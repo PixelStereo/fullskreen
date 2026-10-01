@@ -4,6 +4,7 @@
 #include "Mapping.h"
 #include "VideoDecoder.h"
 
+#include <QImage>
 #include <QString>
 #include <algorithm>
 #include <cmath>
@@ -33,8 +34,10 @@ struct Layer {
     bool playing = true, loop = true;
     double speed = 1.0, playhead = 0.0;
 
-    // Vidéo / image : texture source
+    // Vidéo / image : texture source (alimentée dans le fil de rendu)
     Texture2D sourceTex;
+    QImage pendingImage; // image à envoyer au GPU à la prochaine frame
+    int srcWidth = 0, srcHeight = 0;
 
     // Générateur ISF
     std::unique_ptr<IsfInstance> generator;
@@ -58,6 +61,6 @@ struct Layer {
         if (d <= 0) return playhead;
         return loop ? std::fmod(playhead, d) : std::min(playhead, d);
     }
-    int sourceWidth() const;
-    int sourceHeight() const;
+    int sourceWidth() const { return type == SourceType::Isf ? genWidth : srcWidth; }
+    int sourceHeight() const { return type == SourceType::Isf ? genHeight : srcHeight; }
 };

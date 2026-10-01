@@ -1,29 +1,39 @@
 #include "OutputWindow.h"
 #include "Engine.h"
 
-#include <QCursor>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QScreen>
+#include <QSurfaceFormat>
 
-OutputWindow::OutputWindow(Engine *engine) : QOpenGLWindow(QOpenGLWindow::NoPartialUpdate), m_engine(engine)
+OutputWindow::OutputWindow(Engine *engine) : m_engine(engine)
 {
+    setSurfaceType(QSurface::OpenGLSurface);
+    setFormat(QSurfaceFormat::defaultFormat());
     setTitle(QStringLiteral("Lanterne — Sortie"));
+    create();
+    m_engine->setOutputWindow(this);
 }
 
 OutputWindow::~OutputWindow()
 {
-    if (context()) {
-        makeCurrent();
-        m_draw.destroy();
-        doneCurrent();
-    }
+    m_engine->setOutputWindow(nullptr);
+}
+
+void OutputWindow::sync()
+{
+    const bool exposed = isVisible() && isExposed();
+    const QSize px = size() * devicePixelRatio();
+    if (exposed == m_lastExposed && px == m_lastSize) return;
+    m_lastExposed = exposed;
+    m_lastSize = px;
+    m_engine->setOutputExposed(exposed, px);
 }
 
 void OutputWindow::showOn(QScreen *screen, bool fullscreen)
 {
     if (!screen) screen = QGuiApplication::primaryScreen();
-    hide();
+    hideOutput();
     setScreen(screen);
     if (fullscreen) {
         setGeometry(screen->geometry());
@@ -36,19 +46,44 @@ void OutputWindow::showOn(QScreen *screen, bool fullscreen)
         unsetCursor();
         showNormal();
     }
-    requestActivate();
 }
 
-void OutputWindow::initializeGL() { m_draw.init(); }
-
-void OutputWindow::paintGL()
+void OutputWindow::hideOutput()
 {
-    auto f = context()->extraFunctions();
-    const qreal dpr = devicePixelRatio();
-    f->glViewport(0, 0, int(width() * dpr), int(height() * dpr));
-    f->glClearColor(0, 0, 0, 1);
-    f->glClear(GL_COLOR_BUFFER_BIT);
-    m_draw.drawTexture(m_engine->outputTexture());
+    // Le fil de rendu cesse d'utiliser la fenêtre avant qu'elle ne soit masquée.
+    if (m_lastExposed) {
+        m_lastExposed = false;
+        m_engine->setOutputExposed(false, m_lastSize);
+    }
+    hide();
+}
+
+void OutputWindow::exposeEvent(QExposeEvent *e)
+{
+    QWindow::exposeEvent(e);
+    sync();
+}
+
+void OutputWindow::resizeEvent(QResizeEvent *e)
+{
+    QWindow::resizeEvent(e);
+    sync();
+}
+
+bool OutputWindow::event(QEvent *e)
+{
+    if (e->type() == QEvent::Close) {
+        // Fermer la fenêtre revient à masquer la sortie (géré par la fenêtre principale)
+        emit closeRequested();
+        e->ignore();
+        return true;
+    }
+    if (e->type() == QEvent::Hide || e->type() == QEvent::Show) {
+        const bool r = QWindow::event(e);
+        sync();
+        return r;
+    }
+    return QWindow::event(e);
 }
 
 void OutputWindow::keyPressEvent(QKeyEvent *e)
@@ -58,5 +93,6 @@ void OutputWindow::keyPressEvent(QKeyEvent *e)
         emit closeRequested();
         return;
     }
-    QOpenGLWindow::keyPressEvent(e);
+    emit keyPressed(e->key(), e->modifiers());
+    QWindow::keyPressEvent(e);
 }

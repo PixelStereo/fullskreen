@@ -1,5 +1,6 @@
 #include "Engine.h"
 
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -8,7 +9,9 @@
 #include <QJsonDocument>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
-#include <QDebug>
+#include <QSaveFile>
+#include <QThread>
+#include <QWindow>
 
 static constexpr int kMeshSubdiv = 40;
 
@@ -40,27 +43,33 @@ BlendMode blendModeFromKey(const QString &k)
     return BlendMode::Normal;
 }
 
-int Layer::sourceWidth() const
-{
-    switch (type) {
-    case SourceType::Video:
-    case SourceType::Image: return sourceTex.w > 0 ? sourceTex.w : (video ? video->width() : 0);
-    case SourceType::Isf: return genWidth;
-    default: return 0;
-    }
-}
+// ---------------------------------------------------------------------------
+// Fil de rendu, ressources détachées
+// ---------------------------------------------------------------------------
 
-int Layer::sourceHeight() const
+class RenderThread : public QThread
 {
-    switch (type) {
-    case SourceType::Video:
-    case SourceType::Image: return sourceTex.h > 0 ? sourceTex.h : (video ? video->height() : 0);
-    case SourceType::Isf: return genHeight;
-    default: return 0;
-    }
-}
+public:
+    explicit RenderThread(Engine *e) : m_engine(e) { setObjectName("Lanterne-rendu"); }
 
-// Rend le contexte du moteur courant le temps d'un bloc.
+protected:
+    void run() override { m_engine->renderLoop(); }
+
+private:
+    Engine *m_engine;
+};
+
+// Ressources retirées de la composition (sous verrou), libérées ensuite dans le fil de rendu.
+struct Engine::Garbage {
+    std::unique_ptr<VideoDecoder> video;
+    Texture2D tex;
+    std::unique_ptr<IsfInstance> generator;
+    RenderTarget generatorTarget;
+    std::vector<std::unique_ptr<IsfInstance>> effects;
+    std::unique_ptr<Layer> layer;
+};
+
+// Rend le contexte du moteur courant le temps d'un bloc (mode manuel uniquement).
 struct ScopedCurrent {
     Engine *e;
     explicit ScopedCurrent(Engine *engine) : e(engine) { e->makeCurrent(); }
@@ -74,16 +83,20 @@ Engine::~Engine() { shutdown(); }
 void Engine::makeCurrent()
 {
     if (m_context) m_context->makeCurrent(m_surface);
+    m_currentSurface = m_surface;
 }
 
 void Engine::doneCurrent()
 {
     if (m_context) m_context->doneCurrent();
+    m_currentSurface = nullptr;
 }
 
 bool Engine::initialize(QString *err)
 {
-    m_context = new QOpenGLContext(this);
+    m_ownerThread = QThread::currentThread();
+    // Pas de parent : le contexte est déplacé dans le fil de rendu.
+    m_context = new QOpenGLContext;
     m_context->setShareContext(QOpenGLContext::globalShareContext());
     m_context->setFormat(QSurfaceFormat::defaultFormat());
     if (!m_context->create()) {
@@ -141,23 +154,28 @@ bool Engine::initialize(QString *err)
     f->glBindVertexArray(0);
 
     QString log;
-    m_blitProgram = compileProgram(
-        "#version 330 core\nlayout(location=0) in vec2 a_pos; out vec2 v_uv;\n"
-        "void main(){ v_uv = a_pos*0.5+0.5; gl_Position = vec4(a_pos,0.0,1.0); }\n",
-        "#version 330 core\nuniform sampler2D u_tex; in vec2 v_uv; out vec4 o;\n"
-        "void main(){ o = texture(u_tex, v_uv); }\n",
-        &log);
+    const char *quadVs = "#version 330 core\nlayout(location=0) in vec2 a_pos; out vec2 v_uv;\n"
+                         "void main(){ v_uv = a_pos*0.5+0.5; gl_Position = vec4(a_pos,0.0,1.0); }\n";
+    m_blitProgram = compileProgram(quadVs,
+                                   "#version 330 core\nuniform sampler2D u_tex; in vec2 v_uv; out vec4 o;\n"
+                                   "void main(){ o = texture(u_tex, v_uv); }\n",
+                                   &log);
+    m_presentProgram = compileProgram(quadVs,
+                                      "#version 330 core\nuniform sampler2D u_tex; in vec2 v_uv; out vec4 o;\n"
+                                      "void main(){ o = vec4(texture(u_tex, v_uv).rgb, 1.0); }\n",
+                                      &log);
     m_compProgram = compileProgram(
         "#version 330 core\nlayout(location=0) in vec2 a_pos; layout(location=1) in vec2 a_uv; out vec2 v_uv;\n"
         "void main(){ v_uv = a_uv; gl_Position = vec4(a_pos,0.0,1.0); }\n",
         "#version 330 core\nuniform sampler2D u_tex; uniform float u_opacity; in vec2 v_uv; out vec4 o;\n"
         "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity; o = vec4(c.rgb*a, a); }\n",
         &log);
-    if (!m_blitProgram || !m_compProgram) {
+    if (!m_blitProgram || !m_compProgram || !m_presentProgram) {
         if (err) *err = QStringLiteral("Shaders internes : ") + log;
         return false;
     }
     m_blitTexLoc = f->glGetUniformLocation(m_blitProgram, "u_tex");
+    m_presentTexLoc = f->glGetUniformLocation(m_presentProgram, "u_tex");
     m_compTexLoc = f->glGetUniformLocation(m_compProgram, "u_tex");
     m_compOpacityLoc = f->glGetUniformLocation(m_compProgram, "u_opacity");
 
@@ -168,8 +186,8 @@ bool Engine::initialize(QString *err)
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-    m_output.ensure(m_compSize.width(), m_compSize.height());
-    m_context->doneCurrent();
+    for (RenderTarget &o : m_output) o.ensure(m_compSize.width(), m_compSize.height());
+    doneCurrent();
 
     m_library.scan();
     m_clock.start();
@@ -178,53 +196,271 @@ bool Engine::initialize(QString *err)
     return true;
 }
 
+bool Engine::start()
+{
+    if (!m_initialized || m_threaded) return m_threaded;
+    if (!QOpenGLContext::supportsThreadedOpenGL()) {
+        qWarning("La plateforme ne permet pas le rendu OpenGL dans un fil séparé : rendu dans le fil de l'interface.");
+        return false;
+    }
+    m_quit = false;
+    // Le contexte ne doit être courant dans aucun fil avant d'être confié au fil de rendu.
+    if (QOpenGLContext::currentContext() == m_context) doneCurrent();
+    m_thread = new RenderThread(this);
+    m_context->moveToThread(m_thread);
+    m_threaded = true;
+    m_thread->start(QThread::HighPriority);
+    return true;
+}
+
+void Engine::stop()
+{
+    if (!m_threaded) return;
+    m_quit = true;
+    m_taskCv.notify_all();
+    m_thread->wait();
+    delete m_thread;
+    m_thread = nullptr;
+    m_threaded = false;
+}
+
 void Engine::shutdown()
 {
     if (!m_initialized) return;
-    {
+    stop();
+    if (m_quadVao) { // pas encore libéré par le fil de rendu
         ScopedCurrent sc(this);
-        for (auto &l : m_layers) releaseLayer(*l);
-        m_layers.clear();
-        auto f = gl();
-        m_output.destroy();
-        if (m_blitProgram) f->glDeleteProgram(m_blitProgram);
-        if (m_compProgram) f->glDeleteProgram(m_compProgram);
-        GLuint bufs[] = {m_quadVbo, m_meshVbo, m_meshIbo};
-        f->glDeleteBuffers(3, bufs);
-        GLuint vaos[] = {m_quadVao, m_meshVao};
-        f->glDeleteVertexArrays(2, vaos);
-        f->glDeleteTextures(1, &m_blackTex);
+        releaseAll();
     }
+    delete m_context;
+    m_context = nullptr;
     m_initialized = false;
 }
+
+// ---------------------------------------------------------------------------
+// Tâches OpenGL
+// ---------------------------------------------------------------------------
+
+void Engine::runGl(std::function<void()> fn, bool wait)
+{
+    if (!m_threaded) {
+        if (QOpenGLContext::currentContext() == m_context) {
+            fn();
+        } else {
+            ScopedCurrent sc(this);
+            fn();
+        }
+        return;
+    }
+    if (QThread::currentThread() == m_thread) {
+        fn();
+        return;
+    }
+    auto task = std::make_shared<Task>();
+    task->fn = std::move(fn);
+    std::unique_lock<std::mutex> lk(m_taskMutex);
+    m_tasks.push_back(task);
+    if (!wait) return;
+    m_taskCv.wait(lk, [&] { return task->done || !m_threaded; });
+}
+
+void Engine::runPendingTasks()
+{
+    std::deque<std::shared_ptr<Task>> tasks;
+    {
+        std::lock_guard<std::mutex> lk(m_taskMutex);
+        tasks.swap(m_tasks);
+    }
+    if (tasks.empty()) return;
+    for (auto &t : tasks) {
+        t->fn();
+        t->fn = nullptr;
+    }
+    {
+        std::lock_guard<std::mutex> lk(m_taskMutex);
+        for (auto &t : tasks) t->done = true;
+    }
+    m_taskCv.notify_all();
+}
+
+void Engine::renderLoop()
+{
+    if (!m_context->makeCurrent(m_surface)) {
+        qCritical("Fil de rendu : impossible d'activer le contexte OpenGL.");
+        return;
+    }
+    m_currentSurface = m_surface;
+    QElapsedTimer pace;
+    while (!m_quit) {
+        pace.start();
+        runPendingTasks();
+
+        QSurface *target = (m_outWindow && m_outExposed) ? static_cast<QSurface *>(m_outWindow) : m_surface;
+        if (target != m_currentSurface) {
+            if (!m_context->makeCurrent(target)) {
+                target = m_surface;
+                m_context->makeCurrent(m_surface);
+            }
+            m_currentSurface = target;
+        }
+
+        frame(nextDt());
+
+        bool presented = false;
+        if (target == m_outWindow && m_outWindow) {
+            present(m_outWindow, m_outPixels);
+            m_context->swapBuffers(m_outWindow); // bloque jusqu'à la synchro verticale
+            presented = true;
+        }
+        if (!m_framePending.exchange(true)) emit frameRendered();
+
+        // Sans sortie visible (ou si la synchro ne bloque pas) : environ 60 images/s.
+        const qint64 us = pace.nsecsElapsed() / 1000;
+        if (!presented || us < 4000) QThread::usleep(static_cast<unsigned long>(std::max<qint64>(0, 16667 - us)));
+    }
+    runPendingTasks();
+    releaseAll();
+    {
+        // Libère d'éventuels appels encore en attente
+        std::lock_guard<std::mutex> lk(m_taskMutex);
+        for (auto &t : m_tasks) t->done = true;
+        m_tasks.clear();
+    }
+    m_taskCv.notify_all();
+    m_context->doneCurrent();
+    m_currentSurface = nullptr;
+    m_context->moveToThread(m_ownerThread);
+}
+
+void Engine::releaseAll()
+{
+    {
+        Lock lk(&m_mutex);
+        for (auto &l : m_layers) releaseLayer(*l);
+        m_layers.clear();
+    }
+    auto f = gl();
+    for (RenderTarget &o : m_output) o.destroy();
+    for (GLuint p : {m_blitProgram, m_compProgram, m_presentProgram})
+        if (p) f->glDeleteProgram(p);
+    GLuint bufs[] = {m_quadVbo, m_meshVbo, m_meshIbo};
+    f->glDeleteBuffers(3, bufs);
+    GLuint vaos[] = {m_quadVao, m_meshVao};
+    f->glDeleteVertexArrays(2, vaos);
+    f->glDeleteTextures(1, &m_blackTex);
+    m_quadVao = m_meshVao = 0;
+    m_blitProgram = m_compProgram = m_presentProgram = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Sortie
+// ---------------------------------------------------------------------------
+
+void Engine::setOutputWindow(QWindow *w)
+{
+    runGl([this, w] {
+        if (m_threaded && m_currentSurface == m_outWindow && m_outWindow && m_outWindow != w) {
+            m_context->makeCurrent(m_surface);
+            m_currentSurface = m_surface;
+        }
+        m_outWindow = w;
+        if (!w) m_outExposed = false;
+    });
+}
+
+void Engine::setOutputExposed(bool exposed, QSize pixelSize)
+{
+    runGl([this, exposed, pixelSize] {
+        if (!exposed && m_threaded && m_currentSurface == m_outWindow && m_outWindow) {
+            m_context->makeCurrent(m_surface);
+            m_currentSurface = m_surface;
+        }
+        m_outExposed = exposed;
+        m_outPixels = pixelSize;
+    });
+}
+
+void Engine::present(QWindow *, QSize px)
+{
+    auto f = gl();
+    f->glBindFramebuffer(GL_FRAMEBUFFER, m_context->defaultFramebufferObject());
+    f->glViewport(0, 0, px.width(), px.height());
+    f->glDisable(GL_BLEND);
+    f->glClearColor(0, 0, 0, 1);
+    f->glClear(GL_COLOR_BUFFER_BIT);
+    f->glUseProgram(m_presentProgram);
+    f->glActiveTexture(GL_TEXTURE0);
+    f->glBindTexture(GL_TEXTURE_2D, m_output[m_published].tex);
+    f->glUniform1i(m_presentTexLoc, 0);
+    drawQuad();
+}
+
+GLuint Engine::outputTexture() const { return m_output[m_published.load()].tex; }
 
 // ---------------------------------------------------------------------------
 // Calques
 // ---------------------------------------------------------------------------
 
+QSize Engine::compositionSize() const
+{
+    Lock lk(&m_mutex);
+    return m_compSize;
+}
+
 void Engine::setCompositionSize(QSize s)
 {
     s = s.expandedTo(QSize(16, 16)).boundedTo(QSize(16384, 16384));
-    if (s == m_compSize) return;
-    m_compSize = s;
+    {
+        Lock lk(&m_mutex);
+        if (s == m_compSize) return;
+        m_compSize = s;
+    }
     emit compositionSizeChanged(s);
+}
+
+int Engine::layerCount() const
+{
+    Lock lk(&m_mutex);
+    return int(m_layers.size());
+}
+
+Layer *Engine::layer(int i)
+{
+    Lock lk(&m_mutex);
+    return (i >= 0 && i < int(m_layers.size())) ? m_layers[size_t(i)].get() : nullptr;
 }
 
 int Engine::indexOf(const Layer *l) const
 {
+    Lock lk(&m_mutex);
     for (size_t i = 0; i < m_layers.size(); ++i)
         if (m_layers[i].get() == l) return int(i);
     return -1;
 }
 
+QString Engine::projectPath() const
+{
+    Lock lk(&m_mutex);
+    return m_projectPath;
+}
+
+void Engine::setProjectPath(const QString &p)
+{
+    Lock lk(&m_mutex);
+    m_projectPath = p;
+}
+
 int Engine::addLayer(const QString &name, int at)
 {
-    auto l = std::make_unique<Layer>();
-    l->name = name.isEmpty() ? QStringLiteral("Calque %1").arg(layerCount() + 1) : name;
-    l->genWidth = m_compSize.width();
-    l->genHeight = m_compSize.height();
-    at = std::clamp(at, 0, layerCount());
-    m_layers.insert(m_layers.begin() + at, std::move(l));
+    {
+        Lock lk(&m_mutex);
+        auto l = std::make_unique<Layer>();
+        l->name = name.isEmpty() ? QStringLiteral("Calque %1").arg(m_layers.size() + 1) : name;
+        l->genWidth = m_compSize.width();
+        l->genHeight = m_compSize.height();
+        at = std::clamp(at, 0, int(m_layers.size()));
+        m_layers.insert(m_layers.begin() + at, std::move(l));
+    }
     emit layersChanged();
     return at;
 }
@@ -246,54 +482,137 @@ void Engine::releaseLayer(Layer &l)
 
 void Engine::removeLayer(int i)
 {
-    Layer *l = layer(i);
-    if (!l) return;
+    auto g = std::make_shared<Garbage>();
     {
-        ScopedCurrent sc(this);
-        releaseLayer(*l);
+        Lock lk(&m_mutex);
+        if (i < 0 || i >= int(m_layers.size())) return;
+        g->layer = std::move(m_layers[size_t(i)]);
+        m_layers.erase(m_layers.begin() + i);
     }
-    m_layers.erase(m_layers.begin() + i);
+    if (g->layer->video) g->layer->video->close(); // arrêt du fil de décodage hors du fil de rendu
+    runGl([this, g] { releaseLayer(*g->layer); }, false);
     emit layersChanged();
 }
 
 void Engine::moveLayer(int from, int to)
 {
-    if (!layer(from)) return;
-    to = std::clamp(to, 0, layerCount() - 1);
-    if (from == to) return;
-    auto l = std::move(m_layers[size_t(from)]);
-    m_layers.erase(m_layers.begin() + from);
-    m_layers.insert(m_layers.begin() + to, std::move(l));
+    {
+        Lock lk(&m_mutex);
+        const int n = int(m_layers.size());
+        if (from < 0 || from >= n) return;
+        to = std::clamp(to, 0, n - 1);
+        if (from == to) return;
+        auto l = std::move(m_layers[size_t(from)]);
+        m_layers.erase(m_layers.begin() + from);
+        m_layers.insert(m_layers.begin() + to, std::move(l));
+    }
     emit layersChanged();
+}
+
+QJsonObject Engine::layerJson(int i) const
+{
+    Lock lk(&m_mutex);
+    if (i < 0 || i >= int(m_layers.size())) return {};
+    return layerToJson(*m_layers[size_t(i)], QString());
+}
+
+int Engine::insertLayerJson(int at, const QJsonObject &o)
+{
+    const int idx = addLayer(QString(), at);
+    layerFromJson(idx, o, QString(), nullptr);
+    emit layersChanged();
+    return idx;
+}
+
+void Engine::replaceLayerJson(int i, const QJsonObject &o)
+{
+    if (i < 0 || i >= layerCount()) return;
+    removeLayer(i);
+    insertLayerJson(i, o);
 }
 
 int Engine::duplicateLayer(int i)
 {
-    Layer *l = layer(i);
-    if (!l) return -1;
-    QJsonObject o = layerToJson(*l, QString());
-    o["name"] = l->name + QStringLiteral(" copie");
-    int ni = addLayer(QString(), i);
-    layerFromJson(ni, o, QString(), nullptr);
-    emit layersChanged();
-    return ni;
+    QJsonObject o = layerJson(i);
+    if (o.isEmpty()) return -1;
+    o["name"] = o.value("name").toString() + QStringLiteral(" copie");
+    return insertLayerJson(i, o);
+}
+
+QJsonArray Engine::effectsJson(int i) const
+{
+    Lock lk(&m_mutex);
+    QJsonArray a;
+    if (i < 0 || i >= int(m_layers.size())) return a;
+    for (const auto &e : m_layers[size_t(i)]->effects) a.append(e->save(QString()));
+    return a;
+}
+
+void Engine::setEffectsJson(int i, const QJsonArray &a)
+{
+    auto g = std::make_shared<Garbage>();
+    {
+        Lock lk(&m_mutex);
+        if (i < 0 || i >= int(m_layers.size())) return;
+        g->effects = std::move(m_layers[size_t(i)]->effects);
+        m_layers[size_t(i)]->effects.clear();
+    }
+    runGl([g] { for (auto &e : g->effects) e->releaseGl(); }, false);
+    for (const QJsonValue &v : a) {
+        const QJsonObject e = v.toObject();
+        const int fi = addEffect(i, resolvePath(e, QString()));
+        if (fi < 0) continue;
+        IsfInstance *inst;
+        {
+            Lock lk(&m_mutex);
+            inst = m_layers[size_t(i)]->effects[size_t(fi)].get();
+        }
+        runGl([inst, e] {
+            inst->enabled = e.value("enabled").toBool(true);
+            inst->restoreParams(e.value("params").toObject(), QString());
+        });
+    }
+}
+
+std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
+{
+    auto g = std::make_shared<Garbage>();
+    g->video = std::move(l.video);
+    g->tex = l.sourceTex;
+    l.sourceTex = Texture2D{};
+    g->generator = std::move(l.generator);
+    g->generatorTarget = l.generatorTarget;
+    l.generatorTarget = RenderTarget{};
+    l.pendingImage = QImage();
+    l.type = SourceType::None;
+    l.sourcePath.clear();
+    l.error.clear();
+    l.srcWidth = l.srcHeight = 0;
+    l.finalTex = 0;
+    return g;
+}
+
+// Libère une source détachée : fil de décodage arrêté ici, ressources GL dans le fil de rendu.
+void Engine::releaseGarbage(const std::shared_ptr<Garbage> &g)
+{
+    if (g->video) g->video->close();
+    runGl([g] {
+        g->tex.destroy();
+        if (g->generator) g->generator->releaseGl();
+        g->generatorTarget.destroy();
+    }, false);
 }
 
 void Engine::clearLayerSource(int i)
 {
-    Layer *l = layer(i);
-    if (!l) return;
-    ScopedCurrent sc(this);
-    if (l->video) l->video->close();
-    l->video.reset();
-    l->sourceTex.destroy();
-    if (l->generator) l->generator->releaseGl();
-    l->generator.reset();
-    l->generatorTarget.destroy();
-    l->type = SourceType::None;
-    l->sourcePath.clear();
-    l->error.clear();
-    l->finalTex = 0;
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return;
+        g = detachSource(*l);
+    }
+    releaseGarbage(g);
 }
 
 static bool isDefaultMapping(const Mapping &m)
@@ -308,70 +627,90 @@ static bool isDefaultMapping(const Mapping &m)
 
 bool Engine::setLayerVideo(int i, const QString &path, QString *err)
 {
-    Layer *l = layer(i);
-    if (!l) return false;
+    if (!layer(i)) return false;
     auto dec = std::make_unique<VideoDecoder>();
     QString e;
-    if (!dec->open(path, &e)) {
+    if (!dec->open(path, &e)) { // ouverture hors verrou : peut prendre du temps
         if (err) *err = e;
         return false;
     }
-    clearLayerSource(i);
-    dec->setLoop(l->loop);
-    l->video = std::move(dec);
-    l->type = SourceType::Video;
-    l->sourcePath = QFileInfo(path).absoluteFilePath();
-    l->playhead = 0;
-    l->playing = true;
-    if (isDefaultMapping(l->mapping) && l->video->height() > 0)
-        l->mapping.fitAspect(double(l->video->width()) / l->video->height(),
-                             double(m_compSize.width()) / m_compSize.height());
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        g = detachSource(*l);
+        dec->setLoop(l->loop);
+        l->srcWidth = dec->width();
+        l->srcHeight = dec->height();
+        l->video = std::move(dec);
+        l->type = SourceType::Video;
+        l->sourcePath = QFileInfo(path).absoluteFilePath();
+        l->playhead = 0;
+        l->playing = true;
+        if (isDefaultMapping(l->mapping) && l->srcHeight > 0)
+            l->mapping.fitAspect(double(l->srcWidth) / l->srcHeight, double(m_compSize.width()) / m_compSize.height());
+    }
+    releaseGarbage(g);
     return true;
 }
 
 bool Engine::setLayerImage(int i, const QString &path, QString *err)
 {
-    Layer *l = layer(i);
-    if (!l) return false;
+    if (!layer(i)) return false;
     QImage img(path);
     if (img.isNull()) {
         if (err) *err = QStringLiteral("Image illisible : ") + path;
         return false;
     }
-    clearLayerSource(i);
     img = img.convertToFormat(QImage::Format_RGBA8888).mirrored(false, true);
+    std::shared_ptr<Garbage> g;
     {
-        ScopedCurrent sc(this);
-        l->sourceTex.upload(img.constBits(), img.width(), img.height());
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        g = detachSource(*l);
+        l->pendingImage = img; // envoyé au GPU par le fil de rendu
+        l->srcWidth = img.width();
+        l->srcHeight = img.height();
+        l->type = SourceType::Image;
+        l->sourcePath = QFileInfo(path).absoluteFilePath();
+        if (isDefaultMapping(l->mapping))
+            l->mapping.fitAspect(double(img.width()) / img.height(), double(m_compSize.width()) / m_compSize.height());
     }
-    l->type = SourceType::Image;
-    l->sourcePath = QFileInfo(path).absoluteFilePath();
-    if (isDefaultMapping(l->mapping))
-        l->mapping.fitAspect(double(img.width()) / img.height(), double(m_compSize.width()) / m_compSize.height());
+    releaseGarbage(g);
     return true;
 }
 
 bool Engine::setLayerIsf(int i, const QString &path, QString *err)
 {
-    Layer *l = layer(i);
-    if (!l) return false;
-    clearLayerSource(i);
+    if (!layer(i)) return false;
     auto inst = std::make_unique<IsfInstance>();
-    bool ok;
+    IsfInstance *raw = inst.get();
+    bool ok = false;
+    runGl([raw, path, &ok] { ok = raw->load(path); });
+    std::shared_ptr<Garbage> g;
     {
-        ScopedCurrent sc(this);
-        ok = inst->load(path);
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) {
+            runGl([raw] { raw->releaseGl(); });
+            return false;
+        }
+        g = detachSource(*l);
+        l->type = SourceType::Isf;
+        l->sourcePath = QFileInfo(path).absoluteFilePath();
+        l->error = inst->error();
+        l->generator = std::move(inst);
+        if (!ok && err) *err = l->error;
     }
-    l->type = SourceType::Isf;
-    l->sourcePath = QFileInfo(path).absoluteFilePath();
-    l->error = inst->error();
-    l->generator = std::move(inst);
-    if (!ok && err) *err = l->error;
+    releaseGarbage(g);
     return ok;
 }
 
 void Engine::setGeneratorSize(int i, int w, int h)
 {
+    Lock lk(&m_mutex);
     if (Layer *l = layer(i)) {
         l->genWidth = std::clamp(w, 1, 16384);
         l->genHeight = std::clamp(h, 1, 16384);
@@ -380,6 +719,7 @@ void Engine::setGeneratorSize(int i, int w, int h)
 
 void Engine::setLayerPlaying(int i, bool playing)
 {
+    Lock lk(&m_mutex);
     Layer *l = layer(i);
     if (!l || !l->video) return;
     if (playing && !l->loop && l->duration() > 0 && l->playhead >= l->duration() - 1e-3) seekLayer(i, 0);
@@ -388,6 +728,7 @@ void Engine::setLayerPlaying(int i, bool playing)
 
 void Engine::setLayerLoop(int i, bool loop)
 {
+    Lock lk(&m_mutex);
     Layer *l = layer(i);
     if (!l) return;
     const double pos = l->position();
@@ -400,6 +741,7 @@ void Engine::setLayerLoop(int i, bool loop)
 
 void Engine::seekLayer(int i, double t)
 {
+    Lock lk(&m_mutex);
     Layer *l = layer(i);
     if (!l || !l->video) return;
     const double d = l->duration();
@@ -410,12 +752,16 @@ void Engine::seekLayer(int i, double t)
 
 int Engine::addEffect(int li, const QString &path, QString *err)
 {
-    Layer *l = layer(li);
-    if (!l) return -1;
+    if (!layer(li)) return -1;
     auto inst = std::make_unique<IsfInstance>();
-    {
-        ScopedCurrent sc(this);
-        if (!inst->load(path) && err) *err = inst->error();
+    IsfInstance *raw = inst.get();
+    runGl([raw, path] { raw->load(path); });
+    if (!raw->isValid() && err) *err = raw->error();
+    Lock lk(&m_mutex);
+    Layer *l = layer(li);
+    if (!l) {
+        runGl([raw] { raw->releaseGl(); });
+        return -1;
     }
     l->effects.push_back(std::move(inst));
     return int(l->effects.size()) - 1;
@@ -423,17 +769,20 @@ int Engine::addEffect(int li, const QString &path, QString *err)
 
 void Engine::removeEffect(int li, int fx)
 {
-    Layer *l = layer(li);
-    if (!l || fx < 0 || fx >= int(l->effects.size())) return;
+    std::shared_ptr<IsfInstance> victim;
     {
-        ScopedCurrent sc(this);
-        l->effects[size_t(fx)]->releaseGl();
+        Lock lk(&m_mutex);
+        Layer *l = layer(li);
+        if (!l || fx < 0 || fx >= int(l->effects.size())) return;
+        victim.reset(l->effects[size_t(fx)].release());
+        l->effects.erase(l->effects.begin() + fx);
     }
-    l->effects.erase(l->effects.begin() + fx);
+    runGl([victim] { victim->releaseGl(); }, false);
 }
 
 void Engine::moveEffect(int li, int from, int to)
 {
+    Lock lk(&m_mutex);
     Layer *l = layer(li);
     if (!l) return;
     const int n = int(l->effects.size());
@@ -448,22 +797,41 @@ void Engine::moveEffect(int li, int from, int to)
 bool Engine::setIsfImageInput(IsfInstance *inst, int input, const QString &path, QString *err)
 {
     if (!inst) return false;
-    ScopedCurrent sc(this);
-    return inst->setImageInput(input, path, err);
+    bool ok = false;
+    QString e;
+    runGl([&] { ok = inst->setImageInput(input, path, &e); });
+    if (err) *err = e;
+    return ok;
 }
 
 bool Engine::reloadIsf(IsfInstance *inst)
 {
     if (!inst) return false;
-    // On conserve les valeurs des paramètres à travers le rechargement.
-    const QJsonObject saved = inst->save(QString());
-    ScopedCurrent sc(this);
-    bool ok = inst->load(inst->path());
-    inst->restoreParams(saved.value("params").toObject(), QString());
-    inst->enabled = saved.value("enabled").toBool(true);
+    bool ok = false;
+    runGl([&] {
+        // On conserve les valeurs des paramètres à travers le rechargement.
+        const QJsonObject saved = inst->save(QString());
+        ok = inst->load(inst->path());
+        inst->restoreParams(saved.value("params").toObject(), QString());
+        inst->enabled = saved.value("enabled").toBool(true);
+    });
+    Lock lk(&m_mutex);
     for (auto &l : m_layers)
         if (l->generator.get() == inst) l->error = inst->error();
     return ok;
+}
+
+double Engine::masterTarget() const
+{
+    Lock lk(&m_mutex);
+    return m_masterTarget;
+}
+
+void Engine::fadeMaster(double target, double seconds)
+{
+    Lock lk(&m_mutex);
+    m_masterTarget = std::clamp(target, 0.0, 1.0);
+    m_masterSpeed = seconds > 0.0 ? 1.0 / seconds : 0.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +859,10 @@ void Engine::blit(GLuint tex, const RenderTarget &target)
 
 void Engine::updateSource(Layer &l, double dt)
 {
+    if (!l.pendingImage.isNull()) {
+        l.sourceTex.upload(l.pendingImage.constBits(), l.pendingImage.width(), l.pendingImage.height());
+        l.pendingImage = QImage();
+    }
     if (l.type != SourceType::Video || !l.video) return;
     if (l.playing) {
         l.playhead += dt * l.speed;
@@ -545,8 +917,9 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
 void Engine::composite()
 {
     auto f = gl();
-    m_output.ensure(m_compSize.width(), m_compSize.height());
-    m_output.clear(0, 0, 0, 1);
+    RenderTarget &out = m_output[m_back];
+    out.ensure(m_compSize.width(), m_compSize.height());
+    out.clear(0, 0, 0, 1);
     f->glEnable(GL_BLEND);
     f->glUseProgram(m_compProgram);
     f->glUniform1i(m_compTexLoc, 0);
@@ -555,7 +928,7 @@ void Engine::composite()
     f->glBindBuffer(GL_ARRAY_BUFFER, m_meshVbo);
 
     // Le calque d'index 0 est au-dessus : on dessine du dernier au premier.
-    for (int i = layerCount() - 1; i >= 0; --i) {
+    for (int i = int(m_layers.size()) - 1; i >= 0; --i) {
         Layer &l = *m_layers[size_t(i)];
         if (!l.visible || !l.finalTex || l.opacity <= 0.0f) continue;
         switch (l.blend) {
@@ -570,20 +943,55 @@ void Engine::composite()
         f->glBindTexture(GL_TEXTURE_2D, l.finalTex);
         f->glDrawElements(GL_TRIANGLES, m_meshIndexCount, GL_UNSIGNED_INT, nullptr);
     }
+
+    // Master : multiplie toute l'image par le niveau (couleur constante de mélange).
+    const double master = m_masterLevel.load();
+    if (master < 0.999) {
+        const float m = float(master);
+        f->glBlendColor(m, m, m, 1.0f);
+        f->glBlendFunc(GL_ZERO, GL_CONSTANT_COLOR);
+        f->glUseProgram(m_blitProgram);
+        f->glBindTexture(GL_TEXTURE_2D, m_blackTex);
+        f->glUniform1i(m_blitTexLoc, 0);
+        drawQuad();
+    }
     f->glDisable(GL_BLEND);
     f->glBindVertexArray(0);
 }
 
-void Engine::renderFrame()
+double Engine::nextDt()
 {
-    if (!m_initialized) return;
     const qint64 now = m_clock.nsecsElapsed();
     double dt = (now - m_lastNs) / 1e9;
     m_lastNs = now;
     dt = std::clamp(dt, 0.0, 0.25);
-    if (dt > 0) m_fps = m_fps * 0.95 + (1.0 / dt) * 0.05;
+    if (dt > 0) m_fps = m_fps.load() * 0.95 + (1.0 / dt) * 0.05;
+    return dt;
+}
 
-    ScopedCurrent sc(this);
+void Engine::frame(double dt)
+{
+    // En mode fil, on continue de servir les tâches OpenGL tant que l'interface tient le verrou :
+    // elle peut attendre une tâche en le tenant, sans interblocage.
+    if (m_threaded) {
+        while (!m_mutex.tryLock(2)) {
+            runPendingTasks();
+            if (m_quit) return;
+        }
+    } else {
+        m_mutex.lock();
+    }
+
+    // Master
+    double lvl = m_masterLevel.load();
+    if (m_masterSpeed <= 0.0) {
+        lvl = m_masterTarget;
+    } else {
+        const double step = dt * m_masterSpeed;
+        lvl = lvl < m_masterTarget ? std::min(m_masterTarget, lvl + step) : std::max(m_masterTarget, lvl - step);
+    }
+    m_masterLevel = lvl;
+
     IsfRenderContext rc;
     rc.dt = dt;
     rc.blackTex = m_blackTex;
@@ -593,21 +1001,47 @@ void Engine::renderFrame()
     for (auto &l : m_layers) updateSource(*l, dt);
     for (auto &l : m_layers) renderLayer(*l, rc);
     composite();
-    gl()->glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    // Les fenêtres d'affichage lisent la texture depuis d'autres contextes : on synchronise.
-    gl()->glFinish();
+    m_mutex.unlock();
+
+    auto f = gl();
+    f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    // L'aperçu lit l'image depuis un autre contexte : on attend la fin du rendu avant de la publier.
+    f->glFinish();
+    m_published = m_back;
+    m_back = 1 - m_back;
+    ++m_frameCount;
+}
+
+void Engine::renderFrame()
+{
+    if (!m_initialized || m_threaded) return;
+    QSurface *target = (m_outWindow && m_outExposed) ? static_cast<QSurface *>(m_outWindow) : m_surface;
+    if (!m_context->makeCurrent(target)) {
+        target = m_surface;
+        m_context->makeCurrent(m_surface);
+    }
+    m_currentSurface = target;
+    frame(nextDt());
+    if (target == m_outWindow && m_outWindow) {
+        present(m_outWindow, m_outPixels);
+        m_context->swapBuffers(m_outWindow);
+    }
+    if (!m_framePending.exchange(true)) emit frameRendered();
 }
 
 QImage Engine::grabOutput()
 {
-    ScopedCurrent sc(this);
-    if (!m_output.fbo) return {};
-    QImage img(m_output.w, m_output.h, QImage::Format_RGBA8888);
-    auto f = gl();
-    f->glBindFramebuffer(GL_FRAMEBUFFER, m_output.fbo);
-    f->glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    f->glReadPixels(0, 0, m_output.w, m_output.h, GL_RGBA, GL_UNSIGNED_BYTE, img.bits());
-    f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    QImage img;
+    runGl([this, &img] {
+        const RenderTarget &o = m_output[m_published];
+        if (!o.fbo) return;
+        img = QImage(o.w, o.h, QImage::Format_RGBA8888);
+        auto f = gl();
+        f->glBindFramebuffer(GL_FRAMEBUFFER, o.fbo);
+        f->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        f->glReadPixels(0, 0, o.w, o.h, GL_RGBA, GL_UNSIGNED_BYTE, img.bits());
+        f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    });
     return img.mirrored(false, true);
 }
 
@@ -617,12 +1051,18 @@ QImage Engine::grabOutput()
 
 void Engine::newProject()
 {
+    std::vector<std::unique_ptr<Layer>> old;
     {
-        ScopedCurrent sc(this);
-        for (auto &l : m_layers) releaseLayer(*l);
+        Lock lk(&m_mutex);
+        old.swap(m_layers);
+        m_projectPath.clear();
     }
-    m_layers.clear();
-    m_projectPath.clear();
+    for (auto &l : old) {
+        if (l->video) l->video->close();
+        auto g = std::make_shared<Garbage>();
+        g->layer = std::move(l);
+        runGl([this, g] { releaseLayer(*g->layer); }, false);
+    }
     setCompositionSize(QSize(1920, 1080));
     emit layersChanged();
 }
@@ -683,67 +1123,95 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
 
 void Engine::layerFromJson(int index, const QJsonObject &o, const QString &projectDir, QStringList *warnings)
 {
-    Layer *l = layer(index);
-    if (!l) return;
-    l->name = o.value("name").toString(l->name);
-    l->visible = o.value("visible").toBool(true);
-    l->opacity = float(o.value("opacity").toDouble(1.0));
-    l->blend = blendModeFromKey(o.value("blend").toString());
+    QString name;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(index);
+        if (!l) return;
+        l->name = o.value("name").toString(l->name);
+        l->visible = o.value("visible").toBool(true);
+        l->opacity = float(o.value("opacity").toDouble(1.0));
+        l->blend = blendModeFromKey(o.value("blend").toString());
+        name = l->name;
+    }
 
     const QJsonObject src = o.value("source").toObject();
     const QString type = src.value("type").toString();
     const QString path = type != "none" ? resolvePath(src, projectDir) : QString();
     QString err;
     if (type == "video") {
-        l->loop = src.value("loop").toBool(true);
-        l->speed = src.value("speed").toDouble(1.0);
-        if (!setLayerVideo(index, path, &err) && warnings) *warnings << l->name + " : " + err;
-        l->playing = src.value("playing").toBool(true);
-    } else if (type == "image") {
-        if (!setLayerImage(index, path, &err) && warnings) *warnings << l->name + " : " + err;
-    } else if (type == "isf") {
-        l->genWidth = src.value("width").toInt(m_compSize.width());
-        l->genHeight = src.value("height").toInt(m_compSize.height());
-        if (!setLayerIsf(index, path, &err) && warnings) *warnings << l->name + " : " + err;
-        if (l->generator) {
-            ScopedCurrent sc(this);
-            l->generator->restoreParams(src.value("params").toObject(), projectDir);
+        {
+            Lock lk(&m_mutex);
+            layer(index)->loop = src.value("loop").toBool(true);
+            layer(index)->speed = src.value("speed").toDouble(1.0);
         }
+        if (!setLayerVideo(index, path, &err) && warnings) *warnings << name + " : " + err;
+        Lock lk(&m_mutex);
+        layer(index)->playing = src.value("playing").toBool(true);
+    } else if (type == "image") {
+        if (!setLayerImage(index, path, &err) && warnings) *warnings << name + " : " + err;
+    } else if (type == "isf") {
+        {
+            Lock lk(&m_mutex);
+            layer(index)->genWidth = src.value("width").toInt(m_compSize.width());
+            layer(index)->genHeight = src.value("height").toInt(m_compSize.height());
+        }
+        if (!setLayerIsf(index, path, &err) && warnings) *warnings << name + " : " + err;
+        IsfInstance *gen;
+        {
+            Lock lk(&m_mutex);
+            gen = layer(index)->generator.get();
+        }
+        const QJsonObject params = src.value("params").toObject();
+        if (gen) runGl([gen, params, projectDir] { gen->restoreParams(params, projectDir); });
     }
 
     for (const QJsonValue &v : o.value("effects").toArray()) {
         const QJsonObject e = v.toObject();
         const QString p = resolvePath(e, projectDir);
-        int fi = addEffect(index, p, &err);
+        const int fi = addEffect(index, p, &err);
         if (fi < 0) continue;
-        IsfInstance *inst = l->effects[size_t(fi)].get();
-        if (!inst->isValid() && warnings) *warnings << l->name + " / " + QFileInfo(p).fileName() + " : " + inst->error();
-        inst->enabled = e.value("enabled").toBool(true);
-        ScopedCurrent sc(this);
-        inst->restoreParams(e.value("params").toObject(), projectDir);
+        IsfInstance *inst;
+        {
+            Lock lk(&m_mutex);
+            inst = layer(index)->effects[size_t(fi)].get();
+        }
+        if (!inst->isValid() && warnings) *warnings << name + " / " + QFileInfo(p).fileName() + " : " + inst->error();
+        runGl([inst, e, projectDir] {
+            inst->enabled = e.value("enabled").toBool(true);
+            inst->restoreParams(e.value("params").toObject(), projectDir);
+        });
     }
     // Le mapping est restauré après la source (qui ajuste sinon le ratio automatiquement).
-    l->mapping.fromJson(o.value("mapping").toObject());
+    Lock lk(&m_mutex);
+    layer(index)->mapping.fromJson(o.value("mapping").toObject());
 }
 
 bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QString *err)
 {
     const QString dir = QFileInfo(path).absolutePath();
     QJsonObject root;
-    root["app"] = "Lanterne";
-    root["formatVersion"] = 1;
-    root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()}};
-    QJsonArray layers;
-    for (const auto &l : m_layers) layers.append(layerToJson(*l, dir));
-    root["layers"] = layers;
+    {
+        Lock lk(&m_mutex);
+        root["app"] = "Lanterne";
+        root["formatVersion"] = 1;
+        root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()}};
+        QJsonArray layers;
+        for (const auto &l : m_layers) layers.append(layerToJson(*l, dir));
+        root["layers"] = layers;
+    }
     root["ui"] = uiState;
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    // Écriture atomique : un plantage pendant l'enregistrement ne corrompt pas le fichier existant.
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
         if (err) *err = f.errorString();
         return false;
     }
     f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    m_projectPath = QFileInfo(path).absoluteFilePath();
+    if (!f.commit()) {
+        if (err) *err = f.errorString();
+        return false;
+    }
     return true;
 }
 
@@ -772,7 +1240,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         layerFromJson(idx, layers[i].toObject(), dir, &warnings);
     }
     if (uiState) *uiState = root.value("ui").toObject();
-    m_projectPath = QFileInfo(path).absoluteFilePath();
+    setProjectPath(QFileInfo(path).absoluteFilePath());
     emit layersChanged();
     if (!warnings.isEmpty() && err) *err = warnings.join('\n');
     return true;

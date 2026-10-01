@@ -3,6 +3,9 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QLibraryInfo>
+#include <QLocale>
+#include <QTranslator>
 #include <QMessageBox>
 #include <QPalette>
 #include <QStyleFactory>
@@ -56,6 +59,11 @@ int main(int argc, char *argv[])
     QApplication::setApplicationVersion("0.1.0");
     applyDarkTheme(app);
 
+    // Boutons et dialogues standard de Qt dans la langue du système
+    QTranslator qtTranslator;
+    if (qtTranslator.load(QLocale::system(), "qtbase", "_", QLibraryInfo::path(QLibraryInfo::TranslationsPath)))
+        app.installTranslator(&qtTranslator);
+
     QCommandLineParser cli;
     cli.setApplicationDescription("Lanterne — mapping vidéo multi-calques, lecture FFmpeg, shaders ISF");
     cli.addHelpOption();
@@ -104,10 +112,15 @@ int main(int argc, char *argv[])
         return ok ? 0 : 2;
     }
 
+    // Interface : le rendu tourne dans son propre fil, indépendant de l'interface.
+    engine.start();
+
     int rc;
     {
         MainWindow w(&engine);
         w.show();
+        if (cli.isSet(shotOpt)) w.setAutosaveEnabled(false);
+        else w.offerRecovery();
         if (!project.isEmpty()) w.openProject(project);
         if (cli.isSet(shotOpt)) {
             QTimer::singleShot(2500, &w, [&w, &cli, &shotOpt] {

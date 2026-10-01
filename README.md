@@ -20,6 +20,16 @@ Interface **Qt 6**, décodage **FFmpeg**, rendu **OpenGL 3.3**, effets et géné
   - grille de déformation de 2×2 à 32×32 points, interpolation lisse (Catmull-Rom) ;
   - les deux se combinent : on cale d'abord les coins, puis on affine à la grille.
 - **Sortie plein écran** sur l'écran choisi, cadencée par la synchro verticale. Sur l'écran de l'interface, elle reste fenêtrée.
+- **Rendu dans un fil dédié** : le moteur rend et présente la sortie lui-même ; un ralentissement ou un blocage
+  de l'interface (chargement, dialogue, menu) n'interrompt pas l'image projetée.
+- **Master** : fader de niveau général et bouton **Noir** en fondu (durée réglable), Ctrl+B / ⌘B,
+  actif même quand la fenêtre de sortie a le focus.
+- **Annuler / rétablir** (Ctrl+Z / Ctrl+Maj+Z, ⌘ sur Mac) : mapping (poignées, flèches, boutons), paramètres ISF,
+  opacité, fusion, visibilité, nom, ajout / suppression / ordre des calques, effets, changement de source.
+- **Sauvegarde automatique et reprise** : la session est sauvegardée toutes les 10 s quand elle change.
+  Après un plantage, Lanterne propose de la restaurer au lancement ; si la sortie était affichée,
+  elle revient sur le projecteur **au noir**, et la régie rallume avec Ctrl+B.
+  Les enregistrements sont atomiques : un plantage pendant l'écriture ne corrompt pas le projet.
 - **Projets** `.lanterne` (JSON lisible), chemins relatifs au projet pour déplacer un dossier de spectacle d'une machine à l'autre.
 - **Glisser-déposer** de vidéos, images, shaders ISF (un filtre déposé s'ajoute comme effet au calque sélectionné).
 
@@ -75,6 +85,8 @@ cmake -S . -B build && cmake --build build -j
 | Nouveau calque | bouton **+** sous la liste, menu Calque, ou glisser un fichier dans la fenêtre |
 | Choisir l'écran du vidéoprojecteur | Sortie ▸ Écran de sortie |
 | Afficher / masquer la sortie | Ctrl+Maj+F (⌘⇧F sur Mac) |
+| Noir en fondu / retour | Ctrl+B (⌘B), ou bouton Noir du panneau Master |
+| Annuler / rétablir | Ctrl+Z / Ctrl+Maj+Z ou Ctrl+Y (⌘Z / ⌘⇧Z) |
 | Fermer la sortie depuis la sortie | Maj+Échap (Échap seul ne fait rien, par sécurité) |
 | Régler la composition sur le projecteur | Sortie ▸ Composition = résolution de l'écran de sortie |
 | Lecture / pause du calque vidéo sélectionné | Espace |
@@ -102,17 +114,21 @@ Les 68 transitions ISF sont ignorées : la V1 n'a pas de notion de transition en
 
 ```
 src/engine/   moteur, sans aucune dépendance aux widgets (QtCore/QtGui/OpenGL + FFmpeg)
-  Engine        composition, rendu, projet JSON, contexte OpenGL hors écran partagé
+  Engine        composition, fil de rendu, présentation de la sortie, projet JSON
   Isf           parseur et rendu ISF (traduction GLSL 330 core, passes, tampons)
   VideoDecoder  décodage FFmpeg dans un thread, file d'images, boucle sans couture, positionnement
   Mapping       homographie 4 coins + grille Catmull-Rom
 src/ui/       interface Qt Widgets
   MainWindow, LayerInspector, ParamPanel, MappingView (édition), OutputWindow (projecteur)
+  Commands      commandes d'annulation (QUndoStack)
 isf/          shaders fournis
 test/         tests automatiques
 ```
 
-Le moteur rend la composition dans une texture ; la vue d'édition et la fenêtre de sortie ne font que l'afficher.
+Le moteur possède son contexte OpenGL dans un fil dédié : il rend la composition, la présente dans la fenêtre
+de sortie (synchro verticale) et publie une copie pour l'aperçu de l'interface.
+L'interface lit et modifie les calques sous `Engine::Lock` ; tout ce qui touche OpenGL (compilation de shaders,
+libération de textures) passe par `Engine::runGl()`, exécuté dans le fil de rendu.
 On peut donc remplacer l'interface, ou piloter le moteur en OSC, sans toucher au rendu.
 
 ## Tests
@@ -120,7 +136,8 @@ On peut donc remplacer l'interface, ou piloter le moteur en OSC, sans toucher au
 ```bash
 test/make_media.sh                         # médias de test, une fois
 cmake --build build --target lanterne_tests
-./build/lanterne_tests                     # chargement/sauvegarde, vidéo, ISF
+./build/lanterne_tests                     # projet, vidéo, ISF, annulation, fil de rendu, master
+test/ui_test.sh out/ui                     # Linux + Xvfb + xdotool : scénario complet de l'interface
 ./build/Lanterne --render sortie.png projet.lanterne   # rendu sans interface d'un projet
 ```
 
@@ -138,5 +155,5 @@ génère un projet par shader et par codec. `lanterne_tests --check-isf <dossier
 - **Pas de timeline, de cues ni de pilotage OSC / MIDI / DMX.**
 - **Pas d'entrées Syphon / Spout / NDI, ni de caméra.**
 - Entrées audio des shaders ISF non gérées (texture noire).
-- Rendu dans le thread de l'interface, synchronisé par `glFinish` : simple et fiable, mais un dialogue modal fige la sortie.
-  Un thread de rendu dédié est l'étape suivante avant une utilisation en représentation.
+- La lecture vidéo (lecture, pause, position) n'est pas annulable, volontairement ; la taille de la composition non plus.
+- Annuler une modification de la chaîne d'effets recharge les effets du calque (les tampons de rémanence repartent de zéro).

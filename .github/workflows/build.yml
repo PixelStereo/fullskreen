@@ -78,7 +78,7 @@ jobs:
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item build\Lanterne.exe, build\*.dll dist\
           Copy-Item -Recurse build\isf dist\isf
-          windeployqt --release --no-translations dist\Lanterne.exe
+          windeployqt --release dist\Lanterne.exe
           Compress-Archive -Path dist\* -DestinationPath Lanterne-windows.zip
       - uses: actions/upload-artifact@v4
         with:

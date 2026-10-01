@@ -1,8 +1,13 @@
 #pragma once
 #include <QPointer>
+#include <QVariant>
 #include <QWidget>
+#include <functional>
 
 class Engine;
+class Mapping;
+struct LayerSnapshot;
+class QUndoStack;
 class QVBoxLayout;
 class QSlider;
 class QLabel;
@@ -10,12 +15,12 @@ class QPushButton;
 class QListWidget;
 
 // Inspecteur du calque sélectionné : source, transport vidéo, paramètres ISF,
-// fusion, mapping et chaîne d'effets.
+// fusion, mapping et chaîne d'effets. Les modifications passent par la pile d'annulation.
 class LayerInspector : public QWidget
 {
     Q_OBJECT
 public:
-    explicit LayerInspector(Engine *engine, QWidget *parent = nullptr);
+    LayerInspector(Engine *engine, QUndoStack *undo, QWidget *parent = nullptr);
 
     void setLayer(int index);
     int layerIndex() const { return m_layer; }
@@ -28,13 +33,18 @@ signals:
     void addSourceRequested(const QString &kind); // "video", "image"
 
 private:
-    QWidget *buildSource();
-    QWidget *buildCompositing();
-    QWidget *buildMapping();
-    QWidget *buildEffects();
+    QWidget *buildSource(const LayerSnapshot &s);
+    QWidget *buildCompositing(const LayerSnapshot &s);
+    QWidget *buildMapping(const LayerSnapshot &s);
+    QWidget *buildEffects(const LayerSnapshot &s);
     void chooseGenerator(const QString &path);
+    void editMapping(const QString &text, const std::function<void(Mapping &)> &fn);
+    void editEffects(const QString &text, const std::function<void()> &op);
+    void editSource(const QString &text, const std::function<void()> &op);
+    void setProp(int prop, const QVariant &value);
 
     Engine *m_engine;
+    QUndoStack *m_undo;
     int m_layer = -1;
     int m_selectedEffect = 0;
     QVBoxLayout *m_layout = nullptr;

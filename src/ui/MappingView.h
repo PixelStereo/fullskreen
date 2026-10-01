@@ -1,11 +1,12 @@
 #pragma once
 #include "GlDraw.h"
+#include "Mapping.h"
 #include <QOpenGLWidget>
 #include <QPointF>
 #include <QRectF>
 
 class Engine;
-class Mapping;
+class QUndoStack;
 
 // Prévisualisation de la sortie + édition interactive du mapping du calque sélectionné.
 class MappingView : public QOpenGLWidget
@@ -17,6 +18,7 @@ public:
 
     void setLayer(int index);
     void setShowAllOutlines(bool on) { m_showAll = on; update(); }
+    void setUndoStack(QUndoStack *s) { m_undo = s; }
 
 signals:
     void layerPicked(int index);
@@ -52,6 +54,8 @@ private:
     void pushRect(std::vector<float> &v, QPointF c, float half) const;
 
     Engine *m_engine;
+    QUndoStack *m_undo = nullptr;
+    Mapping m_dragBefore; // état au début du geste, pour l'annulation
     GlDraw m_draw;
     int m_layer = -1;
     bool m_showAll = true;

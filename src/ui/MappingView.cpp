@@ -1,5 +1,8 @@
 #include "MappingView.h"
+#include "Commands.h"
 #include "Engine.h"
+
+#include <QUndoStack>
 
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -115,6 +118,9 @@ void MappingView::paintGL()
     pushLine(frame, r.bottomRight(), r.bottomLeft());
     pushLine(frame, r.bottomLeft(), r.topLeft());
     m_draw.drawLines(frame, QColor(255, 255, 255, 40));
+
+    // Lecture des calques sous verrou (le fil de rendu les utilise en parallèle)
+    Engine::Lock lk(&m_engine->mutex());
 
     // Contours des autres calques
     if (m_showAll) {
@@ -232,6 +238,7 @@ bool MappingView::insideLayer(int index, QPointF p) const
 
 void MappingView::mousePressEvent(QMouseEvent *e)
 {
+    Engine::Lock lk(&m_engine->mutex());
     const QPointF p = e->position();
     m_lastNorm = toNorm(p);
     Handle h = hitHandle(p);
@@ -246,17 +253,21 @@ void MappingView::mousePressEvent(QMouseEvent *e)
         m_selected = Handle{};
         for (int i = 0; i < m_engine->layerCount(); ++i) {
             if (m_engine->layer(i)->visible && insideLayer(i, p)) {
+                lk.unlock();
                 emit layerPicked(i);
+                lk.relock();
                 m_dragLayer = true;
                 break;
             }
         }
     }
+    if (Mapping *m = mapping()) m_dragBefore = *m;
     update();
 }
 
 void MappingView::mouseMoveEvent(QMouseEvent *e)
 {
+    Engine::Lock lk(&m_engine->mutex());
     const QPointF n = toNorm(e->position());
     QPointF delta = n - m_lastNorm;
     m_lastNorm = n;
@@ -273,11 +284,19 @@ void MappingView::mouseMoveEvent(QMouseEvent *e)
 
 void MappingView::mouseReleaseEvent(QMouseEvent *)
 {
+    const bool dragging = m_dragHandle || m_dragLayer;
+    const bool handle = m_dragHandle;
     m_dragHandle = m_dragLayer = false;
+    if (!dragging || !m_undo) return;
+    const Mapping after = cmd::SetMapping::read(m_engine, m_layer);
+    if (after.toJson() == m_dragBefore.toJson()) return;
+    m_undo->push(new cmd::SetMapping(m_engine, m_layer, m_dragBefore, after,
+                                     handle ? QStringLiteral("Déplacer une poignée") : QStringLiteral("Déplacer le calque")));
 }
 
 void MappingView::keyPressEvent(QKeyEvent *e)
 {
+    Engine::Lock lk(&m_engine->mutex());
     Mapping *m = mapping();
     QPointF d;
     switch (e->key()) {
@@ -302,6 +321,7 @@ void MappingView::keyPressEvent(QKeyEvent *e)
     default: QOpenGLWidget::keyPressEvent(e); return;
     }
     if (!m) return;
+    const Mapping before = *m;
     // Un pixel de composition, ×10 avec Maj
     const QSize comp = m_engine->compositionSize();
     const double step = (e->modifiers() & Qt::ShiftModifier) ? 10.0 : 1.0;
@@ -311,6 +331,9 @@ void MappingView::keyPressEvent(QKeyEvent *e)
     } else {
         m->translate(delta);
     }
+    const Mapping after = *m;
+    lk.unlock();
+    if (m_undo) m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, QStringLiteral("Ajuster au pixel"), true));
     emit mappingEdited();
     update();
 }
