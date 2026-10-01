@@ -1,0 +1,182 @@
+#include "Mapping.h"
+#include <QJsonArray>
+#include <algorithm>
+#include <cmath>
+
+Homography Homography::squareToQuad(const QPointF q[4])
+{
+    // Heckbert, "Fundamentals of Texture Mapping" : carré unité -> quadrilatère.
+    Homography H;
+    const double x0 = q[0].x(), y0 = q[0].y(), x1 = q[1].x(), y1 = q[1].y();
+    const double x2 = q[2].x(), y2 = q[2].y(), x3 = q[3].x(), y3 = q[3].y();
+    const double sx = x0 - x1 + x2 - x3, sy = y0 - y1 + y2 - y3;
+    if (std::fabs(sx) < 1e-12 && std::fabs(sy) < 1e-12) {
+        H.a = x1 - x0; H.b = x3 - x0; H.c = x0;
+        H.d = y1 - y0; H.e = y3 - y0; H.f = y0;
+        H.g = H.h = 0;
+        return H;
+    }
+    const double dx1 = x1 - x2, dx2 = x3 - x2, dy1 = y1 - y2, dy2 = y3 - y2;
+    double den = dx1 * dy2 - dx2 * dy1;
+    if (std::fabs(den) < 1e-12) den = den < 0 ? -1e-12 : 1e-12;
+    H.g = (sx * dy2 - dx2 * sy) / den;
+    H.h = (dx1 * sy - sx * dy1) / den;
+    H.a = x1 - x0 + H.g * x1;
+    H.b = x3 - x0 + H.h * x3;
+    H.c = x0;
+    H.d = y1 - y0 + H.g * y1;
+    H.e = y3 - y0 + H.h * y3;
+    H.f = y0;
+    return H;
+}
+
+QPointF Homography::map(double u, double v) const
+{
+    double w = g * u + h * v + 1.0;
+    if (std::fabs(w) < 1e-9) w = 1e-9;
+    return QPointF((a * u + b * v + c) / w, (d * u + e * v + f) / w);
+}
+
+void Mapping::resetMesh(int c, int r)
+{
+    cols = std::clamp(c, 2, 32);
+    rows = std::clamp(r, 2, 32);
+    offsets.assign(size_t(cols) * rows, QPointF(0, 0));
+    ++revision;
+}
+
+void Mapping::resetCorners()
+{
+    corners[0] = {0, 0};
+    corners[1] = {1, 0};
+    corners[2] = {1, 1};
+    corners[3] = {0, 1};
+    ++revision;
+}
+
+void Mapping::setCorner(int i, QPointF p)
+{
+    if (i < 0 || i > 3) return;
+    corners[i] = p;
+    ++revision;
+}
+
+void Mapping::translate(QPointF delta)
+{
+    for (QPointF &c : corners) c += delta;
+    ++revision;
+}
+
+static double catmull(double p0, double p1, double p2, double p3, double t)
+{
+    const double t2 = t * t, t3 = t2 * t;
+    return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+}
+
+QPointF Mapping::offsetAt(double u, double v) const
+{
+    const double gx = std::clamp(u, 0.0, 1.0) * (cols - 1);
+    const double gy = std::clamp(v, 0.0, 1.0) * (rows - 1);
+    int i = std::min(int(std::floor(gx)), cols - 2);
+    int j = std::min(int(std::floor(gy)), rows - 2);
+    const double tx = gx - i, ty = gy - j;
+    auto at = [&](int x, int y) {
+        x = std::clamp(x, 0, cols - 1);
+        y = std::clamp(y, 0, rows - 1);
+        return offsets[size_t(y) * cols + x];
+    };
+    QPointF rowv[4];
+    for (int k = 0; k < 4; ++k) {
+        const int y = j - 1 + k;
+        QPointF p0 = at(i - 1, y), p1 = at(i, y), p2 = at(i + 1, y), p3 = at(i + 2, y);
+        rowv[k] = QPointF(catmull(p0.x(), p1.x(), p2.x(), p3.x(), tx), catmull(p0.y(), p1.y(), p2.y(), p3.y(), tx));
+    }
+    return QPointF(catmull(rowv[0].x(), rowv[1].x(), rowv[2].x(), rowv[3].x(), ty),
+                   catmull(rowv[0].y(), rowv[1].y(), rowv[2].y(), rowv[3].y(), ty));
+}
+
+QPointF Mapping::map(double u, double v) const
+{
+    return Homography::squareToQuad(corners).map(u, v) + offsetAt(u, v);
+}
+
+QPointF Mapping::controlUV(int i, int j) const
+{
+    return QPointF(double(i) / (cols - 1), double(j) / (rows - 1));
+}
+
+QPointF Mapping::controlPoint(int i, int j) const
+{
+    QPointF uv = controlUV(i, j);
+    return Homography::squareToQuad(corners).map(uv.x(), uv.y()) + offsets[size_t(j) * cols + i];
+}
+
+void Mapping::setControlPoint(int i, int j, QPointF p)
+{
+    QPointF uv = controlUV(i, j);
+    offsets[size_t(j) * cols + i] = p - Homography::squareToQuad(corners).map(uv.x(), uv.y());
+    ++revision;
+}
+
+void Mapping::buildVertices(int n, std::vector<float> &out) const
+{
+    const Homography H = Homography::squareToQuad(corners);
+    out.resize(size_t(n + 1) * (n + 1) * 4);
+    size_t k = 0;
+    for (int y = 0; y <= n; ++y) {
+        for (int x = 0; x <= n; ++x) {
+            const double u = double(x) / n, v = double(y) / n;
+            const QPointF p = H.map(u, v) + offsetAt(u, v);
+            out[k++] = float(p.x() * 2.0 - 1.0);
+            out[k++] = float(1.0 - p.y() * 2.0);
+            out[k++] = float(u);
+            out[k++] = float(1.0 - v); // textures en convention OpenGL
+        }
+    }
+}
+
+void Mapping::fitAspect(double srcAspect, double compAspect)
+{
+    if (srcAspect <= 0 || compAspect <= 0) return;
+    double w = 1, h = 1;
+    if (srcAspect > compAspect) h = compAspect / srcAspect;
+    else w = srcAspect / compAspect;
+    const double x0 = (1 - w) / 2, y0 = (1 - h) / 2;
+    corners[0] = {x0, y0};
+    corners[1] = {x0 + w, y0};
+    corners[2] = {x0 + w, y0 + h};
+    corners[3] = {x0, y0 + h};
+    ++revision;
+}
+
+QJsonObject Mapping::toJson() const
+{
+    QJsonObject o;
+    QJsonArray c;
+    for (const QPointF &p : corners) c.append(QJsonArray{p.x(), p.y()});
+    o["corners"] = c;
+    o["cols"] = cols;
+    o["rows"] = rows;
+    QJsonArray off;
+    for (const QPointF &p : offsets) off.append(QJsonArray{p.x(), p.y()});
+    o["offsets"] = off;
+    o["meshMode"] = meshMode;
+    return o;
+}
+
+void Mapping::fromJson(const QJsonObject &o)
+{
+    QJsonArray c = o.value("corners").toArray();
+    for (int i = 0; i < 4 && i < c.size(); ++i) {
+        QJsonArray p = c[i].toArray();
+        corners[i] = QPointF(p[0].toDouble(), p[1].toDouble());
+    }
+    resetMesh(o.value("cols").toInt(4), o.value("rows").toInt(4));
+    QJsonArray off = o.value("offsets").toArray();
+    for (int i = 0; i < int(offsets.size()) && i < off.size(); ++i) {
+        QJsonArray p = off[i].toArray();
+        offsets[size_t(i)] = QPointF(p[0].toDouble(), p[1].toDouble());
+    }
+    meshMode = o.value("meshMode").toBool(false);
+    ++revision;
+}
