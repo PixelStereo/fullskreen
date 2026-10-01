@@ -1,0 +1,86 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (Ubuntu 24.04) + tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dépendances
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config qt6-base-dev libqt6opengl6-dev \
+            libgl1-mesa-dev libgl1-mesa-dri libavformat-dev libavcodec-dev libswscale-dev libavutil-dev \
+            ffmpeg xvfb
+      - name: Compilation
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j4
+          cmake --build build --target lanterne_tests -j4
+      - name: Tests du moteur
+        run: |
+          sh test/make_media.sh
+          xvfb-run -a ./build/lanterne_tests
+          xvfb-run -a ./build/lanterne_tests --check-isf isf
+
+  macos:
+    name: macOS (Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dépendances
+        run: brew install qt ffmpeg pkg-config
+      - name: Compilation
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+          cmake --build build -j4
+      - name: Paquet .app
+        run: |
+          "$(brew --prefix qt)/bin/macdeployqt" build/Lanterne.app
+          ditto -c -k --keepParent build/Lanterne.app Lanterne-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lanterne-macos
+          path: Lanterne-macos.zip
+
+  windows:
+    name: Windows (MSVC 2022)
+    runs-on: windows-2022
+    env:
+      FFMPEG_ZIP: ffmpeg-n8.1-latest-win64-lgpl-shared-8.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: 'win64_msvc2022_64'
+          cache: true
+      - name: FFmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$env:FFMPEG_ZIP.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath C:\ffmpeg
+      - name: Compilation
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="C:\ffmpeg\$env:FFMPEG_ZIP"
+          cmake --build build
+      - name: Paquet
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build\Lanterne.exe, build\*.dll dist\
+          Copy-Item -Recurse build\isf dist\isf
+          windeployqt --release --no-translations dist\Lanterne.exe
+          Compress-Archive -Path dist\* -DestinationPath Lanterne-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lanterne-windows
+          path: Lanterne-windows.zip
