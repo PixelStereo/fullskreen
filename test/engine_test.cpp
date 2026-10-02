@@ -2,6 +2,8 @@
 #include "Commands.h"
 #include "Engine.h"
 #include <QElapsedTimer>
+#include <QLineF>
+#include <mutex>
 #include <QUndoStack>
 #include <QCoreApplication>
 #include <QDir>
@@ -261,6 +263,120 @@ int main(int argc, char **argv)
         std::printf("       niveau du master à mi-fondu : %.2f\n", mid);
         CHECK(mid > 0.25 && mid < 0.75);
     }
+    // 6. Publication : relecture GPU -> fil d'envoi (BGRA, lignes de haut en bas)
+    {
+        e.newProject();
+        e.fadeMaster(1.0, 0);
+        e.setCompositionSize(QSize(64, 32));
+        QImage img(64, 32, QImage::Format_RGBA8888);
+        img.fill(QColor(255, 0, 0));
+        for (int y = 16; y < 32; ++y)
+            for (int x = 0; x < 64; ++x) img.setPixelColor(x, y, QColor(0, 0, 255));
+        img.save(tmp + "/hautrouge.png");
+        int li = e.addLayer("img");
+        CHECK(e.setLayerImage(li, tmp + "/hautrouge.png", &err));
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(li)->mapping.resetCorners();
+        }
+        std::mutex m;
+        CpuFrame last;
+        int frames = 0;
+        e.setTestTap([&](const CpuFrame &f) {
+            std::lock_guard<std::mutex> lk(m);
+            last = f;
+            ++frames;
+        });
+        CHECK(waitFrames(20));
+        std::lock_guard<std::mutex> lk(m);
+        std::printf("       %d images reçues par le fil d'envoi\n", frames);
+        CHECK(frames >= 10);
+        CHECK(last.width == 64 && last.height == 32 && last.stride == 256);
+        auto px = [&](int x, int y) { const uint8_t *p = last.bgra.data() + y * last.stride + x * 4; return QColor(p[2], p[1], p[0]); };
+        std::printf("       pixel haut %s, bas %s\n", qPrintable(px(10, 2).name()), qPrintable(px(10, 29).name()));
+        CHECK(px(10, 2) == QColor(255, 0, 0));  // haut : rouge
+        CHECK(px(10, 29) == QColor(0, 0, 255)); // bas : bleu
+        CHECK(last.timestamp100ns > 0);
+    }
+    e.setTestTap(nullptr);
+    {
+        // Réglages : désactivé par défaut, Syphon/Spout signalés selon la plateforme, aller-retour JSON
+        PublishSettings ps;
+        ps[PublishKind::Ndi].enabled = true;
+        ps[PublishKind::Ndi].name = "Scène";
+        ps[PublishKind::Syphon].enabled = true;
+        ps.omtQuality = 50;
+        CHECK(PublishSettings::fromJson(ps.toJson()) == ps);
+        e.setPublishSettings(ps);
+        CHECK(waitFrames(3));
+        const PublishState syphon = e.publishState(PublishKind::Syphon);
+        std::printf("       Syphon : %s\n       NDI : %s\n", qPrintable(syphon.text), qPrintable(e.publishState(PublishKind::Ndi).text));
+        CHECK(publishCompiledIn(PublishKind::Syphon) ? syphon.level != PublishState::Unavailable
+                                                     : syphon.level == PublishState::Unavailable);
+        CHECK(e.publishState(PublishKind::Omt).level == PublishState::Off);
+        e.setPublishSettings(PublishSettings());
+        CHECK(waitFrames(3));
+        CHECK(e.publishState(PublishKind::Ndi).level == PublishState::Off);
+    }
+
+    // 7. Médias : usage, fichier introuvable conservé, remplacement, chutier
+    {
+        e.newProject();
+        QFile::copy(root + "/media/h264.mp4", tmp + "/clip.mp4");
+        int v = e.addLayer("Clip");
+        CHECK(e.setLayerVideo(v, tmp + "/clip.mp4", &err));
+        int g = e.addLayer("Masque");
+        e.setLayerIsf(g, root + "/../isf/generateurs/Mire.fs", &err);
+        int fx = e.addEffect(g, root + "/../isf/effets/Masque.fs", &err);
+        CHECK(fx == 0);
+        {
+            IsfInstance *inst;
+            {
+                Engine::Lock lk(&e.mutex());
+                inst = e.layer(g)->effects[0].get();
+            }
+            CHECK(e.setIsfImageInput(inst, 1, tmp + "/hautrouge.png", &err));
+        }
+        e.addBinItems({root + "/media/bars.png", tmp + "/clip.mp4"});
+        auto usage = e.mediaUsage();
+        CHECK(usage.size() == 3);
+        auto find = [&](const QString &p) -> const Engine::MediaRef * {
+            for (const auto &r : usage) if (r.path == p) return &r;
+            return nullptr;
+        };
+        const Engine::MediaRef *clip = find(tmp + "/clip.mp4");
+        CHECK(clip && clip->video && clip->users == QStringList{"Clip"} && clip->imported && !clip->missing);
+        const Engine::MediaRef *mask = find(tmp + "/hautrouge.png");
+        CHECK(mask && !mask->video && mask->users.size() == 1 && mask->users[0].contains("Masque"));
+        CHECK(e.layersUsingMedia(tmp + "/hautrouge.png") == QList<int>{g});
+
+        // Enregistrer, supprimer la vidéo, rouvrir : le chemin est conservé et signalé
+        CHECK(e.saveProject(tmp + "/media.lanterne", {}, &err));
+        QFile::rename(tmp + "/clip.mp4", tmp + "/clip_deplace.mp4");
+        QString warn;
+        CHECK(e.loadProject(tmp + "/media.lanterne", nullptr, &warn));
+        std::printf("       avertissement : %s\n", qPrintable(warn));
+        CHECK(warn.contains("introuvable"));
+        int vi = -1;
+        for (int i = 0; i < e.layerCount(); ++i) if (e.layer(i)->name == "Clip") vi = i;
+        CHECK(vi >= 0);
+        usage = e.mediaUsage();
+        clip = find(tmp + "/clip.mp4");
+        CHECK(clip && clip->missing && clip->video);
+        CHECK(e.layerJson(vi).value("source").toObject().value("type").toString() == "video");
+        CHECK(e.binItems().size() == 2);
+        // Remplacement : la vidéo revient, le mapping est conservé
+        Mapping before = e.layer(vi)->mapping;
+        CHECK(e.relinkLayerMedia(vi, tmp + "/clip.mp4", tmp + "/clip_deplace.mp4", &err));
+        e.relinkBinItem(tmp + "/clip.mp4", tmp + "/clip_deplace.mp4");
+        CHECK(e.layer(vi)->type == SourceType::Video && e.layer(vi)->error.isEmpty());
+        CHECK(e.layer(vi)->mapping.toJson() == before.toJson());
+        CHECK(e.binItems().contains(tmp + "/clip_deplace.mp4"));
+        QFile::remove(tmp + "/clip_deplace.mp4");
+        VideoDecoder::Info info;
+        CHECK(VideoDecoder::probe(root + "/media/prores.mov", &info) && info.width == 1920 && info.codec == "prores");
+    }
+
     e.stop();
     CHECK(!e.isThreaded());
     e.renderFrame(); // retour au mode manuel

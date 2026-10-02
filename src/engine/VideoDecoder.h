@@ -27,6 +27,14 @@ public:
     VideoDecoder &operator=(const VideoDecoder &) = delete;
 
     bool open(const QString &path, QString *err);
+
+    // Informations sur un fichier sans le décoder (chutier)
+    struct Info {
+        int width = 0, height = 0;
+        double duration = 0, fps = 0;
+        QString codec;
+    };
+    static bool probe(const QString &path, Info *info, QString *err = nullptr);
     void close();
 
     int width() const { return m_width; }

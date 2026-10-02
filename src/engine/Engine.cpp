@@ -13,6 +13,22 @@
 #include <QThread>
 #include <QWindow>
 
+#include <cmath>
+#include <cstring>
+
+#ifndef GL_BGRA
+#define GL_BGRA 0x80E1
+#endif
+#ifndef GL_PIXEL_PACK_BUFFER
+#define GL_PIXEL_PACK_BUFFER 0x88EB
+#endif
+#ifndef GL_STREAM_READ
+#define GL_STREAM_READ 0x88E1
+#endif
+#ifndef GL_MAP_READ_BIT
+#define GL_MAP_READ_BIT 0x0001
+#endif
+
 static constexpr int kMeshSubdiv = 40;
 
 QString blendModeName(BlendMode m)
@@ -176,6 +192,13 @@ bool Engine::initialize(QString *err)
     }
     m_blitTexLoc = f->glGetUniformLocation(m_blitProgram, "u_tex");
     m_presentTexLoc = f->glGetUniformLocation(m_presentProgram, "u_tex");
+    // Retournement vertical pour la relecture (NDI / OMT attendent des lignes de haut en bas)
+    m_flipProgram = compileProgram("#version 330 core\nlayout(location=0) in vec2 a_pos; out vec2 v_uv;\n"
+                                   "void main(){ v_uv = vec2(a_pos.x*0.5+0.5, 0.5-a_pos.y*0.5); gl_Position = vec4(a_pos,0.0,1.0); }\n",
+                                   "#version 330 core\nuniform sampler2D u_tex; in vec2 v_uv; out vec4 o;\n"
+                                   "void main(){ o = vec4(texture(u_tex, v_uv).rgb, 1.0); }\n",
+                                   &log);
+    m_flipTexLoc = f->glGetUniformLocation(m_flipProgram, "u_tex");
     m_compTexLoc = f->glGetUniformLocation(m_compProgram, "u_tex");
     m_compOpacityLoc = f->glGetUniformLocation(m_compProgram, "u_opacity");
 
@@ -334,6 +357,12 @@ void Engine::renderLoop()
 
 void Engine::releaseAll()
 {
+    // Publications : GPU (contexte courant requis) puis fil d'envoi
+    for (auto &p : m_gpuPubs) p.reset();
+    if (m_sender) m_sender->setPublishers({});
+    m_sender.reset();
+    for (auto &p : m_cpuPubs) p.reset();
+    m_tapPub.reset();
     {
         Lock lk(&m_mutex);
         for (auto &l : m_layers) releaseLayer(*l);
@@ -341,7 +370,10 @@ void Engine::releaseAll()
     }
     auto f = gl();
     for (RenderTarget &o : m_output) o.destroy();
-    for (GLuint p : {m_blitProgram, m_compProgram, m_presentProgram})
+    m_readback.destroy();
+    if (m_pbo[0]) f->glDeleteBuffers(2, m_pbo);
+    m_pbo[0] = m_pbo[1] = 0;
+    for (GLuint p : {m_blitProgram, m_compProgram, m_presentProgram, m_flipProgram})
         if (p) f->glDeleteProgram(p);
     GLuint bufs[] = {m_quadVbo, m_meshVbo, m_meshIbo};
     f->glDeleteBuffers(3, bufs);
@@ -349,7 +381,7 @@ void Engine::releaseAll()
     f->glDeleteVertexArrays(2, vaos);
     f->glDeleteTextures(1, &m_blackTex);
     m_quadVao = m_meshVao = 0;
-    m_blitProgram = m_compProgram = m_presentProgram = 0;
+    m_blitProgram = m_compProgram = m_presentProgram = m_flipProgram = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +620,7 @@ std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
     l.sourcePath.clear();
     l.error.clear();
     l.srcWidth = l.srcHeight = 0;
+    l.missingType = SourceType::None;
     l.finalTex = 0;
     return g;
 }
@@ -623,6 +656,18 @@ static bool isDefaultMapping(const Mapping &m)
     for (const QPointF &o : m.offsets)
         if (!o.isNull()) return false;
     return true;
+}
+
+static QString missingMessage(const QString &path, const QString &err)
+{
+    return QFileInfo::exists(path) ? err : QStringLiteral("Fichier introuvable : ") + path;
+}
+
+static void markMissing(Layer &l, SourceType type, const QString &path, const QString &err)
+{
+    l.missingType = type;
+    l.sourcePath = path;
+    l.error = missingMessage(path, err);
 }
 
 bool Engine::setLayerVideo(int i, const QString &path, QString *err)
@@ -1001,7 +1046,11 @@ void Engine::frame(double dt)
     for (auto &l : m_layers) updateSource(*l, dt);
     for (auto &l : m_layers) renderLayer(*l, rc);
     composite();
+    const bool publishChanged = m_publishDirty || m_tapDirty;
     m_mutex.unlock();
+
+    if (publishChanged || !m_publishInit) applyPublishing();
+    publishFrame(m_output[m_back]);
 
     auto f = gl();
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1056,6 +1105,11 @@ void Engine::newProject()
         Lock lk(&m_mutex);
         old.swap(m_layers);
         m_projectPath.clear();
+        m_binItems.clear();
+        if (m_publish != PublishSettings()) {
+            m_publish = PublishSettings();
+            m_publishDirty = true;
+        }
     }
     for (auto &l : old) {
         if (l->video) l->video->close();
@@ -1107,9 +1161,21 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         src["width"] = l.genWidth;
         src["height"] = l.genHeight;
         break;
-    default: src["type"] = "none"; break;
+    default:
+        // Fichier introuvable : on conserve ce qui était prévu, pour ne rien perdre à l'enregistrement.
+        if (l.missingType == SourceType::Video) {
+            src["type"] = "video";
+            src["loop"] = l.loop;
+            src["speed"] = l.speed;
+            src["playing"] = l.playing;
+        } else if (l.missingType == SourceType::Image) {
+            src["type"] = "image";
+        } else {
+            src["type"] = "none";
+        }
+        break;
     }
-    if (l.type != SourceType::None) {
+    if (l.type != SourceType::None || l.missingType != SourceType::None) {
         src["path"] = l.sourcePath;
         if (!projectDir.isEmpty()) src["relativePath"] = QDir(projectDir).relativeFilePath(l.sourcePath);
     }
@@ -1145,11 +1211,18 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             layer(index)->loop = src.value("loop").toBool(true);
             layer(index)->speed = src.value("speed").toDouble(1.0);
         }
-        if (!setLayerVideo(index, path, &err) && warnings) *warnings << name + " : " + err;
+        const bool ok = setLayerVideo(index, path, &err);
+        if (!ok && warnings) *warnings << name + " : " + missingMessage(path, err);
         Lock lk(&m_mutex);
         layer(index)->playing = src.value("playing").toBool(true);
+        if (!ok) markMissing(*layer(index), SourceType::Video, path, err);
     } else if (type == "image") {
-        if (!setLayerImage(index, path, &err) && warnings) *warnings << name + " : " + err;
+        const bool ok = setLayerImage(index, path, &err);
+        if (!ok && warnings) *warnings << name + " : " + missingMessage(path, err);
+        if (!ok) {
+            Lock lk(&m_mutex);
+            markMissing(*layer(index), SourceType::Image, path, err);
+        }
     } else if (type == "isf") {
         {
             Lock lk(&m_mutex);
@@ -1199,6 +1272,11 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         QJsonArray layers;
         for (const auto &l : m_layers) layers.append(layerToJson(*l, dir));
         root["layers"] = layers;
+        QJsonArray bin;
+        for (const QString &p : m_binItems)
+            bin.append(QJsonObject{{"path", p}, {"relativePath", QDir(dir).relativeFilePath(p)}});
+        root["bin"] = bin;
+        root["publish"] = m_publish.toJson();
     }
     root["ui"] = uiState;
     // Écriture atomique : un plantage pendant l'enregistrement ne corrompt pas le fichier existant.
@@ -1239,9 +1317,379 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         int idx = addLayer(QString(), layerCount());
         layerFromJson(idx, layers[i].toObject(), dir, &warnings);
     }
+    QStringList bin;
+    for (const QJsonValue &v : root.value("bin").toArray()) bin << resolvePath(v.toObject(), dir);
+    addBinItems(bin);
+    if (root.contains("publish")) setPublishSettings(PublishSettings::fromJson(root.value("publish").toObject()));
     if (uiState) *uiState = root.value("ui").toObject();
     setProjectPath(QFileInfo(path).absoluteFilePath());
     emit layersChanged();
     if (!warnings.isEmpty() && err) *err = warnings.join('\n');
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Médias externes (chutier)
+// ---------------------------------------------------------------------------
+
+static const QStringList &videoExtensions()
+{
+    static const QStringList e = {"mov", "mp4", "m4v", "avi", "mkv", "webm", "mxf", "mpg", "mpeg", "wmv", "flv", "ts", "hap", "mts", "m2ts"};
+    return e;
+}
+
+static const QStringList &imageExtensions()
+{
+    static const QStringList e = {"png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif", "webp", "tga", "exr", "psd"};
+    return e;
+}
+
+bool Engine::isVideoFile(const QString &path) { return videoExtensions().contains(QFileInfo(path).suffix().toLower()); }
+bool Engine::isImageFile(const QString &path) { return imageExtensions().contains(QFileInfo(path).suffix().toLower()); }
+
+std::vector<Engine::MediaRef> Engine::mediaUsage() const
+{
+    std::vector<MediaRef> out;
+    auto add = [&](const QString &path, bool video, const QString &user, bool imported) {
+        if (path.isEmpty()) return;
+        for (MediaRef &r : out) {
+            if (r.path == path) {
+                if (!user.isEmpty() && !r.users.contains(user)) r.users << user;
+                r.imported |= imported;
+                return;
+            }
+        }
+        MediaRef r;
+        r.path = path;
+        r.video = video;
+        r.imported = imported;
+        if (!user.isEmpty()) r.users << user;
+        out.push_back(r);
+    };
+    {
+        Lock lk(&m_mutex);
+        for (const auto &l : m_layers) {
+            const SourceType t = l->type != SourceType::None ? l->type : l->missingType;
+            if (t == SourceType::Video || t == SourceType::Image) add(l->sourcePath, t == SourceType::Video, l->name, false);
+            auto scan = [&](const IsfInstance *inst, const QString &user) {
+                if (!inst) return;
+                for (const IsfInput &in : inst->inputs())
+                    if (in.type == IsfInput::Image && !in.isInputImage && !in.imagePath.isEmpty())
+                        add(in.imagePath, isVideoFile(in.imagePath), user, false);
+            };
+            scan(l->generator.get(), l->name);
+            for (const auto &fx : l->effects) scan(fx.get(), l->name + QStringLiteral(" › ") + fx->name());
+        }
+        for (const QString &p : m_binItems) add(p, isVideoFile(p), QString(), true);
+    }
+    for (MediaRef &r : out) r.missing = !QFileInfo::exists(r.path);
+    return out;
+}
+
+QStringList Engine::binItems() const
+{
+    Lock lk(&m_mutex);
+    return m_binItems;
+}
+
+void Engine::addBinItems(const QStringList &paths)
+{
+    Lock lk(&m_mutex);
+    for (const QString &p : paths) {
+        if (p.isEmpty()) continue;
+        const QString abs = QFileInfo(p).isAbsolute() ? QDir::cleanPath(p) : QFileInfo(p).absoluteFilePath();
+        if (!m_binItems.contains(abs)) m_binItems << abs;
+    }
+}
+
+void Engine::removeBinItem(const QString &path)
+{
+    Lock lk(&m_mutex);
+    m_binItems.removeAll(path);
+}
+
+void Engine::relinkBinItem(const QString &from, const QString &to)
+{
+    Lock lk(&m_mutex);
+    const int i = m_binItems.indexOf(from);
+    if (i >= 0) {
+        if (m_binItems.contains(to)) m_binItems.removeAt(i);
+        else m_binItems[i] = to;
+    }
+}
+
+static bool isfUsesImage(const IsfInstance *inst, const QString &path)
+{
+    if (!inst) return false;
+    for (const IsfInput &in : inst->inputs())
+        if (in.type == IsfInput::Image && !in.isInputImage && in.imagePath == path) return true;
+    return false;
+}
+
+QList<int> Engine::layersUsingMedia(const QString &path) const
+{
+    QList<int> out;
+    Lock lk(&m_mutex);
+    for (int i = 0; i < int(m_layers.size()); ++i) {
+        const Layer &l = *m_layers[size_t(i)];
+        bool uses = l.sourcePath == path && (l.type == SourceType::Video || l.type == SourceType::Image || l.missingType != SourceType::None);
+        uses |= isfUsesImage(l.generator.get(), path);
+        for (const auto &fx : l.effects) uses |= isfUsesImage(fx.get(), path);
+        if (uses) out << i;
+    }
+    return out;
+}
+
+bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QString *err)
+{
+    SourceType kind = SourceType::None;
+    Mapping mapping;
+    std::vector<std::pair<IsfInstance *, int>> inputs;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        const SourceType t = l->type != SourceType::None ? l->type : l->missingType;
+        if (l->sourcePath == from && (t == SourceType::Video || t == SourceType::Image)) kind = t;
+        mapping = l->mapping;
+        auto collect = [&](IsfInstance *inst) {
+            if (!inst) return;
+            for (int k = 0; k < int(inst->inputs().size()); ++k) {
+                const IsfInput &in = inst->inputs()[size_t(k)];
+                if (in.type == IsfInput::Image && !in.isInputImage && in.imagePath == from) inputs.emplace_back(inst, k);
+            }
+        };
+        collect(l->generator.get());
+        for (auto &fx : l->effects) collect(fx.get());
+    }
+    bool changed = false, ok = true;
+    if (kind != SourceType::None) {
+        // Le nouveau fichier peut être d'un autre type (vidéo remplacée par une image, ou l'inverse)
+        const bool video = isImageFile(to) ? false : (isVideoFile(to) ? true : kind == SourceType::Video);
+        ok = video ? setLayerVideo(i, to, err) : setLayerImage(i, to, err);
+        if (ok) {
+            Lock lk(&m_mutex);
+            if (Layer *l = layer(i)) {
+                const unsigned rev = l->mapping.revision;
+                l->mapping = mapping; // le mapping calé reste intact
+                l->mapping.revision = rev + 1;
+            }
+            changed = true;
+        }
+    }
+    for (auto &[inst, k] : inputs) {
+        QString e;
+        if (setIsfImageInput(inst, k, to, &e)) changed = true;
+        else if (err && err->isEmpty()) *err = e;
+    }
+    return changed && ok;
+}
+
+// ---------------------------------------------------------------------------
+// Publication
+// ---------------------------------------------------------------------------
+
+void Engine::setPublishSettings(const PublishSettings &s)
+{
+    Lock lk(&m_mutex);
+    if (s == m_publish && m_publishInit) return;
+    m_publish = s;
+    m_publishDirty = true;
+}
+
+PublishSettings Engine::publishSettings() const
+{
+    Lock lk(&m_mutex);
+    return m_publish;
+}
+
+void Engine::setTestTap(std::function<void(const CpuFrame &)> fn)
+{
+    Lock lk(&m_mutex);
+    m_tap = std::move(fn);
+    m_tapDirty = true;
+}
+
+PublishState Engine::publishState(PublishKind k) const
+{
+    std::lock_guard<std::mutex> lk(m_stateMutex);
+    return m_states[int(k)];
+}
+
+void Engine::setPublishState(PublishKind k, PublishState st)
+{
+    std::lock_guard<std::mutex> lk(m_stateMutex);
+    m_states[int(k)] = std::move(st);
+}
+
+static bool isGpuKind(PublishKind k) { return k == PublishKind::Syphon || k == PublishKind::Spout; }
+
+void Engine::applyPublishing()
+{
+    PublishSettings s;
+    std::function<void(const CpuFrame &)> tap;
+    bool tapDirty;
+    {
+        Lock lk(&m_mutex);
+        s = m_publish;
+        m_publishDirty = false;
+        tap = m_tap;
+        tapDirty = m_tapDirty;
+        m_tapDirty = false;
+    }
+    const bool first = !m_publishInit;
+    m_publishInit = true;
+    bool cpuChanged = tapDirty;
+
+    for (int ki = 0; ki < kPublishKindCount; ++ki) {
+        const PublishKind k = PublishKind(ki);
+        const PublishTarget &want = s.targets[ki];
+        const PublishTarget &had = m_publishApplied.targets[ki];
+        const bool optionsChanged = s.libraryFolder != m_publishApplied.libraryFolder
+                                    || (k == PublishKind::Omt && s.omtQuality != m_publishApplied.omtQuality);
+        if (!first && want == had && !(want.enabled && optionsChanged)) continue;
+
+        if (isGpuKind(k)) {
+            m_gpuPubs[ki].reset();
+        } else if (m_cpuPubs[ki]) {
+            m_cpuPubs[ki].reset();
+            cpuChanged = true;
+        }
+        if (!want.enabled) {
+            setPublishState(k, {PublishState::Off, QStringLiteral("Désactivé"), -1});
+            continue;
+        }
+        if (!publishCompiledIn(k)) {
+            setPublishState(k, {PublishState::Unavailable,
+                                k == PublishKind::Syphon ? QStringLiteral("Syphon n'existe que sur macOS")
+                                                         : QStringLiteral("Spout n'existe que sous Windows"),
+                                -1});
+            continue;
+        }
+        QString err;
+        if (isGpuKind(k)) {
+            auto p = k == PublishKind::Syphon ? createSyphonPublisher() : createSpoutPublisher();
+            if (p && p->start(want.name, &err)) {
+                m_gpuPubs[ki] = std::move(p);
+                setPublishState(k, {PublishState::Ok, QStringLiteral("Actif : « %1 »").arg(want.name), -1});
+            } else {
+                setPublishState(k, {PublishState::Error, err.isEmpty() ? QStringLiteral("Démarrage impossible") : err, -1});
+            }
+        } else {
+            std::shared_ptr<CpuPublisher> p(k == PublishKind::Ndi ? createNdiPublisher() : createOmtPublisher());
+            if (p->start(want.name, s, &err)) {
+                m_cpuPubs[ki] = p;
+                cpuChanged = true;
+                setPublishState(k, {PublishState::Ok, QStringLiteral("Actif : « %1 »").arg(want.name), 0});
+            } else {
+                setPublishState(k, {PublishState::Error, err, -1});
+            }
+        }
+    }
+    if (tapDirty) m_tapPub = tap ? std::shared_ptr<CpuPublisher>(createTapPublisher(tap)) : nullptr;
+    m_publishApplied = s;
+
+    if (cpuChanged) {
+        std::vector<std::shared_ptr<CpuPublisher>> pubs;
+        for (auto &p : m_cpuPubs)
+            if (p) pubs.push_back(p);
+        if (m_tapPub) pubs.push_back(m_tapPub);
+        if (!pubs.empty() && !m_sender) m_sender = std::make_unique<CpuSendThread>();
+        if (m_sender) m_sender->setPublishers(std::move(pubs));
+        m_pboPending = false;
+    }
+}
+
+static int standardRate(double fps)
+{
+    static const int rates[] = {24, 25, 30, 48, 50, 60, 72, 75, 90, 100, 120};
+    if (fps < 1.0) return 60;
+    int best = 60;
+    double bestD = 1e9;
+    for (int r : rates) {
+        const double d = std::fabs(fps - r);
+        if (d < bestD) {
+            bestD = d;
+            best = r;
+        }
+    }
+    return best;
+}
+
+void Engine::publishFrame(const RenderTarget &out)
+{
+    for (int ki : {int(PublishKind::Syphon), int(PublishKind::Spout)})
+        if (m_gpuPubs[ki]) m_gpuPubs[ki]->publish(out.tex, out.w, out.h);
+
+    // Nombre de récepteurs, environ deux fois par seconde
+    if ((m_frameCount.load() % 30) == 0) {
+        std::lock_guard<std::mutex> lk(m_stateMutex);
+        for (int ki = 0; ki < kPublishKindCount; ++ki) {
+            if (m_states[ki].level != PublishState::Ok) continue;
+            if (m_cpuPubs[ki]) m_states[ki].receivers = m_cpuPubs[ki]->receivers();
+            else if (m_gpuPubs[ki]) m_states[ki].receivers = m_gpuPubs[ki]->receivers();
+        }
+    }
+
+    if (!m_sender || !m_sender->hasPublishers() || !out.tex) {
+        m_pboPending = false;
+        return;
+    }
+    auto f = gl();
+    const int w = out.w, h = out.h;
+    const GLsizeiptr bytes = GLsizeiptr(w) * h * 4;
+    if (!m_pbo[0] || w != m_pboW || h != m_pboH) {
+        if (!m_pbo[0]) f->glGenBuffers(2, m_pbo);
+        for (GLuint b : m_pbo) {
+            f->glBindBuffer(GL_PIXEL_PACK_BUFFER, b);
+            f->glBufferData(GL_PIXEL_PACK_BUFFER, bytes, nullptr, GL_STREAM_READ);
+        }
+        m_pboW = w;
+        m_pboH = h;
+        m_pboPending = false;
+    }
+    m_readback.ensure(w, h);
+
+    // 1) Image courante retournée (lignes de haut en bas) puis relue de façon asynchrone dans un PBO
+    m_readback.bind();
+    f->glDisable(GL_BLEND);
+    f->glUseProgram(m_flipProgram);
+    f->glActiveTexture(GL_TEXTURE0);
+    f->glBindTexture(GL_TEXTURE_2D, out.tex);
+    f->glUniform1i(m_flipTexLoc, 0);
+    drawQuad();
+    f->glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[m_pboIndex]);
+    f->glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    f->glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+
+    // 2) Image précédente, déjà disponible : copiée vers le fil d'envoi
+    if (m_pboPending) {
+        f->glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[1 - m_pboIndex]);
+        const void *ptr = f->glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT);
+        if (ptr) {
+            if (CpuFrame *cf = m_sender->acquire()) {
+                cf->bgra.resize(size_t(bytes));
+                std::memcpy(cf->bgra.data(), ptr, size_t(bytes));
+                cf->width = w;
+                cf->height = h;
+                cf->stride = w * 4;
+                cf->timestamp100ns = qint64(m_pboTime);
+                // Cadence annoncée : ne change que si la nouvelle valeur se confirme pendant 2 s
+                const int rate = standardRate(m_fps.load());
+                const double nowS = m_clock.nsecsElapsed() / 1e9;
+                if (m_announcedRate == 0) m_announcedRate = rate;
+                if (rate == m_announcedRate) m_rateSince = nowS;
+                else if (nowS - m_rateSince > 2.0) m_announcedRate = rate;
+                cf->fpsN = m_announcedRate;
+                cf->fpsD = 1;
+                m_sender->submit(cf);
+            }
+            f->glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
+    }
+    f->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    m_pboTime = double(m_clock.nsecsElapsed() / 100);
+    m_pboPending = true;
+    m_pboIndex = 1 - m_pboIndex;
 }

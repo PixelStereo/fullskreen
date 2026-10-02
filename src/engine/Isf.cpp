@@ -778,6 +778,7 @@ void IsfInstance::restoreParams(const QJsonObject &params, const QString &projec
                 if (QFile::exists(alt)) p = alt;
             }
             if (QFile::exists(p)) setImageInput(idx, p, nullptr);
+            else if (!p.isEmpty()) in.imagePath = p; // conservé (introuvable) pour le chutier et la sauvegarde
             break;
         }
         default: break;

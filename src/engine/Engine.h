@@ -16,6 +16,7 @@
 
 #include "IsfLibrary.h"
 #include "Layer.h"
+#include "Publish.h"
 
 #include <QElapsedTimer>
 #include <QImage>
@@ -92,6 +93,32 @@ public:
     bool setIsfImageInput(IsfInstance *inst, int input, const QString &path, QString *err = nullptr);
     bool reloadIsf(IsfInstance *inst); // recharge depuis le disque (édition en direct)
 
+    // --- Médias externes (chutier)
+    struct MediaRef {
+        QString path;
+        bool video = false;      // sinon image
+        bool missing = false;
+        bool imported = false;   // ajouté au chutier par l'utilisateur
+        QStringList users;       // « Calque » ou « Calque › Effet »
+    };
+    std::vector<MediaRef> mediaUsage() const;
+    QStringList binItems() const;
+    void addBinItems(const QStringList &paths);
+    void removeBinItem(const QString &path);
+    QList<int> layersUsingMedia(const QString &path) const;
+    // Remplace le fichier `from` par `to` dans un calque (source et entrées image ISF). Retourne true si modifié.
+    bool relinkLayerMedia(int layer, const QString &from, const QString &to, QString *err = nullptr);
+    void relinkBinItem(const QString &from, const QString &to);
+    static bool isVideoFile(const QString &path);
+    static bool isImageFile(const QString &path);
+
+    // --- Publication de la sortie (NDI, OMT, Syphon, Spout)
+    void setPublishSettings(const PublishSettings &s);
+    PublishSettings publishSettings() const;
+    PublishState publishState(PublishKind k) const;
+    // Tests : reçoit les images relues (fil d'envoi)
+    void setTestTap(std::function<void(const CpuFrame &)> fn);
+
     // --- Master (noir) : niveau 0..1 atteint en `seconds` secondes
     void fadeMaster(double target, double seconds);
     double masterLevel() const { return m_masterLevel.load(); }
@@ -149,6 +176,9 @@ private:
     QJsonObject layerToJson(const Layer &l, const QString &projectDir) const;
     void layerFromJson(int index, const QJsonObject &o, const QString &projectDir, QStringList *warnings);
     double nextDt();
+    void applyPublishing();               // fil de rendu
+    void publishFrame(const RenderTarget &out);
+    void setPublishState(PublishKind k, PublishState st);
 
     mutable QRecursiveMutex m_mutex;
 
@@ -198,4 +228,24 @@ private:
 
     QString m_projectPath;
     IsfLibrary m_library;
+    QStringList m_binItems;
+
+    // Publication
+    PublishSettings m_publish, m_publishApplied;
+    bool m_publishDirty = false, m_publishInit = false;
+    std::function<void(const CpuFrame &)> m_tap;
+    bool m_tapDirty = false;
+    std::unique_ptr<GpuPublisher> m_gpuPubs[kPublishKindCount];
+    std::shared_ptr<CpuPublisher> m_cpuPubs[kPublishKindCount], m_tapPub;
+    std::unique_ptr<CpuSendThread> m_sender;
+    mutable std::mutex m_stateMutex;
+    PublishState m_states[kPublishKindCount];
+    RenderTarget m_readback;
+    GLuint m_flipProgram = 0, m_pbo[2] = {0, 0};
+    GLint m_flipTexLoc = -1;
+    int m_pboIndex = 0, m_pboW = 0, m_pboH = 0;
+    bool m_pboPending = false;
+    double m_pboTime = 0;
+    int m_announcedRate = 0;
+    double m_rateSince = 0;
 };
