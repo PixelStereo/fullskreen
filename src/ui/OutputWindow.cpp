@@ -6,6 +6,10 @@
 #include <QScreen>
 #include <QSurfaceFormat>
 
+#ifdef Q_OS_MACOS
+#include "MacPresentation.h"
+#endif
+
 OutputWindow::OutputWindow(Engine *engine) : m_engine(engine)
 {
     setSurfaceType(QSurface::OpenGLSurface);
@@ -36,6 +40,22 @@ void OutputWindow::showOn(QScreen *screen, bool fullscreen)
     hideOutput();
     setScreen(screen);
     if (fullscreen) {
+#ifdef Q_OS_MACOS
+        // On the screen with the menu bar (no external screen, or output on the main screen),
+        // native fullscreen would open a new Space: use a borderless window covering the screen instead,
+        // with the menu bar and the Dock hidden.
+        if (screen == QGuiApplication::primaryScreen()) {
+            macSetMenuBarAndDockHidden(true);
+            m_borderlessFullscreen = true;
+            setFlags(flags() | Qt::FramelessWindowHint);
+            setGeometry(screen->geometry());
+            setCursor(Qt::BlankCursor);
+            show();
+            raise();
+            requestActivate();
+            return;
+        }
+#endif
         setGeometry(screen->geometry());
         setCursor(Qt::BlankCursor);
         showFullScreen();
@@ -56,6 +76,13 @@ void OutputWindow::hideOutput()
         m_engine->setOutputExposed(false, m_lastSize);
     }
     hide();
+#ifdef Q_OS_MACOS
+    if (m_borderlessFullscreen) {
+        m_borderlessFullscreen = false;
+        setFlags(flags() & ~Qt::FramelessWindowHint);
+        macSetMenuBarAndDockHidden(false);
+    }
+#endif
 }
 
 void OutputWindow::exposeEvent(QExposeEvent *e)
