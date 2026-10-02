@@ -12,42 +12,42 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Dépendances
+      - name: Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config qt6-base-dev libqt6opengl6-dev \
             libgl1-mesa-dev libgl1-mesa-dri libavformat-dev libavcodec-dev libswscale-dev libavutil-dev \
             ffmpeg xvfb
-      - name: Compilation
+      - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j4
-          cmake --build build --target lanterne_tests -j4
-      - name: Tests du moteur
+          cmake --build build --target fulskrin_tests -j4
+      - name: Engine tests
         run: |
           sh test/make_media.sh
-          xvfb-run -a ./build/lanterne_tests
-          xvfb-run -a ./build/lanterne_tests --check-isf isf
+          xvfb-run -a ./build/fulskrin_tests
+          xvfb-run -a ./build/fulskrin_tests --check-isf isf
 
   macos:
     name: macOS (Apple Silicon)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Dépendances
+      - name: Dependencies
         run: brew install qt ffmpeg pkg-config
-      - name: Compilation
+      - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
           cmake --build build -j4
-      - name: Paquet .app
+      - name: Package .app
         run: |
-          "$(brew --prefix qt)/bin/macdeployqt" build/Lanterne.app
-          ditto -c -k --keepParent build/Lanterne.app Lanterne-macos.zip
+          "$(brew --prefix qt)/bin/macdeployqt" build/Fulskrin.app
+          ditto -c -k --keepParent build/Fulskrin.app Fulskrin-macos.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Lanterne-macos
-          path: Lanterne-macos.zip
+          name: Fulskrin-macos
+          path: Fulskrin-macos.zip
 
   windows:
     name: Windows (MSVC 2022)
@@ -67,20 +67,20 @@ jobs:
         run: |
           Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$env:FFMPEG_ZIP.zip" -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath C:\ffmpeg
-      - name: Compilation
+      - name: Build
         shell: pwsh
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="C:\ffmpeg\$env:FFMPEG_ZIP"
           cmake --build build
-      - name: Paquet
+      - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item build\Lanterne.exe, build\*.dll dist\
+          Copy-Item build\Fulskrin.exe, build\*.dll dist\
           Copy-Item -Recurse build\isf dist\isf
-          windeployqt --release dist\Lanterne.exe
-          Compress-Archive -Path dist\* -DestinationPath Lanterne-windows.zip
+          windeployqt --release dist\Fulskrin.exe
+          Compress-Archive -Path dist\* -DestinationPath Fulskrin-windows.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Lanterne-windows
-          path: Lanterne-windows.zip
+          name: Fulskrin-windows
+          path: Fulskrin-windows.zip

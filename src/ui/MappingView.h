@@ -8,7 +8,7 @@
 class Engine;
 class QUndoStack;
 
-// Prévisualisation de la sortie + édition interactive du mapping du calque sélectionné.
+// Output preview + interactive mapping editing for the selected layer.
 class MappingView : public QOpenGLWidget
 {
     Q_OBJECT
@@ -31,11 +31,11 @@ protected:
     void mouseMoveEvent(QMouseEvent *e) override;
     void mouseReleaseEvent(QMouseEvent *e) override;
     void keyPressEvent(QKeyEvent *e) override;
-    bool focusNextPrevChild(bool next) override; // Tab sert à parcourir les poignées
+    bool focusNextPrevChild(bool next) override; // Tab cycles through the handles
 
 private:
     struct Handle {
-        int kind = -1; // 0 = coin, 1 = point de grille
+        int kind = -1; // 0 = corner, 1 = mesh point
         int i = 0, j = 0;
         bool valid() const { return kind >= 0; }
         bool operator==(const Handle &o) const { return kind == o.kind && i == o.i && j == o.j; }
@@ -55,7 +55,7 @@ private:
 
     Engine *m_engine;
     QUndoStack *m_undo = nullptr;
-    Mapping m_dragBefore; // état au début du geste, pour l'annulation
+    Mapping m_dragBefore; // state at the start of the gesture, for undo
     GlDraw m_draw;
     int m_layer = -1;
     bool m_showAll = true;

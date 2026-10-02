@@ -13,7 +13,7 @@
 #include <cmath>
 
 // ---------------------------------------------------------------------------
-// Utilitaires de texte
+// Text utilities
 // ---------------------------------------------------------------------------
 
 static bool readText(const QString &path, QString *out)
@@ -24,7 +24,7 @@ static bool readText(const QString &path, QString *out)
     return true;
 }
 
-// Sépare l'en-tête JSON (premier commentaire /* */) du corps GLSL.
+// Splits the JSON header (first /* */ comment) from the GLSL body.
 static bool splitIsf(const QString &src, QString *json, QString *body)
 {
     int start = src.indexOf(QLatin1String("/*"));
@@ -38,13 +38,13 @@ static bool splitIsf(const QString &src, QString *json, QString *body)
 
 static QJsonObject parseLooseJson(QString json, QString *err)
 {
-    // Beaucoup de fichiers ISF contiennent des virgules finales : on les retire.
+    // Many ISF files contain trailing commas: strip them.
     static const QRegularExpression trailing(QStringLiteral(",(\\s*[}\\]])"));
     json.replace(trailing, QStringLiteral("\\1"));
     QJsonParseError pe;
     QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &pe);
     if (pe.error != QJsonParseError::NoError || !doc.isObject()) {
-        if (err) *err = QStringLiteral("En-tête JSON invalide : ") + pe.errorString();
+        if (err) *err = QStringLiteral("Invalid JSON header: ") + pe.errorString();
         return {};
     }
     return doc.object();
@@ -52,8 +52,8 @@ static QJsonObject parseLooseJson(QString json, QString *err)
 
 static bool isIdentChar(QChar c) { return c.isLetterOrNumber() || c == QLatin1Char('_'); }
 
-// Réécrit IMG_PIXEL / IMG_NORM_PIXEL / IMG_THIS_PIXEL / IMG_THIS_NORM_PIXEL / IMG_SIZE
-// en appels GLSL standards. Analyse les parenthèses pour supporter les arguments imbriqués.
+// Rewrites IMG_PIXEL / IMG_NORM_PIXEL / IMG_THIS_PIXEL / IMG_THIS_NORM_PIXEL / IMG_SIZE
+// into standard GLSL calls. Parses parentheses to support nested arguments.
 static QString rewriteImgFuncs(const QString &s)
 {
     static const QStringList names = {QStringLiteral("IMG_THIS_NORM_PIXEL"), QStringLiteral("IMG_THIS_PIXEL"),
@@ -142,7 +142,7 @@ static QString cleanBody(QString body)
 }
 
 // ---------------------------------------------------------------------------
-// Petit évaluateur d'expressions pour WIDTH/HEIGHT des passes ("$WIDTH/2.0", "floor($HEIGHT*0.25)").
+// Small expression evaluator for pass WIDTH/HEIGHT ("$WIDTH/2.0", "floor($HEIGHT*0.25)").
 // ---------------------------------------------------------------------------
 namespace {
 struct ExprParser {
@@ -201,7 +201,7 @@ struct ExprParser {
             ok = false;
             return 0;
         }
-        // fonction
+        // function
         if (!eat('(')) { ok = false; return 0; }
         QVector<double> args;
         if (!eat(')')) {
@@ -313,7 +313,7 @@ IsfInstance::Header IsfInstance::readHeader(const QString &path)
 
 IsfInstance::~IsfInstance()
 {
-    // Le moteur appelle releaseGl() avec son contexte courant avant destruction.
+    // The engine calls releaseGl() with its context current before destruction.
 }
 
 void IsfInstance::releaseGl()
@@ -330,7 +330,7 @@ bool IsfInstance::parse(const QString &src, QString *body)
 {
     QString json;
     if (!splitIsf(src, &json, body)) {
-        m_error = QStringLiteral("Pas d'en-tête ISF (commentaire JSON /* */ manquant).");
+        m_error = QStringLiteral("No ISF header (missing /* */ JSON comment).");
         return false;
     }
     QJsonObject o = parseLooseJson(json, &m_error);
@@ -421,14 +421,14 @@ bool IsfInstance::parse(const QString &src, QString *body)
             }
         }
     }
-    // ISF v1 : "PERSISTENT_BUFFERS"
+    // ISF v1: "PERSISTENT_BUFFERS"
     QJsonValue pb = o.value("PERSISTENT_BUFFERS");
     QStringList persistentNames;
     if (pb.isArray()) for (const QJsonValue &x : pb.toArray()) persistentNames << x.toString();
     else if (pb.isObject()) persistentNames = pb.toObject().keys();
     for (IsfTarget &t : m_targets) if (persistentNames.contains(t.name)) t.persistent = true;
 
-    // Images importées : objet {nom: {PATH}} ou tableau [{NAME, PATH}]
+    // Imported images: object {name: {PATH}} or array [{NAME, PATH}]
     QJsonValue imp = o.value("IMPORTED");
     const QDir dir = QFileInfo(m_path).absoluteDir();
     auto addImport = [&](const QString &n, const QString &p) {
@@ -454,7 +454,7 @@ QString IsfInstance::uniformBlock() const
     u += "uniform int PASSINDEX;\nuniform vec2 RENDERSIZE;\nuniform float TIME;\nuniform float TIMEDELTA;\n"
          "uniform vec4 DATE;\nuniform int FRAMEINDEX;\n";
     auto sampler = [&](const QString &n) {
-        // _imgRect / _flip : variables internes de VVISF que certains shaders utilisent directement
+        // _imgRect / _flip: VVISF internal variables that some shaders use directly
         u += QStringLiteral("uniform sampler2D %1;\nuniform vec2 _%1_imgSize;\nuniform vec4 _%1_imgRect;\n"
                             "uniform bool _%1_flip;\n").arg(n);
     };
@@ -519,7 +519,7 @@ bool IsfInstance::compile(const QString &fsBody, const QString &vsBody)
     QString log;
     m_program = compileProgram(vs, fs, &log);
     if (!m_program) {
-        m_error = QStringLiteral("Erreur de compilation :\n") + log;
+        m_error = QStringLiteral("Compilation error:\n") + log;
         return false;
     }
     cacheLocations();
@@ -557,10 +557,10 @@ static bool loadImageTexture(const QString &path, Texture2D &tex, QString *err)
 {
     QImage img(path);
     if (img.isNull()) {
-        if (err) *err = QStringLiteral("Image illisible : ") + path;
+        if (err) *err = QStringLiteral("Unreadable image: ") + path;
         return false;
     }
-    // Convention OpenGL : première ligne = bas de l'image.
+    // OpenGL convention: first row = bottom of the image.
     img = img.convertToFormat(QImage::Format_RGBA8888).mirrored(false, true);
     tex.upload(img.constBits(), img.width(), img.height());
     return true;
@@ -582,7 +582,7 @@ bool IsfInstance::load(const QString &path)
 
     QString src;
     if (!readText(m_path, &src)) {
-        m_error = QStringLiteral("Fichier introuvable : ") + path;
+        m_error = QStringLiteral("File not found: ") + path;
         return false;
     }
     QString body;
@@ -626,7 +626,7 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
     auto f = gl();
     out.ensure(outW, outH);
     if (!m_program) {
-        // Shader cassé : on laisse passer l'image (filtre) ou on rend du noir (générateur).
+        // Broken shader: pass the image through (filter) or render black (generator).
         if (inputTex) rc.blit(inputTex, out);
         else out.clear();
         return;
@@ -694,7 +694,7 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
             target->rt[1].ensure(pw, ph, target->isFloat);
         }
 
-        // Les cibles déjà rendues sont lisibles (buffer "front").
+        // Already-rendered targets are readable ("front" buffer).
         unit = targetUnitBase;
         for (IsfTarget &t : m_targets) {
             const RenderTarget &fr = t.rt[t.front];
@@ -704,7 +704,7 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
         if (m_locPassIndex >= 0) f->glUniform1i(m_locPassIndex, int(i));
 
         if (target) {
-            // Double buffer : on lit "front" et on écrit "back", puis on échange.
+            // Double buffer: read "front", write "back", then swap.
             RenderTarget &back = target->rt[1 - target->front];
             back.bind();
             if (m_locRenderSize >= 0) f->glUniform2f(m_locRenderSize, pw, ph);
@@ -715,7 +715,7 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
                 f->glUseProgram(m_program);
             }
         } else {
-            // Passe sans cible : rend directement dans la sortie (taille de sortie).
+            // Pass without target: renders directly into the output (output size).
             out.bind();
             if (m_locRenderSize >= 0) f->glUniform2f(m_locRenderSize, out.w, out.h);
             rc.drawQuad();
@@ -728,7 +728,7 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
 }
 
 // ---------------------------------------------------------------------------
-// Sauvegarde des paramètres
+// Parameter saving
 // ---------------------------------------------------------------------------
 
 QJsonObject IsfInstance::save(const QString &projectDir) const
@@ -778,7 +778,7 @@ void IsfInstance::restoreParams(const QJsonObject &params, const QString &projec
                 if (QFile::exists(alt)) p = alt;
             }
             if (QFile::exists(p)) setImageInput(idx, p, nullptr);
-            else if (!p.isEmpty()) in.imagePath = p; // conservé (introuvable) pour le chutier et la sauvegarde
+            else if (!p.isEmpty()) in.imagePath = p; // kept (missing) for the media bin and saving
             break;
         }
         default: break;

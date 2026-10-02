@@ -49,7 +49,7 @@ static QString videoFilter()
     QStringList p;
     for (const QString &e : {"mov", "mp4", "m4v", "avi", "mkv", "webm", "mxf", "mpg", "mpeg", "wmv", "flv", "ts", "hap"})
         p << "*." + QString(e);
-    return QStringLiteral("Vidéos (%1);;Tous les fichiers (*)").arg(p.join(' '));
+    return QStringLiteral("Videos (%1);;All Files (*)").arg(p.join(' '));
 }
 
 static QString imageFilter()
@@ -81,7 +81,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_engine->library().scan();
     m_screenName = s.value("output/screen").toString();
 
-    // --- Haut : chutier | aperçu et mapping | onglets Calque / Master
+    // --- Top: media bin | preview and mapping | Layer / Master tabs
     m_bin = new MediaBin(m_engine);
     m_bin->setMinimumWidth(260);
     m_view = new MappingView(m_engine);
@@ -89,7 +89,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_inspector = new LayerInspector(m_engine, m_undo);
     m_master = new MasterPanel(m_engine);
     m_tabs = new QTabWidget;
-    m_tabs->addTab(scrolled(m_inspector), QStringLiteral("Calque"));
+    m_tabs->addTab(scrolled(m_inspector), QStringLiteral("Layer"));
     m_tabs->addTab(scrolled(m_master), QStringLiteral("Master"));
     m_tabs->setMinimumWidth(390);
 
@@ -102,7 +102,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     top->setStretchFactor(2, 0);
     top->setSizes({330, 840, 430});
 
-    // --- Bas : calques sur toute la largeur
+    // --- Bottom: layers across the full width
     m_layerTable = new LayerTable;
     auto *split = new QSplitter(Qt::Vertical);
     split->addWidget(top);
@@ -117,17 +117,17 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_status = new QLabel;
     statusBar()->addPermanentWidget(m_status);
 
-    // --- Sortie : le fil de rendu y présente l'image lui-même
+    // --- Output: the render thread presents the frame there itself
     m_output = new OutputWindow(m_engine);
     connect(m_output, &OutputWindow::closeRequested, this, [this] { setOutputMode(OutputHidden); });
-    // Quand la fenêtre de sortie a le focus (clic sur l'écran du projecteur, ou plein écran sur l'écran principal),
-    // les raccourcis de régie restent actifs.
+    // When the output window has focus (click on the projector screen, or fullscreen on the main screen),
+    // show-control shortcuts remain active.
     connect(m_output, &OutputWindow::keyPressed, this, [this](int key, Qt::KeyboardModifiers mods) { handleControlKey(key, mods); });
 
     buildMenus();
     rebuildGeneratorMenus();
 
-    // --- Calques
+    // --- Layers
     connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
         m_view->setLayer(r);
         m_inspector->setLayer(r);
@@ -144,7 +144,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Opacity);
         if (before.isValid() && std::abs(before.toDouble() - v) > 1e-6)
             m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Opacity, before, v));
-        if (row == m_inspector->layerIndex()) m_inspectorTimer.start(); // inspecteur resynchronisé après le geste
+        if (row == m_inspector->layerIndex()) m_inspectorTimer.start(); // inspector resynced after the gesture
     });
     connect(m_layerTable, &LayerTable::removeClicked, this, &MainWindow::removeCurrentLayer);
     connect(m_layerTable, &LayerTable::duplicateClicked, this, &MainWindow::duplicateCurrentLayer);
@@ -154,7 +154,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     auto *backspace = new QShortcut(QKeySequence(Qt::Key_Backspace), m_layerTable->table(), nullptr, nullptr, Qt::WidgetShortcut);
     connect(backspace, &QShortcut::activated, this, &MainWindow::removeCurrentLayer);
 
-    // --- Chutier
+    // --- Media bin
     connect(m_bin, &MediaBin::relinkRequested, this, &MainWindow::relinkMedia);
     connect(m_bin, &MediaBin::useAsSourceRequested, this, [this](const QString &p) {
         if (currentLayer() < 0) {
@@ -193,28 +193,28 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
             if (px == m_engine->compositionSize()) return;
             m_engine->setCompositionSize(px);
             markDirty();
-            statusBar()->showMessage(QStringLiteral("Composition : %1 × %2").arg(px.width()).arg(px.height()), 4000);
+            statusBar()->showMessage(QStringLiteral("Composition: %1 × %2").arg(px.width()).arg(px.height()), 4000);
         }
     });
 
-    // --- Synchronisation générale
+    // --- General sync
     connect(m_view, &MappingView::layerPicked, this, &MainWindow::selectLayer);
     connect(m_inspector, &LayerInspector::layerChanged, this, &MainWindow::refreshLayerList);
     connect(m_inspector, &LayerInspector::mappingChanged, m_view, qOverload<>(&QWidget::update));
     connect(m_inspector, &LayerInspector::addSourceRequested, this, &MainWindow::setSourceFromDialog);
     connect(m_engine, &Engine::layersChanged, this, &MainWindow::refreshLayerList);
     connect(m_engine, &Engine::compositionSizeChanged, this, [this] { m_view->update(); });
-    // L'aperçu suit le rendu (au plus une mise à jour par image produite)
+    // The preview follows rendering (at most one update per rendered frame)
     connect(m_engine, &Engine::frameRendered, this, [this] {
         m_engine->acknowledgeFrame();
         m_view->update();
     });
-    // Le rendu a pu démarrer avant cette connexion : on débloque la notification.
+    // Rendering may have started before this connection: unblock the notification.
     m_engine->acknowledgeFrame();
     connect(m_undo, &QUndoStack::cleanChanged, this, [this] { updateTitle(); });
     connect(m_undo, &QUndoStack::indexChanged, this, [this] {
-        refreshLayerList();   // mise à jour sur place (opacité, visibilité, nom…)
-        m_binTimer.start();   // le chutier suit les sources et les images des shaders
+        refreshLayerList();   // in-place update (opacity, visibility, name…)
+        m_binTimer.start();   // the media bin follows sources and shader images
     });
 
     auto *space = new QShortcut(QKeySequence(Qt::Key_Space), this);
@@ -223,15 +223,15 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(qApp, &QGuiApplication::screenAdded, this, &MainWindow::buildOutputScreensMenu);
     connect(qApp, &QGuiApplication::screenRemoved, this, [this] {
         buildOutputScreensMenu();
-        if (m_outputMode != OutputHidden) setOutputMode(m_outputMode); // repositionne
+        if (m_outputMode != OutputHidden) setOutputMode(m_outputMode); // reposition
     });
 
-    // Interface : état et transport. Le rendu, lui, ne dépend pas de l'interface.
+    // UI: status and transport. Rendering itself does not depend on the UI.
     m_statusTimer.setInterval(100);
     connect(&m_statusTimer, &QTimer::timeout, this, &MainWindow::statusTick);
     m_statusTimer.start();
     if (!m_engine->isThreaded()) {
-        // Plateforme sans rendu OpenGL dans un fil séparé : rendu cadencé par l'interface.
+        // Platform without OpenGL rendering on a separate thread: rendering is clocked by the UI.
         m_renderTimer.setTimerType(Qt::PreciseTimer);
         m_renderTimer.setInterval(16);
         connect(&m_renderTimer, &QTimer::timeout, m_engine, &Engine::renderFrame);
@@ -257,7 +257,7 @@ MainWindow::~MainWindow()
 }
 
 // ---------------------------------------------------------------------------
-// Raccourcis de régie
+// Show-control shortcuts
 // ---------------------------------------------------------------------------
 
 bool MainWindow::handleControlKey(int key, Qt::KeyboardModifiers mods)
@@ -285,31 +285,31 @@ void MainWindow::setBlackout(bool on)
 
 void MainWindow::buildMenus()
 {
-    QMenu *file = menuBar()->addMenu(QStringLiteral("&Fichier"));
-    file->addAction(QStringLiteral("Nouveau projet"), QKeySequence::New, this, &MainWindow::newProject);
-    file->addAction(QStringLiteral("Ouvrir…"), QKeySequence::Open, this, &MainWindow::openProjectDialog);
+    QMenu *file = menuBar()->addMenu(QStringLiteral("&File"));
+    file->addAction(QStringLiteral("New Project"), QKeySequence::New, this, &MainWindow::newProject);
+    file->addAction(QStringLiteral("Open…"), QKeySequence::Open, this, &MainWindow::openProjectDialog);
     file->addSeparator();
-    file->addAction(QStringLiteral("Enregistrer"), QKeySequence::Save, this, &MainWindow::save);
-    file->addAction(QStringLiteral("Enregistrer sous…"), QKeySequence::SaveAs, this, &MainWindow::saveAs);
+    file->addAction(QStringLiteral("Save"), QKeySequence::Save, this, &MainWindow::save);
+    file->addAction(QStringLiteral("Save As…"), QKeySequence::SaveAs, this, &MainWindow::saveAs);
     file->addSeparator();
-    file->addAction(QStringLiteral("Importer dans le chutier…"), QKeySequence(Qt::CTRL | Qt::Key_I), this, [this] {
+    file->addAction(QStringLiteral("Import to Media Bin…"), QKeySequence(Qt::CTRL | Qt::Key_I), this, [this] {
         QSettings s;
-        const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Importer dans le chutier"),
+        const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Import to Media Bin"),
                                                                 s.value("dirs/video").toString(),
-                                                                QStringLiteral("Images et vidéos (*)"));
+                                                                QStringLiteral("Images and Videos (*)"));
         if (!files.isEmpty()) m_bin->importFiles(files);
     });
     file->addSeparator();
-    QAction *quit = file->addAction(QStringLiteral("Quitter"), QKeySequence::Quit, this, &QWidget::close);
+    QAction *quit = file->addAction(QStringLiteral("Quit"), QKeySequence::Quit, this, &QWidget::close);
     quit->setMenuRole(QAction::QuitRole);
 
-    // Annuler / rétablir : actions maison pour rafraîchir toute l'interface après coup
-    QMenu *edit = menuBar()->addMenu(QStringLiteral("É&dition"));
-    m_undoAction = edit->addAction(QStringLiteral("Annuler"));
+    // Undo / redo: custom actions so the whole UI refreshes afterwards
+    QMenu *edit = menuBar()->addMenu(QStringLiteral("&Edit"));
+    m_undoAction = edit->addAction(QStringLiteral("Undo"));
     m_undoAction->setShortcut(QKeySequence::Undo);
-    m_redoAction = edit->addAction(QStringLiteral("Rétablir"));
+    m_redoAction = edit->addAction(QStringLiteral("Redo"));
     {
-        // Ctrl+Maj+Z et Ctrl+Y partout (Cmd sur Mac), sans doublon avec le raccourci natif
+        // Ctrl+Shift+Z and Ctrl+Y everywhere (Cmd on Mac), without duplicating the native shortcut
         QList<QKeySequence> redo = QKeySequence::keyBindings(QKeySequence::Redo);
         for (const QKeySequence &k : {QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z), QKeySequence(Qt::CTRL | Qt::Key_Y)})
             if (!redo.contains(k)) redo << k;
@@ -318,10 +318,10 @@ void MainWindow::buildMenus()
     auto updateUndoActions = [this] {
         m_undoAction->setEnabled(m_undo->canUndo());
         m_redoAction->setEnabled(m_undo->canRedo());
-        m_undoAction->setText(m_undo->canUndo() ? QStringLiteral("Annuler : %1").arg(m_undo->undoText())
-                                                : QStringLiteral("Annuler"));
-        m_redoAction->setText(m_undo->canRedo() ? QStringLiteral("Rétablir : %1").arg(m_undo->redoText())
-                                                : QStringLiteral("Rétablir"));
+        m_undoAction->setText(m_undo->canUndo() ? QStringLiteral("Undo %1").arg(m_undo->undoText())
+                                                : QStringLiteral("Undo"));
+        m_redoAction->setText(m_undo->canRedo() ? QStringLiteral("Redo %1").arg(m_undo->redoText())
+                                                : QStringLiteral("Redo"));
     };
     connect(m_undo, &QUndoStack::indexChanged, this, updateUndoActions);
     connect(m_undo, &QUndoStack::undoTextChanged, this, updateUndoActions);
@@ -335,70 +335,70 @@ void MainWindow::buildMenus()
         refreshAll();
     });
 
-    QMenu *layer = menuBar()->addMenu(QStringLiteral("&Calque"));
-    // Même contenu dans le menu « + » de la liste des calques
+    QMenu *layer = menuBar()->addMenu(QStringLiteral("&Layer"));
+    // Same content in the "+" menu of the layer list
     for (QMenu *m : {layer, m_layerTable->addMenu()}) {
-        m->addAction(QStringLiteral("Calque vidéo…"), this, &MainWindow::addVideoLayer);
-        m->addAction(QStringLiteral("Calque image…"), this, &MainWindow::addImageLayer);
-        QMenu *gen = m->addMenu(QStringLiteral("Calque générateur ISF"));
+        m->addAction(QStringLiteral("Video Layer…"), this, &MainWindow::addVideoLayer);
+        m->addAction(QStringLiteral("Image Layer…"), this, &MainWindow::addImageLayer);
+        QMenu *gen = m->addMenu(QStringLiteral("ISF Generator Layer"));
         gen->setProperty("generatorMenu", true);
-        m->addAction(QStringLiteral("Calque vide"), this, &MainWindow::addEmptyLayer);
+        m->addAction(QStringLiteral("Empty Layer"), this, &MainWindow::addEmptyLayer);
         if (m == layer) m_generatorMenu = gen;
     }
     layer->addSeparator();
-    QAction *dup = layer->addAction(QStringLiteral("Dupliquer"), this, &MainWindow::duplicateCurrentLayer);
+    QAction *dup = layer->addAction(QStringLiteral("Duplicate"), this, &MainWindow::duplicateCurrentLayer);
     dup->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
-    layer->addAction(QStringLiteral("Supprimer (Suppr dans la liste)"), this, &MainWindow::removeCurrentLayer);
-    layer->addAction(QStringLiteral("Monter"), QKeySequence(Qt::CTRL | Qt::Key_BracketRight), this,
+    layer->addAction(QStringLiteral("Delete (Del in list)"), this, &MainWindow::removeCurrentLayer);
+    layer->addAction(QStringLiteral("Move Up"), QKeySequence(Qt::CTRL | Qt::Key_BracketRight), this,
                      [this] { moveCurrentLayer(-1); });
-    layer->addAction(QStringLiteral("Descendre"), QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), this,
+    layer->addAction(QStringLiteral("Move Down"), QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), this,
                      [this] { moveCurrentLayer(+1); });
     layer->addSeparator();
-    layer->addAction(QStringLiteral("Lecture / pause (Espace)"), this, &MainWindow::togglePlayCurrent);
+    layer->addAction(QStringLiteral("Play / Pause (Space)"), this, &MainWindow::togglePlayCurrent);
 
     QMenu *comp = menuBar()->addMenu(QStringLiteral("C&omposition"));
-    comp->addAction(QStringLiteral("Réglages (onglet Master)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
-    QAction *outlines = comp->addAction(QStringLiteral("Afficher le contour des autres calques"));
+    comp->addAction(QStringLiteral("Settings (Master tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
+    QAction *outlines = comp->addAction(QStringLiteral("Show Outlines of Other Layers"));
     outlines->setCheckable(true);
     outlines->setChecked(true);
     connect(outlines, &QAction::toggled, m_view, &MappingView::setShowAllOutlines);
 
-    QMenu *out = menuBar()->addMenu(QStringLiteral("&Sortie"));
-    m_fullscreenAction = out->addAction(QStringLiteral("Plein écran"));
+    QMenu *out = menuBar()->addMenu(QStringLiteral("&Output"));
+    m_fullscreenAction = out->addAction(QStringLiteral("Fullscreen"));
     m_fullscreenAction->setCheckable(true);
     m_fullscreenAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F));
     m_fullscreenAction->setShortcutContext(Qt::ApplicationShortcut);
     connect(m_fullscreenAction, &QAction::triggered, this, [this] { toggleFullscreen(); });
-    m_windowedAction = out->addAction(QStringLiteral("Sortie dans une fenêtre"));
+    m_windowedAction = out->addAction(QStringLiteral("Windowed Output"));
     m_windowedAction->setCheckable(true);
     m_windowedAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
     m_windowedAction->setShortcutContext(Qt::ApplicationShortcut);
     connect(m_windowedAction, &QAction::triggered, this, [this] { toggleWindowed(); });
-    out->addAction(QStringLiteral("Masquer la sortie"), this, [this] { setOutputMode(OutputHidden); });
+    out->addAction(QStringLiteral("Hide Output"), this, [this] { setOutputMode(OutputHidden); });
     out->addSeparator();
-    m_blackoutAction = out->addAction(QStringLiteral("Noir (fondu)"));
+    m_blackoutAction = out->addAction(QStringLiteral("Blackout (Fade)"));
     m_blackoutAction->setCheckable(true);
     m_blackoutAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_B));
     m_blackoutAction->setShortcutContext(Qt::ApplicationShortcut);
     connect(m_blackoutAction, &QAction::toggled, this, &MainWindow::setBlackout);
     out->addSeparator();
-    m_screensMenu = out->addMenu(QStringLiteral("Écran de sortie"));
+    m_screensMenu = out->addMenu(QStringLiteral("Output Screen"));
     buildOutputScreensMenu();
 
-    QMenu *lib = menuBar()->addMenu(QStringLiteral("&Bibliothèque ISF"));
-    lib->addAction(QStringLiteral("Ajouter un dossier de shaders…"), this, &MainWindow::addIsfFolder);
-    lib->addAction(QStringLiteral("Rafraîchir"), QKeySequence::Refresh, this, &MainWindow::rescanLibrary);
-    lib->addAction(QStringLiteral("Oublier les dossiers ajoutés"), this, [this] {
+    QMenu *lib = menuBar()->addMenu(QStringLiteral("ISF &Library"));
+    lib->addAction(QStringLiteral("Add ISF Folder…"), this, &MainWindow::addIsfFolder);
+    lib->addAction(QStringLiteral("Rescan"), QKeySequence::Refresh, this, &MainWindow::rescanLibrary);
+    lib->addAction(QStringLiteral("Forget Added Folders"), this, [this] {
         m_engine->library().setUserFolders({});
         QSettings().setValue("isf/folders", QStringList());
         rescanLibrary();
     });
     lib->addSeparator();
-    lib->addAction(QStringLiteral("Ouvrir le dossier des shaders fournis"), this, [] {
+    lib->addAction(QStringLiteral("Open Bundled Shaders Folder"), this, [] {
         QDesktopServices::openUrl(QUrl::fromLocalFile(IsfLibrary::bundledFolder()));
     });
     connect(lib, &QMenu::aboutToShow, this, [this, lib] {
-        // Liste informative des dossiers scannés
+        // Informational list of scanned folders
         for (QAction *a : lib->actions())
             if (a->property("folderInfo").toBool()) lib->removeAction(a), a->deleteLater();
         for (const QString &f : m_engine->library().allFolders()) {
@@ -420,12 +420,12 @@ void MainWindow::rebuildGeneratorMenus()
             a->setToolTip(e.description);
             connect(a, &QAction::triggered, this, [this, p = e.path] { addGeneratorLayer(p); });
         }
-        if (m->isEmpty()) m->addAction(QStringLiteral("(aucun générateur)"))->setEnabled(false);
+        if (m->isEmpty()) m->addAction(QStringLiteral("(no generators)"))->setEnabled(false);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Sortie
+// Output
 // ---------------------------------------------------------------------------
 
 void MainWindow::buildOutputScreensMenu()
@@ -437,7 +437,7 @@ void MainWindow::buildOutputScreensMenu()
     bool found = false;
     for (QScreen *sc : screens) found |= sc->name() == m_screenName;
     if (!found) {
-        // Par défaut : le premier écran qui n'est pas l'écran principal (vidéoprojecteur), sinon l'écran principal
+        // Default: the first screen that is not the main screen (projector), otherwise the main screen
         QScreen *primary = QGuiApplication::primaryScreen();
         m_screenName = primary ? primary->name() : QString();
         for (QScreen *sc : screens)
@@ -453,7 +453,7 @@ void MainWindow::buildOutputScreensMenu()
                                   .arg(sc->name())
                                   .arg(px.width())
                                   .arg(px.height())
-                                  .arg(sc == QGuiApplication::primaryScreen() ? QStringLiteral(" — principal") : QString());
+                                  .arg(sc == QGuiApplication::primaryScreen() ? QStringLiteral(" — main") : QString());
         list << qMakePair(label, sc->name());
         QAction *a = m_screensMenu->addAction(label);
         a->setCheckable(true);
@@ -495,7 +495,7 @@ void MainWindow::setOutputMode(OutputMode mode)
     m_fullscreenAction->setChecked(mode == OutputFullscreen);
     m_windowedAction->setChecked(mode == OutputWindowed);
     m_master->setOutputMode(int(mode));
-    m_autosaveDone = false; // l'état de la sortie fait partie de la session à restaurer
+    m_autosaveDone = false; // output state is part of the session to restore
     if (mode == OutputHidden) {
         m_output->hideOutput();
         activateWindow();
@@ -505,17 +505,17 @@ void MainWindow::setOutputMode(OutputMode mode)
     const bool sameAsUi = sc == screen();
     m_output->showOn(sc, mode == OutputFullscreen);
     if (mode == OutputFullscreen && sameAsUi) {
-        // Plein écran sur l'écran de l'interface : la sortie passe devant et garde le clavier (⌘F / Ctrl+F pour en sortir)
+        // Fullscreen on the UI screen: the output comes to the front and keeps the keyboard (⌘F / Ctrl+F to exit)
         m_output->raise();
         m_output->requestActivate();
-        statusBar()->showMessage(QStringLiteral("Plein écran sur l'écran principal : Ctrl+F (⌘F) pour revenir."), 8000);
+        statusBar()->showMessage(QStringLiteral("Fullscreen on main screen: Ctrl+F (⌘F) to return."), 8000);
     } else {
         activateWindow();
     }
 }
 
 // ---------------------------------------------------------------------------
-// Liste des calques
+// Layer list
 // ---------------------------------------------------------------------------
 
 static QString layerTag(SourceType t)
@@ -552,9 +552,9 @@ void MainWindow::refreshLayerList()
             switch (l->type) {
             case SourceType::Video:
             case SourceType::Image: r.source = QFileInfo(l->sourcePath).fileName(); break;
-            case SourceType::Isf: r.source = QStringLiteral("générateur ") + QFileInfo(l->sourcePath).completeBaseName(); break;
-            default: r.source = l->missingType != SourceType::None ? QFileInfo(l->sourcePath).fileName() + QStringLiteral(" — introuvable")
-                                                                    : QStringLiteral("(vide)");
+            case SourceType::Isf: r.source = QStringLiteral("generator ") + QFileInfo(l->sourcePath).completeBaseName(); break;
+            default: r.source = l->missingType != SourceType::None ? QFileInfo(l->sourcePath).fileName() + QStringLiteral(" — missing")
+                                                                    : QStringLiteral("(empty)");
             }
             QStringList fx;
             for (const auto &e : l->effects) fx << (e->enabled ? e->name() : QStringLiteral("(") + e->name() + QStringLiteral(")"));
@@ -563,7 +563,7 @@ void MainWindow::refreshLayerList()
                 r.playback = QStringLiteral("%1 %2 / %3").arg(l->playing ? QStringLiteral("▶") : QStringLiteral("❚❚"),
                                                                fmtClock(l->position()), fmtClock(l->duration()));
             } else if (l->type == SourceType::Isf) {
-                r.playback = QStringLiteral("temps réel");
+                r.playback = QStringLiteral("real time");
             }
             rows.push_back(r);
         }
@@ -601,7 +601,7 @@ void MainWindow::selectLayer(int index)
 int MainWindow::currentLayer() const { return m_layerTable->currentRow(); }
 
 // ---------------------------------------------------------------------------
-// Actions sur les calques (toutes annulables)
+// Layer actions (all undoable)
 // ---------------------------------------------------------------------------
 
 int MainWindow::newLayerFromFile(const QString &path, int at)
@@ -613,21 +613,21 @@ int MainWindow::newLayerFromFile(const QString &path, int at)
     bool ok;
     if (Engine::isImageFile(path)) ok = m_engine->setLayerImage(idx, path, &err);
     else if (kIsfExt.contains(ext)) ok = (m_engine->setLayerIsf(idx, path, &err), true);
-    else ok = m_engine->setLayerVideo(idx, path, &err); // extensions vidéo et inconnues : FFmpeg tranche
+    else ok = m_engine->setLayerVideo(idx, path, &err); // video and unknown extensions: FFmpeg decides
     if (!ok) {
         m_engine->removeLayer(idx);
         idx = -1;
     } else {
-        m_undo->push(new cmd::AddLayer(m_engine, idx, QStringLiteral("Ajouter « %1 »").arg(base)));
+        m_undo->push(new cmd::AddLayer(m_engine, idx, QStringLiteral("Add \"%1\"").arg(base)));
     }
-    if (!err.isEmpty()) statusBar()->showMessage(QFileInfo(path).fileName() + " : " + err.section('\n', 0, 0), 8000);
+    if (!err.isEmpty()) statusBar()->showMessage(QFileInfo(path).fileName() + ": " + err.section('\n', 0, 0), 8000);
     return idx;
 }
 
 void MainWindow::addVideoLayer()
 {
     QSettings s;
-    const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Calque vidéo"),
+    const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Video Layer"),
                                                             s.value("dirs/video").toString(), videoFilter());
     if (files.isEmpty()) return;
     s.setValue("dirs/video", QFileInfo(files.first()).absolutePath());
@@ -642,7 +642,7 @@ void MainWindow::addVideoLayer()
 void MainWindow::addImageLayer()
 {
     QSettings s;
-    const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Calque image"),
+    const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Image Layer"),
                                                             s.value("dirs/image").toString(), imageFilter());
     if (files.isEmpty()) return;
     s.setValue("dirs/image", QFileInfo(files.first()).absolutePath());
@@ -661,7 +661,7 @@ void MainWindow::setSourceFromDialog(const QString &kind)
     QSettings s;
     const bool video = kind == "video";
     const QString key = video ? "dirs/video" : "dirs/image";
-    const QString f = QFileDialog::getOpenFileName(this, video ? QStringLiteral("Source vidéo") : QStringLiteral("Source image"),
+    const QString f = QFileDialog::getOpenFileName(this, video ? QStringLiteral("Video Source") : QStringLiteral("Image Source"),
                                                    s.value(key).toString(), video ? videoFilter() : imageFilter());
     if (f.isEmpty()) return;
     s.setValue(key, QFileInfo(f).absolutePath());
@@ -680,9 +680,9 @@ void MainWindow::setSourceFromFile(int i, const QString &f)
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(i);
-        if (l && l->name.startsWith(QStringLiteral("Calque "))) l->name = QFileInfo(f).completeBaseName();
+        if (l && l->name.startsWith(QStringLiteral("Layer "))) l->name = QFileInfo(f).completeBaseName();
     }
-    m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Source « %1 »").arg(QFileInfo(f).fileName())));
+    m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Source \"%1\"").arg(QFileInfo(f).fileName())));
     refreshAll();
 }
 
@@ -691,13 +691,13 @@ void MainWindow::relinkMedia(const QString &from, const QString &to)
     const QList<int> layers = m_engine->layersUsingMedia(from);
     QStringList errors;
     if (!layers.isEmpty()) {
-        // Une seule étape d'annulation pour tous les calques concernés
-        m_undo->beginMacro(QStringLiteral("Remplacer « %1 »").arg(QFileInfo(from).fileName()));
+        // A single undo step for all affected layers
+        m_undo->beginMacro(QStringLiteral("Relink \"%1\"").arg(QFileInfo(from).fileName()));
         for (int i : layers) {
             const QJsonObject before = m_engine->layerJson(i);
             QString err;
             if (m_engine->relinkLayerMedia(i, from, to, &err))
-                m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Remplacer le fichier")));
+                m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Relink File")));
             else if (!err.isEmpty()) errors << err;
         }
         m_undo->endMacro();
@@ -705,8 +705,8 @@ void MainWindow::relinkMedia(const QString &from, const QString &to)
     m_engine->relinkBinItem(from, to);
     markDirty();
     refreshAll();
-    if (!errors.isEmpty()) QMessageBox::warning(this, QStringLiteral("Remplacer"), errors.join('\n'));
-    else statusBar()->showMessage(QStringLiteral("« %1 » remplacé dans %2 calque(s)").arg(QFileInfo(from).fileName()).arg(layers.size()), 5000);
+    if (!errors.isEmpty()) QMessageBox::warning(this, QStringLiteral("Relink"), errors.join('\n'));
+    else statusBar()->showMessage(QStringLiteral("\"%1\" relinked in %2 layer(s)").arg(QFileInfo(from).fileName()).arg(layers.size()), 5000);
 }
 
 void MainWindow::addGeneratorLayer(const QString &path)
@@ -715,14 +715,14 @@ void MainWindow::addGeneratorLayer(const QString &path)
     const QString name = QFileInfo(path).completeBaseName();
     int i = m_engine->addLayer(name, 0);
     m_engine->setLayerIsf(i, path, &err);
-    m_undo->push(new cmd::AddLayer(m_engine, i, QStringLiteral("Ajouter « %1 »").arg(name)));
+    m_undo->push(new cmd::AddLayer(m_engine, i, QStringLiteral("Add \"%1\"").arg(name)));
     selectLayer(i);
 }
 
 void MainWindow::addEmptyLayer()
 {
     int i = m_engine->addLayer();
-    m_undo->push(new cmd::AddLayer(m_engine, i, QStringLiteral("Ajouter un calque")));
+    m_undo->push(new cmd::AddLayer(m_engine, i, QStringLiteral("Add Layer")));
     selectLayer(i);
 }
 
@@ -740,7 +740,7 @@ void MainWindow::duplicateCurrentLayer()
     if (i < 0) return;
     const int ni = m_engine->duplicateLayer(i);
     if (ni < 0) return;
-    m_undo->push(new cmd::AddLayer(m_engine, ni, QStringLiteral("Dupliquer le calque")));
+    m_undo->push(new cmd::AddLayer(m_engine, ni, QStringLiteral("Duplicate Layer")));
     selectLayer(ni);
 }
 
@@ -768,38 +768,38 @@ void MainWindow::togglePlayCurrent()
 }
 
 // ---------------------------------------------------------------------------
-// État
+// Status
 // ---------------------------------------------------------------------------
 
 void MainWindow::statusTick()
 {
-    m_engine->acknowledgeFrame(); // filet de sécurité : l'aperçu ne peut pas rester figé
+    m_engine->acknowledgeFrame(); // safety net: the preview cannot stay frozen
     m_inspector->refreshDynamic();
     m_master->refreshStatus();
-    refreshLayerList(); // positions de lecture (mise à jour sur place)
+    refreshLayerList(); // playback positions (in-place update)
     const int pct = int(std::lround(m_engine->masterLevel() * 100));
     const QSize c = m_engine->compositionSize();
     QStringList pubs;
     for (int k = 0; k < kPublishKindCount; ++k)
         if (m_engine->publishState(PublishKind(k)).level == PublishState::Ok) pubs << publishKindName(PublishKind(k));
-    const QString mode = m_outputMode == OutputFullscreen ? QStringLiteral("plein écran ") + m_screenName
-                         : m_outputMode == OutputWindowed ? QStringLiteral("fenêtre")
-                                                          : QStringLiteral("masquée");
-    m_status->setText(QStringLiteral("%1 × %2   ·   %3 i/s   ·   master %4 %   ·   sortie : %5%6")
+    const QString mode = m_outputMode == OutputFullscreen ? QStringLiteral("fullscreen ") + m_screenName
+                         : m_outputMode == OutputWindowed ? QStringLiteral("windowed")
+                                                          : QStringLiteral("hidden");
+    m_status->setText(QStringLiteral("%1 × %2   ·   %3 fps   ·   master %4%   ·   output: %5%6")
                           .arg(c.width())
                           .arg(c.height())
                           .arg(m_engine->fps(), 0, 'f', 1)
                           .arg(pct)
-                          .arg(mode, pubs.isEmpty() ? QString() : QStringLiteral("   ·   publié : ") + pubs.join(", ")));
+                          .arg(mode, pubs.isEmpty() ? QString() : QStringLiteral("   ·   published: ") + pubs.join(", ")));
 }
 
 // ---------------------------------------------------------------------------
-// Bibliothèque ISF
+// ISF Library
 // ---------------------------------------------------------------------------
 
 void MainWindow::addIsfFolder()
 {
-    const QString d = QFileDialog::getExistingDirectory(this, QStringLiteral("Dossier de shaders ISF"));
+    const QString d = QFileDialog::getExistingDirectory(this, QStringLiteral("ISF Shader Folder"));
     if (d.isEmpty()) return;
     QStringList f = m_engine->library().userFolders();
     if (!f.contains(d)) f << d;
@@ -813,14 +813,14 @@ void MainWindow::rescanLibrary()
     m_engine->library().scan();
     rebuildGeneratorMenus();
     m_inspector->rebuild();
-    statusBar()->showMessage(QStringLiteral("Bibliothèque ISF : %1 générateurs, %2 effets")
+    statusBar()->showMessage(QStringLiteral("ISF Library: %1 generators, %2 effects")
                                  .arg(m_engine->library().generators().size())
                                  .arg(m_engine->library().filters().size()),
                              5000);
 }
 
 // ---------------------------------------------------------------------------
-// Projet, sauvegarde automatique, reprise
+// Project, autosave, recovery
 // ---------------------------------------------------------------------------
 
 bool MainWindow::isDirty() const { return m_forceDirty || !m_undo->isClean(); }
@@ -835,7 +835,7 @@ void MainWindow::markDirty()
 void MainWindow::updateTitle()
 {
     const QString p = m_engine->projectPath();
-    setWindowTitle((p.isEmpty() ? QStringLiteral("sans titre") : QFileInfo(p).fileName()) + QStringLiteral("[*] — Lanterne"));
+    setWindowTitle((p.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(p).fileName()) + QStringLiteral("[*] — Fulskrin"));
     setWindowModified(isDirty());
 }
 
@@ -851,7 +851,7 @@ QJsonObject MainWindow::uiState() const
 bool MainWindow::maybeSave()
 {
     if (!isDirty()) return true;
-    auto r = QMessageBox::question(this, QStringLiteral("Lanterne"), QStringLiteral("Enregistrer les modifications du projet ?"),
+    auto r = QMessageBox::question(this, QStringLiteral("Fulskrin"), QStringLiteral("Save changes to the project?"),
                                    QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
     if (r == QMessageBox::Cancel) return false;
     if (r == QMessageBox::Save) return save();
@@ -883,8 +883,8 @@ void MainWindow::openProjectDialog()
 {
     if (!maybeSave()) return;
     QSettings s;
-    const QString f = QFileDialog::getOpenFileName(this, QStringLiteral("Ouvrir un projet"), s.value("dirs/project").toString(),
-                                                   QStringLiteral("Projets Lanterne (*.lanterne *.json)"));
+    const QString f = QFileDialog::getOpenFileName(this, QStringLiteral("Open Project"), s.value("dirs/project").toString(),
+                                                   QStringLiteral("Fulskrin Projects (*.fulskrin *.lanterne *.json)"));
     if (!f.isEmpty()) openProject(f);
 }
 
@@ -893,7 +893,7 @@ bool MainWindow::openProject(const QString &path)
     QJsonObject ui;
     QString err;
     if (!m_engine->loadProject(path, &ui, &err) && !err.isEmpty()) {
-        QMessageBox::warning(this, QStringLiteral("Ouverture"), err);
+        QMessageBox::warning(this, QStringLiteral("Open Project"), err);
         return false;
     }
     m_forceDirty = false;
@@ -903,10 +903,10 @@ bool MainWindow::openProject(const QString &path)
     s.setValue("project/last", QFileInfo(path).absoluteFilePath());
     if (!err.isEmpty() && m_quiet) statusBar()->showMessage(err.section('\n', 0, 0), 15000);
     else if (!err.isEmpty())
-        QMessageBox::warning(this, QStringLiteral("Ouverture"),
-                             QStringLiteral("Projet ouvert avec des avertissements :\n\n") + err
-                                 + QStringLiteral("\n\nLes fichiers introuvables apparaissent en rouge dans le chutier : "
-                                                  "« Remplacer… » pour les retrouver."));
+        QMessageBox::warning(this, QStringLiteral("Open Project"),
+                             QStringLiteral("Project opened with warnings:\n\n") + err
+                                 + QStringLiteral("\n\nMissing files are shown in red in the Media Bin: "
+                                                  "use \"Replace…\" to relink them."));
     return true;
 }
 
@@ -914,14 +914,14 @@ bool MainWindow::saveTo(const QString &path)
 {
     QString err;
     if (!m_engine->saveProject(path, uiState(), &err)) {
-        QMessageBox::warning(this, QStringLiteral("Enregistrement"), err);
+        QMessageBox::warning(this, QStringLiteral("Save"), err);
         return false;
     }
     m_engine->setProjectPath(QFileInfo(path).absoluteFilePath());
     m_undo->setClean();
     m_forceDirty = false;
     updateTitle();
-    statusBar()->showMessage(QStringLiteral("Enregistré : ") + path, 4000);
+    statusBar()->showMessage(QStringLiteral("Saved: ") + path, 4000);
     return true;
 }
 
@@ -934,10 +934,10 @@ bool MainWindow::save()
 bool MainWindow::saveAs()
 {
     QSettings s;
-    QString f = QFileDialog::getSaveFileName(this, QStringLiteral("Enregistrer le projet"), s.value("dirs/project").toString(),
-                                             QStringLiteral("Projets Lanterne (*.lanterne)"));
+    QString f = QFileDialog::getSaveFileName(this, QStringLiteral("Save Project"), s.value("dirs/project").toString(),
+                                             QStringLiteral("Fulskrin Projects (*.fulskrin)"));
     if (f.isEmpty()) return false;
-    if (QFileInfo(f).suffix().isEmpty()) f += ".lanterne";
+    if (QFileInfo(f).suffix().isEmpty()) f += ".fulskrin";
     if (!saveTo(f)) return false;
     s.setValue("dirs/project", QFileInfo(f).absolutePath());
     s.setValue("project/last", f);
@@ -948,13 +948,13 @@ QString MainWindow::autosavePath()
 {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dir);
-    return dir + "/autosave.lanterne";
+    return dir + "/autosave.fulskrin";
 }
 
 void MainWindow::autosave()
 {
     if (!m_autosaveEnabled) return;
-    if (m_autosaveDone && m_undo->index() == m_autosaveIndex) return; // rien de neuf
+    if (m_autosaveDone && m_undo->index() == m_autosaveIndex) return; // nothing new
     QJsonObject ui = uiState();
     ui["autosaveOf"] = m_engine->projectPath();
     ui["autosaveTime"] = QDateTime::currentDateTime().toString(Qt::ISODate);
@@ -964,7 +964,7 @@ void MainWindow::autosave()
         m_autosaveIndex = m_undo->index();
         m_autosaveDone = true;
     } else {
-        statusBar()->showMessage(QStringLiteral("Sauvegarde automatique impossible : ") + err, 6000);
+        statusBar()->showMessage(QStringLiteral("Autosave failed: ") + err, 6000);
     }
 }
 
@@ -978,13 +978,13 @@ void MainWindow::offerRecovery()
     f.close();
     const QString original = ui.value("autosaveOf").toString();
     const QDateTime when = QDateTime::fromString(ui.value("autosaveTime").toString(), Qt::ISODate);
-    QMessageBox box(QMessageBox::Warning, QStringLiteral("Reprise"), QStringLiteral("Lanterne ne s'est pas fermée normalement."),
+    QMessageBox box(QMessageBox::Warning, QStringLiteral("Recovery"), QStringLiteral("Fulskrin did not quit normally."),
                     QMessageBox::NoButton, this);
-    box.setInformativeText(QStringLiteral("Restaurer la session sauvegardée automatiquement le %1 %2 ?")
-                               .arg(when.isValid() ? when.toString("dd/MM à HH:mm:ss") : QStringLiteral("(date inconnue)"),
-                                    original.isEmpty() ? QString() : QStringLiteral("(projet %1)").arg(QFileInfo(original).fileName())));
-    QPushButton *restore = box.addButton(QStringLiteral("Restaurer"), QMessageBox::AcceptRole);
-    box.addButton(QStringLiteral("Ignorer"), QMessageBox::RejectRole);
+    box.setInformativeText(QStringLiteral("Restore the session autosaved on %1 %2?")
+                               .arg(when.isValid() ? when.toString("dd/MM 'at' HH:mm:ss") : QStringLiteral("(unknown date)"),
+                                    original.isEmpty() ? QString() : QStringLiteral("(project %1)").arg(QFileInfo(original).fileName())));
+    QPushButton *restore = box.addButton(QStringLiteral("Restore"), QMessageBox::AcceptRole);
+    box.addButton(QStringLiteral("Ignore"), QMessageBox::RejectRole);
     box.setDefaultButton(restore);
     box.exec();
     if (box.clickedButton() != restore) {
@@ -994,20 +994,20 @@ void MainWindow::offerRecovery()
     QJsonObject loadedUi;
     QString err;
     m_engine->loadProject(path, &loadedUi, &err);
-    m_engine->setProjectPath(original); // « Enregistrer » écrit dans le projet d'origine
+    m_engine->setProjectPath(original); // "Save" writes to the original project
     m_forceDirty = ui.value("autosaveDirty").toBool(true);
     afterProjectLoaded(loadedUi);
-    if (!err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Reprise"), err);
+    if (!err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Recovery"), err);
     QString mode = ui.value("outputMode").toString();
-    if (mode.isEmpty() && ui.value("outputVisible").toBool()) mode = "fullscreen"; // sessions précédentes
+    if (mode.isEmpty() && ui.value("outputVisible").toBool()) mode = "fullscreen"; // older sessions
     if (mode == "fullscreen" || mode == "window") {
-        // La sortie revient, mais au noir : c'est la régie qui décide de rallumer.
+        // Output comes back, but blacked out: the operator decides when to bring it back up.
         m_engine->fadeMaster(0.0, 0.0);
         setBlackout(true);
         setOutputMode(mode == "fullscreen" ? OutputFullscreen : OutputWindowed);
-        statusBar()->showMessage(QStringLiteral("Session restaurée — sortie au noir : Ctrl+B (⌘B) pour rallumer"), 15000);
+        statusBar()->showMessage(QStringLiteral("Session restored — output blacked out: Ctrl+B (⌘B) to bring it back"), 15000);
     } else {
-        statusBar()->showMessage(QStringLiteral("Session restaurée"), 6000);
+        statusBar()->showMessage(QStringLiteral("Session restored"), 6000);
     }
 }
 
@@ -1022,13 +1022,13 @@ void MainWindow::closeEvent(QCloseEvent *e)
     if (auto *split = findChild<QSplitter *>("mainSplit")) s.setValue("ui/mainSplit", split->saveState());
     if (auto *top = findChild<QSplitter *>("topSplit")) s.setValue("ui/topSplit", top->saveState());
     m_output->hideOutput();
-    // Fermeture normale : pas de reprise à proposer au prochain lancement.
+    // Normal exit: no recovery to offer on next launch.
     if (m_autosaveEnabled) QFile::remove(autosavePath());
     e->accept();
 }
 
 // ---------------------------------------------------------------------------
-// Glisser-déposer (fichiers du système ou du chutier)
+// Drag and drop (files from the system or the media bin)
 // ---------------------------------------------------------------------------
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *e)
@@ -1044,17 +1044,17 @@ void MainWindow::dropEvent(QDropEvent *e)
         const QString path = urls[k].toLocalFile();
         if (path.isEmpty()) continue;
         const QString ext = QFileInfo(path).suffix().toLower();
-        if (ext == "lanterne") {
+        if (ext == "fulskrin" || ext == "lanterne") {
             if (maybeSave()) openProject(path);
             return;
         }
-        // Un filtre ISF déposé s'ajoute comme effet au calque sélectionné
+        // A dropped ISF filter is added as an effect on the selected layer
         const int cur = currentLayer();
         if (kIsfExt.contains(ext) && IsfInstance::readHeader(path).isFilter && cur >= 0) {
             const QJsonArray before = m_engine->effectsJson(cur);
             m_engine->addEffect(cur, path);
             m_undo->push(new cmd::SetEffects(m_engine, cur, before,
-                                             QStringLiteral("Ajouter l'effet %1").arg(QFileInfo(path).completeBaseName())));
+                                             QStringLiteral("Add Effect %1").arg(QFileInfo(path).completeBaseName())));
             m_inspector->rebuild();
             continue;
         }

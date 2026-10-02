@@ -1,12 +1,12 @@
 /*{
-    "DESCRIPTION": "Pixelisation (mosaïque) avec cellules carrées.",
-    "CREDIT": "Lanterne",
+    "DESCRIPTION": "Pixelation (mosaic) with square cells.",
+    "CREDIT": "Fulskrin",
     "ISFVSN": "2",
-    "CATEGORIES": ["Stylisation"],
+    "CATEGORIES": ["Stylize"],
     "INPUTS": [
         { "NAME": "inputImage", "TYPE": "image" },
-        { "NAME": "cellSize", "LABEL": "Taille (px)", "TYPE": "float", "DEFAULT": 16.0, "MIN": 1.0, "MAX": 200.0 },
-        { "NAME": "gap", "LABEL": "Interstice", "TYPE": "float", "DEFAULT": 0.0, "MIN": 0.0, "MAX": 0.45 }
+        { "NAME": "cellSize", "LABEL": "Size (px)", "TYPE": "float", "DEFAULT": 16.0, "MIN": 1.0, "MAX": 200.0 },
+        { "NAME": "gap", "LABEL": "Gap", "TYPE": "float", "DEFAULT": 0.0, "MIN": 0.0, "MAX": 0.45 }
     ]
 }*/
 

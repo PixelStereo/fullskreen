@@ -6,8 +6,8 @@ class QMenu;
 class QTableWidget;
 class QToolButton;
 
-// Liste des calques, en bas de la fenêtre sur toute la largeur.
-// Le calque du haut de la liste est affiché au-dessus des autres.
+// Layer list, full width at the bottom of the window.
+// The layer at the top of the list is drawn above the others.
 class LayerTable : public QWidget
 {
     Q_OBJECT
@@ -20,7 +20,7 @@ public:
 
     explicit LayerTable(QWidget *parent = nullptr);
 
-    void setRows(const std::vector<Row> &rows); // reconstruit si le nombre change, sinon met à jour sur place
+    void setRows(const std::vector<Row> &rows); // rebuilds if the count changes, otherwise updates in place
     int currentRow() const;
     void setCurrentRow(int row);
     QMenu *addMenu() const { return m_addMenu; }

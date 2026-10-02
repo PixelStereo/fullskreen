@@ -1,15 +1,15 @@
 /*{
-    "DESCRIPTION": "Kaléidoscope à secteurs miroirs, rotatif.",
-    "CREDIT": "Lanterne",
+    "DESCRIPTION": "Rotating kaleidoscope with mirrored segments.",
+    "CREDIT": "Fulskrin",
     "ISFVSN": "2",
-    "CATEGORIES": ["Géométrie"],
+    "CATEGORIES": ["Geometry"],
     "INPUTS": [
         { "NAME": "inputImage", "TYPE": "image" },
-        { "NAME": "segments", "LABEL": "Secteurs", "TYPE": "float", "DEFAULT": 6.0, "MIN": 1.0, "MAX": 24.0 },
+        { "NAME": "segments", "LABEL": "Segments", "TYPE": "float", "DEFAULT": 6.0, "MIN": 1.0, "MAX": 24.0 },
         { "NAME": "rotation", "LABEL": "Rotation (°)", "TYPE": "float", "DEFAULT": 0.0, "MIN": -180.0, "MAX": 180.0 },
-        { "NAME": "spin", "LABEL": "Rotation auto (tours/s)", "TYPE": "float", "DEFAULT": 0.0, "MIN": -1.0, "MAX": 1.0 },
+        { "NAME": "spin", "LABEL": "Auto rotation (turns/s)", "TYPE": "float", "DEFAULT": 0.0, "MIN": -1.0, "MAX": 1.0 },
         { "NAME": "zoom", "LABEL": "Zoom", "TYPE": "float", "DEFAULT": 1.0, "MIN": 0.2, "MAX": 4.0 },
-        { "NAME": "center", "LABEL": "Centre", "TYPE": "point2D", "DEFAULT": [0.5, 0.5], "MIN": [0.0, 0.0], "MAX": [1.0, 1.0] }
+        { "NAME": "center", "LABEL": "Center", "TYPE": "point2D", "DEFAULT": [0.5, 0.5], "MIN": [0.0, 0.0], "MAX": [1.0, 1.0] }
     ]
 }*/
 

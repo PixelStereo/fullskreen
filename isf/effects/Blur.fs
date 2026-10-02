@@ -1,11 +1,11 @@
 /*{
-    "DESCRIPTION": "Flou gaussien séparable en deux passes (passe horizontale à demi-résolution, puis verticale).",
-    "CREDIT": "Lanterne",
+    "DESCRIPTION": "Separable two-pass Gaussian blur (horizontal pass at half resolution, then vertical).",
+    "CREDIT": "Fulskrin",
     "ISFVSN": "2",
-    "CATEGORIES": ["Flou"],
+    "CATEGORIES": ["Blur"],
     "INPUTS": [
         { "NAME": "inputImage", "TYPE": "image" },
-        { "NAME": "radius", "LABEL": "Rayon (px)", "TYPE": "float", "DEFAULT": 8.0, "MIN": 0.0, "MAX": 64.0 }
+        { "NAME": "radius", "LABEL": "Radius (px)", "TYPE": "float", "DEFAULT": 8.0, "MIN": 0.0, "MAX": 64.0 }
     ],
     "PASSES": [
         { "TARGET": "horizontal", "WIDTH": "floor($WIDTH / 2.0)", "HEIGHT": "floor($HEIGHT / 2.0)" },

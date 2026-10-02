@@ -27,7 +27,7 @@ bool VideoDecoder::open(const QString &path, QString *err)
     QByteArray p = QFileInfo(path).absoluteFilePath().toUtf8();
     int r = avformat_open_input(&m_fmt, p.constData(), nullptr, nullptr);
     if (r < 0) {
-        if (err) *err = QStringLiteral("Impossible d'ouvrir la vidéo : ") + avErr(r);
+        if (err) *err = QStringLiteral("Unable to open video: ") + avErr(r);
         m_fmt = nullptr;
         return false;
     }
@@ -35,7 +35,7 @@ bool VideoDecoder::open(const QString &path, QString *err)
     const AVCodec *dec = nullptr;
     m_stream = av_find_best_stream(m_fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &dec, 0);
     if (m_stream < 0 || !dec) {
-        if (err) *err = QStringLiteral("Aucun flux vidéo décodable.");
+        if (err) *err = QStringLiteral("No decodable video stream.");
         close();
         return false;
     }
@@ -46,7 +46,7 @@ bool VideoDecoder::open(const QString &path, QString *err)
     m_codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
     r = avcodec_open2(m_codec, dec, nullptr);
     if (r < 0) {
-        if (err) *err = QStringLiteral("Décodeur indisponible : ") + avErr(r);
+        if (err) *err = QStringLiteral("Decoder unavailable: ") + avErr(r);
         close();
         return false;
     }
@@ -90,7 +90,7 @@ bool VideoDecoder::probe(const QString &path, Info *info, QString *err)
     const int s = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (s < 0) {
         avformat_close_input(&fmt);
-        if (err) *err = QStringLiteral("Aucun flux vidéo");
+        if (err) *err = QStringLiteral("No video stream");
         return false;
     }
     AVStream *st = fmt->streams[s];
@@ -219,7 +219,7 @@ int VideoDecoder::decodeNext(Frame &f)
             f.rgba.resize(size_t(w) * h * 4);
             f.w = w;
             f.h = h;
-            // Écriture retournée : on part de la dernière ligne avec un pas négatif.
+            // Flipped write: start from the last row with a negative stride.
             uint8_t *dst[4] = {f.rgba.data() + size_t(h - 1) * w * 4, nullptr, nullptr, nullptr};
             int dstStride[4] = {-w * 4, 0, 0, 0};
             if (m_sws) sws_scale(m_sws, m_frame->data, m_frame->linesize, 0, h, dst, dstStride);
@@ -232,7 +232,7 @@ int VideoDecoder::decodeNext(Frame &f)
 
         r = av_read_frame(m_fmt, m_packet);
         if (r < 0) {
-            avcodec_send_packet(m_codec, nullptr); // vidange
+            avcodec_send_packet(m_codec, nullptr); // flush
             m_draining = true;
             continue;
         }
@@ -279,7 +279,7 @@ void VideoDecoder::run()
             }
             m_queue.push_back(std::move(f));
         } else {
-            // Fin de fichier (ou erreur)
+            // End of file (or error)
             if (r == 0 && m_loop) {
                 m_loopBase += m_lastPts + 1.0 / m_fps;
                 doSeek(0);

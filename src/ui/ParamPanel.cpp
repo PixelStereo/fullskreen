@@ -44,7 +44,7 @@ void ParamPanel::setValue(int input, const QString &label, const std::function<v
 ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QWidget *parent)
     : QWidget(parent), m_engine(engine), m_undo(undo), m_layer(layer), m_slot(slot)
 {
-    // Copie des métadonnées et des valeurs sous verrou : la construction des widgets se fait ensuite sans bloquer le rendu.
+    // Copy metadata and values under the lock: widgets are then built without blocking rendering.
     std::vector<IsfInput> inputs;
     QString description;
     {
@@ -118,7 +118,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             break;
         }
         case IsfInput::Event: {
-            auto *b = new QPushButton(QStringLiteral("Déclencher"));
+            auto *b = new QPushButton(QStringLiteral("Trigger"));
             connect(b, &QPushButton::clicked, this, [=] {
                 Engine::Lock lk(&m_engine->mutex());
                 if (IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot))
@@ -177,7 +177,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
                     cur = inst->inputs()[size_t(idx)].value();
                 }
                 const QColor start = QColor::fromRgbF(cur.c[0], cur.c[1], cur.c[2], cur.c[3]);
-                // Dialogue non bloquant : la couleur s'applique en direct pendant le choix.
+                // Non-modal dialog: the color is applied live while picking.
                 auto *dlg = new QColorDialog(start, this);
                 dlg->setOption(QColorDialog::ShowAlphaChannel);
                 dlg->setAttribute(Qt::WA_DeleteOnClose);
@@ -197,7 +197,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             auto *w = new QWidget;
             auto *h = new QHBoxLayout(w);
             h->setContentsMargins(0, 0, 0, 0);
-            auto *name = new QLabel(in.imagePath.isEmpty() ? QStringLiteral("(aucune)") : QFileInfo(in.imagePath).fileName());
+            auto *name = new QLabel(in.imagePath.isEmpty() ? QStringLiteral("(none)") : QFileInfo(in.imagePath).fileName());
             name->setStyleSheet("color:#bbb;");
             auto *pick = new QPushButton(QStringLiteral("Image…"));
             auto *clear = new QPushButton(QStringLiteral("×"));
@@ -212,7 +212,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             connect(pick, &QPushButton::clicked, this, [=] {
                 QSettings s;
                 const QString f = QFileDialog::getOpenFileName(
-                    this, QStringLiteral("Image pour %1").arg(label), s.value("dirs/image").toString(),
+                    this, QStringLiteral("Image for %1").arg(label), s.value("dirs/image").toString(),
                     QStringLiteral("Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.gif *.webp *.tga)"));
                 if (f.isEmpty()) return;
                 s.setValue("dirs/image", QFileInfo(f).absolutePath());
@@ -222,14 +222,14 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             });
             connect(clear, &QPushButton::clicked, this, [=] {
                 m_engine->setIsfImageInput(instance(), idx, QString());
-                name->setText(QStringLiteral("(aucune)"));
+                name->setText(QStringLiteral("(none)"));
             });
             field = w;
             break;
         }
         case IsfInput::Audio:
         case IsfInput::AudioFFT: {
-            auto *l = new QLabel(QStringLiteral("entrée audio non gérée (V1)"));
+            auto *l = new QLabel(QStringLiteral("audio input not supported (V1)"));
             l->setStyleSheet("color:#888;");
             field = l;
             break;
@@ -239,11 +239,11 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
         form->addRow(label, field);
     }
 
-    auto *reset = new QPushButton(QStringLiteral("Valeurs par défaut"));
+    auto *reset = new QPushButton(QStringLiteral("Reset to Defaults"));
     reset->setFlat(true);
     reset->setStyleSheet("color:#aaa; text-align:left;");
     connect(reset, &QPushButton::clicked, this, [this] {
-        // Une seule étape d'annulation pour l'ensemble des paramètres
+        // A single undo step for all parameters
         std::vector<std::pair<IsfValue, IsfValue>> changes;
         std::vector<QString> labels;
         {
@@ -261,7 +261,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
                 labels.push_back(in.label);
             }
         }
-        m_undo->beginMacro(QStringLiteral("Valeurs par défaut"));
+        m_undo->beginMacro(QStringLiteral("Reset to Defaults"));
         for (size_t k = 0; k < changes.size(); ++k)
             if (changes[k].first != changes[k].second)
                 m_undo->push(new cmd::SetParam(m_engine, m_layer, m_slot, int(k), changes[k].first, changes[k].second,

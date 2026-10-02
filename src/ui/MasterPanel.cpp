@@ -52,8 +52,8 @@ QWidget *MasterPanel::buildMaster()
     m_master = new QSlider(Qt::Horizontal);
     m_master->setRange(0, 100);
     m_master->setValue(100);
-    m_master->setToolTip(QStringLiteral("Niveau général de la sortie"));
-    m_masterLabel = new QLabel(QStringLiteral("100 %"));
+    m_master->setToolTip(QStringLiteral("Output master level"));
+    m_masterLabel = new QLabel(QStringLiteral("100%"));
     m_masterLabel->setMinimumWidth(48);
     m_masterLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     row->addWidget(m_master, 1);
@@ -61,10 +61,10 @@ QWidget *MasterPanel::buildMaster()
     v->addLayout(row);
 
     auto *row2 = new QHBoxLayout;
-    m_blackout = new QPushButton(QStringLiteral("Noir"));
+    m_blackout = new QPushButton(QStringLiteral("Blackout"));
     m_blackout->setCheckable(true);
     m_blackout->setMinimumHeight(34);
-    m_blackout->setToolTip(QStringLiteral("Fondu au noir / retour (Ctrl+B, ⌘B sur Mac)"));
+    m_blackout->setToolTip(QStringLiteral("Fade to black / fade back in (Ctrl+B, ⌘B on Mac)"));
     m_blackout->setStyleSheet("QPushButton { font-weight:bold; } QPushButton:checked { background:#b3261e; color:white; }");
     m_fade = new QDoubleSpinBox;
     m_fade->setRange(0.0, 30.0);
@@ -72,14 +72,14 @@ QWidget *MasterPanel::buildMaster()
     m_fade->setDecimals(1);
     m_fade->setSuffix(QStringLiteral(" s"));
     m_fade->setValue(QSettings().value("master/fade", 1.0).toDouble());
-    m_fade->setToolTip(QStringLiteral("Durée du fondu au noir et du retour"));
+    m_fade->setToolTip(QStringLiteral("Fade duration for blackout and fade back in"));
     row2->addWidget(m_blackout, 1);
-    row2->addWidget(new QLabel(QStringLiteral("Fondu")));
+    row2->addWidget(new QLabel(QStringLiteral("Fade")));
     row2->addWidget(m_fade);
     v->addLayout(row2);
 
     connect(m_master, &QSlider::valueChanged, this, [this](int val) {
-        // Pendant un noir, le fader règle le niveau de retour sans rallumer.
+        // During a blackout, the fader sets the return level without lighting the output back up.
         if (!m_blackout->isChecked()) m_engine->fadeMaster(val / 100.0, 0.05);
     });
     connect(m_blackout, &QPushButton::toggled, this, [this](bool on) {
@@ -94,11 +94,11 @@ QWidget *MasterPanel::buildMaster()
 void MasterPanel::setBlackout(bool on)
 {
     if (m_blackout->isChecked() == on) {
-        // Rejoue le fondu (par exemple après une reprise où le niveau a été forcé)
+        // Replay the fade (e.g. after a recovery where the level was forced)
         m_engine->fadeMaster(on ? 0.0 : masterValue(), fadeTime());
         return;
     }
-    m_blackout->setChecked(on); // déclenche le fondu et blackoutChanged
+    m_blackout->setChecked(on); // triggers the fade and blackoutChanged
 }
 
 bool MasterPanel::isBlackout() const { return m_blackout->isChecked(); }
@@ -106,32 +106,32 @@ double MasterPanel::masterValue() const { return m_master->value() / 100.0; }
 double MasterPanel::fadeTime() const { return m_fade->value(); }
 
 // ---------------------------------------------------------------------------
-// Sortie vidéo
+// Video Output
 // ---------------------------------------------------------------------------
 
 QWidget *MasterPanel::buildOutput()
 {
-    auto *g = new QGroupBox(QStringLiteral("Sortie vidéo"));
+    auto *g = new QGroupBox(QStringLiteral("Video Output"));
     auto *v = new QVBoxLayout(g);
     auto *form = new QFormLayout;
     m_screens = new QComboBox;
-    form->addRow(QStringLiteral("Écran"), m_screens);
+    form->addRow(QStringLiteral("Screen"), m_screens);
     v->addLayout(form);
     auto *row = new QHBoxLayout;
-    m_full = new QPushButton(QStringLiteral("Plein écran"));
+    m_full = new QPushButton(QStringLiteral("Fullscreen"));
     m_full->setCheckable(true);
-    m_full->setToolTip(QStringLiteral("Ctrl+F (⌘F sur Mac) pour entrer et sortir du plein écran"));
-    m_windowed = new QPushButton(QStringLiteral("Fenêtre"));
+    m_full->setToolTip(QStringLiteral("Ctrl+F (⌘F on Mac) to enter and exit fullscreen"));
+    m_windowed = new QPushButton(QStringLiteral("Windowed"));
     m_windowed->setCheckable(true);
-    m_windowed->setToolTip(QStringLiteral("Ctrl+Maj+F (⌘⇧F sur Mac)"));
-    m_hide = new QPushButton(QStringLiteral("Masquer"));
+    m_windowed->setToolTip(QStringLiteral("Ctrl+Shift+F (⌘⇧F on Mac)"));
+    m_hide = new QPushButton(QStringLiteral("Hide"));
     m_hide->setCheckable(true);
     row->addWidget(m_full);
     row->addWidget(m_windowed);
     row->addWidget(m_hide);
     v->addLayout(row);
-    v->addWidget(note(QStringLiteral("⌘F / Ctrl+F : plein écran sur l'écran choisi (le second écran s'il est branché, "
-                                     "sinon l'écran principal), et retour. Fonctionne aussi depuis la sortie.")));
+    v->addWidget(note(QStringLiteral("⌘F / Ctrl+F: fullscreen on the selected screen (the second screen if connected, "
+                                     "otherwise the main screen), and back. Also works from the output window.")));
 
     connect(m_screens, qOverload<int>(&QComboBox::activated), this,
             [this](int i) { emit screenChosen(m_screens->itemData(i).toString()); });
@@ -165,7 +165,7 @@ QWidget *MasterPanel::buildComposition()
     auto *g = new QGroupBox(QStringLiteral("Composition"));
     auto *form = new QFormLayout(g);
     m_preset = new QComboBox;
-    m_preset->addItem(QStringLiteral("Personnalisée"));
+    m_preset->addItem(QStringLiteral("Custom"));
     const QList<QSize> sizes = {{1920, 1080}, {1280, 720}, {3840, 2160}, {4096, 2160}, {1920, 1200}, {2560, 1600},
                                 {1400, 1050}, {1024, 768}, {3840, 1080}, {5760, 1080}};
     for (const QSize &s : sizes) m_preset->addItem(QStringLiteral("%1 × %2").arg(s.width()).arg(s.height()), s);
@@ -179,12 +179,12 @@ QWidget *MasterPanel::buildComposition()
     size->addWidget(m_width);
     size->addWidget(new QLabel(QStringLiteral("×")));
     size->addWidget(m_height);
-    auto *fit = new QPushButton(QStringLiteral("= écran de sortie"));
-    form->addRow(QStringLiteral("Préréglage"), m_preset);
-    form->addRow(QStringLiteral("Taille"), size);
+    auto *fit = new QPushButton(QStringLiteral("= output screen"));
+    form->addRow(QStringLiteral("Preset"), m_preset);
+    form->addRow(QStringLiteral("Size"), size);
     form->addRow(QString(), fit);
-    form->addRow(note(QStringLiteral("Réglez la composition sur la résolution native du vidéoprojecteur. "
-                                     "Le mapping est relatif : il suit le changement de taille.")));
+    form->addRow(note(QStringLiteral("Set the composition to the projector's native resolution. "
+                                     "Mapping is relative: it follows size changes.")));
 
     connect(m_preset, qOverload<int>(&QComboBox::activated), this, [this](int i) {
         const QSize s = m_preset->itemData(i).toSize();
@@ -211,27 +211,27 @@ void MasterPanel::applyComposition()
 }
 
 // ---------------------------------------------------------------------------
-// Publication
+// Output Publishing
 // ---------------------------------------------------------------------------
 
 QWidget *MasterPanel::buildPublish()
 {
-    auto *g = new QGroupBox(QStringLiteral("Publication de la sortie"));
+    auto *g = new QGroupBox(QStringLiteral("Output Publishing"));
     auto *v = new QVBoxLayout(g);
     auto *grid = new QGridLayout;
     grid->setColumnStretch(1, 1);
     const QString tips[kPublishKindCount] = {
-        QStringLiteral("NDI : réseau. Nécessite NDI Tools ou le NDI Runtime installé sur la machine."),
-        QStringLiteral("OMT (Open Media Transport) : réseau, libre et ouvert. Nécessite libomt et libvmx."),
-        QStringLiteral("Syphon : partage d'image avec les applications du même Mac (MadMapper, Resolume, OBS…)."),
-        QStringLiteral("Spout : partage d'image avec les applications du même PC (Resolume, TouchDesigner, OBS…)."),
+        QStringLiteral("NDI: network. Requires NDI Tools or the NDI Runtime installed on this machine."),
+        QStringLiteral("OMT (Open Media Transport): network, free and open. Requires libomt and libvmx."),
+        QStringLiteral("Syphon: shares the image with apps on the same Mac (MadMapper, Resolume, OBS…)."),
+        QStringLiteral("Spout: shares the image with apps on the same PC (Resolume, TouchDesigner, OBS…)."),
     };
     for (int k = 0; k < kPublishKindCount; ++k) {
         m_pubEnabled[k] = new QCheckBox(publishKindName(PublishKind(k)));
         m_pubEnabled[k]->setToolTip(tips[k]);
         m_pubName[k] = new QLineEdit;
-        m_pubName[k]->setPlaceholderText(QStringLiteral("Nom de la source"));
-        m_pubName[k]->setToolTip(QStringLiteral("Nom sous lequel la sortie apparaît chez les récepteurs"));
+        m_pubName[k]->setPlaceholderText(QStringLiteral("Source name"));
+        m_pubName[k]->setToolTip(QStringLiteral("Name under which the output appears on receivers"));
         m_pubState[k] = new QLabel;
         m_pubState[k]->setWordWrap(true);
         m_pubState[k]->setStyleSheet("font-size:11px;");
@@ -249,30 +249,30 @@ QWidget *MasterPanel::buildPublish()
 
     auto *form = new QFormLayout;
     m_omtQuality = new QComboBox;
-    m_omtQuality->addItem(QStringLiteral("Automatique"), 0);
-    m_omtQuality->addItem(QStringLiteral("Basse"), 1);
-    m_omtQuality->addItem(QStringLiteral("Moyenne"), 50);
-    m_omtQuality->addItem(QStringLiteral("Haute"), 100);
-    form->addRow(QStringLiteral("Qualité OMT"), m_omtQuality);
+    m_omtQuality->addItem(QStringLiteral("Auto"), 0);
+    m_omtQuality->addItem(QStringLiteral("Low"), 1);
+    m_omtQuality->addItem(QStringLiteral("Medium"), 50);
+    m_omtQuality->addItem(QStringLiteral("High"), 100);
+    form->addRow(QStringLiteral("OMT Quality"), m_omtQuality);
     auto *lib = new QHBoxLayout;
     m_libFolder = new QLineEdit;
-    m_libFolder->setPlaceholderText(QStringLiteral("emplacements standards"));
-    m_libFolder->setToolTip(QStringLiteral("Dossier supplémentaire où chercher les bibliothèques NDI (libndi) et OMT (libomt, libvmx)"));
+    m_libFolder->setPlaceholderText(QStringLiteral("standard locations"));
+    m_libFolder->setToolTip(QStringLiteral("Additional folder to search for the NDI (libndi) and OMT (libomt, libvmx) libraries"));
     auto *browse = new QPushButton(QStringLiteral("…"));
     browse->setFixedWidth(30);
     lib->addWidget(m_libFolder, 1);
     lib->addWidget(browse);
-    form->addRow(QStringLiteral("Bibliothèques"), lib);
+    form->addRow(QStringLiteral("Libraries"), lib);
     v->addLayout(form);
     m_libInfo = note(QString());
     v->addWidget(m_libInfo);
-    v->addWidget(note(QStringLiteral("NDI et OMT envoient l'image à la résolution de la composition ; "
-                                     "Syphon et Spout la partagent directement sur la carte graphique.")));
+    v->addWidget(note(QStringLiteral("NDI and OMT send the image at the composition resolution; "
+                                     "Syphon and Spout share it directly on the GPU.")));
 
     connect(m_omtQuality, qOverload<int>(&QComboBox::activated), this, &MasterPanel::applyPublish);
     connect(m_libFolder, &QLineEdit::editingFinished, this, &MasterPanel::applyPublish);
     connect(browse, &QPushButton::clicked, this, [this] {
-        const QString d = QFileDialog::getExistingDirectory(this, QStringLiteral("Dossier des bibliothèques NDI / OMT"),
+        const QString d = QFileDialog::getExistingDirectory(this, QStringLiteral("NDI / OMT Library Folder"),
                                                             m_libFolder->text());
         if (d.isEmpty()) return;
         m_libFolder->setText(d);
@@ -288,7 +288,7 @@ void MasterPanel::applyPublish()
     for (int k = 0; k < kPublishKindCount; ++k) {
         s.targets[k].enabled = m_pubEnabled[k]->isChecked();
         const QString n = m_pubName[k]->text().trimmed();
-        s.targets[k].name = n.isEmpty() ? QStringLiteral("Lanterne") : n;
+        s.targets[k].name = n.isEmpty() ? QStringLiteral("Fulskrin") : n;
     }
     s.omtQuality = m_omtQuality->currentData().toInt();
     s.libraryFolder = m_libFolder->text().trimmed();
@@ -319,7 +319,7 @@ void MasterPanel::syncFromEngine()
 void MasterPanel::refreshStatus()
 {
     const int pct = int(std::lround(m_engine->masterLevel() * 100));
-    m_masterLabel->setText(QStringLiteral("%1 %").arg(pct));
+    m_masterLabel->setText(QStringLiteral("%1%").arg(pct));
     m_masterLabel->setStyleSheet(pct == 0 ? "color:#ff5a4f; font-weight:bold;" : "");
 
     const QSize c = m_engine->compositionSize();
@@ -335,24 +335,24 @@ void MasterPanel::refreshStatus()
         const PublishState st = m_engine->publishState(PublishKind(k));
         QString text = st.text, color = "#888";
         if (!publishCompiledIn(PublishKind(k))) {
-            text = k == int(PublishKind::Syphon) ? QStringLiteral("macOS uniquement") : QStringLiteral("Windows uniquement");
+            text = k == int(PublishKind::Syphon) ? QStringLiteral("macOS only") : QStringLiteral("Windows only");
         } else if (st.level == PublishState::Ok) {
             color = "#5fd47a";
-            if (st.receivers > 0) text += k == int(PublishKind::Syphon) ? QStringLiteral(" — client connecté")
-                                                                        : QStringLiteral(" — %1 récepteur(s)").arg(st.receivers);
-            else if (st.receivers == 0) text += QStringLiteral(" — aucun récepteur");
+            if (st.receivers > 0) text += k == int(PublishKind::Syphon) ? QStringLiteral(" — client connected")
+                                                                        : QStringLiteral(" — %1 receiver(s)").arg(st.receivers);
+            else if (st.receivers == 0) text += QStringLiteral(" — no receivers");
         } else if (st.level == PublishState::Error) {
             color = "#ff6e5f";
         }
-        if (text.isEmpty()) text = QStringLiteral("Désactivé");
+        if (text.isEmpty()) text = QStringLiteral("Disabled");
         m_pubState[k]->setText(QStringLiteral("<span style='color:%1'>%2</span>").arg(color, text.toHtmlEscaped()));
     }
-    // Recherche des bibliothèques : environ toutes les deux secondes (accès disque)
+    // Library lookup: roughly every two seconds (disk access)
     const QString folder = m_libFolder->text().trimmed();
     if (m_libTick++ % 20 != 0 && folder == m_libCheckedFolder) return;
     m_libCheckedFolder = folder;
     const QString ndi = ndiLibraryPath(folder), omt = omtLibraryPath(folder);
-    m_libInfo->setText(QStringLiteral("NDI : %1<br>OMT : %2")
-                           .arg(ndi.isEmpty() ? QStringLiteral("non trouvé") : ndi.toHtmlEscaped(),
-                                omt.isEmpty() ? QStringLiteral("non trouvé") : omt.toHtmlEscaped()));
+    m_libInfo->setText(QStringLiteral("NDI: %1<br>OMT: %2")
+                           .arg(ndi.isEmpty() ? QStringLiteral("not found") : ndi.toHtmlEscaped(),
+                                omt.isEmpty() ? QStringLiteral("not found") : omt.toHtmlEscaped()));
 }

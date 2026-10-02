@@ -10,7 +10,7 @@ OutputWindow::OutputWindow(Engine *engine) : m_engine(engine)
 {
     setSurfaceType(QSurface::OpenGLSurface);
     setFormat(QSurfaceFormat::defaultFormat());
-    setTitle(QStringLiteral("Lanterne — Sortie"));
+    setTitle(QStringLiteral("Fulskrin — Output"));
     create();
     m_engine->setOutputWindow(this);
 }
@@ -50,7 +50,7 @@ void OutputWindow::showOn(QScreen *screen, bool fullscreen)
 
 void OutputWindow::hideOutput()
 {
-    // Le fil de rendu cesse d'utiliser la fenêtre avant qu'elle ne soit masquée.
+    // The render thread stops using the window before it is hidden.
     if (m_lastExposed) {
         m_lastExposed = false;
         m_engine->setOutputExposed(false, m_lastSize);
@@ -73,7 +73,7 @@ void OutputWindow::resizeEvent(QResizeEvent *e)
 bool OutputWindow::event(QEvent *e)
 {
     if (e->type() == QEvent::Close) {
-        // Fermer la fenêtre revient à masquer la sortie (géré par la fenêtre principale)
+        // Closing the window hides the output (handled by the main window)
         emit closeRequested();
         e->ignore();
         return true;
@@ -88,7 +88,7 @@ bool OutputWindow::event(QEvent *e)
 
 void OutputWindow::keyPressEvent(QKeyEvent *e)
 {
-    // Échap ne ferme pas la sortie (sécurité en représentation) : il faut Maj+Échap.
+    // Esc does not close the output (safety during a show): Shift+Esc is required.
     if (e->key() == Qt::Key_Escape && (e->modifiers() & Qt::ShiftModifier)) {
         emit closeRequested();
         return;

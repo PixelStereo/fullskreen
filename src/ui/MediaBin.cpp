@@ -28,7 +28,7 @@
 namespace {
 enum Role { PathRole = Qt::UserRole + 1, MissingRole, UsedRole };
 
-// Arbre du chutier : glisser des éléments vers les calques, déposer des fichiers pour les importer.
+// Media Bin tree: drag items onto layers, drop files to import them.
 class BinTree : public QTreeWidget
 {
 public:
@@ -85,17 +85,17 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     v->setContentsMargins(8, 8, 4, 4);
     v->setSpacing(6);
     auto *head = new QHBoxLayout;
-    head->addWidget(new QLabel(QStringLiteral("<b>Chutier</b>")));
+    head->addWidget(new QLabel(QStringLiteral("<b>Media Bin</b>")));
     head->addStretch();
-    auto *import = new QPushButton(QStringLiteral("Importer…"));
-    import->setToolTip(QStringLiteral("Ajouter des images ou des vidéos au chutier (sans créer de calque)"));
+    auto *import = new QPushButton(QStringLiteral("Import…"));
+    import->setToolTip(QStringLiteral("Add images or videos to the Media Bin (without creating a layer)"));
     head->addWidget(import);
     v->addLayout(head);
 
     auto *tree = new BinTree;
     m_tree = tree;
     m_tree->setColumnCount(3);
-    m_tree->setHeaderLabels({QStringLiteral("Fichier"), QStringLiteral("Infos"), QStringLiteral("Calques")});
+    m_tree->setHeaderLabels({QStringLiteral("File"), QStringLiteral("Info"), QStringLiteral("Layers")});
     m_tree->setRootIsDecorated(true);
     m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_tree->setDragEnabled(true);
@@ -111,10 +111,10 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     m_tree->setColumnWidth(1, 120);
     m_tree->setColumnWidth(2, 56);
     m_tree->setTextElideMode(Qt::ElideMiddle);
-    m_tree->setToolTip(QStringLiteral("Glissez un fichier vers la liste des calques ou l'aperçu pour créer un calque.\n"
-                                      "Double-clic : remplacer la source du calque sélectionné."));
+    m_tree->setToolTip(QStringLiteral("Drag a file onto the layer list or the preview to create a layer.\n"
+                                      "Double-click: replace the source of the selected layer."));
     tree->onDrop = [this](const QStringList &p) { importFiles(p); };
-    m_videos = new QTreeWidgetItem(m_tree, {QStringLiteral("Vidéos")});
+    m_videos = new QTreeWidgetItem(m_tree, {QStringLiteral("Videos")});
     m_images = new QTreeWidgetItem(m_tree, {QStringLiteral("Images")});
     for (QTreeWidgetItem *cat : {m_videos, m_images}) {
         QFont f = cat->font(0);
@@ -127,18 +127,18 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     v->addWidget(m_tree, 1);
 
     auto *buttons = new QHBoxLayout;
-    m_relink = new QPushButton(QStringLiteral("Remplacer…"));
-    m_relink->setToolTip(QStringLiteral("Remplacer ce fichier par un autre partout où il est utilisé (fichier déplacé, nouvelle version)"));
-    m_remove = new QPushButton(QStringLiteral("Retirer"));
-    m_remove->setToolTip(QStringLiteral("Retirer du chutier (seulement les fichiers qu'aucun calque n'utilise)"));
+    m_relink = new QPushButton(QStringLiteral("Replace…"));
+    m_relink->setToolTip(QStringLiteral("Replace this file with another everywhere it is used (moved file, new version)"));
+    m_remove = new QPushButton(QStringLiteral("Remove"));
+    m_remove->setToolTip(QStringLiteral("Remove from the Media Bin (only files not used by any layer)"));
 #if defined(Q_OS_MACOS)
     m_reveal = new QPushButton(QStringLiteral("Finder"));
 #elif defined(Q_OS_WIN)
-    m_reveal = new QPushButton(QStringLiteral("Explorateur"));
+    m_reveal = new QPushButton(QStringLiteral("Explorer"));
 #else
-    m_reveal = new QPushButton(QStringLiteral("Dossier"));
+    m_reveal = new QPushButton(QStringLiteral("Folder"));
 #endif
-    m_reveal->setToolTip(QStringLiteral("Afficher le fichier dans son dossier"));
+    m_reveal->setToolTip(QStringLiteral("Show the file in its folder"));
     for (auto *b : {m_relink, m_remove, m_reveal}) buttons->addWidget(b);
     v->addLayout(buttons);
     m_summary = new QLabel;
@@ -171,7 +171,7 @@ void MediaBin::refresh()
     const QString selected = selectedPath();
 
     int nv = 0, ni = 0, missing = 0;
-    // Mise à jour sur place : on garde la sélection et le défilement.
+    // Update in place: keep selection and scroll position.
     QHash<QString, QTreeWidgetItem *> existing;
     for (QTreeWidgetItem *cat : {m_videos, m_images})
         for (int i = 0; i < cat->childCount(); ++i) existing.insert(cat->child(i)->data(0, PathRole).toString(), cat->child(i));
@@ -195,7 +195,7 @@ void MediaBin::refresh()
         it->setData(0, UsedRole, !r.users.isEmpty());
         it->setText(0, QFileInfo(r.path).fileName());
         if (r.missing) {
-            it->setText(1, QStringLiteral("introuvable"));
+            it->setText(1, QStringLiteral("missing"));
             m_info.remove(r.path);
         } else {
             if (!m_info.contains(r.path)) probe(r.path);
@@ -203,12 +203,12 @@ void MediaBin::refresh()
             it->setText(1, info.section('\t', 0, 0));
             it->setToolTip(1, info.contains('\t') ? info.section('\t', 0, 0) + QStringLiteral(" · ") + info.section('\t', 1) : info);
         }
-        if (r.missing) it->setToolTip(1, QStringLiteral("Fichier introuvable : ") + r.path);
-        // Nombre de calques ; le détail est dans l'infobulle
+        if (r.missing) it->setToolTip(1, QStringLiteral("File not found: ") + r.path);
+        // Layer count; details are in the tooltip
         it->setText(2, r.users.isEmpty() ? QStringLiteral("—") : QString::number(r.users.size()));
         it->setTextAlignment(2, Qt::AlignCenter);
-        const QString usedBy = r.users.isEmpty() ? QStringLiteral("Non utilisé (importé dans le chutier)")
-                                                 : QStringLiteral("Utilisé par :\n") + r.users.join('\n');
+        const QString usedBy = r.users.isEmpty() ? QStringLiteral("Unused (imported to the Media Bin)")
+                                                 : QStringLiteral("Used by:\n") + r.users.join('\n');
         it->setToolTip(0, r.path + QStringLiteral("\n\n") + usedBy);
         it->setToolTip(2, usedBy);
         const QColor fg = r.missing ? QColor(255, 110, 95) : (r.users.isEmpty() ? QColor(140, 140, 145) : QColor(225, 225, 228));
@@ -217,11 +217,11 @@ void MediaBin::refresh()
     for (auto e = existing.begin(); e != existing.end(); ++e)
         if (!seen.contains(e.key())) delete e.value();
     for (QTreeWidgetItem *cat : {m_videos, m_images}) cat->sortChildren(0, Qt::AscendingOrder);
-    m_videos->setText(0, QStringLiteral("Vidéos (%1)").arg(nv));
+    m_videos->setText(0, QStringLiteral("Videos (%1)").arg(nv));
     m_images->setText(0, QStringLiteral("Images (%1)").arg(ni));
-    m_summary->setText(missing ? QStringLiteral("<span style='color:#ff6e5f'>%1 fichier(s) introuvable(s) : "
-                                                "sélectionnez-les puis « Remplacer… »</span>").arg(missing)
-                               : QStringLiteral("%1 fichier(s)").arg(nv + ni));
+    m_summary->setText(missing ? QStringLiteral("<span style='color:#ff6e5f'>%1 missing file(s): "
+                                                "select them, then \"Replace…\"</span>").arg(missing)
+                               : QStringLiteral("%1 file(s)").arg(nv + ni));
     if (!selected.isEmpty())
         for (QTreeWidgetItem *cat : {m_videos, m_images})
             for (int i = 0; i < cat->childCount(); ++i)
@@ -235,27 +235,27 @@ void MediaBin::probe(const QString &path)
     m_probing[path] = true;
     QPointer<MediaBin> self(this);
     const bool video = Engine::isVideoFile(path) || !Engine::isImageFile(path);
-    // Lecture des métadonnées hors du fil de l'interface (fichiers sur disque réseau, etc.)
+    // Read metadata off the UI thread (files on network drives, etc.)
     QThreadPool::globalInstance()->start([self, path, video] {
         QString info;
         if (video) {
             VideoDecoder::Info vi;
             if (VideoDecoder::probe(path, &vi)) {
-                // Colonne courte (résolution · durée) ; le détail est dans l'infobulle
+                // Short column (resolution · duration); details are in the tooltip
                 info = QStringLiteral("%1×%2").arg(vi.width).arg(vi.height);
                 if (vi.duration > 0) info += QStringLiteral(" · ") + fmtDuration(vi.duration);
                 QStringList more;
-                if (vi.fps > 0) more << QStringLiteral("%1 i/s").arg(vi.fps, 0, 'g', 4);
+                if (vi.fps > 0) more << QStringLiteral("%1 fps").arg(vi.fps, 0, 'g', 4);
                 if (!vi.codec.isEmpty()) more << vi.codec;
                 if (!more.isEmpty()) info += QStringLiteral("\t") + more.join(QStringLiteral(" · "));
             } else {
-                info = QStringLiteral("illisible");
+                info = QStringLiteral("unreadable");
             }
         } else {
             QImageReader r(path);
             const QSize s = r.size();
             info = s.isValid() ? QStringLiteral("%1×%2 · %3").arg(s.width()).arg(s.height()).arg(QString::fromLatin1(r.format()))
-                               : QStringLiteral("illisible");
+                               : QStringLiteral("unreadable");
         }
         QMetaObject::invokeMethod(
             QCoreApplication::instance(),
@@ -288,7 +288,7 @@ void MediaBin::importFiles(const QStringList &paths)
     for (const QString &p : paths) {
         QFileInfo fi(p);
         if (fi.isDir()) {
-            // Un dossier déposé : on importe ses images et vidéos (premier niveau)
+            // A dropped folder: import its images and videos (top level only)
             for (const QFileInfo &f : QDir(p).entryInfoList(QDir::Files, QDir::Name))
                 if (Engine::isVideoFile(f.filePath()) || Engine::isImageFile(f.filePath())) ok << f.absoluteFilePath();
         } else if (Engine::isVideoFile(p) || Engine::isImageFile(p)) {
@@ -307,9 +307,9 @@ void MediaBin::importDialog()
     QStringList ext;
     for (const QString &e : {"mov", "mp4", "m4v", "avi", "mkv", "webm", "mxf", "mpg", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif", "webp", "tga"})
         ext << "*." + QString(e);
-    const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Importer dans le chutier"),
+    const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Import to Media Bin"),
                                                             s.value("dirs/video").toString(),
-                                                            QStringLiteral("Images et vidéos (%1);;Tous les fichiers (*)").arg(ext.join(' ')));
+                                                            QStringLiteral("Images and Videos (%1);;All Files (*)").arg(ext.join(' ')));
     if (files.isEmpty()) return;
     s.setValue("dirs/video", QFileInfo(files.first()).absolutePath());
     importFiles(files);
@@ -321,7 +321,7 @@ void MediaBin::relinkSelected()
     if (from.isEmpty()) return;
     QString start = QFileInfo(from).absolutePath();
     if (!QFileInfo(start).isDir()) start = QSettings().value("dirs/video").toString();
-    const QString to = QFileDialog::getOpenFileName(this, QStringLiteral("Remplacer « %1 » par…").arg(QFileInfo(from).fileName()),
+    const QString to = QFileDialog::getOpenFileName(this, QStringLiteral("Replace \"%1\" with…").arg(QFileInfo(from).fileName()),
                                                     start + "/" + QFileInfo(from).fileName());
     if (to.isEmpty() || to == from) return;
     emit relinkRequested(from, QFileInfo(to).absoluteFilePath());
@@ -355,16 +355,16 @@ void MediaBin::contextMenu(const QPoint &pos)
     QMenu menu(this);
     if (!p.isEmpty()) {
         const bool missing = it->data(0, MissingRole).toBool();
-        QAction *a = menu.addAction(QStringLiteral("Nouveau calque avec ce fichier"), this, [this, p] { emit newLayerRequested(p); });
+        QAction *a = menu.addAction(QStringLiteral("New Layer with This File"), this, [this, p] { emit newLayerRequested(p); });
         a->setEnabled(!missing);
-        a = menu.addAction(QStringLiteral("Source du calque sélectionné"), this, [this, p] { emit useAsSourceRequested(p); });
+        a = menu.addAction(QStringLiteral("Use as Source of Selected Layer"), this, [this, p] { emit useAsSourceRequested(p); });
         a->setEnabled(!missing);
         menu.addSeparator();
-        menu.addAction(QStringLiteral("Remplacer le fichier…"), this, &MediaBin::relinkSelected);
+        menu.addAction(QStringLiteral("Relink File…"), this, &MediaBin::relinkSelected);
         menu.addAction(m_reveal->text(), this, &MediaBin::revealSelected)->setEnabled(!missing);
-        menu.addAction(QStringLiteral("Retirer du chutier"), this, &MediaBin::removeSelected)->setEnabled(!it->data(0, UsedRole).toBool());
+        menu.addAction(QStringLiteral("Remove from Media Bin"), this, &MediaBin::removeSelected)->setEnabled(!it->data(0, UsedRole).toBool());
         menu.addSeparator();
     }
-    menu.addAction(QStringLiteral("Importer…"), this, &MediaBin::importDialog);
+    menu.addAction(QStringLiteral("Import…"), this, &MediaBin::importDialog);
     menu.exec(m_tree->viewport()->mapToGlobal(pos));
 }

@@ -1,7 +1,7 @@
 #pragma once
-// Décodage vidéo FFmpeg dans un thread dédié.
-// Les images sont converties en RGBA, retournées verticalement (convention OpenGL)
-// et mises en file avec un horodatage monotone (les boucles s'additionnent).
+// FFmpeg video decoding on a dedicated thread.
+// Frames are converted to RGBA, flipped vertically (OpenGL convention)
+// and queued with a monotonic timestamp (loops accumulate).
 
 #include <QString>
 #include <atomic>
@@ -28,7 +28,7 @@ public:
 
     bool open(const QString &path, QString *err);
 
-    // Informations sur un fichier sans le décoder (chutier)
+    // File info without decoding it (media bin)
     struct Info {
         int width = 0, height = 0;
         double duration = 0, fps = 0;
@@ -46,13 +46,13 @@ public:
     void setLoop(bool on) { m_loop = on; }
     bool loop() const { return m_loop; }
 
-    // Demande un positionnement (asynchrone). Après seek(t), l'horloge du lecteur doit valoir t.
+    // Requests a seek (asynchronous). After seek(t), the player clock must equal t.
     void seek(double t);
 
-    // Récupère l'image la plus récente dont l'horodatage <= t. Retourne true si une nouvelle image a été écrite dans out.
+    // Fetches the most recent frame whose timestamp <= t. Returns true if a new frame was written to out.
     bool fetch(double t, std::vector<uint8_t> &out, int *w, int *h);
 
-    // Vrai quand la lecture sans boucle est arrivée au bout et que la file est vide.
+    // True when non-looping playback has reached the end and the queue is empty.
     bool finished();
 
 private:
@@ -64,7 +64,7 @@ private:
 
     void run();
     void doSeek(double t);
-    int decodeNext(Frame &f); // 1 = image, 0 = fin, -1 = erreur
+    int decodeNext(Frame &f); // 1 = frame, 0 = end, -1 = error
     void recycle(std::vector<uint8_t> &&buf);
 
     AVFormatContext *m_fmt = nullptr;
@@ -89,7 +89,7 @@ private:
     uint64_t m_generation = 0;
     std::atomic<bool> m_loop{true};
 
-    // État du thread de décodage
+    // Decode thread state
     bool m_draining = false;
     double m_loopBase = 0, m_lastPts = 0, m_discardBefore = -1e9;
 };

@@ -27,32 +27,32 @@ struct Layer {
     SourceType type = SourceType::None;
     QString sourcePath;
     QString error;
-    // Fichier introuvable au chargement : le chemin et le type sont conservés (sauvegarde, chutier, remplacement)
+    // File missing on load: path and type are kept (save, media bin, relink)
     SourceType missingType = SourceType::None;
 
-    // Vidéo
+    // Video
     std::unique_ptr<VideoDecoder> video;
     std::vector<uint8_t> frameBuffer;
     bool playing = true, loop = true;
     double speed = 1.0, playhead = 0.0;
 
-    // Vidéo / image : texture source (alimentée dans le fil de rendu)
+    // Video / image: source texture (fed in the render thread)
     Texture2D sourceTex;
-    QImage pendingImage; // image à envoyer au GPU à la prochaine frame
+    QImage pendingImage; // image to upload to the GPU on the next frame
     int srcWidth = 0, srcHeight = 0;
 
-    // Générateur ISF
+    // ISF generator
     std::unique_ptr<IsfInstance> generator;
     int genWidth = 1920, genHeight = 1080;
     RenderTarget generatorTarget;
 
-    // Chaîne d'effets ISF
+    // ISF effect chain
     std::vector<std::unique_ptr<IsfInstance>> effects;
     RenderTarget fxTarget[2];
 
     Mapping mapping;
 
-    // Résultat du rendu de la frame
+    // Frame render result
     GLuint finalTex = 0;
     int finalW = 0, finalH = 0;
 

@@ -1,6 +1,6 @@
-// Publication Spout (Windows) : partage de la texture de sortie avec d'autres applications.
-// Compilé uniquement sur Windows (LANTERNE_HAS_SPOUT), avec le SDK Spout2 (licence BSD).
-// Ce fichier n'inclut volontairement aucun en-tête OpenGL de Qt (Spout fournit les siens).
+// Spout publishing (Windows): shares the output texture with other applications.
+// Compiled only on Windows (FULSKRIN_HAS_SPOUT), with the Spout2 SDK (BSD license).
+// This file deliberately includes no Qt OpenGL header (Spout provides its own).
 
 #include "Publish.h"
 
@@ -20,7 +20,7 @@ public:
 
     void publish(unsigned int texture, int width, int height) override
     {
-        // Texture OpenGL (origine en bas) : Spout la retourne pour les récepteurs DirectX.
+        // OpenGL texture (bottom-left origin): Spout flips it for DirectX receivers.
         m_sender.SendTexture(texture, GL_TEXTURE_2D, unsigned(width), unsigned(height), true, 0);
     }
 

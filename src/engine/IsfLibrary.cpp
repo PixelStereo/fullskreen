@@ -13,10 +13,10 @@ QString IsfLibrary::bundledFolder()
 {
     const QString app = QCoreApplication::applicationDirPath();
     const QStringList candidates = {
-        app + "/isf",                     // Windows / Linux : à côté de l'exécutable
-        app + "/../Resources/isf",        // macOS : Lanterne.app/Contents/Resources/isf
-        app + "/../share/lanterne/isf",   // Linux installé
-        app + "/../isf",                  // dossier de build
+        app + "/isf",                     // Windows / Linux: next to the executable
+        app + "/../Resources/isf",        // macOS: Fulskrin.app/Contents/Resources/isf
+        app + "/../share/fulskrin/isf",   // Linux, installed
+        app + "/../isf",                  // build folder
         app + "/../../isf",
     };
     for (const QString &c : candidates)

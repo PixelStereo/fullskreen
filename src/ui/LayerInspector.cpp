@@ -26,7 +26,7 @@
 #include <QVBoxLayout>
 #include <cmath>
 
-// Copie de l'état d'un calque prise sous verrou : les widgets sont construits ensuite sans bloquer le rendu.
+// Copy of a layer's state taken under the lock: widgets are built afterwards without blocking rendering.
 struct LayerSnapshot {
     bool valid = false;
     QString name, sourcePath, error;
@@ -125,7 +125,7 @@ void LayerInspector::setLayer(int index)
     rebuild();
 }
 
-// --- Modifications annulables ------------------------------------------------
+// --- Undoable edits ----------------------------------------------------------
 
 void LayerInspector::setProp(int prop, const QVariant &value)
 {
@@ -158,7 +158,7 @@ void LayerInspector::editSource(const QString &text, const std::function<void()>
     m_undo->push(new cmd::ReplaceLayer(m_engine, m_layer, before, text));
 }
 
-// --- Construction ------------------------------------------------------------
+// --- Building ----------------------------------------------------------------
 
 void LayerInspector::rebuild()
 {
@@ -174,8 +174,8 @@ void LayerInspector::rebuild()
 
     const LayerSnapshot s = LayerSnapshot::take(m_engine, m_layer);
     if (!s.valid) {
-        auto *empty = new QLabel(QStringLiteral("Aucun calque sélectionné.\n\nAjoutez un calque avec le bouton +\n"
-                                                "ou glissez des vidéos, images ou\nshaders ISF dans la fenêtre."));
+        auto *empty = new QLabel(QStringLiteral("No layer selected.\n\nAdd a layer with the + button\n"
+                                                "or drop videos, images or\nISF shaders into the window."));
         empty->setAlignment(Qt::AlignCenter);
         empty->setStyleSheet("color:#888;");
         v->addWidget(empty);
@@ -183,7 +183,7 @@ void LayerInspector::rebuild()
         return;
     }
 
-    // En-tête : nom + visibilité
+    // Header: name + visibility
     auto *head = new QHBoxLayout;
     auto *name = new QLineEdit(s.name);
     name->setStyleSheet("font-weight:bold; font-size:14px;");
@@ -216,10 +216,10 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
 
     QString desc;
     switch (s.type) {
-    case SourceType::Video: desc = QStringLiteral("Vidéo — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
+    case SourceType::Video: desc = QStringLiteral("Video — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
     case SourceType::Image: desc = QStringLiteral("Image — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
-    case SourceType::Isf: desc = QStringLiteral("Générateur ISF — %1").arg(QFileInfo(s.sourcePath).completeBaseName()); break;
-    default: desc = QStringLiteral("Aucune source"); break;
+    case SourceType::Isf: desc = QStringLiteral("ISF Generator — %1").arg(QFileInfo(s.sourcePath).completeBaseName()); break;
+    default: desc = QStringLiteral("No source"); break;
     }
     auto *title = new QLabel(desc);
     title->setWordWrap(true);
@@ -227,18 +227,18 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     v->addWidget(title);
 
     auto *buttons = new QHBoxLayout;
-    auto *bVideo = new QPushButton(QStringLiteral("Vidéo…"));
+    auto *bVideo = new QPushButton(QStringLiteral("Video…"));
     auto *bImage = new QPushButton(QStringLiteral("Image…"));
-    auto *bGen = new QPushButton(QStringLiteral("Générateur"));
+    auto *bGen = new QPushButton(QStringLiteral("Generator"));
     auto *genMenu = new QMenu(bGen);
     for (const IsfEntry &e : m_engine->library().generators()) {
         QAction *a = genMenu->addAction(e.name);
         a->setToolTip(e.description);
         connect(a, &QAction::triggered, this, [this, p = e.path] { chooseGenerator(p); });
     }
-    if (genMenu->isEmpty()) genMenu->addAction(QStringLiteral("(bibliothèque vide)"))->setEnabled(false);
+    if (genMenu->isEmpty()) genMenu->addAction(QStringLiteral("(library is empty)"))->setEnabled(false);
     bGen->setMenu(genMenu);
-    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Retirer la source"));
+    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Remove Source"));
     buttons->addWidget(bVideo);
     buttons->addWidget(bImage);
     buttons->addWidget(bGen);
@@ -247,7 +247,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     connect(bVideo, &QPushButton::clicked, this, [this] { emit addSourceRequested("video"); });
     connect(bImage, &QPushButton::clicked, this, [this] { emit addSourceRequested("image"); });
     connect(bClear, &QToolButton::clicked, this, [this] {
-        editSource(QStringLiteral("Retirer la source"), [this] { m_engine->clearLayerSource(m_layer); });
+        editSource(QStringLiteral("Remove Source"), [this] { m_engine->clearLayerSource(m_layer); });
         emit layerChanged();
         rebuild();
     });
@@ -255,7 +255,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     if (!s.error.isEmpty()) v->addWidget(errorLabel(s.error));
 
     if (s.type == SourceType::Video && s.hasVideo) {
-        auto *info = new QLabel(QStringLiteral("%1 × %2 · %3 i/s · %4 · %5")
+        auto *info = new QLabel(QStringLiteral("%1 × %2 · %3 fps · %4 · %5")
                                     .arg(s.videoW)
                                     .arg(s.videoH)
                                     .arg(s.fps, 0, 'f', 2)
@@ -265,16 +265,16 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         v->addWidget(info);
 
         auto *transport = new QHBoxLayout;
-        m_play = new QPushButton(s.playing ? QStringLiteral("Pause") : QStringLiteral("Lecture"));
-        auto *rewind = toolButton(QStringLiteral("⏮"), QStringLiteral("Retour au début"));
-        auto *loop = new QCheckBox(QStringLiteral("Boucle"));
+        m_play = new QPushButton(s.playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
+        auto *rewind = toolButton(QStringLiteral("⏮"), QStringLiteral("Back to Start"));
+        auto *loop = new QCheckBox(QStringLiteral("Loop"));
         loop->setChecked(s.loop);
         auto *speed = new QDoubleSpinBox;
         speed->setRange(0.05, 8.0);
         speed->setSingleStep(0.05);
         speed->setValue(s.speed);
         speed->setSuffix(QStringLiteral(" ×"));
-        speed->setToolTip(QStringLiteral("Vitesse de lecture"));
+        speed->setToolTip(QStringLiteral("Playback speed"));
         transport->addWidget(m_play);
         transport->addWidget(rewind);
         transport->addWidget(loop);
@@ -291,7 +291,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         seekRow->addWidget(m_time);
         v->addLayout(seekRow);
 
-        // La lecture n'est pas une modification du projet : pas d'annulation.
+        // Playback is not a project edit: no undo.
         connect(m_play, &QPushButton::clicked, this, [this] {
             bool playing;
             {
@@ -327,8 +327,8 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         w->setValue(s.genW);
         h->setValue(s.genH);
         auto *fit = new QPushButton(QStringLiteral("= composition"));
-        auto *reload = toolButton(QStringLiteral("⟳"), QStringLiteral("Recharger le shader depuis le disque"));
-        res->addWidget(new QLabel(QStringLiteral("Résolution")));
+        auto *reload = toolButton(QStringLiteral("⟳"), QStringLiteral("Reload shader from disk"));
+        res->addWidget(new QLabel(QStringLiteral("Resolution")));
         res->addWidget(w);
         res->addWidget(new QLabel(QStringLiteral("×")));
         res->addWidget(h);
@@ -362,12 +362,12 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
 
 void LayerInspector::chooseGenerator(const QString &path)
 {
-    editSource(QStringLiteral("Générateur %1").arg(QFileInfo(path).completeBaseName()), [this, path] {
+    editSource(QStringLiteral("Generator %1").arg(QFileInfo(path).completeBaseName()), [this, path] {
         QString err;
         m_engine->setLayerIsf(m_layer, path, &err);
         Engine::Lock lk(&m_engine->mutex());
         if (Layer *l = m_engine->layer(m_layer))
-            if (l->name.startsWith(QStringLiteral("Calque "))) l->name = QFileInfo(path).completeBaseName();
+            if (l->name.startsWith(QStringLiteral("Layer "))) l->name = QFileInfo(path).completeBaseName();
     });
     emit layerChanged();
     rebuild();
@@ -390,7 +390,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
     spin->setValue(slider->value());
     h->addWidget(slider, 1);
     h->addWidget(spin);
-    form->addRow(QStringLiteral("Opacité"), row);
+    form->addRow(QStringLiteral("Opacity"), row);
     connect(slider, &QSlider::valueChanged, spin, &QSpinBox::setValue);
     connect(spin, qOverload<int>(&QSpinBox::valueChanged), slider, &QSlider::setValue);
     connect(slider, &QSlider::valueChanged, this, [this](int v) { setProp(cmd::SetLayerProp::Opacity, v / 100.0); });
@@ -399,7 +399,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
     for (BlendMode m : {BlendMode::Normal, BlendMode::Add, BlendMode::Screen, BlendMode::Multiply})
         blend->addItem(blendModeName(m), int(m));
     blend->setCurrentIndex(blend->findData(int(s.blend)));
-    form->addRow(QStringLiteral("Fusion"), blend);
+    form->addRow(QStringLiteral("Blend"), blend);
     connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this, blend](int i) { setProp(cmd::SetLayerProp::Blend, blend->itemData(i).toInt()); });
     return g;
@@ -411,8 +411,8 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     auto *v = new QVBoxLayout(g);
 
     auto *modeRow = new QHBoxLayout;
-    auto *corners = new QRadioButton(QStringLiteral("Coins"));
-    auto *mesh = new QRadioButton(QStringLiteral("Grille"));
+    auto *corners = new QRadioButton(QStringLiteral("Corners"));
+    auto *mesh = new QRadioButton(QStringLiteral("Mesh"));
     (s.meshMode ? mesh : corners)->setChecked(true);
     auto *modes = new QButtonGroup(g);
     modes->addButton(corners, 0);
@@ -422,10 +422,10 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     rows->setRange(2, 32);
     cols->setValue(s.cols);
     rows->setValue(s.rows);
-    cols->setToolTip(QStringLiteral("Colonnes de points"));
-    rows->setToolTip(QStringLiteral("Lignes de points"));
-    auto *apply = new QPushButton(QStringLiteral("Appliquer"));
-    apply->setToolTip(QStringLiteral("Change la densité de la grille (réinitialise la déformation)"));
+    cols->setToolTip(QStringLiteral("Point columns"));
+    rows->setToolTip(QStringLiteral("Point rows"));
+    auto *apply = new QPushButton(QStringLiteral("Apply"));
+    apply->setToolTip(QStringLiteral("Change the mesh density (resets the warp)"));
     modeRow->addWidget(corners);
     modeRow->addWidget(mesh);
     modeRow->addStretch();
@@ -436,41 +436,41 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     v->addLayout(modeRow);
 
     auto *actions = new QHBoxLayout;
-    auto *full = new QPushButton(QStringLiteral("Plein cadre"));
-    auto *ratio = new QPushButton(QStringLiteral("Ratio source"));
-    auto *resetMesh = new QPushButton(QStringLiteral("Aplanir la grille"));
+    auto *full = new QPushButton(QStringLiteral("Full Frame"));
+    auto *ratio = new QPushButton(QStringLiteral("Source Aspect"));
+    auto *resetMesh = new QPushButton(QStringLiteral("Flatten Mesh"));
     actions->addWidget(full);
     actions->addWidget(ratio);
     actions->addWidget(resetMesh);
     v->addLayout(actions);
 
-    auto *hint = new QLabel(QStringLiteral("Glisser : déplacer · Maj : précision · Flèches : 1 px (Maj : 10 px) · "
-                                           "Tab : poignée suivante · Échap : désélection"));
+    auto *hint = new QLabel(QStringLiteral("Drag: move · Shift: fine · Arrows: 1 px (Shift: 10 px) · "
+                                           "Tab: next handle · Esc: deselect"));
     hint->setWordWrap(true);
     hint->setStyleSheet("color:#888; font-size:11px;");
     v->addWidget(hint);
 
     connect(modes, &QButtonGroup::idClicked, this, [this](int id) {
-        editMapping(id == 1 ? QStringLiteral("Mode grille") : QStringLiteral("Mode coins"),
+        editMapping(id == 1 ? QStringLiteral("Mesh Mode") : QStringLiteral("Corners Mode"),
                     [id](Mapping &m) { m.meshMode = id == 1; });
     });
     connect(apply, &QPushButton::clicked, this, [this, cols, rows] {
         bool deformed = false;
         for (const QPointF &o : cmd::SetMapping::read(m_engine, m_layer).offsets) deformed |= !o.isNull();
-        if (deformed && QMessageBox::question(this, QStringLiteral("Grille"),
-                                              QStringLiteral("Changer la densité efface la déformation actuelle "
-                                                             "(annulable avec Ctrl+Z). Continuer ?"))
+        if (deformed && QMessageBox::question(this, QStringLiteral("Mesh"),
+                                              QStringLiteral("Changing the density clears the current warp "
+                                                             "(undoable with Ctrl+Z). Continue?"))
                             != QMessageBox::Yes)
             return;
         const int c = cols->value(), r = rows->value();
-        editMapping(QStringLiteral("Densité de la grille"), [c, r](Mapping &m) {
+        editMapping(QStringLiteral("Mesh Density"), [c, r](Mapping &m) {
             m.resetMesh(c, r);
             m.meshMode = true;
         });
         rebuild();
     });
     connect(full, &QPushButton::clicked, this,
-            [this] { editMapping(QStringLiteral("Plein cadre"), [](Mapping &m) { m.resetCorners(); }); });
+            [this] { editMapping(QStringLiteral("Full Frame"), [](Mapping &m) { m.resetCorners(); }); });
     connect(ratio, &QPushButton::clicked, this, [this] {
         int sw, sh;
         {
@@ -482,27 +482,27 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
         }
         if (sh <= 0) return;
         const QSize c = m_engine->compositionSize();
-        editMapping(QStringLiteral("Ratio source"),
+        editMapping(QStringLiteral("Source Aspect"),
                     [=](Mapping &m) { m.fitAspect(double(sw) / sh, double(c.width()) / c.height()); });
     });
     connect(resetMesh, &QPushButton::clicked, this, [this] {
-        editMapping(QStringLiteral("Aplanir la grille"), [](Mapping &m) { m.resetMesh(m.cols, m.rows); });
+        editMapping(QStringLiteral("Flatten Mesh"), [](Mapping &m) { m.resetMesh(m.cols, m.rows); });
     });
     return g;
 }
 
 QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
 {
-    auto *g = new QGroupBox(QStringLiteral("Effets ISF"));
+    auto *g = new QGroupBox(QStringLiteral("ISF Effects"));
     auto *v = new QVBoxLayout(g);
 
     auto *bar = new QHBoxLayout;
-    auto *add = new QPushButton(QStringLiteral("Ajouter un effet"));
+    auto *add = new QPushButton(QStringLiteral("Add Effect"));
     auto *menu = new QMenu(add);
     add->setMenu(menu);
     connect(menu, &QMenu::aboutToShow, this, [this, menu] {
         menu->clear();
-        // Regroupe par catégorie ISF
+        // Group by ISF category
         QMap<QString, QMenu *> sub;
         for (const IsfEntry &e : m_engine->library().filters()) {
             const QString cat = e.categories.value(0);
@@ -514,19 +514,19 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
             QAction *a = target->addAction(e.name);
             a->setToolTip(e.description);
             connect(a, &QAction::triggered, this, [this, p = e.path, n = e.name] {
-                editEffects(QStringLiteral("Ajouter l'effet %1").arg(n), [this, p] {
+                editEffects(QStringLiteral("Add Effect %1").arg(n), [this, p] {
                     QString err;
                     m_selectedEffect = m_engine->addEffect(m_layer, p, &err);
                 });
                 rebuild();
             });
         }
-        if (menu->isEmpty()) menu->addAction(QStringLiteral("(aucun filtre dans la bibliothèque)"))->setEnabled(false);
+        if (menu->isEmpty()) menu->addAction(QStringLiteral("(no filters in the library)"))->setEnabled(false);
     });
-    auto *remove = toolButton(QStringLiteral("−"), QStringLiteral("Retirer l'effet"));
-    auto *up = toolButton(QStringLiteral("▲"), QStringLiteral("Monter (appliqué plus tôt)"));
-    auto *down = toolButton(QStringLiteral("▼"), QStringLiteral("Descendre (appliqué plus tard)"));
-    auto *reload = toolButton(QStringLiteral("⟳"), QStringLiteral("Recharger le shader depuis le disque"));
+    auto *remove = toolButton(QStringLiteral("−"), QStringLiteral("Remove Effect"));
+    auto *up = toolButton(QStringLiteral("▲"), QStringLiteral("Move Up (applied earlier)"));
+    auto *down = toolButton(QStringLiteral("▼"), QStringLiteral("Move Down (applied later)"));
+    auto *reload = toolButton(QStringLiteral("⟳"), QStringLiteral("Reload shader from disk"));
     bar->addWidget(add, 1);
     bar->addWidget(remove);
     bar->addWidget(up);
@@ -535,7 +535,7 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     v->addLayout(bar);
 
     if (s.effects.empty()) {
-        auto *none = new QLabel(QStringLiteral("Aucun effet. Les effets s'appliquent dans l'ordre de la liste."));
+        auto *none = new QLabel(QStringLiteral("No effects. Effects are applied in list order."));
         none->setWordWrap(true);
         none->setStyleSheet("color:#888;");
         v->addWidget(none);
@@ -559,7 +559,7 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     connect(list, &QListWidget::itemChanged, this, [this, list](QListWidgetItem *it) {
         const int r = list->row(it);
         const bool on = it->checkState() == Qt::Checked;
-        editEffects(on ? QStringLiteral("Activer l'effet") : QStringLiteral("Désactiver l'effet"), [this, r, on] {
+        editEffects(on ? QStringLiteral("Enable Effect") : QStringLiteral("Disable Effect"), [this, r, on] {
             Engine::Lock lk(&m_engine->mutex());
             Layer *ly = m_engine->layer(m_layer);
             if (ly && r >= 0 && r < int(ly->effects.size())) ly->effects[size_t(r)]->enabled = on;
@@ -572,19 +572,19 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
         }
     });
     connect(remove, &QToolButton::clicked, this, [this] {
-        editEffects(QStringLiteral("Retirer l'effet"), [this] { m_engine->removeEffect(m_layer, m_selectedEffect); });
+        editEffects(QStringLiteral("Remove Effect"), [this] { m_engine->removeEffect(m_layer, m_selectedEffect); });
         rebuild();
     });
     connect(up, &QToolButton::clicked, this, [this] {
         if (m_selectedEffect <= 0) return;
-        editEffects(QStringLiteral("Ordre des effets"),
+        editEffects(QStringLiteral("Reorder Effects"),
                     [this] { m_engine->moveEffect(m_layer, m_selectedEffect, m_selectedEffect - 1); });
         --m_selectedEffect;
         rebuild();
     });
     connect(down, &QToolButton::clicked, this, [this, count] {
         if (m_selectedEffect >= count - 1) return;
-        editEffects(QStringLiteral("Ordre des effets"),
+        editEffects(QStringLiteral("Reorder Effects"),
                     [this] { m_engine->moveEffect(m_layer, m_selectedEffect, m_selectedEffect + 1); });
         ++m_selectedEffect;
         rebuild();
@@ -622,7 +622,7 @@ void LayerInspector::refreshDynamic()
         d = l->duration();
         p = l->position();
     }
-    if (m_play) m_play->setText(playing ? QStringLiteral("Pause") : QStringLiteral("Lecture"));
+    if (m_play) m_play->setText(playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
     if (m_seek && !m_seek->isSliderDown() && d > 0) {
         QSignalBlocker b(m_seek);
         m_seek->setValue(int(std::lround(p / d * 10000)));

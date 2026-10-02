@@ -1,9 +1,11 @@
 #include "Engine.h"
 
+
 #include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -34,9 +36,9 @@ static constexpr int kMeshSubdiv = 40;
 QString blendModeName(BlendMode m)
 {
     switch (m) {
-    case BlendMode::Add: return QStringLiteral("Addition");
-    case BlendMode::Screen: return QStringLiteral("Écran");
-    case BlendMode::Multiply: return QStringLiteral("Produit");
+    case BlendMode::Add: return QStringLiteral("Add");
+    case BlendMode::Screen: return QStringLiteral("Screen");
+    case BlendMode::Multiply: return QStringLiteral("Multiply");
     default: return QStringLiteral("Normal");
     }
 }
@@ -60,13 +62,13 @@ BlendMode blendModeFromKey(const QString &k)
 }
 
 // ---------------------------------------------------------------------------
-// Fil de rendu, ressources détachées
+// Render thread, detached resources
 // ---------------------------------------------------------------------------
 
 class RenderThread : public QThread
 {
 public:
-    explicit RenderThread(Engine *e) : m_engine(e) { setObjectName("Lanterne-rendu"); }
+    explicit RenderThread(Engine *e) : m_engine(e) { setObjectName("Fulskrin-render"); }
 
 protected:
     void run() override { m_engine->renderLoop(); }
@@ -75,7 +77,7 @@ private:
     Engine *m_engine;
 };
 
-// Ressources retirées de la composition (sous verrou), libérées ensuite dans le fil de rendu.
+// Resources removed from the composition (under lock), then released in the render thread.
 struct Engine::Garbage {
     std::unique_ptr<VideoDecoder> video;
     Texture2D tex;
@@ -85,7 +87,7 @@ struct Engine::Garbage {
     std::unique_ptr<Layer> layer;
 };
 
-// Rend le contexte du moteur courant le temps d'un bloc (mode manuel uniquement).
+// Makes the engine context current for the duration of a scope (manual mode only).
 struct ScopedCurrent {
     Engine *e;
     explicit ScopedCurrent(Engine *engine) : e(engine) { e->makeCurrent(); }
@@ -111,32 +113,32 @@ void Engine::doneCurrent()
 bool Engine::initialize(QString *err)
 {
     m_ownerThread = QThread::currentThread();
-    // Pas de parent : le contexte est déplacé dans le fil de rendu.
+    // No parent: the context is moved to the render thread.
     m_context = new QOpenGLContext;
     m_context->setShareContext(QOpenGLContext::globalShareContext());
     m_context->setFormat(QSurfaceFormat::defaultFormat());
     if (!m_context->create()) {
-        if (err) *err = QStringLiteral("Impossible de créer un contexte OpenGL 3.3.");
+        if (err) *err = QStringLiteral("Unable to create an OpenGL 3.3 context.");
         return false;
     }
     m_surface = new QOffscreenSurface(nullptr, this);
     m_surface->setFormat(m_context->format());
     m_surface->create();
     if (!m_context->makeCurrent(m_surface)) {
-        if (err) *err = QStringLiteral("Impossible d'activer le contexte OpenGL.");
+        if (err) *err = QStringLiteral("Unable to make the OpenGL context current.");
         return false;
     }
     const QSurfaceFormat fmt = m_context->format();
     if (fmt.majorVersion() * 10 + fmt.minorVersion() < 33) {
         if (err)
-            *err = QStringLiteral("OpenGL 3.3 requis (obtenu %1.%2).").arg(fmt.majorVersion()).arg(fmt.minorVersion());
+            *err = QStringLiteral("OpenGL 3.3 required (got %1.%2).").arg(fmt.majorVersion()).arg(fmt.minorVersion());
         return false;
     }
     auto f = gl();
     qInfo().noquote() << "OpenGL" << reinterpret_cast<const char *>(f->glGetString(GL_VERSION)) << "-"
                       << reinterpret_cast<const char *>(f->glGetString(GL_RENDERER));
 
-    // Quad plein écran
+    // Fullscreen quad
     const float quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
     f->glGenVertexArrays(1, &m_quadVao);
     f->glBindVertexArray(m_quadVao);
@@ -146,7 +148,7 @@ bool Engine::initialize(QString *err)
     f->glEnableVertexAttribArray(0);
     f->glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-    // Maillage de mapping : sommets dynamiques, indices fixes
+    // Mapping mesh: dynamic vertices, fixed indices
     f->glGenVertexArrays(1, &m_meshVao);
     f->glBindVertexArray(m_meshVao);
     f->glGenBuffers(1, &m_meshVbo);
@@ -187,12 +189,12 @@ bool Engine::initialize(QString *err)
         "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity; o = vec4(c.rgb*a, a); }\n",
         &log);
     if (!m_blitProgram || !m_compProgram || !m_presentProgram) {
-        if (err) *err = QStringLiteral("Shaders internes : ") + log;
+        if (err) *err = QStringLiteral("Internal shaders: ") + log;
         return false;
     }
     m_blitTexLoc = f->glGetUniformLocation(m_blitProgram, "u_tex");
     m_presentTexLoc = f->glGetUniformLocation(m_presentProgram, "u_tex");
-    // Retournement vertical pour la relecture (NDI / OMT attendent des lignes de haut en bas)
+    // Vertical flip for readback (NDI / OMT expect top-to-bottom rows)
     m_flipProgram = compileProgram("#version 330 core\nlayout(location=0) in vec2 a_pos; out vec2 v_uv;\n"
                                    "void main(){ v_uv = vec2(a_pos.x*0.5+0.5, 0.5-a_pos.y*0.5); gl_Position = vec4(a_pos,0.0,1.0); }\n",
                                    "#version 330 core\nuniform sampler2D u_tex; in vec2 v_uv; out vec4 o;\n"
@@ -223,11 +225,11 @@ bool Engine::start()
 {
     if (!m_initialized || m_threaded) return m_threaded;
     if (!QOpenGLContext::supportsThreadedOpenGL()) {
-        qWarning("La plateforme ne permet pas le rendu OpenGL dans un fil séparé : rendu dans le fil de l'interface.");
+        qWarning("Platform does not support OpenGL rendering on a separate thread: rendering on the UI thread.");
         return false;
     }
     m_quit = false;
-    // Le contexte ne doit être courant dans aucun fil avant d'être confié au fil de rendu.
+    // The context must not be current on any thread before being handed to the render thread.
     if (QOpenGLContext::currentContext() == m_context) doneCurrent();
     m_thread = new RenderThread(this);
     m_context->moveToThread(m_thread);
@@ -251,7 +253,7 @@ void Engine::shutdown()
 {
     if (!m_initialized) return;
     stop();
-    if (m_quadVao) { // pas encore libéré par le fil de rendu
+    if (m_quadVao) { // not yet released by the render thread
         ScopedCurrent sc(this);
         releaseAll();
     }
@@ -261,7 +263,7 @@ void Engine::shutdown()
 }
 
 // ---------------------------------------------------------------------------
-// Tâches OpenGL
+// OpenGL tasks
 // ---------------------------------------------------------------------------
 
 void Engine::runGl(std::function<void()> fn, bool wait)
@@ -309,7 +311,7 @@ void Engine::runPendingTasks()
 void Engine::renderLoop()
 {
     if (!m_context->makeCurrent(m_surface)) {
-        qCritical("Fil de rendu : impossible d'activer le contexte OpenGL.");
+        qCritical("Render thread: unable to make the OpenGL context current.");
         return;
     }
     m_currentSurface = m_surface;
@@ -332,19 +334,19 @@ void Engine::renderLoop()
         bool presented = false;
         if (target == m_outWindow && m_outWindow) {
             present(m_outWindow, m_outPixels);
-            m_context->swapBuffers(m_outWindow); // bloque jusqu'à la synchro verticale
+            m_context->swapBuffers(m_outWindow); // blocks until vertical sync
             presented = true;
         }
         if (!m_framePending.exchange(true)) emit frameRendered();
 
-        // Sans sortie visible (ou si la synchro ne bloque pas) : environ 60 images/s.
+        // No visible output (or vsync does not block): about 60 fps.
         const qint64 us = pace.nsecsElapsed() / 1000;
         if (!presented || us < 4000) QThread::usleep(static_cast<unsigned long>(std::max<qint64>(0, 16667 - us)));
     }
     runPendingTasks();
     releaseAll();
     {
-        // Libère d'éventuels appels encore en attente
+        // Release any callers still waiting
         std::lock_guard<std::mutex> lk(m_taskMutex);
         for (auto &t : m_tasks) t->done = true;
         m_tasks.clear();
@@ -357,7 +359,7 @@ void Engine::renderLoop()
 
 void Engine::releaseAll()
 {
-    // Publications : GPU (contexte courant requis) puis fil d'envoi
+    // Publishers: GPU (current context required), then the send thread
     for (auto &p : m_gpuPubs) p.reset();
     if (m_sender) m_sender->setPublishers({});
     m_sender.reset();
@@ -385,7 +387,7 @@ void Engine::releaseAll()
 }
 
 // ---------------------------------------------------------------------------
-// Sortie
+// Output
 // ---------------------------------------------------------------------------
 
 void Engine::setOutputWindow(QWindow *w)
@@ -430,7 +432,7 @@ void Engine::present(QWindow *, QSize px)
 GLuint Engine::outputTexture() const { return m_output[m_published.load()].tex; }
 
 // ---------------------------------------------------------------------------
-// Calques
+// Layers
 // ---------------------------------------------------------------------------
 
 QSize Engine::compositionSize() const
@@ -487,7 +489,7 @@ int Engine::addLayer(const QString &name, int at)
     {
         Lock lk(&m_mutex);
         auto l = std::make_unique<Layer>();
-        l->name = name.isEmpty() ? QStringLiteral("Calque %1").arg(m_layers.size() + 1) : name;
+        l->name = name.isEmpty() ? QStringLiteral("Layer %1").arg(m_layers.size() + 1) : name;
         l->genWidth = m_compSize.width();
         l->genHeight = m_compSize.height();
         at = std::clamp(at, 0, int(m_layers.size()));
@@ -521,7 +523,7 @@ void Engine::removeLayer(int i)
         g->layer = std::move(m_layers[size_t(i)]);
         m_layers.erase(m_layers.begin() + i);
     }
-    if (g->layer->video) g->layer->video->close(); // arrêt du fil de décodage hors du fil de rendu
+    if (g->layer->video) g->layer->video->close(); // stop the decode thread outside the render thread
     runGl([this, g] { releaseLayer(*g->layer); }, false);
     emit layersChanged();
 }
@@ -567,7 +569,7 @@ int Engine::duplicateLayer(int i)
 {
     QJsonObject o = layerJson(i);
     if (o.isEmpty()) return -1;
-    o["name"] = o.value("name").toString() + QStringLiteral(" copie");
+    o["name"] = o.value("name").toString() + QStringLiteral(" copy");
     return insertLayerJson(i, o);
 }
 
@@ -625,7 +627,7 @@ std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
     return g;
 }
 
-// Libère une source détachée : fil de décodage arrêté ici, ressources GL dans le fil de rendu.
+// Releases a detached source: decode thread stopped here, GL resources in the render thread.
 void Engine::releaseGarbage(const std::shared_ptr<Garbage> &g)
 {
     if (g->video) g->video->close();
@@ -660,7 +662,7 @@ static bool isDefaultMapping(const Mapping &m)
 
 static QString missingMessage(const QString &path, const QString &err)
 {
-    return QFileInfo::exists(path) ? err : QStringLiteral("Fichier introuvable : ") + path;
+    return QFileInfo::exists(path) ? err : QStringLiteral("File not found: ") + path;
 }
 
 static void markMissing(Layer &l, SourceType type, const QString &path, const QString &err)
@@ -675,7 +677,7 @@ bool Engine::setLayerVideo(int i, const QString &path, QString *err)
     if (!layer(i)) return false;
     auto dec = std::make_unique<VideoDecoder>();
     QString e;
-    if (!dec->open(path, &e)) { // ouverture hors verrou : peut prendre du temps
+    if (!dec->open(path, &e)) { // opened outside the lock: may take a while
         if (err) *err = e;
         return false;
     }
@@ -705,7 +707,7 @@ bool Engine::setLayerImage(int i, const QString &path, QString *err)
     if (!layer(i)) return false;
     QImage img(path);
     if (img.isNull()) {
-        if (err) *err = QStringLiteral("Image illisible : ") + path;
+        if (err) *err = QStringLiteral("Unreadable image: ") + path;
         return false;
     }
     img = img.convertToFormat(QImage::Format_RGBA8888).mirrored(false, true);
@@ -715,7 +717,7 @@ bool Engine::setLayerImage(int i, const QString &path, QString *err)
         Layer *l = layer(i);
         if (!l) return false;
         g = detachSource(*l);
-        l->pendingImage = img; // envoyé au GPU par le fil de rendu
+        l->pendingImage = img; // uploaded to the GPU by the render thread
         l->srcWidth = img.width();
         l->srcHeight = img.height();
         l->type = SourceType::Image;
@@ -780,7 +782,7 @@ void Engine::setLayerLoop(int i, bool loop)
     l->loop = loop;
     if (l->video) {
         l->video->setLoop(loop);
-        if (!loop) seekLayer(i, pos); // ramène l'horloge monotone dans [0, durée]
+        if (!loop) seekLayer(i, pos); // brings the monotonic clock back into [0, duration]
     }
 }
 
@@ -854,7 +856,7 @@ bool Engine::reloadIsf(IsfInstance *inst)
     if (!inst) return false;
     bool ok = false;
     runGl([&] {
-        // On conserve les valeurs des paramètres à travers le rechargement.
+        // Keep parameter values across the reload.
         const QJsonObject saved = inst->save(QString());
         ok = inst->load(inst->path());
         inst->restoreParams(saved.value("params").toObject(), QString());
@@ -880,7 +882,7 @@ void Engine::fadeMaster(double target, double seconds)
 }
 
 // ---------------------------------------------------------------------------
-// Rendu
+// Rendering
 // ---------------------------------------------------------------------------
 
 void Engine::drawQuad()
@@ -972,7 +974,7 @@ void Engine::composite()
     f->glBindVertexArray(m_meshVao);
     f->glBindBuffer(GL_ARRAY_BUFFER, m_meshVbo);
 
-    // Le calque d'index 0 est au-dessus : on dessine du dernier au premier.
+    // Layer index 0 is on top: draw from last to first.
     for (int i = int(m_layers.size()) - 1; i >= 0; --i) {
         Layer &l = *m_layers[size_t(i)];
         if (!l.visible || !l.finalTex || l.opacity <= 0.0f) continue;
@@ -989,7 +991,7 @@ void Engine::composite()
         f->glDrawElements(GL_TRIANGLES, m_meshIndexCount, GL_UNSIGNED_INT, nullptr);
     }
 
-    // Master : multiplie toute l'image par le niveau (couleur constante de mélange).
+    // Master: multiplies the whole image by the level (constant blend color).
     const double master = m_masterLevel.load();
     if (master < 0.999) {
         const float m = float(master);
@@ -1016,8 +1018,8 @@ double Engine::nextDt()
 
 void Engine::frame(double dt)
 {
-    // En mode fil, on continue de servir les tâches OpenGL tant que l'interface tient le verrou :
-    // elle peut attendre une tâche en le tenant, sans interblocage.
+    // In threaded mode, keep serving OpenGL tasks while the UI holds the lock:
+    // it may wait on a task while holding it, without deadlock.
     if (m_threaded) {
         while (!m_mutex.tryLock(2)) {
             runPendingTasks();
@@ -1054,7 +1056,7 @@ void Engine::frame(double dt)
 
     auto f = gl();
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    // L'aperçu lit l'image depuis un autre contexte : on attend la fin du rendu avant de la publier.
+    // The preview reads the image from another context: wait for rendering to finish before publishing it.
     f->glFinish();
     m_published = m_back;
     m_back = 1 - m_back;
@@ -1095,7 +1097,7 @@ QImage Engine::grabOutput()
 }
 
 // ---------------------------------------------------------------------------
-// Projet (JSON)
+// Project (JSON)
 // ---------------------------------------------------------------------------
 
 void Engine::newProject()
@@ -1134,7 +1136,16 @@ QString Engine::resolvePath(const QJsonObject &o, const QString &projectDir) con
         const QString same = QDir(projectDir).absoluteFilePath(QFileInfo(abs).fileName());
         if (QFile::exists(same)) return same;
     }
-    const QString lib = m_library.findByFileName(QFileInfo(abs).fileName());
+    QString fileName = QFileInfo(abs).fileName();
+    // Shaders bundled with Lanterne (former name) were renamed in English.
+    static const QHash<QString, QString> legacy = {
+        {"Mire.fs", "TestPattern.fs"},   {"CouleurUnie.fs", "SolidColor.fs"}, {"Degrade.fs", "Gradient.fs"},
+        {"Nuages.fs", "Clouds.fs"},      {"Couleur.fs", "ColorCorrection.fs"}, {"Teinte.fs", "Hue.fs"},
+        {"Flou.fs", "Blur.fs"},          {"Remanence.fs", "Trails.fs"},       {"BordsDoux.fs", "SoftEdges.fs"},
+        {"Masque.fs", "Mask.fs"},        {"Orientation.fs", "FlipCrop.fs"},   {"Pixels.fs", "Pixelate.fs"},
+    };
+    QString lib = m_library.findByFileName(fileName);
+    if (lib.isEmpty() && legacy.contains(fileName)) lib = m_library.findByFileName(legacy.value(fileName));
     if (!lib.isEmpty()) return lib;
     return abs;
 }
@@ -1162,7 +1173,7 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         src["height"] = l.genHeight;
         break;
     default:
-        // Fichier introuvable : on conserve ce qui était prévu, pour ne rien perdre à l'enregistrement.
+        // Missing file: keep what was intended, so nothing is lost on save.
         if (l.missingType == SourceType::Video) {
             src["type"] = "video";
             src["loop"] = l.loop;
@@ -1212,13 +1223,13 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             layer(index)->speed = src.value("speed").toDouble(1.0);
         }
         const bool ok = setLayerVideo(index, path, &err);
-        if (!ok && warnings) *warnings << name + " : " + missingMessage(path, err);
+        if (!ok && warnings) *warnings << name + ": " + missingMessage(path, err);
         Lock lk(&m_mutex);
         layer(index)->playing = src.value("playing").toBool(true);
         if (!ok) markMissing(*layer(index), SourceType::Video, path, err);
     } else if (type == "image") {
         const bool ok = setLayerImage(index, path, &err);
-        if (!ok && warnings) *warnings << name + " : " + missingMessage(path, err);
+        if (!ok && warnings) *warnings << name + ": " + missingMessage(path, err);
         if (!ok) {
             Lock lk(&m_mutex);
             markMissing(*layer(index), SourceType::Image, path, err);
@@ -1229,7 +1240,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             layer(index)->genWidth = src.value("width").toInt(m_compSize.width());
             layer(index)->genHeight = src.value("height").toInt(m_compSize.height());
         }
-        if (!setLayerIsf(index, path, &err) && warnings) *warnings << name + " : " + err;
+        if (!setLayerIsf(index, path, &err) && warnings) *warnings << name + ": " + err;
         IsfInstance *gen;
         {
             Lock lk(&m_mutex);
@@ -1249,13 +1260,13 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             Lock lk(&m_mutex);
             inst = layer(index)->effects[size_t(fi)].get();
         }
-        if (!inst->isValid() && warnings) *warnings << name + " / " + QFileInfo(p).fileName() + " : " + inst->error();
+        if (!inst->isValid() && warnings) *warnings << name + " / " + QFileInfo(p).fileName() + ": " + inst->error();
         runGl([inst, e, projectDir] {
             inst->enabled = e.value("enabled").toBool(true);
             inst->restoreParams(e.value("params").toObject(), projectDir);
         });
     }
-    // Le mapping est restauré après la source (qui ajuste sinon le ratio automatiquement).
+    // The mapping is restored after the source (which would otherwise auto-adjust the aspect ratio).
     Lock lk(&m_mutex);
     layer(index)->mapping.fromJson(o.value("mapping").toObject());
 }
@@ -1266,7 +1277,7 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
     QJsonObject root;
     {
         Lock lk(&m_mutex);
-        root["app"] = "Lanterne";
+        root["app"] = "Fulskrin";
         root["formatVersion"] = 1;
         root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()}};
         QJsonArray layers;
@@ -1279,7 +1290,7 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         root["publish"] = m_publish.toJson();
     }
     root["ui"] = uiState;
-    // Écriture atomique : un plantage pendant l'enregistrement ne corrompt pas le fichier existant.
+    // Atomic write: a crash during save does not corrupt the existing file.
     QSaveFile f(path);
     if (!f.open(QIODevice::WriteOnly)) {
         if (err) *err = f.errorString();
@@ -1303,7 +1314,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     QJsonParseError pe;
     QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &pe);
     if (!doc.isObject()) {
-        if (err) *err = QStringLiteral("Projet illisible : ") + pe.errorString();
+        if (err) *err = QStringLiteral("Unreadable project: ") + pe.errorString();
         return false;
     }
     const QJsonObject root = doc.object();
@@ -1329,7 +1340,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
 }
 
 // ---------------------------------------------------------------------------
-// Médias externes (chutier)
+// External media (media bin)
 // ---------------------------------------------------------------------------
 
 static const QStringList &videoExtensions()
@@ -1464,14 +1475,14 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
     }
     bool changed = false, ok = true;
     if (kind != SourceType::None) {
-        // Le nouveau fichier peut être d'un autre type (vidéo remplacée par une image, ou l'inverse)
+        // The new file may be of another type (video replaced by an image, or vice versa)
         const bool video = isImageFile(to) ? false : (isVideoFile(to) ? true : kind == SourceType::Video);
         ok = video ? setLayerVideo(i, to, err) : setLayerImage(i, to, err);
         if (ok) {
             Lock lk(&m_mutex);
             if (Layer *l = layer(i)) {
                 const unsigned rev = l->mapping.revision;
-                l->mapping = mapping; // le mapping calé reste intact
+                l->mapping = mapping; // the aligned mapping stays intact
                 l->mapping.revision = rev + 1;
             }
             changed = true;
@@ -1486,7 +1497,7 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
 }
 
 // ---------------------------------------------------------------------------
-// Publication
+// Publishing
 // ---------------------------------------------------------------------------
 
 void Engine::setPublishSettings(const PublishSettings &s)
@@ -1556,13 +1567,13 @@ void Engine::applyPublishing()
             cpuChanged = true;
         }
         if (!want.enabled) {
-            setPublishState(k, {PublishState::Off, QStringLiteral("Désactivé"), -1});
+            setPublishState(k, {PublishState::Off, QStringLiteral("Disabled"), -1});
             continue;
         }
         if (!publishCompiledIn(k)) {
             setPublishState(k, {PublishState::Unavailable,
-                                k == PublishKind::Syphon ? QStringLiteral("Syphon n'existe que sur macOS")
-                                                         : QStringLiteral("Spout n'existe que sous Windows"),
+                                k == PublishKind::Syphon ? QStringLiteral("Syphon is only available on macOS")
+                                                         : QStringLiteral("Spout is only available on Windows"),
                                 -1});
             continue;
         }
@@ -1571,16 +1582,16 @@ void Engine::applyPublishing()
             auto p = k == PublishKind::Syphon ? createSyphonPublisher() : createSpoutPublisher();
             if (p && p->start(want.name, &err)) {
                 m_gpuPubs[ki] = std::move(p);
-                setPublishState(k, {PublishState::Ok, QStringLiteral("Actif : « %1 »").arg(want.name), -1});
+                setPublishState(k, {PublishState::Ok, QStringLiteral("Active: \"%1\"").arg(want.name), -1});
             } else {
-                setPublishState(k, {PublishState::Error, err.isEmpty() ? QStringLiteral("Démarrage impossible") : err, -1});
+                setPublishState(k, {PublishState::Error, err.isEmpty() ? QStringLiteral("Failed to start") : err, -1});
             }
         } else {
             std::shared_ptr<CpuPublisher> p(k == PublishKind::Ndi ? createNdiPublisher() : createOmtPublisher());
             if (p->start(want.name, s, &err)) {
                 m_cpuPubs[ki] = p;
                 cpuChanged = true;
-                setPublishState(k, {PublishState::Ok, QStringLiteral("Actif : « %1 »").arg(want.name), 0});
+                setPublishState(k, {PublishState::Ok, QStringLiteral("Active: \"%1\"").arg(want.name), 0});
             } else {
                 setPublishState(k, {PublishState::Error, err, -1});
             }
@@ -1621,7 +1632,7 @@ void Engine::publishFrame(const RenderTarget &out)
     for (int ki : {int(PublishKind::Syphon), int(PublishKind::Spout)})
         if (m_gpuPubs[ki]) m_gpuPubs[ki]->publish(out.tex, out.w, out.h);
 
-    // Nombre de récepteurs, environ deux fois par seconde
+    // Receiver count, about twice per second
     if ((m_frameCount.load() % 30) == 0) {
         std::lock_guard<std::mutex> lk(m_stateMutex);
         for (int ki = 0; ki < kPublishKindCount; ++ki) {
@@ -1650,7 +1661,7 @@ void Engine::publishFrame(const RenderTarget &out)
     }
     m_readback.ensure(w, h);
 
-    // 1) Image courante retournée (lignes de haut en bas) puis relue de façon asynchrone dans un PBO
+    // 1) Current frame flipped (top-to-bottom rows), then read back asynchronously into a PBO
     m_readback.bind();
     f->glDisable(GL_BLEND);
     f->glUseProgram(m_flipProgram);
@@ -1662,7 +1673,7 @@ void Engine::publishFrame(const RenderTarget &out)
     f->glPixelStorei(GL_PACK_ALIGNMENT, 4);
     f->glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
 
-    // 2) Image précédente, déjà disponible : copiée vers le fil d'envoi
+    // 2) Previous frame, already available: copied to the send thread
     if (m_pboPending) {
         f->glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[1 - m_pboIndex]);
         const void *ptr = f->glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT);
@@ -1674,7 +1685,7 @@ void Engine::publishFrame(const RenderTarget &out)
                 cf->height = h;
                 cf->stride = w * 4;
                 cf->timestamp100ns = qint64(m_pboTime);
-                // Cadence annoncée : ne change que si la nouvelle valeur se confirme pendant 2 s
+                // Announced frame rate: only changes if the new value holds for 2 s
                 const int rate = standardRate(m_fps.load());
                 const double nowS = m_clock.nsecsElapsed() / 1e9;
                 if (m_announcedRate == 0) m_announcedRate = rate;

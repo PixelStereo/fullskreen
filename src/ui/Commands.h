@@ -1,7 +1,7 @@
 #pragma once
-// Commandes d'annulation (QUndoStack). Chaque commande s'applique au moteur sous son verrou.
-// Les calques sont repérés par leur index : la pile garantit que l'ordre des index est cohérent
-// au moment où une commande est annulée ou rejouée.
+// Undo commands (QUndoStack). Each command is applied to the engine under its lock.
+// Layers are identified by index: the stack guarantees that index order is consistent
+// at the time a command is undone or redone.
 
 #include "Engine.h"
 
@@ -14,10 +14,10 @@ namespace cmd {
 
 enum Id { ParamId = 1, PropId = 2, NudgeId = 3 };
 
-// Instance ISF d'un calque : slot -1 = générateur, sinon index de l'effet. Verrou du moteur requis.
+// A layer's ISF instance: slot -1 = generator, otherwise the effect index. Engine lock required.
 IsfInstance *resolveIsf(Engine *e, int layer, int slot);
 
-// Paramètre d'un shader ISF (fusionne les mouvements continus d'un même curseur)
+// ISF shader parameter (merges continuous moves of the same slider)
 class SetParam : public QUndoCommand
 {
 public:
@@ -35,7 +35,7 @@ private:
     qint64 m_time;
 };
 
-// Propriété simple d'un calque
+// Simple layer property
 class SetLayerProp : public QUndoCommand
 {
 public:
@@ -56,7 +56,7 @@ private:
     qint64 m_time;
 };
 
-// Mapping complet (coins + grille) avant / après une modification
+// Full mapping (corners + mesh) before / after an edit
 class SetMapping : public QUndoCommand
 {
 public:
@@ -76,7 +76,7 @@ private:
     qint64 m_time;
 };
 
-// Calque ajouté (déjà fait au moment du push)
+// Layer added (already done at push time)
 class AddLayer : public QUndoCommand
 {
 public:
@@ -91,7 +91,7 @@ private:
     bool m_first = true;
 };
 
-// Calque supprimé
+// Layer deleted
 class RemoveLayer : public QUndoCommand
 {
 public:
@@ -117,7 +117,7 @@ private:
     int m_from, m_to;
 };
 
-// Calque remplacé par un autre état complet (changement de source…) ; déjà fait au moment du push
+// Layer replaced by another full state (source change…); already done at push time
 class ReplaceLayer : public QUndoCommand
 {
 public:
@@ -132,7 +132,7 @@ private:
     bool m_first = true;
 };
 
-// Chaîne d'effets avant / après (ajout, suppression, ordre, activation) ; déjà fait au moment du push
+// Effect chain before / after (add, remove, reorder, enable); already done at push time
 class SetEffects : public QUndoCommand
 {
 public:

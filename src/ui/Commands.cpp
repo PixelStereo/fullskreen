@@ -5,7 +5,7 @@
 namespace cmd {
 
 static qint64 nowMs() { return QDateTime::currentMSecsSinceEpoch(); }
-static constexpr qint64 kMergeWindowMs = 1500; // gestes continus fusionnés en une seule étape
+static constexpr qint64 kMergeWindowMs = 1500; // continuous gestures merged into a single step
 
 IsfInstance *resolveIsf(Engine *e, int layer, int slot)
 {
@@ -21,7 +21,7 @@ SetParam::SetParam(Engine *e, int layer, int slot, int input, const IsfValue &be
                    const QString &label)
     : m_e(e), m_layer(layer), m_slot(slot), m_input(input), m_before(before), m_after(after), m_time(nowMs())
 {
-    setText(QStringLiteral("Paramètre « %1 »").arg(label));
+    setText(QStringLiteral("Change \"%1\"").arg(label));
 }
 
 void SetParam::apply(const IsfValue &v)
@@ -50,12 +50,12 @@ bool SetParam::mergeWith(const QUndoCommand *other)
 static QString propText(SetLayerProp::Prop p)
 {
     switch (p) {
-    case SetLayerProp::Name: return QStringLiteral("Nom du calque");
-    case SetLayerProp::Visible: return QStringLiteral("Visibilité");
-    case SetLayerProp::Opacity: return QStringLiteral("Opacité");
-    case SetLayerProp::Blend: return QStringLiteral("Mode de fusion");
-    case SetLayerProp::Speed: return QStringLiteral("Vitesse");
-    case SetLayerProp::Loop: return QStringLiteral("Boucle");
+    case SetLayerProp::Name: return QStringLiteral("Rename Layer");
+    case SetLayerProp::Visible: return QStringLiteral("Change Visibility");
+    case SetLayerProp::Opacity: return QStringLiteral("Change Opacity");
+    case SetLayerProp::Blend: return QStringLiteral("Change Blend Mode");
+    case SetLayerProp::Speed: return QStringLiteral("Change Speed");
+    case SetLayerProp::Loop: return QStringLiteral("Toggle Loop");
     }
     return {};
 }
@@ -147,7 +147,7 @@ bool SetMapping::mergeWith(const QUndoCommand *other)
     return true;
 }
 
-// --- Calques ----------------------------------------------------------------
+// --- Layers -----------------------------------------------------------------
 
 AddLayer::AddLayer(Engine *e, int index, const QString &text) : m_e(e), m_index(index)
 {
@@ -169,7 +169,7 @@ void AddLayer::redo()
 RemoveLayer::RemoveLayer(Engine *e, int index) : m_e(e), m_index(index)
 {
     m_json = e->layerJson(index);
-    setText(QStringLiteral("Supprimer « %1 »").arg(m_json.value("name").toString()));
+    setText(QStringLiteral("Delete \"%1\"").arg(m_json.value("name").toString()));
 }
 
 void RemoveLayer::undo() { m_e->insertLayerJson(m_index, m_json); }
@@ -177,7 +177,7 @@ void RemoveLayer::redo() { m_e->removeLayer(m_index); }
 
 MoveLayer::MoveLayer(Engine *e, int from, int to) : m_e(e), m_from(from), m_to(to)
 {
-    setText(QStringLiteral("Ordre des calques"));
+    setText(QStringLiteral("Reorder Layers"));
 }
 
 ReplaceLayer::ReplaceLayer(Engine *e, int index, const QJsonObject &before, const QString &text)

@@ -46,8 +46,8 @@ PublishSettings PublishSettings::fromJson(const QJsonObject &o)
     for (int i = 0; i < kPublishKindCount; ++i) {
         const QJsonObject t = o.value(kKeys[i]).toObject();
         s.targets[i].enabled = t.value("enabled").toBool(false);
-        s.targets[i].name = t.value("name").toString(QStringLiteral("Lanterne"));
-        if (s.targets[i].name.trimmed().isEmpty()) s.targets[i].name = QStringLiteral("Lanterne");
+        s.targets[i].name = t.value("name").toString(QStringLiteral("Fulskrin"));
+        if (s.targets[i].name.trimmed().isEmpty()) s.targets[i].name = QStringLiteral("Fulskrin");
     }
     s.omtQuality = o.value("omtQuality").toInt(0);
     s.libraryFolder = o.value("libraryFolder").toString();
@@ -59,25 +59,25 @@ bool publishCompiledIn(PublishKind k)
     switch (k) {
     case PublishKind::Ndi:
     case PublishKind::Omt: return true;
-#ifdef LANTERNE_HAS_SYPHON
+#ifdef FULSKRIN_HAS_SYPHON
     case PublishKind::Syphon: return true;
 #endif
-#ifdef LANTERNE_HAS_SPOUT
+#ifdef FULSKRIN_HAS_SPOUT
     case PublishKind::Spout: return true;
 #endif
     default: return false;
     }
 }
 
-#ifndef LANTERNE_HAS_SYPHON
+#ifndef FULSKRIN_HAS_SYPHON
 std::unique_ptr<GpuPublisher> createSyphonPublisher() { return nullptr; }
 #endif
-#ifndef LANTERNE_HAS_SPOUT
+#ifndef FULSKRIN_HAS_SPOUT
 std::unique_ptr<GpuPublisher> createSpoutPublisher() { return nullptr; }
 #endif
 
 // ---------------------------------------------------------------------------
-// Fil d'envoi
+// Send thread
 // ---------------------------------------------------------------------------
 
 CpuSendThread::CpuSendThread()
@@ -104,7 +104,7 @@ CpuFrame *CpuSendThread::acquire()
         m_free.pop_back();
         return f;
     }
-    // Le fil d'envoi est en retard : on remplace l'image en attente plutôt que d'attendre.
+    // The send thread is lagging: replace the pending frame rather than wait.
     CpuFrame *f = m_pending;
     m_pending = nullptr;
     return f;
@@ -139,7 +139,7 @@ void CpuSendThread::run()
         m_cv.wait(lk, [&] { return m_quit || m_changed || m_pending; });
         if (m_quit) break;
         if (m_changed) {
-            // Les anciennes publications sont détruites ici, avant que leur dernier tampon ne soit réutilisé.
+            // Old publishers are destroyed here, before their last buffer is reused.
             auto old = std::move(m_pubs);
             m_pubs = std::move(m_next);
             m_next.clear();
@@ -171,7 +171,7 @@ void CpuSendThread::run()
 }
 
 // ---------------------------------------------------------------------------
-// Chargement des bibliothèques
+// Library loading
 // ---------------------------------------------------------------------------
 
 static QStringList appFolders()
@@ -186,7 +186,7 @@ static QStringList appFolders()
     return f;
 }
 
-// Essaie une liste de chemins / noms ; retourne la bibliothèque chargée (jamais déchargée).
+// Tries a list of paths / names; returns the loaded library (never unloaded).
 static QLibrary *loadFirst(const QStringList &candidates, QString *triedOut)
 {
     QStringList tried;
@@ -275,7 +275,7 @@ QString omtLibraryPath(const QString &extra)
 }
 
 // ---------------------------------------------------------------------------
-// NDI (structures conformes à Processing.NDI.structs.h / Send.h, SDK v5 et v6)
+// NDI (structures matching Processing.NDI.structs.h / Send.h, SDK v5 and v6)
 // ---------------------------------------------------------------------------
 namespace ndi {
 struct SendCreate {
@@ -324,7 +324,7 @@ static Lib &lib(const QString &extra)
     QString triedPaths;
     QLibrary *q = loadFirst(ndiCandidates(extra), &triedPaths);
     if (!q) {
-        l.error = QStringLiteral("Bibliothèque NDI introuvable : installez « NDI Tools » ou le « NDI Runtime » (ndi.video).");
+        l.error = QStringLiteral("NDI library not found: install \"NDI Tools\" or the \"NDI Runtime\" (ndi.video).");
         return l;
     }
     l.path = q->fileName();
@@ -335,11 +335,11 @@ static Lib &lib(const QString &extra)
     l.send_video_v2 = reinterpret_cast<void (*)(void *, const VideoFrameV2 *)>(q->resolve("NDIlib_send_send_video_v2"));
     l.send_get_no_connections = reinterpret_cast<int (*)(void *, uint32_t)>(q->resolve("NDIlib_send_get_no_connections"));
     if (!l.initialize || !l.send_create || !l.send_destroy || !l.send_video_async_v2) {
-        l.error = QStringLiteral("Bibliothèque NDI incompatible : ") + l.path;
+        l.error = QStringLiteral("Incompatible NDI library: ") + l.path;
         return l;
     }
     if (!l.initialize()) {
-        l.error = QStringLiteral("NDI ne peut pas s'initialiser sur ce processeur.");
+        l.error = QStringLiteral("NDI cannot initialize on this processor.");
         return l;
     }
     l.ok = true;
@@ -353,7 +353,7 @@ class NdiPublisher : public CpuPublisher
 public:
     ~NdiPublisher() override
     {
-        if (m_send) m_lib->send_destroy(m_send); // synchronise aussi l'envoi asynchrone en cours
+        if (m_send) m_lib->send_destroy(m_send); // also syncs the pending asynchronous send
     }
     bool start(const QString &name, const PublishSettings &s, QString *err) override
     {
@@ -366,7 +366,7 @@ public:
         ndi::SendCreate c{m_name.constData(), nullptr, false, false};
         m_send = m_lib->send_create(&c);
         if (!m_send) {
-            if (err) *err = QStringLiteral("Création de la source NDI impossible.");
+            if (err) *err = QStringLiteral("Failed to create the NDI source.");
             return false;
         }
         return true;
@@ -384,7 +384,7 @@ public:
         v.timecode = INT64_MAX; // NDIlib_send_timecode_synthesize
         v.p_data = const_cast<uint8_t *>(f.bgra.data());
         v.line_stride_in_bytes = f.stride;
-        // Le tampon reste valide jusqu'à l'envoi suivant (géré par CpuSendThread)
+        // The buffer stays valid until the next send (handled by CpuSendThread)
         m_lib->send_video_async_v2(m_send, &v);
         if (m_lib->send_get_no_connections && (++m_count % 30) == 1) m_receivers = m_lib->send_get_no_connections(m_send, 0);
     }
@@ -399,7 +399,7 @@ private:
 std::unique_ptr<CpuPublisher> createNdiPublisher() { return std::make_unique<NdiPublisher>(); }
 
 // ---------------------------------------------------------------------------
-// OMT (structures conformes à libomt.h, Open Media Transport, licence MIT)
+// OMT (structures matching libomt.h, Open Media Transport, MIT license)
 // ---------------------------------------------------------------------------
 namespace omt {
 struct MediaFrame {
@@ -442,7 +442,7 @@ static Lib &lib(const QString &extra)
     tried = true;
     QString vmxName;
     const QStringList candidates = omtCandidates(extra, &vmxName);
-    // libomt charge le codec libvmx : on le précharge depuis le même dossier.
+    // libomt loads the libvmx codec: preload it from the same folder.
     for (const QString &c : candidates) {
         if (!QFileInfo(c).isAbsolute() || !QFileInfo::exists(c)) continue;
         const QString vmx = QFileInfo(c).dir().filePath(vmxName);
@@ -456,8 +456,8 @@ static Lib &lib(const QString &extra)
     QString triedPaths;
     QLibrary *q = loadFirst(candidates, &triedPaths);
     if (!q) {
-        l.error = QStringLiteral("Bibliothèque OMT introuvable : placez libomt et libvmx (github.com/openmediatransport) "
-                                 "à côté de l'application ou dans le dossier choisi.");
+        l.error = QStringLiteral("OMT library not found: place libomt and libvmx (github.com/openmediatransport) "
+                                 "next to the application or in the chosen folder.");
         return l;
     }
     l.path = q->fileName();
@@ -466,7 +466,7 @@ static Lib &lib(const QString &extra)
     l.send = reinterpret_cast<int (*)(void *, MediaFrame *)>(q->resolve("omt_send"));
     l.send_connections = reinterpret_cast<int (*)(void *)>(q->resolve("omt_send_connections"));
     if (!l.send_create || !l.send_destroy || !l.send) {
-        l.error = QStringLiteral("Bibliothèque OMT incompatible : ") + l.path;
+        l.error = QStringLiteral("Incompatible OMT library: ") + l.path;
         return l;
     }
     l.ok = true;
@@ -485,10 +485,10 @@ public:
     bool start(const QString &name, const PublishSettings &s, QString *err) override
     {
 #if defined(Q_OS_LINUX)
-        // Sous Linux, libomt utilise Avahi pour la découverte et interrompt le programme s'il n'est pas lancé.
+        // On Linux, libomt uses Avahi for discovery and aborts the program if it is not running.
         if (!QFileInfo::exists(QStringLiteral("/run/avahi-daemon/socket"))
             && !QFileInfo::exists(QStringLiteral("/var/run/avahi-daemon/socket"))) {
-            if (err) *err = QStringLiteral("OMT a besoin du service Avahi (avahi-daemon), qui n'est pas lancé.");
+            if (err) *err = QStringLiteral("OMT requires the Avahi service (avahi-daemon), which is not running.");
             return false;
         }
 #endif
@@ -499,7 +499,7 @@ public:
         }
         m_send = m_lib->send_create(name.toUtf8().constData(), s.omtQuality);
         if (!m_send) {
-            if (err) *err = QStringLiteral("Création de la source OMT impossible.");
+            if (err) *err = QStringLiteral("Failed to create the OMT source.");
             return false;
         }
         return true;

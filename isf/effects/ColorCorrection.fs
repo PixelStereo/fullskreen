@@ -1,15 +1,15 @@
 /*{
-    "DESCRIPTION": "Correction colorimétrique : exposition, contraste, saturation, gamma, teinte RVB.",
-    "CREDIT": "Lanterne",
+    "DESCRIPTION": "Color correction: exposure, contrast, saturation, gamma, RGB tint.",
+    "CREDIT": "Fulskrin",
     "ISFVSN": "2",
-    "CATEGORIES": ["Couleur"],
+    "CATEGORIES": ["Color"],
     "INPUTS": [
         { "NAME": "inputImage", "TYPE": "image" },
-        { "NAME": "exposure", "LABEL": "Exposition (IL)", "TYPE": "float", "DEFAULT": 0.0, "MIN": -4.0, "MAX": 4.0 },
-        { "NAME": "contrast", "LABEL": "Contraste", "TYPE": "float", "DEFAULT": 1.0, "MIN": 0.0, "MAX": 3.0 },
+        { "NAME": "exposure", "LABEL": "Exposure (EV)", "TYPE": "float", "DEFAULT": 0.0, "MIN": -4.0, "MAX": 4.0 },
+        { "NAME": "contrast", "LABEL": "Contrast", "TYPE": "float", "DEFAULT": 1.0, "MIN": 0.0, "MAX": 3.0 },
         { "NAME": "saturation", "LABEL": "Saturation", "TYPE": "float", "DEFAULT": 1.0, "MIN": 0.0, "MAX": 3.0 },
         { "NAME": "gamma", "LABEL": "Gamma", "TYPE": "float", "DEFAULT": 1.0, "MIN": 0.2, "MAX": 3.0 },
-        { "NAME": "tint", "LABEL": "Multiplier par", "TYPE": "color", "DEFAULT": [1.0, 1.0, 1.0, 1.0] }
+        { "NAME": "tint", "LABEL": "Multiply by", "TYPE": "color", "DEFAULT": [1.0, 1.0, 1.0, 1.0] }
     ]
 }*/
 
