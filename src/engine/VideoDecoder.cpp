@@ -70,11 +70,12 @@ bool VideoDecoder::open(const QString &path, QString *err)
     m_seekPending = false;
     m_needFirst = true;
     m_draining = false;
-    m_loopBase = 0;
     m_lastPts = 0;
     m_discardBefore = -1e9;
-    m_backward = false;
     m_backStack.clear();
+    m_timeline.duration = m_pendingTimeline.duration = m_duration;
+    m_leg = m_timeline.firstLeg();
+    m_legDone = false;
     m_thread = std::thread(&VideoDecoder::run, this);
     return true;
 }
@@ -132,12 +133,19 @@ void VideoDecoder::close()
     m_width = m_height = 0;
 }
 
-void VideoDecoder::seek(double t)
+void VideoDecoder::setTimeline(const Timeline &t)
+{
+    std::lock_guard<std::mutex> lk(m_mutex);
+    m_pendingTimeline = t;
+    m_pendingTimeline.duration = m_duration;
+}
+
+void VideoDecoder::seek(double c)
 {
     {
         std::lock_guard<std::mutex> lk(m_mutex);
         ++m_generation;
-        m_seekTarget = std::max(0.0, t);
+        m_seekTarget = std::max(0.0, c);
         m_seekPending = true;
         m_needFirst = true;
         m_eof = false;
@@ -206,7 +214,7 @@ int VideoDecoder::decodeNext(Frame &f, double skipBefore)
             if (ts == AV_NOPTS_VALUE) ts = m_frame->pts;
             double local = ts != AV_NOPTS_VALUE ? ts * m_timeBase - m_startTime : m_lastPts + 1.0 / m_fps;
             m_lastPts = local;
-            f.pts = local + m_loopBase;
+            f.pts = local; // position; stamped with the clock by the caller
             if (local < skipBefore - 0.25 / m_fps) { // not needed: no conversion
                 av_frame_unref(m_frame);
                 return 2;
@@ -247,13 +255,41 @@ int VideoDecoder::decodeNext(Frame &f, double skipBefore)
     }
 }
 
-// Ping-pong: delivers the frames of [a, m_backEnd) in reverse order, a = one short window earlier.
-// Monotonic time of a frame at local time L on the backward leg: legBase + span - L - frame duration.
+// Starts producing a leg at a position within it.
+void VideoDecoder::startLeg(const Timeline::Leg &leg, double position)
+{
+    for (Frame &f : m_backStack) recycle(std::move(f.rgba));
+    m_backStack.clear();
+    m_leg = leg;
+    m_legDone = false;
+    if (leg.forward) {
+        doSeek(position);
+        m_discardBefore = position - 0.5 / m_fps;
+    } else {
+        m_backEnd = position;
+    }
+}
+
+// End of the current leg: the next one (Loop, PingPong), or the end of playback (Once).
+void VideoDecoder::finishLeg()
+{
+    if (m_timeline.mode == Timeline::Once || m_duration <= 0) {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        m_eof = true;
+        return;
+    }
+    const Timeline::Leg next = m_timeline.nextLeg(m_leg);
+    startLeg(next, next.from);
+    m_discardBefore = -1e9;
+}
+
+// Backward leg: the frames of [a, m_backEnd) in reverse order, a = one short window earlier.
+// Clock of a frame at position L: clockStart + from - L - frame duration.
 void VideoDecoder::produceBackwardWindow()
 {
     const double dt = 1.0 / m_fps;
     const double window = std::max(4.0, std::min(12.0, m_fps * 0.3)) * dt; // a few frames: bounded memory
-    const double a = std::max(0.0, m_backEnd - window);
+    const double a = std::max(m_leg.to, m_backEnd - window);
     doSeek(a);
     std::vector<Frame> got;
     for (;;) {
@@ -261,18 +297,17 @@ void VideoDecoder::produceBackwardWindow()
         const int r = decodeNext(f, a);
         if (r == 2) continue;
         if (r != 1) break;
-        const double local = f.pts - m_loopBase;
+        const double local = f.pts;
         if (local >= m_backEnd - 0.25 * dt) {
             recycle(std::move(f.rgba));
             break;
         }
-        f.pts = m_legBase + span() - local - dt;
+        f.pts = m_leg.clockStart + m_leg.from - local - dt;
         got.push_back(std::move(f));
     }
-    // The stack is delivered from its end: the latest local time first
-    m_backStack = std::move(got);
+    m_backStack = std::move(got); // delivered from its end: the latest position first
     m_backEnd = a;
-    if (a <= 1e-9) m_backEnd = -1; // leg finished once the stack is delivered
+    if (a <= m_leg.to + 1e-9) m_legDone = true; // finished once the stack is delivered
 }
 
 void VideoDecoder::run()
@@ -289,20 +324,16 @@ void VideoDecoder::run()
             if (m_quit) return;
             if (m_seekPending) {
                 m_seekPending = false;
-                const double t = m_seekTarget;
+                const double c = m_seekTarget;
+                m_timeline = m_pendingTimeline;
                 gen = m_generation;
                 lk.unlock();
-                for (Frame &f : m_backStack) recycle(std::move(f.rgba));
-                m_backStack.clear();
-                m_backward = false;
-                doSeek(t);
-                m_loopBase = 0;
-                m_discardBefore = t - 0.5 / m_fps;
+                startLeg(m_timeline.legAt(c), m_timeline.position(c));
                 continue;
             }
         }
 
-        if (m_backward) {
+        if (!m_leg.forward) {
             if (!m_backStack.empty()) {
                 Frame f = std::move(m_backStack.back());
                 m_backStack.pop_back();
@@ -311,50 +342,31 @@ void VideoDecoder::run()
                 else m_queue.push_back(std::move(f));
                 continue;
             }
-            if (m_backEnd > 0 && m_mode == PingPong) {
-                produceBackwardWindow();
-                continue;
-            }
-            // Back at the start: forward again
-            m_backward = false;
-            m_loopBase = m_legBase + span();
-            doSeek(0);
-            m_discardBefore = -1e9;
+            if (!m_legDone) produceBackwardWindow();
+            else finishLeg();
             continue;
         }
 
         Frame f;
         int r = decodeNext(f);
         if (r == 1) {
-            if (f.pts - m_loopBase < m_discardBefore) {
+            const double local = f.pts;
+            if (local < m_discardBefore) {
                 recycle(std::move(f.rgba));
                 continue;
             }
-            if (m_mode != Once && m_duration > 0 && f.pts - m_loopBase >= m_duration) { // beyond the layer's length
+            if (m_duration > 0 && m_timeline.mode != Timeline::Once && local >= m_leg.to) { // end of the leg
                 recycle(std::move(f.rgba));
-                r = 0;
-            } else {
-                std::lock_guard<std::mutex> lk(m_mutex);
-                if (gen != m_generation) {
-                    m_pool.push_back(std::move(f.rgba));
-                    continue;
-                }
-                m_queue.push_back(std::move(f));
+                finishLeg();
                 continue;
             }
-        }
-        // End of file (or error)
-        if (r == 0 && m_mode == Loop) {
-            m_loopBase += span();
-            doSeek(0);
-            m_discardBefore = -1e9;
-        } else if (r == 0 && m_mode == PingPong) {
-            m_backward = true;
-            m_legBase = m_loopBase + span();
-            m_backEnd = span();
-        } else {
+            f.pts = m_leg.clockStart + local - m_leg.from;
             std::lock_guard<std::mutex> lk(m_mutex);
-            m_eof = true;
+            if (gen != m_generation) m_pool.push_back(std::move(f.rgba));
+            else m_queue.push_back(std::move(f));
+            continue;
         }
+        if (r == 2) continue;
+        finishLeg(); // end of file (or error)
     }
 }

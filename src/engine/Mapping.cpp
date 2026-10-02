@@ -67,6 +67,31 @@ void Mapping::translate(QPointF delta)
     ++revision;
 }
 
+QRectF Mapping::bounds() const
+{
+    double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    auto add = [&](QPointF p) {
+        x0 = std::min(x0, p.x());
+        y0 = std::min(y0, p.y());
+        x1 = std::max(x1, p.x());
+        y1 = std::max(y1, p.y());
+    };
+    for (const QPointF &c : corners) add(c);
+    for (int j = 0; j < rows; ++j)
+        for (int i = 0; i < cols; ++i) add(controlPoint(i, j));
+    return QRectF(QPointF(x0, y0), QPointF(x1, y1));
+}
+
+void Mapping::setBounds(const QRectF &to)
+{
+    const QRectF from = bounds();
+    const double kx = from.width() > 1e-9 ? to.width() / from.width() : 1.0;
+    const double ky = from.height() > 1e-9 ? to.height() / from.height() : 1.0;
+    for (QPointF &c : corners) c = QPointF(to.left() + (c.x() - from.left()) * kx, to.top() + (c.y() - from.top()) * ky);
+    for (QPointF &o : offsets) o = QPointF(o.x() * kx, o.y() * ky);
+    ++revision;
+}
+
 static double catmull(double p0, double p1, double p2, double p3, double t)
 {
     const double t2 = t * t, t3 = t2 * t;

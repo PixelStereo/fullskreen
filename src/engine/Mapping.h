@@ -4,6 +4,7 @@
 
 #include <QJsonObject>
 #include <QPointF>
+#include <QRectF>
 #include <vector>
 
 struct Homography {
@@ -27,6 +28,12 @@ public:
     void resetCorners();
     void setCorner(int i, QPointF p);
     void translate(QPointF delta);
+
+    // Bounding box of the mapped shape (corners and mesh points), normalized
+    QRectF bounds() const;
+    // Moves / scales the whole shape so that its bounding box becomes `to` (corners and mesh warp alike:
+    // an axis-aligned scale + translation composes exactly with the homography).
+    void setBounds(const QRectF &to);
 
     // Final position (homography + warp) for (u,v) in [0,1].
     QPointF map(double u, double v) const;

@@ -14,6 +14,7 @@ class QLabel;
 class QPushButton;
 class QListWidget;
 class QProgressBar;
+class QDoubleSpinBox;
 
 // Inspector for the selected layer, in sub-tabs: Source (drop zone, transport, sound, generator parameters),
 // Spatial (mapping), Effects (ISF chain), Compositing (opacity, blend). All edits go through the undo stack.
@@ -38,7 +39,8 @@ private:
     QWidget *buildCompositing(const LayerSnapshot &s);
     QWidget *buildMapping(const LayerSnapshot &s);
     QWidget *buildEffects(const LayerSnapshot &s);
-    void editMapping(const QString &text, const std::function<void(Mapping &)> &fn);
+    void editMapping(const QString &text, const std::function<void(Mapping &)> &fn, bool merge = false);
+    void refreshSpatial(); // position / scale fields follow the mapping (handles dragged in the preview)
     void editEffects(const QString &text, const std::function<void()> &op);
     void editSource(const QString &text, const std::function<void()> &op);
     void setProp(int prop, const QVariant &value);
@@ -55,4 +57,6 @@ private:
     QPointer<QLabel> m_time;
     QPointer<QPushButton> m_play;
     QPointer<QProgressBar> m_meter;
+    QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY;
+    bool m_scaleLinked = true;
 };

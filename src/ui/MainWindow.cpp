@@ -537,7 +537,7 @@ void MainWindow::refreshLayerList()
                 static const QString kModeSymbol[] = {QStringLiteral("→|"), QStringLiteral("↻"), QStringLiteral("⇄"),
                                                       QStringLiteral("→■")};
                 r.playback = QStringLiteral("%1 %2 / %3  %4")
-                                 .arg(l->ended ? QStringLiteral("■") : l->playing ? QStringLiteral("▶") : QStringLiteral("❚❚"),
+                                 .arg(l->ended ? QStringLiteral("■") : !l->playing ? QStringLiteral("❚❚") : l->speed < 0 ? QStringLiteral("◀") : QStringLiteral("▶"),
                                       fmtClock(l->position()), fmtClock(l->duration()), kModeSymbol[int(l->mode)]);
             } else if (l->type == SourceType::Isf) {
                 r.playback = QStringLiteral("real time");

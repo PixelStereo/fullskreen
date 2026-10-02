@@ -18,6 +18,12 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   decoded backwards in short windows, so any codec works, all-intra codecs such as HAP or ProRes being the
   lightest), **Stop** (plays once, then black and silent). The mode given to newly loaded media is set in the
   **Preferences** (Loop by default).
+- **Negative speed** plays videos and sounds backwards, in every play mode (Loop goes on backwards from the end,
+  One-shot stops on the first frame…); changing direction keeps the current position.
+- **Spatial tab**: position (center, composition pixels) and scale (% of the composition, X and Y linked by
+  default) of the whole mapped layer — corners and mesh are transformed together and follow handle edits.
+- **Preview zoom**: mouse wheel / pinch around the cursor, − / + / Fit buttons; the higher the zoom, the finer
+  the moves of the layer and its points.
 - **ISF effect chain per layer**: any number of effects, reorderable, each one can be enabled or disabled.
   Parameters are generated automatically from each shader's JSON header.
 - **ISF v2 support**: multiple passes, computed pass sizes (`"$WIDTH/2"`), persistent and float buffers,
@@ -143,6 +149,10 @@ cmake -S . -B build && cmake --build build -j
 | Play / pause the selected video or audio layer | Space |
 | Play mode of a video or a sound | Source tab ▸ One-shot / Loop / Ping-pong / Stop |
 | Default play mode for newly loaded media | Preferences (⌘, on Mac, Ctrl+, elsewhere) |
+| Play backwards | negative speed (Source tab), e.g. −1 × |
+| Zoom the preview (finer moves) | mouse wheel or pinch, or the − / + / Fit buttons at the top right of the preview |
+| Pan the zoomed preview | middle button or Alt/⌥ + drag, two fingers on a trackpad |
+| Position and scale of the whole layer | Layer tab ▸ Spatial ▸ Position X / Y (px), Scale X / Y (%, linked by default) |
 | Move a handle | drag (Shift: fine movement) |
 | Select several points (mesh or corners) | Ctrl/⌘+click to add or remove, Ctrl/⌘+drag a rectangle, Ctrl/⌘+A for all |
 | Move the selected points together | drag one of them, or arrow keys |
