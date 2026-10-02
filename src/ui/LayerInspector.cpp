@@ -6,6 +6,11 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QTabWidget>
+#include <QUrl>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -121,6 +126,61 @@ static QToolButton *toolButton(const QString &text, const QString &tip)
     return b;
 }
 
+namespace {
+// Drop zone of the Source tab: a file from the Media Bin or the Finder is loaded into the layer.
+class DropZone : public QLabel
+{
+public:
+    std::function<void(const QString &)> onDrop;
+    explicit DropZone(const QString &text) : QLabel(text)
+    {
+        setAcceptDrops(true);
+        setAlignment(Qt::AlignCenter);
+        setWordWrap(true);
+        setMinimumHeight(64);
+        setHover(false);
+    }
+
+protected:
+    void setHover(bool on)
+    {
+        setStyleSheet(on ? "QLabel { border:2px dashed #ffa028; border-radius:6px; background:rgba(255,160,40,40);"
+                           " color:#ffd9a8; padding:8px; }"
+                         : "QLabel { border:2px dashed #55555c; border-radius:6px; color:#9a9aa0; padding:8px; }");
+    }
+    static QString firstFile(const QMimeData *m)
+    {
+        for (const QUrl &u : m->urls())
+            if (u.isLocalFile()) return u.toLocalFile();
+        return {};
+    }
+    void dragEnterEvent(QDragEnterEvent *e) override
+    {
+        if (firstFile(e->mimeData()).isEmpty()) return e->ignore();
+        setHover(true);
+        e->acceptProposedAction();
+    }
+    void dragLeaveEvent(QDragLeaveEvent *) override { setHover(false); }
+    void dropEvent(QDropEvent *e) override
+    {
+        setHover(false);
+        const QString f = firstFile(e->mimeData());
+        e->acceptProposedAction();
+        if (!f.isEmpty() && onDrop) onDrop(f);
+    }
+};
+
+QWidget *page(QWidget *content)
+{
+    auto *w = new QWidget;
+    auto *v = new QVBoxLayout(w);
+    v->setContentsMargins(0, 6, 0, 0);
+    v->addWidget(content);
+    v->addStretch();
+    return w;
+}
+} // namespace
+
 LayerInspector::LayerInspector(Engine *engine, QUndoStack *undo, QWidget *parent)
     : QWidget(parent), m_engine(engine), m_undo(undo)
 {
@@ -185,8 +245,8 @@ void LayerInspector::rebuild()
 
     const LayerSnapshot s = LayerSnapshot::take(m_engine, m_layer);
     if (!s.valid) {
-        auto *empty = new QLabel(QStringLiteral("No layer selected.\n\nAdd a layer with the + button\n"
-                                                "or drop videos, images or\nISF shaders into the window."));
+        auto *empty = new QLabel(QStringLiteral("No layer selected.\n\nCreate a layer with the + button,\n"
+                                                "then drop a video, image, sound\nor ISF generator onto it."));
         empty->setAlignment(Qt::AlignCenter);
         empty->setStyleSheet("color:#888;");
         v->addWidget(empty);
@@ -212,20 +272,32 @@ void LayerInspector::rebuild()
         emit layerChanged();
     });
 
-    v->addWidget(buildSource(s));
-    if (s.type != SourceType::Audio) { // a sound has no picture: no compositing, mapping or effects
-        v->addWidget(buildCompositing(s));
-        v->addWidget(buildMapping(s));
-        v->addWidget(buildEffects(s));
+    // Sub-tabs; the current one is kept from one layer to the next
+    auto *tabs = new QTabWidget;
+    tabs->setDocumentMode(true);
+    tabs->addTab(page(buildSource(s)), QStringLiteral("Source"));
+    tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
+    tabs->addTab(page(buildEffects(s)), QStringLiteral("Effects"));
+    tabs->addTab(page(buildCompositing(s)), QStringLiteral("Compositing"));
+    if (s.type == SourceType::Audio) { // a sound has no picture: no mapping, effects or compositing
+        for (int t = 1; t < tabs->count(); ++t) {
+            tabs->setTabEnabled(t, false);
+            tabs->setTabToolTip(t, QStringLiteral("An audio layer has no picture"));
+        }
     }
-    v->addStretch();
+    tabs->setCurrentIndex(tabs->isTabEnabled(m_subTab) ? m_subTab : 0);
+    connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int i) {
+        if (tabs->isTabEnabled(i)) m_subTab = i;
+    });
+    v->addWidget(tabs, 1);
     refreshDynamic();
 }
 
 QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
 {
-    auto *g = new QGroupBox(QStringLiteral("Source"));
+    auto *g = new QWidget;
     auto *v = new QVBoxLayout(g);
+    v->setContentsMargins(0, 0, 0, 0);
 
     QString desc;
     switch (s.type) {
@@ -235,36 +307,23 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     case SourceType::Audio: desc = QStringLiteral("Audio — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
     default: desc = QStringLiteral("No source"); break;
     }
-    auto *title = new QLabel(desc);
-    title->setWordWrap(true);
-    title->setToolTip(s.sourcePath);
-    v->addWidget(title);
-
-    auto *buttons = new QHBoxLayout;
-    auto *bVideo = new QPushButton(QStringLiteral("Video…"));
-    auto *bImage = new QPushButton(QStringLiteral("Image…"));
-    auto *bAudio = new QPushButton(QStringLiteral("Audio…"));
-    auto *bGen = new QPushButton(QStringLiteral("Generator"));
-    auto *genMenu = new QMenu(bGen);
-    for (const IsfEntry &e : m_engine->library().generators()) {
-        QAction *a = genMenu->addAction(e.name);
-        a->setToolTip(e.description);
-        connect(a, &QAction::triggered, this, [this, p = e.path] { chooseGenerator(p); });
-    }
-    if (genMenu->isEmpty()) genMenu->addAction(QStringLiteral("(library is empty)"))->setEnabled(false);
-    bGen->setMenu(genMenu);
-    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Remove Source"));
-    buttons->addWidget(bVideo);
-    buttons->addWidget(bImage);
-    buttons->addWidget(bAudio);
-    buttons->addWidget(bGen);
-    buttons->addWidget(bClear);
-    v->addLayout(buttons);
-    connect(bVideo, &QPushButton::clicked, this, [this] { emit addSourceRequested("video"); });
-    connect(bImage, &QPushButton::clicked, this, [this] { emit addSourceRequested("image"); });
-    connect(bAudio, &QPushButton::clicked, this, [this] { emit addSourceRequested("audio"); });
+    // Drop zone: the current media, replaced by whatever is dropped (Media Bin, Finder). × ejects it.
+    const bool loaded = s.type != SourceType::None;
+    auto *zoneRow = new QHBoxLayout;
+    auto *zone = new DropZone(loaded ? QStringLiteral("<b>%1</b><br><span style='font-size:11px'>Drop another media here to replace it</span>")
+                                           .arg(desc.toHtmlEscaped())
+                                     : QStringLiteral("Drop a video, image, sound or ISF generator here<br>"
+                                                      "<span style='font-size:11px'>from the Media Bin or the Finder</span>"));
+    zone->setTextFormat(Qt::RichText);
+    zone->setToolTip(s.sourcePath.isEmpty() ? QStringLiteral("Video, image, audio file or ISF generator") : s.sourcePath);
+    zone->onDrop = [this](const QString &f) { emit fileDropped(f); };
+    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Eject the media from the layer"));
+    bClear->setEnabled(loaded || s.error.size());
+    zoneRow->addWidget(zone, 1);
+    zoneRow->addWidget(bClear, 0, Qt::AlignTop);
+    v->addLayout(zoneRow);
     connect(bClear, &QToolButton::clicked, this, [this] {
-        editSource(QStringLiteral("Remove Source"), [this] { m_engine->clearLayerSource(m_layer); });
+        editSource(QStringLiteral("Eject Media"), [this] { m_engine->clearLayerSource(m_layer); });
         emit layerChanged();
         rebuild();
     });
@@ -425,22 +484,9 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     return g;
 }
 
-void LayerInspector::chooseGenerator(const QString &path)
-{
-    editSource(QStringLiteral("Generator %1").arg(QFileInfo(path).completeBaseName()), [this, path] {
-        QString err;
-        m_engine->setLayerIsf(m_layer, path, &err);
-        Engine::Lock lk(&m_engine->mutex());
-        if (Layer *l = m_engine->layer(m_layer))
-            if (l->name.startsWith(QStringLiteral("Layer "))) l->name = QFileInfo(path).completeBaseName();
-    });
-    emit layerChanged();
-    rebuild();
-}
-
 QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
 {
-    auto *g = new QGroupBox(QStringLiteral("Composition"));
+    auto *g = new QWidget; // titled by its sub-tab
     auto *form = new QFormLayout(g);
 
     auto *row = new QWidget;
@@ -472,7 +518,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
 
 QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
 {
-    auto *g = new QGroupBox(QStringLiteral("Mapping"));
+    auto *g = new QWidget; // titled by its sub-tab
     auto *v = new QVBoxLayout(g);
 
     auto *modeRow = new QHBoxLayout;
@@ -558,7 +604,7 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
 
 QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
 {
-    auto *g = new QGroupBox(QStringLiteral("ISF Effects"));
+    auto *g = new QWidget; // titled by its sub-tab
     auto *v = new QVBoxLayout(g);
 
     auto *bar = new QHBoxLayout;

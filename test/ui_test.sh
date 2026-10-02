@@ -58,7 +58,7 @@ shot 05_opacity
 at 750 650; xdotool click 1; sleep 0.3
 xdotool key ctrl+z; sleep 1; shot 06_opacity_undone
 
-# --- Drag an image from the Media Bin to the layer list
+# --- Drag an image from the Media Bin below the layers: loaded into the selected layer
 at 80 144; xdotool mousedown 1; sleep 0.3; at 120 300; sleep 0.3; at 500 880; sleep 0.3; at 600 900; sleep 0.5; xdotool mouseup 1; sleep 1.5
 shot 07_dragged
 
