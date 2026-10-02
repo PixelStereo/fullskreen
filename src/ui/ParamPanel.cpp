@@ -1,4 +1,5 @@
 #include "ParamPanel.h"
+#include "Commands.h"
 #include "Engine.h"
 
 #include <QCheckBox>
@@ -14,6 +15,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QUndoStack>
 #include <cmath>
 
 static void setSwatch(QPushButton *b, const float c[4])
@@ -24,27 +26,52 @@ static void setSwatch(QPushButton *b, const float c[4])
                          .arg(col.name(QColor::HexRgb), col.lightnessF() > 0.55 ? "#000" : "#fff"));
 }
 
-ParamPanel::ParamPanel(Engine *engine, IsfInstance *inst, QWidget *parent)
-    : QWidget(parent), m_engine(engine), m_inst(inst)
+void ParamPanel::setValue(int input, const QString &label, const std::function<void(IsfValue &)> &modify)
 {
+    IsfValue before;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
+        if (!inst || input >= int(inst->inputs().size())) return;
+        before = inst->inputs()[size_t(input)].value();
+    }
+    IsfValue after = before;
+    modify(after);
+    if (after == before) return;
+    m_undo->push(new cmd::SetParam(m_engine, m_layer, m_slot, input, before, after, label));
+}
+
+ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QWidget *parent)
+    : QWidget(parent), m_engine(engine), m_undo(undo), m_layer(layer), m_slot(slot)
+{
+    // Copie des métadonnées et des valeurs sous verrou : la construction des widgets se fait ensuite sans bloquer le rendu.
+    std::vector<IsfInput> inputs;
+    QString description;
+    {
+        Engine::Lock lk(&engine->mutex());
+        IsfInstance *inst = cmd::resolveIsf(engine, layer, slot);
+        if (inst) {
+            inputs = inst->inputs();
+            description = inst->description();
+        }
+    }
+
     auto *form = new QFormLayout(this);
     form->setContentsMargins(0, 4, 0, 0);
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-    if (!inst->description().isEmpty()) {
-        auto *d = new QLabel(inst->description());
+    if (!description.isEmpty()) {
+        auto *d = new QLabel(description);
         d->setWordWrap(true);
         d->setStyleSheet("color:#999; font-size:11px;");
         form->addRow(d);
     }
 
-    auto &inputs = inst->inputs();
     for (int idx = 0; idx < int(inputs.size()); ++idx) {
-        IsfInput &in = inputs[idx];
+        const IsfInput &in = inputs[size_t(idx)];
         if (in.type == IsfInput::Image && in.isInputImage) continue;
-        auto input = [this, idx]() -> IsfInput & { return m_inst->inputs()[size_t(idx)]; };
-        QString label = in.label;
+        const QString label = in.label;
         QWidget *field = nullptr;
 
         switch (in.type) {
@@ -56,26 +83,29 @@ ParamPanel::ParamPanel(Engine *engine, IsfInstance *inst, QWidget *parent)
             slider->setRange(0, 1000);
             auto *spin = new QDoubleSpinBox;
             spin->setRange(in.fMin, in.fMax);
-            const double span = in.fMax - in.fMin;
+            const double mn = in.fMin, span = in.fMax - in.fMin;
             spin->setDecimals(span >= 100 ? 1 : span >= 10 ? 2 : 3);
             spin->setSingleStep(span / 100.0);
             spin->setValue(in.fValue);
             spin->setKeyboardTracking(false);
             spin->setFixedWidth(80);
-            slider->setValue(int(std::lround((in.fValue - in.fMin) / span * 1000)));
+            slider->setValue(int(std::lround((in.fValue - mn) / span * 1000)));
             h->addWidget(slider, 1);
             h->addWidget(spin);
             connect(slider, &QSlider::valueChanged, this, [=](int v) {
-                IsfInput &i = input();
-                i.fValue = i.fMin + (i.fMax - i.fMin) * v / 1000.0;
-                QSignalBlocker b(spin);
-                spin->setValue(i.fValue);
+                const double val = mn + span * v / 1000.0;
+                {
+                    QSignalBlocker b(spin);
+                    spin->setValue(val);
+                }
+                setValue(idx, label, [val](IsfValue &x) { x.f = val; });
             });
             connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double v) {
-                IsfInput &i = input();
-                i.fValue = v;
-                QSignalBlocker b(slider);
-                slider->setValue(int(std::lround((v - i.fMin) / (i.fMax - i.fMin) * 1000)));
+                {
+                    QSignalBlocker b(slider);
+                    slider->setValue(int(std::lround((v - mn) / span * 1000)));
+                }
+                setValue(idx, label, [v](IsfValue &x) { x.f = v; });
             });
             field = w;
             break;
@@ -83,13 +113,17 @@ ParamPanel::ParamPanel(Engine *engine, IsfInstance *inst, QWidget *parent)
         case IsfInput::Bool: {
             auto *c = new QCheckBox;
             c->setChecked(in.bValue);
-            connect(c, &QCheckBox::toggled, this, [=](bool on) { input().bValue = on; });
+            connect(c, &QCheckBox::toggled, this, [=](bool on) { setValue(idx, label, [on](IsfValue &x) { x.b = on; }); });
             field = c;
             break;
         }
         case IsfInput::Event: {
             auto *b = new QPushButton(QStringLiteral("Déclencher"));
-            connect(b, &QPushButton::clicked, this, [=] { input().eventFired = true; });
+            connect(b, &QPushButton::clicked, this, [=] {
+                Engine::Lock lk(&m_engine->mutex());
+                if (IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot))
+                    if (idx < int(inst->inputs().size())) inst->inputs()[size_t(idx)].eventFired = true;
+            });
             field = b;
             break;
         }
@@ -97,8 +131,10 @@ ParamPanel::ParamPanel(Engine *engine, IsfInstance *inst, QWidget *parent)
             auto *c = new QComboBox;
             for (int k = 0; k < in.lValues.size(); ++k) c->addItem(in.lLabels.value(k), in.lValues[k]);
             c->setCurrentIndex(qMax(0, in.lValues.indexOf(in.lValue)));
-            connect(c, qOverload<int>(&QComboBox::currentIndexChanged), this,
-                    [=](int k) { input().lValue = c->itemData(k).toInt(); });
+            connect(c, qOverload<int>(&QComboBox::currentIndexChanged), this, [=](int k) {
+                const int v = c->itemData(k).toInt();
+                setValue(idx, label, [v](IsfValue &x) { x.l = v; });
+            });
             field = c;
             break;
         }
@@ -122,8 +158,10 @@ ParamPanel::ParamPanel(Engine *engine, IsfInstance *inst, QWidget *parent)
             y->setPrefix("y ");
             h->addWidget(x);
             h->addWidget(y);
-            connect(x, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double v) { input().pValue.setX(v); });
-            connect(y, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double v) { input().pValue.setY(v); });
+            connect(x, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                    [=](double v) { setValue(idx, label, [v](IsfValue &p) { p.p.setX(v); }); });
+            connect(y, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                    [=](double v) { setValue(idx, label, [v](IsfValue &p) { p.p.setY(v); }); });
             field = w;
             break;
         }
@@ -131,19 +169,22 @@ ParamPanel::ParamPanel(Engine *engine, IsfInstance *inst, QWidget *parent)
             auto *b = new QPushButton;
             setSwatch(b, in.cValue);
             connect(b, &QPushButton::clicked, this, [=] {
-                IsfInput &i = input();
-                const QColor start = QColor::fromRgbF(i.cValue[0], i.cValue[1], i.cValue[2], i.cValue[3]);
-                // Dialogue non bloquant : la couleur est appliquée en direct pendant le choix.
+                IsfValue cur;
+                {
+                    Engine::Lock lk(&m_engine->mutex());
+                    IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
+                    if (!inst || idx >= int(inst->inputs().size())) return;
+                    cur = inst->inputs()[size_t(idx)].value();
+                }
+                const QColor start = QColor::fromRgbF(cur.c[0], cur.c[1], cur.c[2], cur.c[3]);
+                // Dialogue non bloquant : la couleur s'applique en direct pendant le choix.
                 auto *dlg = new QColorDialog(start, this);
                 dlg->setOption(QColorDialog::ShowAlphaChannel);
                 dlg->setAttribute(Qt::WA_DeleteOnClose);
                 auto apply = [=](const QColor &c) {
-                    IsfInput &ii = input();
-                    ii.cValue[0] = float(c.redF());
-                    ii.cValue[1] = float(c.greenF());
-                    ii.cValue[2] = float(c.blueF());
-                    ii.cValue[3] = float(c.alphaF());
-                    setSwatch(b, ii.cValue);
+                    float v[4] = {float(c.redF()), float(c.greenF()), float(c.blueF()), float(c.alphaF())};
+                    setValue(idx, label, [v](IsfValue &x) { std::copy(v, v + 4, x.c); });
+                    setSwatch(b, v);
                 };
                 connect(dlg, &QColorDialog::currentColorChanged, b, apply);
                 connect(dlg, &QColorDialog::rejected, b, [=] { apply(start); });
@@ -164,19 +205,23 @@ ParamPanel::ParamPanel(Engine *engine, IsfInstance *inst, QWidget *parent)
             h->addWidget(name, 1);
             h->addWidget(pick);
             h->addWidget(clear);
+            auto instance = [this] {
+                Engine::Lock lk(&m_engine->mutex());
+                return cmd::resolveIsf(m_engine, m_layer, m_slot);
+            };
             connect(pick, &QPushButton::clicked, this, [=] {
                 QSettings s;
                 const QString f = QFileDialog::getOpenFileName(
-                    this, QStringLiteral("Image pour %1").arg(input().name), s.value("dirs/image").toString(),
+                    this, QStringLiteral("Image pour %1").arg(label), s.value("dirs/image").toString(),
                     QStringLiteral("Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.gif *.webp *.tga)"));
                 if (f.isEmpty()) return;
                 s.setValue("dirs/image", QFileInfo(f).absolutePath());
                 QString err;
-                if (m_engine->setIsfImageInput(m_inst, idx, f, &err)) name->setText(QFileInfo(f).fileName());
+                if (m_engine->setIsfImageInput(instance(), idx, f, &err)) name->setText(QFileInfo(f).fileName());
                 else name->setText(err);
             });
             connect(clear, &QPushButton::clicked, this, [=] {
-                m_engine->setIsfImageInput(m_inst, idx, QString());
+                m_engine->setIsfImageInput(instance(), idx, QString());
                 name->setText(QStringLiteral("(aucune)"));
             });
             field = w;
@@ -198,7 +243,30 @@ ParamPanel::ParamPanel(Engine *engine, IsfInstance *inst, QWidget *parent)
     reset->setFlat(true);
     reset->setStyleSheet("color:#aaa; text-align:left;");
     connect(reset, &QPushButton::clicked, this, [this] {
-        m_inst->resetParams();
+        // Une seule étape d'annulation pour l'ensemble des paramètres
+        std::vector<std::pair<IsfValue, IsfValue>> changes;
+        std::vector<QString> labels;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
+            if (!inst) return;
+            for (const IsfInput &in : inst->inputs()) {
+                IsfValue def;
+                def.f = in.fDefault;
+                def.b = in.bDefault;
+                def.l = in.lDefault;
+                def.p = in.pDefault;
+                std::copy(in.cDefault, in.cDefault + 4, def.c);
+                changes.emplace_back(in.value(), def);
+                labels.push_back(in.label);
+            }
+        }
+        m_undo->beginMacro(QStringLiteral("Valeurs par défaut"));
+        for (size_t k = 0; k < changes.size(); ++k)
+            if (changes[k].first != changes[k].second)
+                m_undo->push(new cmd::SetParam(m_engine, m_layer, m_slot, int(k), changes[k].first, changes[k].second,
+                                               labels[k]));
+        m_undo->endMacro();
         emit rebuildRequested();
     });
     form->addRow(reset);

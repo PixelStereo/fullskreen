@@ -9,8 +9,24 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <algorithm>
 #include <functional>
 #include <vector>
+
+// Valeur d'un paramètre (tous types numériques confondus), pour l'annulation.
+struct IsfValue {
+    double f = 0;
+    bool b = false;
+    int l = 0;
+    QPointF p;
+    float c[4] = {0, 0, 0, 0};
+    bool operator==(const IsfValue &o) const
+    {
+        return f == o.f && b == o.b && l == o.l && p == o.p && c[0] == o.c[0] && c[1] == o.c[1] && c[2] == o.c[2]
+               && c[3] == o.c[3];
+    }
+    bool operator!=(const IsfValue &o) const { return !(*this == o); }
+};
 
 struct IsfInput {
     enum Type { Event, Bool, Long, Float, Point2D, Color, Image, Audio, AudioFFT, Unknown };
@@ -33,6 +49,25 @@ struct IsfInput {
 
     GLint loc = -1, sizeLoc = -1, rectLoc = -1;
     static QString typeName(Type t);
+
+    IsfValue value() const
+    {
+        IsfValue v;
+        v.f = fValue;
+        v.b = bValue;
+        v.l = lValue;
+        v.p = pValue;
+        std::copy(cValue, cValue + 4, v.c);
+        return v;
+    }
+    void setValue(const IsfValue &v)
+    {
+        fValue = v.f;
+        bValue = v.b;
+        lValue = v.l;
+        pValue = v.p;
+        std::copy(v.c, v.c + 4, cValue);
+    }
 };
 
 struct IsfPass {

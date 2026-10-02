@@ -60,6 +60,7 @@ set(APP_SOURCES
   src/ui/MappingView.cpp
   src/ui/OutputWindow.cpp
   src/ui/GlDraw.cpp
+  src/ui/Commands.cpp
 )
 
 if(APPLE)
@@ -100,7 +101,8 @@ install(TARGETS Lanterne BUNDLE DESTINATION . RUNTIME DESTINATION bin)
 # ---------------------------------------------------------------------------
 option(LANTERNE_TESTS "Compiler les tests du moteur" ON)
 if(LANTERNE_TESTS)
-  add_executable(lanterne_tests EXCLUDE_FROM_ALL test/engine_test.cpp)
+  add_executable(lanterne_tests EXCLUDE_FROM_ALL test/engine_test.cpp src/ui/Commands.cpp)
+  target_include_directories(lanterne_tests PRIVATE src/ui)
   target_link_libraries(lanterne_tests PRIVATE lanterne_engine)
   target_compile_definitions(lanterne_tests PRIVATE TEST_DIR="${CMAKE_SOURCE_DIR}/test")
 endif()

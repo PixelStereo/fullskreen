@@ -1,4 +1,5 @@
 #include "LayerInspector.h"
+#include "Commands.h"
 #include "Engine.h"
 #include "ParamPanel.h"
 
@@ -21,8 +22,67 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QToolButton>
+#include <QUndoStack>
 #include <QVBoxLayout>
 #include <cmath>
+
+// Copie de l'état d'un calque prise sous verrou : les widgets sont construits ensuite sans bloquer le rendu.
+struct LayerSnapshot {
+    bool valid = false;
+    QString name, sourcePath, error;
+    bool visible = true;
+    float opacity = 1;
+    BlendMode blend = BlendMode::Normal;
+    SourceType type = SourceType::None;
+    bool hasVideo = false, playing = false, loop = true;
+    int videoW = 0, videoH = 0;
+    double fps = 0, duration = 0, speed = 1;
+    QString codec;
+    bool hasGenerator = false;
+    int genW = 0, genH = 0;
+    struct Fx {
+        QString name, error;
+        bool valid = false, enabled = true;
+    };
+    std::vector<Fx> effects;
+    bool meshMode = false;
+    int cols = 4, rows = 4;
+
+    static LayerSnapshot take(Engine *e, int index)
+    {
+        LayerSnapshot s;
+        Engine::Lock lk(&e->mutex());
+        Layer *l = e->layer(index);
+        if (!l) return s;
+        s.valid = true;
+        s.name = l->name;
+        s.sourcePath = l->sourcePath;
+        s.error = l->error;
+        s.visible = l->visible;
+        s.opacity = l->opacity;
+        s.blend = l->blend;
+        s.type = l->type;
+        if (l->video) {
+            s.hasVideo = true;
+            s.videoW = l->video->width();
+            s.videoH = l->video->height();
+            s.fps = l->video->fps();
+            s.codec = l->video->codecName();
+            s.duration = l->duration();
+        }
+        s.playing = l->playing;
+        s.loop = l->loop;
+        s.speed = l->speed;
+        s.hasGenerator = l->generator != nullptr;
+        s.genW = l->genWidth;
+        s.genH = l->genHeight;
+        for (const auto &fx : l->effects) s.effects.push_back({fx->name(), fx->error(), fx->isValid(), fx->enabled});
+        s.meshMode = l->mapping.meshMode;
+        s.cols = l->mapping.cols;
+        s.rows = l->mapping.rows;
+        return s;
+    }
+};
 
 static QString fmtTime(double s)
 {
@@ -30,12 +90,6 @@ static QString fmtTime(double s)
     const int m = int(s) / 60;
     const double r = s - m * 60;
     return QStringLiteral("%1:%2").arg(m, 2, 10, QLatin1Char('0')).arg(r, 5, 'f', 2, QLatin1Char('0'));
-}
-
-static QGroupBox *group(const QString &title)
-{
-    auto *g = new QGroupBox(title);
-    return g;
 }
 
 static QLabel *errorLabel(const QString &text)
@@ -56,7 +110,8 @@ static QToolButton *toolButton(const QString &text, const QString &tip)
     return b;
 }
 
-LayerInspector::LayerInspector(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(engine)
+LayerInspector::LayerInspector(Engine *engine, QUndoStack *undo, QWidget *parent)
+    : QWidget(parent), m_engine(engine), m_undo(undo)
 {
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(8, 8, 8, 8);
@@ -70,6 +125,41 @@ void LayerInspector::setLayer(int index)
     rebuild();
 }
 
+// --- Modifications annulables ------------------------------------------------
+
+void LayerInspector::setProp(int prop, const QVariant &value)
+{
+    const auto p = cmd::SetLayerProp::Prop(prop);
+    const QVariant before = cmd::SetLayerProp::read(m_engine, m_layer, p);
+    if (!before.isValid() || before == value) return;
+    m_undo->push(new cmd::SetLayerProp(m_engine, m_layer, p, before, value));
+}
+
+void LayerInspector::editMapping(const QString &text, const std::function<void(Mapping &)> &fn)
+{
+    const Mapping before = cmd::SetMapping::read(m_engine, m_layer);
+    Mapping after = before;
+    fn(after);
+    m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, text));
+    emit mappingChanged();
+}
+
+void LayerInspector::editEffects(const QString &text, const std::function<void()> &op)
+{
+    const QJsonArray before = m_engine->effectsJson(m_layer);
+    op();
+    m_undo->push(new cmd::SetEffects(m_engine, m_layer, before, text));
+}
+
+void LayerInspector::editSource(const QString &text, const std::function<void()> &op)
+{
+    const QJsonObject before = m_engine->layerJson(m_layer);
+    op();
+    m_undo->push(new cmd::ReplaceLayer(m_engine, m_layer, before, text));
+}
+
+// --- Construction ------------------------------------------------------------
+
 void LayerInspector::rebuild()
 {
     if (m_content) {
@@ -82,8 +172,8 @@ void LayerInspector::rebuild()
     v->setSpacing(10);
     m_layout->addWidget(m_content);
 
-    Layer *l = m_engine->layer(m_layer);
-    if (!l) {
+    const LayerSnapshot s = LayerSnapshot::take(m_engine, m_layer);
+    if (!s.valid) {
         auto *empty = new QLabel(QStringLiteral("Aucun calque sélectionné.\n\nAjoutez un calque avec le bouton +\n"
                                                 "ou glissez des vidéos, images ou\nshaders ISF dans la fenêtre."));
         empty->setAlignment(Qt::AlignCenter);
@@ -95,48 +185,45 @@ void LayerInspector::rebuild()
 
     // En-tête : nom + visibilité
     auto *head = new QHBoxLayout;
-    auto *name = new QLineEdit(l->name);
+    auto *name = new QLineEdit(s.name);
     name->setStyleSheet("font-weight:bold; font-size:14px;");
     auto *vis = new QCheckBox(QStringLiteral("Visible"));
-    vis->setChecked(l->visible);
+    vis->setChecked(s.visible);
     head->addWidget(name, 1);
     head->addWidget(vis);
     v->addLayout(head);
     connect(name, &QLineEdit::textEdited, this, [this](const QString &t) {
-        if (Layer *ly = m_engine->layer(m_layer)) ly->name = t;
+        setProp(cmd::SetLayerProp::Name, t);
         emit layerChanged();
     });
     connect(vis, &QCheckBox::toggled, this, [this](bool on) {
-        if (Layer *ly = m_engine->layer(m_layer)) ly->visible = on;
+        setProp(cmd::SetLayerProp::Visible, on);
         emit layerChanged();
     });
 
-    v->addWidget(buildSource());
-    v->addWidget(buildCompositing());
-    v->addWidget(buildMapping());
-    v->addWidget(buildEffects());
+    v->addWidget(buildSource(s));
+    v->addWidget(buildCompositing(s));
+    v->addWidget(buildMapping(s));
+    v->addWidget(buildEffects(s));
     v->addStretch();
     refreshDynamic();
 }
 
-QWidget *LayerInspector::buildSource()
+QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
 {
-    Layer *l = m_engine->layer(m_layer);
-    auto *g = group(QStringLiteral("Source"));
+    auto *g = new QGroupBox(QStringLiteral("Source"));
     auto *v = new QVBoxLayout(g);
 
     QString desc;
-    switch (l->type) {
-    case SourceType::Video:
-        desc = QStringLiteral("Vidéo — %1").arg(QFileInfo(l->sourcePath).fileName());
-        break;
-    case SourceType::Image: desc = QStringLiteral("Image — %1").arg(QFileInfo(l->sourcePath).fileName()); break;
-    case SourceType::Isf: desc = QStringLiteral("Générateur ISF — %1").arg(QFileInfo(l->sourcePath).completeBaseName()); break;
+    switch (s.type) {
+    case SourceType::Video: desc = QStringLiteral("Vidéo — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
+    case SourceType::Image: desc = QStringLiteral("Image — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
+    case SourceType::Isf: desc = QStringLiteral("Générateur ISF — %1").arg(QFileInfo(s.sourcePath).completeBaseName()); break;
     default: desc = QStringLiteral("Aucune source"); break;
     }
     auto *title = new QLabel(desc);
     title->setWordWrap(true);
-    title->setToolTip(l->sourcePath);
+    title->setToolTip(s.sourcePath);
     v->addWidget(title);
 
     auto *buttons = new QHBoxLayout;
@@ -160,32 +247,32 @@ QWidget *LayerInspector::buildSource()
     connect(bVideo, &QPushButton::clicked, this, [this] { emit addSourceRequested("video"); });
     connect(bImage, &QPushButton::clicked, this, [this] { emit addSourceRequested("image"); });
     connect(bClear, &QToolButton::clicked, this, [this] {
-        m_engine->clearLayerSource(m_layer);
+        editSource(QStringLiteral("Retirer la source"), [this] { m_engine->clearLayerSource(m_layer); });
         emit layerChanged();
         rebuild();
     });
 
-    if (!l->error.isEmpty()) v->addWidget(errorLabel(l->error));
+    if (!s.error.isEmpty()) v->addWidget(errorLabel(s.error));
 
-    if (l->type == SourceType::Video && l->video) {
+    if (s.type == SourceType::Video && s.hasVideo) {
         auto *info = new QLabel(QStringLiteral("%1 × %2 · %3 i/s · %4 · %5")
-                                    .arg(l->video->width())
-                                    .arg(l->video->height())
-                                    .arg(l->video->fps(), 0, 'f', 2)
-                                    .arg(l->video->codecName())
-                                    .arg(fmtTime(l->duration())));
+                                    .arg(s.videoW)
+                                    .arg(s.videoH)
+                                    .arg(s.fps, 0, 'f', 2)
+                                    .arg(s.codec)
+                                    .arg(fmtTime(s.duration)));
         info->setStyleSheet("color:#999; font-size:11px;");
         v->addWidget(info);
 
         auto *transport = new QHBoxLayout;
-        m_play = new QPushButton(l->playing ? QStringLiteral("Pause") : QStringLiteral("Lecture"));
+        m_play = new QPushButton(s.playing ? QStringLiteral("Pause") : QStringLiteral("Lecture"));
         auto *rewind = toolButton(QStringLiteral("⏮"), QStringLiteral("Retour au début"));
         auto *loop = new QCheckBox(QStringLiteral("Boucle"));
-        loop->setChecked(l->loop);
+        loop->setChecked(s.loop);
         auto *speed = new QDoubleSpinBox;
         speed->setRange(0.05, 8.0);
         speed->setSingleStep(0.05);
-        speed->setValue(l->speed);
+        speed->setValue(s.speed);
         speed->setSuffix(QStringLiteral(" ×"));
         speed->setToolTip(QStringLiteral("Vitesse de lecture"));
         transport->addWidget(m_play);
@@ -204,20 +291,25 @@ QWidget *LayerInspector::buildSource()
         seekRow->addWidget(m_time);
         v->addLayout(seekRow);
 
+        // La lecture n'est pas une modification du projet : pas d'annulation.
         connect(m_play, &QPushButton::clicked, this, [this] {
-            Layer *ly = m_engine->layer(m_layer);
-            if (!ly) return;
-            m_engine->setLayerPlaying(m_layer, !ly->playing);
+            bool playing;
+            {
+                Engine::Lock lk(&m_engine->mutex());
+                Layer *ly = m_engine->layer(m_layer);
+                if (!ly) return;
+                playing = ly->playing;
+            }
+            m_engine->setLayerPlaying(m_layer, !playing);
             refreshDynamic();
         });
         connect(rewind, &QToolButton::clicked, this, [this] { m_engine->seekLayer(m_layer, 0); });
-        connect(loop, &QCheckBox::toggled, this, [this](bool on) { m_engine->setLayerLoop(m_layer, on); });
-        connect(speed, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double s) {
-            if (Layer *ly = m_engine->layer(m_layer)) ly->speed = s;
-        });
-        auto seekTo = [this](int v) {
-            Layer *ly = m_engine->layer(m_layer);
-            if (ly && ly->duration() > 0) m_engine->seekLayer(m_layer, ly->duration() * v / 10000.0);
+        connect(loop, &QCheckBox::toggled, this, [this](bool on) { setProp(cmd::SetLayerProp::Loop, on); });
+        connect(speed, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [this](double sp) { setProp(cmd::SetLayerProp::Speed, sp); });
+        const double duration = s.duration;
+        auto seekTo = [this, duration](int pos) {
+            if (duration > 0) m_engine->seekLayer(m_layer, duration * pos / 10000.0);
         };
         connect(m_seek, &QSlider::sliderMoved, this, seekTo);
         connect(m_seek, &QSlider::actionTriggered, this, [this, seekTo](int action) {
@@ -225,15 +317,15 @@ QWidget *LayerInspector::buildSource()
         });
     }
 
-    if (l->type == SourceType::Isf && l->generator) {
+    if (s.type == SourceType::Isf && s.hasGenerator) {
         auto *res = new QHBoxLayout;
         auto *w = new QSpinBox, *h = new QSpinBox;
-        for (auto *s : {w, h}) {
-            s->setRange(1, 16384);
-            s->setKeyboardTracking(false);
+        for (auto *sb : {w, h}) {
+            sb->setRange(1, 16384);
+            sb->setKeyboardTracking(false);
         }
-        w->setValue(l->genWidth);
-        h->setValue(l->genHeight);
+        w->setValue(s.genW);
+        h->setValue(s.genH);
         auto *fit = new QPushButton(QStringLiteral("= composition"));
         auto *reload = toolButton(QStringLiteral("⟳"), QStringLiteral("Recharger le shader depuis le disque"));
         res->addWidget(new QLabel(QStringLiteral("Résolution")));
@@ -252,10 +344,16 @@ QWidget *LayerInspector::buildSource()
             h->setValue(c.height());
         });
         connect(reload, &QToolButton::clicked, this, [this] {
-            if (Layer *ly = m_engine->layer(m_layer)) m_engine->reloadIsf(ly->generator.get());
+            IsfInstance *gen;
+            {
+                Engine::Lock lk(&m_engine->mutex());
+                Layer *ly = m_engine->layer(m_layer);
+                gen = ly ? ly->generator.get() : nullptr;
+            }
+            m_engine->reloadIsf(gen);
             rebuild();
         });
-        auto *params = new ParamPanel(m_engine, l->generator.get());
+        auto *params = new ParamPanel(m_engine, m_undo, m_layer, -1);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
     }
@@ -264,19 +362,20 @@ QWidget *LayerInspector::buildSource()
 
 void LayerInspector::chooseGenerator(const QString &path)
 {
-    QString err;
-    m_engine->setLayerIsf(m_layer, path, &err);
-    if (Layer *l = m_engine->layer(m_layer)) {
-        if (l->name.startsWith(QStringLiteral("Calque "))) l->name = QFileInfo(path).completeBaseName();
-    }
+    editSource(QStringLiteral("Générateur %1").arg(QFileInfo(path).completeBaseName()), [this, path] {
+        QString err;
+        m_engine->setLayerIsf(m_layer, path, &err);
+        Engine::Lock lk(&m_engine->mutex());
+        if (Layer *l = m_engine->layer(m_layer))
+            if (l->name.startsWith(QStringLiteral("Calque "))) l->name = QFileInfo(path).completeBaseName();
+    });
     emit layerChanged();
     rebuild();
 }
 
-QWidget *LayerInspector::buildCompositing()
+QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
 {
-    Layer *l = m_engine->layer(m_layer);
-    auto *g = group(QStringLiteral("Composition"));
+    auto *g = new QGroupBox(QStringLiteral("Composition"));
     auto *form = new QFormLayout(g);
 
     auto *row = new QWidget;
@@ -284,7 +383,7 @@ QWidget *LayerInspector::buildCompositing()
     h->setContentsMargins(0, 0, 0, 0);
     auto *slider = new QSlider(Qt::Horizontal);
     slider->setRange(0, 100);
-    slider->setValue(int(std::lround(l->opacity * 100)));
+    slider->setValue(int(std::lround(s.opacity * 100)));
     auto *spin = new QSpinBox;
     spin->setRange(0, 100);
     spin->setSuffix(" %");
@@ -294,39 +393,35 @@ QWidget *LayerInspector::buildCompositing()
     form->addRow(QStringLiteral("Opacité"), row);
     connect(slider, &QSlider::valueChanged, spin, &QSpinBox::setValue);
     connect(spin, qOverload<int>(&QSpinBox::valueChanged), slider, &QSlider::setValue);
-    connect(slider, &QSlider::valueChanged, this, [this](int v) {
-        if (Layer *ly = m_engine->layer(m_layer)) ly->opacity = v / 100.0f;
-    });
+    connect(slider, &QSlider::valueChanged, this, [this](int v) { setProp(cmd::SetLayerProp::Opacity, v / 100.0); });
 
     auto *blend = new QComboBox;
     for (BlendMode m : {BlendMode::Normal, BlendMode::Add, BlendMode::Screen, BlendMode::Multiply})
         blend->addItem(blendModeName(m), int(m));
-    blend->setCurrentIndex(blend->findData(int(l->blend)));
+    blend->setCurrentIndex(blend->findData(int(s.blend)));
     form->addRow(QStringLiteral("Fusion"), blend);
-    connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, blend](int i) {
-        if (Layer *ly = m_engine->layer(m_layer)) ly->blend = BlendMode(blend->itemData(i).toInt());
-    });
+    connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            [this, blend](int i) { setProp(cmd::SetLayerProp::Blend, blend->itemData(i).toInt()); });
     return g;
 }
 
-QWidget *LayerInspector::buildMapping()
+QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
 {
-    Layer *l = m_engine->layer(m_layer);
-    auto *g = group(QStringLiteral("Mapping"));
+    auto *g = new QGroupBox(QStringLiteral("Mapping"));
     auto *v = new QVBoxLayout(g);
 
     auto *modeRow = new QHBoxLayout;
     auto *corners = new QRadioButton(QStringLiteral("Coins"));
     auto *mesh = new QRadioButton(QStringLiteral("Grille"));
-    (l->mapping.meshMode ? mesh : corners)->setChecked(true);
+    (s.meshMode ? mesh : corners)->setChecked(true);
     auto *modes = new QButtonGroup(g);
     modes->addButton(corners, 0);
     modes->addButton(mesh, 1);
     auto *cols = new QSpinBox, *rows = new QSpinBox;
     cols->setRange(2, 32);
     rows->setRange(2, 32);
-    cols->setValue(l->mapping.cols);
-    rows->setValue(l->mapping.rows);
+    cols->setValue(s.cols);
+    rows->setValue(s.rows);
     cols->setToolTip(QStringLiteral("Colonnes de points"));
     rows->setToolTip(QStringLiteral("Lignes de points"));
     auto *apply = new QPushButton(QStringLiteral("Appliquer"));
@@ -356,45 +451,49 @@ QWidget *LayerInspector::buildMapping()
     v->addWidget(hint);
 
     connect(modes, &QButtonGroup::idClicked, this, [this](int id) {
-        if (Layer *ly = m_engine->layer(m_layer)) ly->mapping.meshMode = id == 1;
-        emit mappingChanged();
+        editMapping(id == 1 ? QStringLiteral("Mode grille") : QStringLiteral("Mode coins"),
+                    [id](Mapping &m) { m.meshMode = id == 1; });
     });
     connect(apply, &QPushButton::clicked, this, [this, cols, rows] {
-        Layer *ly = m_engine->layer(m_layer);
-        if (!ly) return;
         bool deformed = false;
-        for (const QPointF &o : ly->mapping.offsets) deformed |= !o.isNull();
+        for (const QPointF &o : cmd::SetMapping::read(m_engine, m_layer).offsets) deformed |= !o.isNull();
         if (deformed && QMessageBox::question(this, QStringLiteral("Grille"),
-                                              QStringLiteral("Changer la densité efface la déformation actuelle. Continuer ?"))
+                                              QStringLiteral("Changer la densité efface la déformation actuelle "
+                                                             "(annulable avec Ctrl+Z). Continuer ?"))
                             != QMessageBox::Yes)
             return;
-        ly->mapping.resetMesh(cols->value(), rows->value());
-        ly->mapping.meshMode = true;
-        emit mappingChanged();
+        const int c = cols->value(), r = rows->value();
+        editMapping(QStringLiteral("Densité de la grille"), [c, r](Mapping &m) {
+            m.resetMesh(c, r);
+            m.meshMode = true;
+        });
         rebuild();
     });
-    connect(full, &QPushButton::clicked, this, [this] {
-        if (Layer *ly = m_engine->layer(m_layer)) ly->mapping.resetCorners();
-        emit mappingChanged();
-    });
+    connect(full, &QPushButton::clicked, this,
+            [this] { editMapping(QStringLiteral("Plein cadre"), [](Mapping &m) { m.resetCorners(); }); });
     connect(ratio, &QPushButton::clicked, this, [this] {
-        Layer *ly = m_engine->layer(m_layer);
-        if (!ly || ly->sourceHeight() <= 0) return;
+        int sw, sh;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *ly = m_engine->layer(m_layer);
+            if (!ly) return;
+            sw = ly->sourceWidth();
+            sh = ly->sourceHeight();
+        }
+        if (sh <= 0) return;
         const QSize c = m_engine->compositionSize();
-        ly->mapping.fitAspect(double(ly->sourceWidth()) / ly->sourceHeight(), double(c.width()) / c.height());
-        emit mappingChanged();
+        editMapping(QStringLiteral("Ratio source"),
+                    [=](Mapping &m) { m.fitAspect(double(sw) / sh, double(c.width()) / c.height()); });
     });
     connect(resetMesh, &QPushButton::clicked, this, [this] {
-        if (Layer *ly = m_engine->layer(m_layer)) ly->mapping.resetMesh(ly->mapping.cols, ly->mapping.rows);
-        emit mappingChanged();
+        editMapping(QStringLiteral("Aplanir la grille"), [](Mapping &m) { m.resetMesh(m.cols, m.rows); });
     });
     return g;
 }
 
-QWidget *LayerInspector::buildEffects()
+QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
 {
-    Layer *l = m_engine->layer(m_layer);
-    auto *g = group(QStringLiteral("Effets ISF"));
+    auto *g = new QGroupBox(QStringLiteral("Effets ISF"));
     auto *v = new QVBoxLayout(g);
 
     auto *bar = new QHBoxLayout;
@@ -414,9 +513,11 @@ QWidget *LayerInspector::buildEffects()
             }
             QAction *a = target->addAction(e.name);
             a->setToolTip(e.description);
-            connect(a, &QAction::triggered, this, [this, p = e.path] {
-                QString err;
-                m_selectedEffect = m_engine->addEffect(m_layer, p, &err);
+            connect(a, &QAction::triggered, this, [this, p = e.path, n = e.name] {
+                editEffects(QStringLiteral("Ajouter l'effet %1").arg(n), [this, p] {
+                    QString err;
+                    m_selectedEffect = m_engine->addEffect(m_layer, p, &err);
+                });
                 rebuild();
             });
         }
@@ -433,34 +534,36 @@ QWidget *LayerInspector::buildEffects()
     bar->addWidget(reload);
     v->addLayout(bar);
 
-    if (l->effects.empty()) {
+    if (s.effects.empty()) {
         auto *none = new QLabel(QStringLiteral("Aucun effet. Les effets s'appliquent dans l'ordre de la liste."));
         none->setWordWrap(true);
         none->setStyleSheet("color:#888;");
         v->addWidget(none);
-        remove->setEnabled(false);
-        up->setEnabled(false);
-        down->setEnabled(false);
-        reload->setEnabled(false);
+        for (auto *b : {remove, up, down, reload}) b->setEnabled(false);
         return g;
     }
 
-    m_selectedEffect = std::clamp(m_selectedEffect, 0, int(l->effects.size()) - 1);
+    const int count = int(s.effects.size());
+    m_selectedEffect = std::clamp(m_selectedEffect, 0, count - 1);
     auto *list = new QListWidget;
-    for (const auto &fx : l->effects) {
-        auto *it = new QListWidgetItem(fx->name() + (fx->isValid() ? QString() : QStringLiteral("  ⚠")));
+    for (const auto &fx : s.effects) {
+        auto *it = new QListWidgetItem(fx.name + (fx.valid ? QString() : QStringLiteral("  ⚠")));
         it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
-        it->setCheckState(fx->enabled ? Qt::Checked : Qt::Unchecked);
+        it->setCheckState(fx.enabled ? Qt::Checked : Qt::Unchecked);
         list->addItem(it);
     }
     list->setCurrentRow(m_selectedEffect);
-    list->setMaximumHeight(qMin(160, 26 * int(l->effects.size()) + 8));
+    list->setMaximumHeight(qMin(160, 26 * count + 8));
     v->addWidget(list);
 
     connect(list, &QListWidget::itemChanged, this, [this, list](QListWidgetItem *it) {
-        Layer *ly = m_engine->layer(m_layer);
         const int r = list->row(it);
-        if (ly && r >= 0 && r < int(ly->effects.size())) ly->effects[size_t(r)]->enabled = it->checkState() == Qt::Checked;
+        const bool on = it->checkState() == Qt::Checked;
+        editEffects(on ? QStringLiteral("Activer l'effet") : QStringLiteral("Désactiver l'effet"), [this, r, on] {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *ly = m_engine->layer(m_layer);
+            if (ly && r >= 0 && r < int(ly->effects.size())) ly->effects[size_t(r)]->enabled = on;
+        });
     });
     connect(list, &QListWidget::currentRowChanged, this, [this](int r) {
         if (r >= 0 && r != m_selectedEffect) {
@@ -469,32 +572,38 @@ QWidget *LayerInspector::buildEffects()
         }
     });
     connect(remove, &QToolButton::clicked, this, [this] {
-        m_engine->removeEffect(m_layer, m_selectedEffect);
+        editEffects(QStringLiteral("Retirer l'effet"), [this] { m_engine->removeEffect(m_layer, m_selectedEffect); });
         rebuild();
     });
     connect(up, &QToolButton::clicked, this, [this] {
-        m_engine->moveEffect(m_layer, m_selectedEffect, m_selectedEffect - 1);
-        m_selectedEffect = qMax(0, m_selectedEffect - 1);
+        if (m_selectedEffect <= 0) return;
+        editEffects(QStringLiteral("Ordre des effets"),
+                    [this] { m_engine->moveEffect(m_layer, m_selectedEffect, m_selectedEffect - 1); });
+        --m_selectedEffect;
         rebuild();
     });
-    connect(down, &QToolButton::clicked, this, [this] {
-        Layer *ly = m_engine->layer(m_layer);
-        m_engine->moveEffect(m_layer, m_selectedEffect, m_selectedEffect + 1);
-        if (ly) m_selectedEffect = qMin(int(ly->effects.size()) - 1, m_selectedEffect + 1);
+    connect(down, &QToolButton::clicked, this, [this, count] {
+        if (m_selectedEffect >= count - 1) return;
+        editEffects(QStringLiteral("Ordre des effets"),
+                    [this] { m_engine->moveEffect(m_layer, m_selectedEffect, m_selectedEffect + 1); });
+        ++m_selectedEffect;
         rebuild();
     });
     connect(reload, &QToolButton::clicked, this, [this] {
-        Layer *ly = m_engine->layer(m_layer);
-        if (ly && m_selectedEffect < int(ly->effects.size())) m_engine->reloadIsf(ly->effects[size_t(m_selectedEffect)].get());
+        IsfInstance *fx;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            fx = cmd::resolveIsf(m_engine, m_layer, m_selectedEffect);
+        }
+        m_engine->reloadIsf(fx);
         rebuild();
     });
 
-    IsfInstance *fx = l->effects[size_t(m_selectedEffect)].get();
-    auto *title = new QLabel(QStringLiteral("<b>%1</b>").arg(fx->name().toHtmlEscaped()));
-    v->addWidget(title);
-    if (!fx->error().isEmpty()) v->addWidget(errorLabel(fx->error()));
-    if (fx->isValid()) {
-        auto *params = new ParamPanel(m_engine, fx);
+    const auto &fx = s.effects[size_t(m_selectedEffect)];
+    v->addWidget(new QLabel(QStringLiteral("<b>%1</b>").arg(fx.name.toHtmlEscaped())));
+    if (!fx.error.isEmpty()) v->addWidget(errorLabel(fx.error));
+    if (fx.valid) {
+        auto *params = new ParamPanel(m_engine, m_undo, m_layer, m_selectedEffect);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
     }
@@ -503,11 +612,17 @@ QWidget *LayerInspector::buildEffects()
 
 void LayerInspector::refreshDynamic()
 {
-    Layer *l = m_engine->layer(m_layer);
-    if (!l || l->type != SourceType::Video) return;
-    if (m_play) m_play->setText(l->playing ? QStringLiteral("Pause") : QStringLiteral("Lecture"));
-    const double d = l->duration();
-    const double p = l->position();
+    bool playing;
+    double d, p;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Layer *l = m_engine->layer(m_layer);
+        if (!l || l->type != SourceType::Video) return;
+        playing = l->playing;
+        d = l->duration();
+        p = l->position();
+    }
+    if (m_play) m_play->setText(playing ? QStringLiteral("Pause") : QStringLiteral("Lecture"));
     if (m_seek && !m_seek->isSliderDown() && d > 0) {
         QSignalBlocker b(m_seek);
         m_seek->setValue(int(std::lround(p / d * 10000)));
