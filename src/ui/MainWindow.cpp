@@ -884,7 +884,7 @@ void MainWindow::openProjectDialog()
     if (!maybeSave()) return;
     QSettings s;
     const QString f = QFileDialog::getOpenFileName(this, QStringLiteral("Open Project"), s.value("dirs/project").toString(),
-                                                   QStringLiteral("Fulskrin Projects (*.fulskrin *.lanterne *.json)"));
+                                                   QStringLiteral("Fulskrin Projects (*.fulskrin *.json)"));
     if (!f.isEmpty()) openProject(f);
 }
 
@@ -1044,7 +1044,7 @@ void MainWindow::dropEvent(QDropEvent *e)
         const QString path = urls[k].toLocalFile();
         if (path.isEmpty()) continue;
         const QString ext = QFileInfo(path).suffix().toLower();
-        if (ext == "fulskrin" || ext == "lanterne") {
+        if (ext == "fulskrin") {
             if (maybeSave()) openProject(path);
             return;
         }

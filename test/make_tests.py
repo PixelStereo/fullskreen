@@ -51,17 +51,15 @@ proj('mapping', [
     layer('Plasma', {"type": "isf", "path": plasma, "width": 512, "height": 512}, mapping=quad, blend='add', opacity=0.9),
     layer('Test Pattern', {"type": "isf", "path": pattern, "width": 1280, "height": 720}, mapping=warp),
 ])
-# UI demo (test/ui_test.sh), saved in the legacy Lanterne format on purpose: .lanterne extension,
-# "app": "Lanterne" and the former French names of the bundled shaders, which must still resolve.
-legacy = lambda sub, f: os.path.join(isf, sub, f)
+# UI demo (test/ui_test.sh)
 video_quad = {"corners": [[0.0,0.45],[0.45,0.5],[0.42,1.0],[0.0,0.98]], "cols": 4, "rows": 4, "offsets": [[0,0]]*16}
-demo = {"app": "Lanterne", "formatVersion": 1, "composition": {"width": 640, "height": 360}, "layers": [
-    layer('Plasma', {"type": "isf", "path": legacy('generateurs', 'Plasma.fs'), "width": 512, "height": 512}, mapping=quad, blend='add', opacity=0.9),
-    layer('Test Pattern', {"type": "isf", "path": legacy('generateurs', 'Mire.fs'), "width": 1280, "height": 720}, mapping=warp),
+demo = {"app": "Fulskrin", "formatVersion": 1, "composition": {"width": 640, "height": 360}, "layers": [
+    layer('Plasma', {"type": "isf", "path": plasma, "width": 512, "height": 512}, mapping=quad, blend='add', opacity=0.9),
+    layer('Test Pattern', {"type": "isf", "path": pattern, "width": 1280, "height": 720}, mapping=warp),
     layer('Video h264', video('h264.mp4'), [
-        {"path": legacy('effets', 'Couleur.fs'), "enabled": True, "params": {"saturation": 0.3}},
-        {"path": legacy('effets', 'BordsDoux.fs'), "enabled": True, "params": {"left": 0.2, "right": 0.2}}], mapping=video_quad),
+        {"path": os.path.join(isf, 'effects', 'ColorCorrection.fs'), "enabled": True, "params": {"saturation": 0.3}},
+        {"path": os.path.join(isf, 'effects', 'SoftEdges.fs'), "enabled": True, "params": {"left": 0.2, "right": 0.2}}], mapping=video_quad),
     layer('Act 2', {"type": "video", "path": os.path.join(root, 'out', 'missing', 'act2.mov'), "loop": True, "speed": 1, "playing": True}),
 ], "bin": [{"path": os.path.join(media, 'bars.png')}], "ui": {"selectedLayer": 1}}
-json.dump(demo, open(os.path.join(root, 'projects', 'demo.lanterne'), 'w'), indent=1)
+json.dump(demo, open(os.path.join(root, 'projects', 'demo.fulskrin'), 'w'), indent=1)
 print('ok')

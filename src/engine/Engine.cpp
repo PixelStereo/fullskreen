@@ -5,7 +5,6 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QHash>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -1136,16 +1135,7 @@ QString Engine::resolvePath(const QJsonObject &o, const QString &projectDir) con
         const QString same = QDir(projectDir).absoluteFilePath(QFileInfo(abs).fileName());
         if (QFile::exists(same)) return same;
     }
-    QString fileName = QFileInfo(abs).fileName();
-    // Shaders bundled with Lanterne (former name) were renamed in English.
-    static const QHash<QString, QString> legacy = {
-        {"Mire.fs", "TestPattern.fs"},   {"CouleurUnie.fs", "SolidColor.fs"}, {"Degrade.fs", "Gradient.fs"},
-        {"Nuages.fs", "Clouds.fs"},      {"Couleur.fs", "ColorCorrection.fs"}, {"Teinte.fs", "Hue.fs"},
-        {"Flou.fs", "Blur.fs"},          {"Remanence.fs", "Trails.fs"},       {"BordsDoux.fs", "SoftEdges.fs"},
-        {"Masque.fs", "Mask.fs"},        {"Orientation.fs", "FlipCrop.fs"},   {"Pixels.fs", "Pixelate.fs"},
-    };
-    QString lib = m_library.findByFileName(fileName);
-    if (lib.isEmpty() && legacy.contains(fileName)) lib = m_library.findByFileName(legacy.value(fileName));
+    const QString lib = m_library.findByFileName(QFileInfo(abs).fileName());
     if (!lib.isEmpty()) return lib;
     return abs;
 }
