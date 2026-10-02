@@ -2,33 +2,29 @@
 #include "Commands.h"
 #include "Engine.h"
 #include "LayerInspector.h"
+#include "LayerTable.h"
 #include "MappingView.h"
+#include "MasterPanel.h"
+#include "MediaBin.h"
 #include "OutputWindow.h"
 
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
-#include <QComboBox>
 #include <QDateTime>
 #include <QDesktopServices>
-#include <QDialog>
-#include <QDialogButtonBox>
 #include <QDir>
-#include <QDoubleSpinBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFormLayout>
-#include <QGroupBox>
 #include <QGuiApplication>
-#include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLabel>
-#include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -38,38 +34,45 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QShortcut>
-#include <QSlider>
-#include <QSpinBox>
 #include <QSplitter>
 #include <QStandardPaths>
 #include <QStatusBar>
-#include <QToolButton>
+#include <QTabWidget>
 #include <QUndoStack>
 #include <QUrl>
-#include <QVBoxLayout>
+#include <cmath>
 
-static const QStringList kVideoExt = {"mov", "mp4", "m4v", "avi", "mkv", "webm", "mxf", "mpg", "mpeg", "wmv", "flv", "ts", "hap"};
-static const QStringList kImageExt = {"png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif", "webp", "tga"};
 static const QStringList kIsfExt = {"fs", "frag"};
 
 static QString videoFilter()
 {
     QStringList p;
-    for (const QString &e : kVideoExt) p << "*." + e;
+    for (const QString &e : {"mov", "mp4", "m4v", "avi", "mkv", "webm", "mxf", "mpg", "mpeg", "wmv", "flv", "ts", "hap"})
+        p << "*." + QString(e);
     return QStringLiteral("Vidéos (%1);;Tous les fichiers (*)").arg(p.join(' '));
 }
 
 static QString imageFilter()
 {
     QStringList p;
-    for (const QString &e : kImageExt) p << "*." + e;
+    for (const QString &e : {"png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif", "webp", "tga"}) p << "*." + QString(e);
     return QStringLiteral("Images (%1)").arg(p.join(' '));
+}
+
+static QScrollArea *scrolled(QWidget *w)
+{
+    auto *s = new QScrollArea;
+    s->setWidget(w);
+    s->setWidgetResizable(true);
+    s->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    s->setFrameShape(QFrame::NoFrame);
+    return s;
 }
 
 MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m_engine(engine)
 {
     setAcceptDrops(true);
-    resize(1500, 900);
+    resize(1600, 980);
     m_undo = new QUndoStack(this);
     m_undo->setUndoLimit(500);
 
@@ -78,61 +81,37 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_engine->library().scan();
     m_screenName = s.value("output/screen").toString();
 
-    // --- Panneau des calques
-    auto *left = new QWidget;
-    auto *lv = new QVBoxLayout(left);
-    lv->setContentsMargins(8, 8, 4, 8);
-    auto *title = new QLabel(QStringLiteral("<b>Calques</b>"));
-    m_layers = new QListWidget;
-    m_layers->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_layers->setToolTip(QStringLiteral("Le calque du haut est affiché au-dessus des autres"));
-    auto *bar = new QHBoxLayout;
-    auto *add = new QToolButton;
-    add->setText(QStringLiteral("+"));
-    add->setToolTip(QStringLiteral("Nouveau calque"));
-    add->setPopupMode(QToolButton::InstantPopup);
-    m_addMenu = new QMenu(add);
-    add->setMenu(m_addMenu);
-    auto *remove = new QToolButton;
-    remove->setText(QStringLiteral("−"));
-    remove->setToolTip(QStringLiteral("Supprimer le calque"));
-    auto *dup = new QToolButton;
-    dup->setText(QStringLiteral("⧉"));
-    dup->setToolTip(QStringLiteral("Dupliquer le calque"));
-    auto *up = new QToolButton;
-    up->setText(QStringLiteral("▲"));
-    auto *down = new QToolButton;
-    down->setText(QStringLiteral("▼"));
-    for (auto *b : {add, remove, dup, up, down}) {
-        b->setMinimumSize(30, 26);
-        bar->addWidget(b);
-    }
-    bar->addStretch();
-    lv->addWidget(title);
-    lv->addWidget(m_layers, 1);
-    lv->addLayout(bar);
-    lv->addWidget(buildMasterPanel());
-
-    // --- Vue de mapping
+    // --- Haut : chutier | aperçu et mapping | onglets Calque / Master
+    m_bin = new MediaBin(m_engine);
+    m_bin->setMinimumWidth(260);
     m_view = new MappingView(m_engine);
     m_view->setUndoStack(m_undo);
-
-    // --- Inspecteur
     m_inspector = new LayerInspector(m_engine, m_undo);
-    auto *scroll = new QScrollArea;
-    scroll->setWidget(m_inspector);
-    scroll->setWidgetResizable(true);
-    scroll->setMinimumWidth(380);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_master = new MasterPanel(m_engine);
+    m_tabs = new QTabWidget;
+    m_tabs->addTab(scrolled(m_inspector), QStringLiteral("Calque"));
+    m_tabs->addTab(scrolled(m_master), QStringLiteral("Master"));
+    m_tabs->setMinimumWidth(390);
 
-    auto *split = new QSplitter;
-    split->addWidget(left);
-    split->addWidget(m_view);
-    split->addWidget(scroll);
-    split->setStretchFactor(0, 0);
-    split->setStretchFactor(1, 1);
-    split->setStretchFactor(2, 0);
-    split->setSizes({240, 850, 410});
+    auto *top = new QSplitter(Qt::Horizontal);
+    top->addWidget(m_bin);
+    top->addWidget(m_view);
+    top->addWidget(m_tabs);
+    top->setStretchFactor(0, 0);
+    top->setStretchFactor(1, 1);
+    top->setStretchFactor(2, 0);
+    top->setSizes({330, 840, 430});
+
+    // --- Bas : calques sur toute la largeur
+    m_layerTable = new LayerTable;
+    auto *split = new QSplitter(Qt::Vertical);
+    split->addWidget(top);
+    split->addWidget(m_layerTable);
+    split->setStretchFactor(0, 1);
+    split->setStretchFactor(1, 0);
+    split->setSizes({700, 240});
+    split->setObjectName("mainSplit");
+    top->setObjectName("topSplit");
     setCentralWidget(split);
 
     m_status = new QLabel;
@@ -140,38 +119,85 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 
     // --- Sortie : le fil de rendu y présente l'image lui-même
     m_output = new OutputWindow(m_engine);
-    connect(m_output, &OutputWindow::closeRequested, this, [this] { setOutputVisible(false); });
-    // Quand la fenêtre de sortie a le focus (clic sur l'écran du projecteur), les commandes de régie restent actives.
-    connect(m_output, &OutputWindow::keyPressed, this, [this](int key, Qt::KeyboardModifiers mods) {
-        const bool ctrl = mods & Qt::ControlModifier;
-        if (ctrl && key == Qt::Key_B) setBlackout(!m_blackoutButton->isChecked());
-        else if (ctrl && (mods & Qt::ShiftModifier) && key == Qt::Key_F) setOutputVisible(false);
-        else if (key == Qt::Key_Space) togglePlayCurrent();
-    });
+    connect(m_output, &OutputWindow::closeRequested, this, [this] { setOutputMode(OutputHidden); });
+    // Quand la fenêtre de sortie a le focus (clic sur l'écran du projecteur, ou plein écran sur l'écran principal),
+    // les raccourcis de régie restent actifs.
+    connect(m_output, &OutputWindow::keyPressed, this, [this](int key, Qt::KeyboardModifiers mods) { handleControlKey(key, mods); });
 
     buildMenus();
     rebuildGeneratorMenus();
 
-    connect(add, &QToolButton::clicked, add, &QToolButton::showMenu);
-    connect(remove, &QToolButton::clicked, this, &MainWindow::removeCurrentLayer);
-    connect(dup, &QToolButton::clicked, this, &MainWindow::duplicateCurrentLayer);
-    connect(up, &QToolButton::clicked, this, [this] { moveCurrentLayer(-1); });
-    connect(down, &QToolButton::clicked, this, [this] { moveCurrentLayer(+1); });
-
-    connect(m_layers, &QListWidget::currentRowChanged, this, [this](int r) {
-        if (m_refreshingList) return;
+    // --- Calques
+    connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
         m_view->setLayer(r);
         m_inspector->setLayer(r);
+        if (r >= 0 && r != m_lastSelected) m_tabs->setCurrentIndex(0);
+        m_lastSelected = r;
     });
-    connect(m_layers, &QListWidget::itemChanged, this, [this](QListWidgetItem *it) {
-        if (m_refreshingList) return;
-        const int row = m_layers->row(it);
-        const bool on = it->checkState() == Qt::Checked;
+    connect(m_layerTable, &LayerTable::visibilityToggled, this, [this](int row, bool on) {
         const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Visible);
         if (before.isValid() && before.toBool() != on)
             m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Visible, before, on));
-        if (row == m_inspector->layerIndex()) m_inspector->rebuild();
+        if (row == m_inspector->layerIndex()) m_inspectorTimer.start();
     });
+    connect(m_layerTable, &LayerTable::opacityEdited, this, [this](int row, double v) {
+        const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Opacity);
+        if (before.isValid() && std::abs(before.toDouble() - v) > 1e-6)
+            m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Opacity, before, v));
+        if (row == m_inspector->layerIndex()) m_inspectorTimer.start(); // inspecteur resynchronisé après le geste
+    });
+    connect(m_layerTable, &LayerTable::removeClicked, this, &MainWindow::removeCurrentLayer);
+    connect(m_layerTable, &LayerTable::duplicateClicked, this, &MainWindow::duplicateCurrentLayer);
+    connect(m_layerTable, &LayerTable::moveClicked, this, &MainWindow::moveCurrentLayer);
+    auto *del = new QShortcut(QKeySequence::Delete, m_layerTable->table(), nullptr, nullptr, Qt::WidgetShortcut);
+    connect(del, &QShortcut::activated, this, &MainWindow::removeCurrentLayer);
+    auto *backspace = new QShortcut(QKeySequence(Qt::Key_Backspace), m_layerTable->table(), nullptr, nullptr, Qt::WidgetShortcut);
+    connect(backspace, &QShortcut::activated, this, &MainWindow::removeCurrentLayer);
+
+    // --- Chutier
+    connect(m_bin, &MediaBin::relinkRequested, this, &MainWindow::relinkMedia);
+    connect(m_bin, &MediaBin::useAsSourceRequested, this, [this](const QString &p) {
+        if (currentLayer() < 0) {
+            const int i = newLayerFromFile(p, 0);
+            if (i >= 0) selectLayer(i);
+        } else {
+            setSourceFromFile(currentLayer(), p);
+        }
+    });
+    connect(m_bin, &MediaBin::newLayerRequested, this, [this](const QString &p) {
+        const int i = newLayerFromFile(p, 0);
+        if (i >= 0) selectLayer(i);
+    });
+    connect(m_bin, &MediaBin::binEdited, this, &MainWindow::markDirty);
+    m_binTimer.setSingleShot(true);
+    m_binTimer.setInterval(150);
+    connect(&m_binTimer, &QTimer::timeout, m_bin, &MediaBin::refresh);
+    m_inspectorTimer.setSingleShot(true);
+    m_inspectorTimer.setInterval(250);
+    connect(&m_inspectorTimer, &QTimer::timeout, m_inspector, &LayerInspector::rebuild);
+
+    // --- Master
+    connect(m_master, &MasterPanel::blackoutChanged, this, [this](bool on) {
+        QSignalBlocker b(m_blackoutAction);
+        m_blackoutAction->setChecked(on);
+    });
+    connect(m_master, &MasterPanel::screenChosen, this, &MainWindow::chooseScreen);
+    connect(m_master, &MasterPanel::fullscreenRequested, this, [this] { setOutputMode(OutputFullscreen); });
+    connect(m_master, &MasterPanel::windowedRequested, this, [this] { setOutputMode(OutputWindowed); });
+    connect(m_master, &MasterPanel::hideRequested, this, [this] { setOutputMode(OutputHidden); });
+    connect(m_master, &MasterPanel::compositionEdited, this, &MainWindow::markDirty);
+    connect(m_master, &MasterPanel::publishEdited, this, &MainWindow::markDirty);
+    connect(m_master, &MasterPanel::fitCompositionToScreenRequested, this, [this] {
+        if (QScreen *sc = selectedScreen()) {
+            const QSize px = sc->geometry().size() * sc->devicePixelRatio();
+            if (px == m_engine->compositionSize()) return;
+            m_engine->setCompositionSize(px);
+            markDirty();
+            statusBar()->showMessage(QStringLiteral("Composition : %1 × %2").arg(px.width()).arg(px.height()), 4000);
+        }
+    });
+
+    // --- Synchronisation générale
     connect(m_view, &MappingView::layerPicked, this, &MainWindow::selectLayer);
     connect(m_inspector, &LayerInspector::layerChanged, this, &MainWindow::refreshLayerList);
     connect(m_inspector, &LayerInspector::mappingChanged, m_view, qOverload<>(&QWidget::update));
@@ -183,7 +209,13 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         m_engine->acknowledgeFrame();
         m_view->update();
     });
+    // Le rendu a pu démarrer avant cette connexion : on débloque la notification.
+    m_engine->acknowledgeFrame();
     connect(m_undo, &QUndoStack::cleanChanged, this, [this] { updateTitle(); });
+    connect(m_undo, &QUndoStack::indexChanged, this, [this] {
+        refreshLayerList();   // mise à jour sur place (opacité, visibilité, nom…)
+        m_binTimer.start();   // le chutier suit les sources et les images des shaders
+    });
 
     auto *space = new QShortcut(QKeySequence(Qt::Key_Space), this);
     connect(space, &QShortcut::activated, this, &MainWindow::togglePlayCurrent);
@@ -191,7 +223,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(qApp, &QGuiApplication::screenAdded, this, &MainWindow::buildOutputScreensMenu);
     connect(qApp, &QGuiApplication::screenRemoved, this, [this] {
         buildOutputScreensMenu();
-        if (m_output->isVisible()) setOutputVisible(true); // repositionne
+        if (m_outputMode != OutputHidden) setOutputMode(m_outputMode); // repositionne
     });
 
     // Interface : état et transport. Le rendu, lui, ne dépend pas de l'interface.
@@ -212,6 +244,8 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     refreshLayerList();
     updateTitle();
     restoreGeometry(s.value("ui/geometry").toByteArray());
+    split->restoreState(s.value("ui/mainSplit").toByteArray());
+    top->restoreState(s.value("ui/topSplit").toByteArray());
 }
 
 MainWindow::~MainWindow()
@@ -223,63 +257,26 @@ MainWindow::~MainWindow()
 }
 
 // ---------------------------------------------------------------------------
-// Master
+// Raccourcis de régie
 // ---------------------------------------------------------------------------
 
-QWidget *MainWindow::buildMasterPanel()
+bool MainWindow::handleControlKey(int key, Qt::KeyboardModifiers mods)
 {
-    auto *g = new QGroupBox(QStringLiteral("Master"));
-    auto *v = new QVBoxLayout(g);
-    auto *row = new QHBoxLayout;
-    m_masterSlider = new QSlider(Qt::Horizontal);
-    m_masterSlider->setRange(0, 100);
-    m_masterSlider->setValue(100);
-    m_masterSlider->setToolTip(QStringLiteral("Niveau général de la sortie"));
-    m_masterLabel = new QLabel(QStringLiteral("100 %"));
-    m_masterLabel->setMinimumWidth(44);
-    m_masterLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    row->addWidget(m_masterSlider, 1);
-    row->addWidget(m_masterLabel);
-    v->addLayout(row);
-
-    auto *row2 = new QHBoxLayout;
-    m_blackoutButton = new QPushButton(QStringLiteral("Noir"));
-    m_blackoutButton->setCheckable(true);
-    m_blackoutButton->setToolTip(QStringLiteral("Fondu au noir / retour (Ctrl+B)"));
-    m_blackoutButton->setStyleSheet("QPushButton:checked { background:#b3261e; color:white; font-weight:bold; }");
-    m_fadeTime = new QDoubleSpinBox;
-    m_fadeTime->setRange(0.0, 30.0);
-    m_fadeTime->setSingleStep(0.5);
-    m_fadeTime->setDecimals(1);
-    m_fadeTime->setSuffix(QStringLiteral(" s"));
-    m_fadeTime->setValue(QSettings().value("master/fade", 1.0).toDouble());
-    m_fadeTime->setToolTip(QStringLiteral("Durée du fondu au noir"));
-    row2->addWidget(m_blackoutButton, 1);
-    row2->addWidget(new QLabel(QStringLiteral("Fondu")));
-    row2->addWidget(m_fadeTime);
-    v->addLayout(row2);
-
-    connect(m_masterSlider, &QSlider::valueChanged, this, [this](int val) {
-        // Pendant un noir, le curseur règle le niveau de retour sans rallumer.
-        if (!m_blackoutButton->isChecked()) m_engine->fadeMaster(val / 100.0, 0.05);
-    });
-    connect(m_blackoutButton, &QPushButton::toggled, this, &MainWindow::setBlackout);
-    connect(m_fadeTime, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
-            [](double v) { QSettings().setValue("master/fade", v); });
-    return g;
+    const bool ctrl = mods & Qt::ControlModifier;
+    const bool shift = mods & Qt::ShiftModifier;
+    if (ctrl && key == Qt::Key_B) setBlackout(!m_master->isBlackout());
+    else if (ctrl && shift && key == Qt::Key_F) toggleWindowed();
+    else if (ctrl && key == Qt::Key_F) toggleFullscreen();
+    else if (!ctrl && key == Qt::Key_Space) togglePlayCurrent();
+    else return false;
+    return true;
 }
 
 void MainWindow::setBlackout(bool on)
 {
-    if (m_blackoutButton->isChecked() != on) {
-        QSignalBlocker b(m_blackoutButton);
-        m_blackoutButton->setChecked(on);
-    }
-    if (m_blackoutAction && m_blackoutAction->isChecked() != on) {
-        QSignalBlocker b(m_blackoutAction);
-        m_blackoutAction->setChecked(on);
-    }
-    m_engine->fadeMaster(on ? 0.0 : m_masterSlider->value() / 100.0, m_fadeTime->value());
+    m_master->setBlackout(on);
+    QSignalBlocker b(m_blackoutAction);
+    m_blackoutAction->setChecked(on);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +291,14 @@ void MainWindow::buildMenus()
     file->addSeparator();
     file->addAction(QStringLiteral("Enregistrer"), QKeySequence::Save, this, &MainWindow::save);
     file->addAction(QStringLiteral("Enregistrer sous…"), QKeySequence::SaveAs, this, &MainWindow::saveAs);
+    file->addSeparator();
+    file->addAction(QStringLiteral("Importer dans le chutier…"), QKeySequence(Qt::CTRL | Qt::Key_I), this, [this] {
+        QSettings s;
+        const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Importer dans le chutier"),
+                                                                s.value("dirs/video").toString(),
+                                                                QStringLiteral("Images et vidéos (*)"));
+        if (!files.isEmpty()) m_bin->importFiles(files);
+    });
     file->addSeparator();
     QAction *quit = file->addAction(QStringLiteral("Quitter"), QKeySequence::Quit, this, &QWidget::close);
     quit->setMenuRole(QAction::QuitRole);
@@ -331,8 +336,8 @@ void MainWindow::buildMenus()
     });
 
     QMenu *layer = menuBar()->addMenu(QStringLiteral("&Calque"));
-    // Même contenu dans le menu « + » du panneau
-    for (QMenu *m : {layer, m_addMenu}) {
+    // Même contenu dans le menu « + » de la liste des calques
+    for (QMenu *m : {layer, m_layerTable->addMenu()}) {
         m->addAction(QStringLiteral("Calque vidéo…"), this, &MainWindow::addVideoLayer);
         m->addAction(QStringLiteral("Calque image…"), this, &MainWindow::addImageLayer);
         QMenu *gen = m->addMenu(QStringLiteral("Calque générateur ISF"));
@@ -343,10 +348,7 @@ void MainWindow::buildMenus()
     layer->addSeparator();
     QAction *dup = layer->addAction(QStringLiteral("Dupliquer"), this, &MainWindow::duplicateCurrentLayer);
     dup->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
-    QAction *del = layer->addAction(QStringLiteral("Supprimer"), this, &MainWindow::removeCurrentLayer);
-    del->setShortcuts({QKeySequence::Delete, QKeySequence(Qt::Key_Backspace)});
-    del->setShortcutContext(Qt::WidgetShortcut);
-    m_layers->addAction(del);
+    layer->addAction(QStringLiteral("Supprimer (Suppr dans la liste)"), this, &MainWindow::removeCurrentLayer);
     layer->addAction(QStringLiteral("Monter"), QKeySequence(Qt::CTRL | Qt::Key_BracketRight), this,
                      [this] { moveCurrentLayer(-1); });
     layer->addAction(QStringLiteral("Descendre"), QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), this,
@@ -355,17 +357,25 @@ void MainWindow::buildMenus()
     layer->addAction(QStringLiteral("Lecture / pause (Espace)"), this, &MainWindow::togglePlayCurrent);
 
     QMenu *comp = menuBar()->addMenu(QStringLiteral("C&omposition"));
-    comp->addAction(QStringLiteral("Résolution…"), this, &MainWindow::compositionDialog);
+    comp->addAction(QStringLiteral("Réglages (onglet Master)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
     QAction *outlines = comp->addAction(QStringLiteral("Afficher le contour des autres calques"));
     outlines->setCheckable(true);
     outlines->setChecked(true);
     connect(outlines, &QAction::toggled, m_view, &MappingView::setShowAllOutlines);
 
     QMenu *out = menuBar()->addMenu(QStringLiteral("&Sortie"));
-    m_outputAction = out->addAction(QStringLiteral("Afficher la sortie"));
-    m_outputAction->setCheckable(true);
-    m_outputAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
-    connect(m_outputAction, &QAction::toggled, this, &MainWindow::setOutputVisible);
+    m_fullscreenAction = out->addAction(QStringLiteral("Plein écran"));
+    m_fullscreenAction->setCheckable(true);
+    m_fullscreenAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F));
+    m_fullscreenAction->setShortcutContext(Qt::ApplicationShortcut);
+    connect(m_fullscreenAction, &QAction::triggered, this, [this] { toggleFullscreen(); });
+    m_windowedAction = out->addAction(QStringLiteral("Sortie dans une fenêtre"));
+    m_windowedAction->setCheckable(true);
+    m_windowedAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
+    m_windowedAction->setShortcutContext(Qt::ApplicationShortcut);
+    connect(m_windowedAction, &QAction::triggered, this, [this] { toggleWindowed(); });
+    out->addAction(QStringLiteral("Masquer la sortie"), this, [this] { setOutputMode(OutputHidden); });
+    out->addSeparator();
     m_blackoutAction = out->addAction(QStringLiteral("Noir (fondu)"));
     m_blackoutAction->setCheckable(true);
     m_blackoutAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_B));
@@ -373,13 +383,6 @@ void MainWindow::buildMenus()
     connect(m_blackoutAction, &QAction::toggled, this, &MainWindow::setBlackout);
     out->addSeparator();
     m_screensMenu = out->addMenu(QStringLiteral("Écran de sortie"));
-    out->addAction(QStringLiteral("Composition = résolution de l'écran de sortie"), this, [this] {
-        if (QScreen *sc = selectedScreen()) {
-            const QSize px = sc->geometry().size() * sc->devicePixelRatio();
-            m_engine->setCompositionSize(px);
-            statusBar()->showMessage(QStringLiteral("Composition : %1 × %2").arg(px.width()).arg(px.height()), 4000);
-        }
-    });
     buildOutputScreensMenu();
 
     QMenu *lib = menuBar()->addMenu(QStringLiteral("&Bibliothèque ISF"));
@@ -421,6 +424,10 @@ void MainWindow::rebuildGeneratorMenus()
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sortie
+// ---------------------------------------------------------------------------
+
 void MainWindow::buildOutputScreensMenu()
 {
     m_screensMenu->clear();
@@ -430,22 +437,39 @@ void MainWindow::buildOutputScreensMenu()
     bool found = false;
     for (QScreen *sc : screens) found |= sc->name() == m_screenName;
     if (!found) {
-        // Par défaut : le premier écran qui n'est pas l'écran principal (vidéoprojecteur)
-        m_screenName = screens.size() > 1 ? screens.at(1)->name() : QGuiApplication::primaryScreen()->name();
+        // Par défaut : le premier écran qui n'est pas l'écran principal (vidéoprojecteur), sinon l'écran principal
+        QScreen *primary = QGuiApplication::primaryScreen();
+        m_screenName = primary ? primary->name() : QString();
+        for (QScreen *sc : screens)
+            if (sc != primary) {
+                m_screenName = sc->name();
+                break;
+            }
     }
+    QList<QPair<QString, QString>> list;
     for (QScreen *sc : screens) {
         const QSize px = sc->geometry().size() * sc->devicePixelRatio();
-        QAction *a = m_screensMenu->addAction(
-            QStringLiteral("%1  (%2 × %3)").arg(sc->name()).arg(px.width()).arg(px.height()));
+        const QString label = QStringLiteral("%1  (%2 × %3)%4")
+                                  .arg(sc->name())
+                                  .arg(px.width())
+                                  .arg(px.height())
+                                  .arg(sc == QGuiApplication::primaryScreen() ? QStringLiteral(" — principal") : QString());
+        list << qMakePair(label, sc->name());
+        QAction *a = m_screensMenu->addAction(label);
         a->setCheckable(true);
         a->setChecked(sc->name() == m_screenName);
         m_screenGroup->addAction(a);
-        connect(a, &QAction::triggered, this, [this, name = sc->name()] {
-            m_screenName = name;
-            QSettings().setValue("output/screen", name);
-            if (m_output->isVisible()) setOutputVisible(true);
-        });
+        connect(a, &QAction::triggered, this, [this, name = sc->name()] { chooseScreen(name); });
     }
+    m_master->setScreens(list, m_screenName);
+}
+
+void MainWindow::chooseScreen(const QString &name)
+{
+    m_screenName = name;
+    QSettings().setValue("output/screen", name);
+    buildOutputScreensMenu();
+    if (m_outputMode != OutputHidden) setOutputMode(m_outputMode);
 }
 
 QScreen *MainWindow::selectedScreen() const
@@ -455,26 +479,39 @@ QScreen *MainWindow::selectedScreen() const
     return QGuiApplication::primaryScreen();
 }
 
-void MainWindow::setOutputVisible(bool on)
+void MainWindow::toggleFullscreen()
 {
-    if (m_outputAction->isChecked() != on) {
-        QSignalBlocker b(m_outputAction);
-        m_outputAction->setChecked(on);
-    }
+    setOutputMode(m_outputMode == OutputFullscreen ? OutputHidden : OutputFullscreen);
+}
+
+void MainWindow::toggleWindowed()
+{
+    setOutputMode(m_outputMode == OutputWindowed ? OutputHidden : OutputWindowed);
+}
+
+void MainWindow::setOutputMode(OutputMode mode)
+{
+    m_outputMode = mode;
+    m_fullscreenAction->setChecked(mode == OutputFullscreen);
+    m_windowedAction->setChecked(mode == OutputWindowed);
+    m_master->setOutputMode(int(mode));
     m_autosaveDone = false; // l'état de la sortie fait partie de la session à restaurer
-    if (!on) {
+    if (mode == OutputHidden) {
         m_output->hideOutput();
+        activateWindow();
         return;
     }
     QScreen *sc = selectedScreen();
-    // Sur l'écran de l'interface on reste fenêtré, pour ne pas masquer les commandes.
     const bool sameAsUi = sc == screen();
-    m_output->showOn(sc, !sameAsUi);
-    if (sameAsUi)
-        statusBar()->showMessage(
-            QStringLiteral("Sortie fenêtrée : choisissez un autre écran dans Sortie ▸ Écran de sortie pour le plein écran."),
-            6000);
-    activateWindow();
+    m_output->showOn(sc, mode == OutputFullscreen);
+    if (mode == OutputFullscreen && sameAsUi) {
+        // Plein écran sur l'écran de l'interface : la sortie passe devant et garde le clavier (⌘F / Ctrl+F pour en sortir)
+        m_output->raise();
+        m_output->requestActivate();
+        statusBar()->showMessage(QStringLiteral("Plein écran sur l'écran principal : Ctrl+F (⌘F) pour revenir."), 8000);
+    } else {
+        activateWindow();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -491,37 +528,55 @@ static QString layerTag(SourceType t)
     }
 }
 
+static QString fmtClock(double s)
+{
+    if (s < 0) s = 0;
+    const int m = int(s) / 60;
+    return QStringLiteral("%1:%2").arg(m, 2, 10, QChar('0')).arg(s - m * 60, 5, 'f', 2, QChar('0'));
+}
+
 void MainWindow::refreshLayerList()
 {
-    struct Row {
-        QString text;
-        bool visible, error;
-    };
-    std::vector<Row> rows;
+    std::vector<LayerTable::Row> rows;
     {
         Engine::Lock lk(&m_engine->mutex());
         for (int i = 0; i < m_engine->layerCount(); ++i) {
             Layer *l = m_engine->layer(i);
-            rows.push_back({QStringLiteral("%1  %2").arg(layerTag(l->type), l->name), l->visible, !l->error.isEmpty()});
+            LayerTable::Row r;
+            r.name = l->name;
+            r.tag = layerTag(l->type != SourceType::None ? l->type : l->missingType);
+            r.visible = l->visible;
+            r.opacity = l->opacity;
+            r.blend = blendModeName(l->blend);
+            r.error = !l->error.isEmpty();
+            switch (l->type) {
+            case SourceType::Video:
+            case SourceType::Image: r.source = QFileInfo(l->sourcePath).fileName(); break;
+            case SourceType::Isf: r.source = QStringLiteral("générateur ") + QFileInfo(l->sourcePath).completeBaseName(); break;
+            default: r.source = l->missingType != SourceType::None ? QFileInfo(l->sourcePath).fileName() + QStringLiteral(" — introuvable")
+                                                                    : QStringLiteral("(vide)");
+            }
+            QStringList fx;
+            for (const auto &e : l->effects) fx << (e->enabled ? e->name() : QStringLiteral("(") + e->name() + QStringLiteral(")"));
+            r.effects = fx.join(QStringLiteral(" › "));
+            if (l->type == SourceType::Video) {
+                r.playback = QStringLiteral("%1 %2 / %3").arg(l->playing ? QStringLiteral("▶") : QStringLiteral("❚❚"),
+                                                               fmtClock(l->position()), fmtClock(l->duration()));
+            } else if (l->type == SourceType::Isf) {
+                r.playback = QStringLiteral("temps réel");
+            }
+            rows.push_back(r);
         }
     }
     const int n = int(rows.size());
-    const int keep = qBound(-1, m_layers->currentRow(), n - 1);
-    m_refreshingList = true;
-    m_layers->clear();
-    for (const Row &r : rows) {
-        auto *it = new QListWidgetItem(r.text);
-        it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
-        it->setCheckState(r.visible ? Qt::Checked : Qt::Unchecked);
-        if (r.error) it->setForeground(QColor(255, 120, 100));
-        m_layers->addItem(it);
-    }
+    const int keep = qBound(-1, m_layerTable->currentRow(), n - 1);
+    m_layerTable->setRows(rows);
     const int sel = keep >= 0 ? keep : (n > 0 ? 0 : -1);
-    m_layers->setCurrentRow(sel);
-    m_refreshingList = false;
+    if (sel != m_layerTable->currentRow()) m_layerTable->setCurrentRow(sel);
     if (sel != m_inspector->layerIndex()) {
         m_inspector->setLayer(sel);
         m_view->setLayer(sel);
+        m_lastSelected = sel;
     }
 }
 
@@ -530,19 +585,20 @@ void MainWindow::refreshAll()
     refreshLayerList();
     m_inspector->rebuild();
     m_view->update();
+    m_bin->refresh();
 }
 
 void MainWindow::selectLayer(int index)
 {
     refreshLayerList();
-    m_refreshingList = true;
-    m_layers->setCurrentRow(index);
-    m_refreshingList = false;
+    m_layerTable->setCurrentRow(index);
     m_view->setLayer(index);
     m_inspector->setLayer(index);
+    if (index >= 0 && index != m_lastSelected) m_tabs->setCurrentIndex(0);
+    m_lastSelected = index;
 }
 
-int MainWindow::currentLayer() const { return m_layers->currentRow(); }
+int MainWindow::currentLayer() const { return m_layerTable->currentRow(); }
 
 // ---------------------------------------------------------------------------
 // Actions sur les calques (toutes annulables)
@@ -555,7 +611,7 @@ int MainWindow::newLayerFromFile(const QString &path, int at)
     QString err;
     int idx = m_engine->addLayer(base, at);
     bool ok;
-    if (kImageExt.contains(ext)) ok = m_engine->setLayerImage(idx, path, &err);
+    if (Engine::isImageFile(path)) ok = m_engine->setLayerImage(idx, path, &err);
     else if (kIsfExt.contains(ext)) ok = (m_engine->setLayerIsf(idx, path, &err), true);
     else ok = m_engine->setLayerVideo(idx, path, &err); // extensions vidéo et inconnues : FFmpeg tranche
     if (!ok) {
@@ -609,9 +665,14 @@ void MainWindow::setSourceFromDialog(const QString &kind)
                                                    s.value(key).toString(), video ? videoFilter() : imageFilter());
     if (f.isEmpty()) return;
     s.setValue(key, QFileInfo(f).absolutePath());
+    setSourceFromFile(i, f);
+}
+
+void MainWindow::setSourceFromFile(int i, const QString &f)
+{
     const QJsonObject before = m_engine->layerJson(i);
     QString err;
-    const bool ok = video ? m_engine->setLayerVideo(i, f, &err) : m_engine->setLayerImage(i, f, &err);
+    const bool ok = Engine::isImageFile(f) ? m_engine->setLayerImage(i, f, &err) : m_engine->setLayerVideo(i, f, &err);
     if (!ok) {
         QMessageBox::warning(this, QStringLiteral("Source"), err);
         return;
@@ -623,6 +684,29 @@ void MainWindow::setSourceFromDialog(const QString &kind)
     }
     m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Source « %1 »").arg(QFileInfo(f).fileName())));
     refreshAll();
+}
+
+void MainWindow::relinkMedia(const QString &from, const QString &to)
+{
+    const QList<int> layers = m_engine->layersUsingMedia(from);
+    QStringList errors;
+    if (!layers.isEmpty()) {
+        // Une seule étape d'annulation pour tous les calques concernés
+        m_undo->beginMacro(QStringLiteral("Remplacer « %1 »").arg(QFileInfo(from).fileName()));
+        for (int i : layers) {
+            const QJsonObject before = m_engine->layerJson(i);
+            QString err;
+            if (m_engine->relinkLayerMedia(i, from, to, &err))
+                m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Remplacer le fichier")));
+            else if (!err.isEmpty()) errors << err;
+        }
+        m_undo->endMacro();
+    }
+    m_engine->relinkBinItem(from, to);
+    markDirty();
+    refreshAll();
+    if (!errors.isEmpty()) QMessageBox::warning(this, QStringLiteral("Remplacer"), errors.join('\n'));
+    else statusBar()->showMessage(QStringLiteral("« %1 » remplacé dans %2 calque(s)").arg(QFileInfo(from).fileName()).arg(layers.size()), 5000);
 }
 
 void MainWindow::addGeneratorLayer(const QString &path)
@@ -689,64 +773,29 @@ void MainWindow::togglePlayCurrent()
 
 void MainWindow::statusTick()
 {
+    m_engine->acknowledgeFrame(); // filet de sécurité : l'aperçu ne peut pas rester figé
     m_inspector->refreshDynamic();
-    const double lvl = m_engine->masterLevel();
-    const int pct = int(std::lround(lvl * 100));
-    m_masterLabel->setText(QStringLiteral("%1 %").arg(pct));
-    m_masterLabel->setStyleSheet(pct == 0 ? "color:#ff5a4f; font-weight:bold;" : "");
+    m_master->refreshStatus();
+    refreshLayerList(); // positions de lecture (mise à jour sur place)
+    const int pct = int(std::lround(m_engine->masterLevel() * 100));
     const QSize c = m_engine->compositionSize();
-    m_status->setText(QStringLiteral("%1 × %2   ·   %3 i/s   ·   master %4 %   ·   sortie : %5")
+    QStringList pubs;
+    for (int k = 0; k < kPublishKindCount; ++k)
+        if (m_engine->publishState(PublishKind(k)).level == PublishState::Ok) pubs << publishKindName(PublishKind(k));
+    const QString mode = m_outputMode == OutputFullscreen ? QStringLiteral("plein écran ") + m_screenName
+                         : m_outputMode == OutputWindowed ? QStringLiteral("fenêtre")
+                                                          : QStringLiteral("masquée");
+    m_status->setText(QStringLiteral("%1 × %2   ·   %3 i/s   ·   master %4 %   ·   sortie : %5%6")
                           .arg(c.width())
                           .arg(c.height())
                           .arg(m_engine->fps(), 0, 'f', 1)
                           .arg(pct)
-                          .arg(m_output->isVisible() ? m_screenName : QStringLiteral("masquée")));
+                          .arg(mode, pubs.isEmpty() ? QString() : QStringLiteral("   ·   publié : ") + pubs.join(", ")));
 }
 
 // ---------------------------------------------------------------------------
-// Composition, bibliothèque
+// Bibliothèque ISF
 // ---------------------------------------------------------------------------
-
-void MainWindow::compositionDialog()
-{
-    QDialog dlg(this);
-    dlg.setWindowTitle(QStringLiteral("Résolution de la composition"));
-    auto *form = new QFormLayout(&dlg);
-    auto *preset = new QComboBox;
-    const QList<QSize> sizes = {{1920, 1080}, {1280, 720}, {3840, 2160}, {1920, 1200}, {2560, 1600},
-                                {1400, 1050}, {1024, 768}, {4096, 2160}, {3840, 1080}, {5760, 1080}};
-    preset->addItem(QStringLiteral("Personnalisée"));
-    for (const QSize &s : sizes) preset->addItem(QStringLiteral("%1 × %2").arg(s.width()).arg(s.height()), s);
-    auto *w = new QSpinBox, *h = new QSpinBox;
-    w->setRange(16, 16384);
-    h->setRange(16, 16384);
-    w->setValue(m_engine->compositionSize().width());
-    h->setValue(m_engine->compositionSize().height());
-    form->addRow(QStringLiteral("Préréglage"), preset);
-    form->addRow(QStringLiteral("Largeur"), w);
-    form->addRow(QStringLiteral("Hauteur"), h);
-    auto *note = new QLabel(QStringLiteral("Réglez-la sur la résolution native du vidéoprojecteur.\n"
-                                           "Le mapping est stocké en coordonnées relatives : il suit le changement."));
-    note->setStyleSheet("color:#999;");
-    form->addRow(note);
-    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    form->addRow(bb);
-    connect(preset, qOverload<int>(&QComboBox::currentIndexChanged), &dlg, [=](int i) {
-        const QSize s = preset->itemData(i).toSize();
-        if (s.isValid()) {
-            w->setValue(s.width());
-            h->setValue(s.height());
-        }
-    });
-    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    if (dlg.exec() == QDialog::Accepted) {
-        m_engine->setCompositionSize(QSize(w->value(), h->value()));
-        m_forceDirty = true;
-        m_autosaveDone = false;
-        updateTitle();
-    }
-}
 
 void MainWindow::addIsfFolder()
 {
@@ -776,6 +825,13 @@ void MainWindow::rescanLibrary()
 
 bool MainWindow::isDirty() const { return m_forceDirty || !m_undo->isClean(); }
 
+void MainWindow::markDirty()
+{
+    m_forceDirty = true;
+    m_autosaveDone = false;
+    updateTitle();
+}
+
 void MainWindow::updateTitle()
 {
     const QString p = m_engine->projectPath();
@@ -788,7 +844,7 @@ QJsonObject MainWindow::uiState() const
     QJsonObject o;
     o["outputScreen"] = m_screenName;
     o["selectedLayer"] = currentLayer();
-    o["outputVisible"] = m_output && m_output->isVisible();
+    o["outputMode"] = m_outputMode == OutputFullscreen ? "fullscreen" : m_outputMode == OutputWindowed ? "window" : "hidden";
     return o;
 }
 
@@ -802,15 +858,25 @@ bool MainWindow::maybeSave()
     return true;
 }
 
+void MainWindow::afterProjectLoaded(const QJsonObject &ui)
+{
+    m_undo->clear();
+    m_autosaveDone = false;
+    const QString scr = ui.value("outputScreen").toString();
+    if (!scr.isEmpty()) m_screenName = scr;
+    buildOutputScreensMenu();
+    m_master->syncFromEngine();
+    m_bin->refresh();
+    selectLayer(qBound(-1, ui.value("selectedLayer").toInt(0), m_engine->layerCount() - 1));
+    updateTitle();
+}
+
 void MainWindow::newProject()
 {
     if (!maybeSave()) return;
     m_engine->newProject();
-    m_undo->clear();
     m_forceDirty = false;
-    m_autosaveDone = false;
-    selectLayer(-1);
-    updateTitle();
+    afterProjectLoaded({});
 }
 
 void MainWindow::openProjectDialog()
@@ -830,21 +896,17 @@ bool MainWindow::openProject(const QString &path)
         QMessageBox::warning(this, QStringLiteral("Ouverture"), err);
         return false;
     }
-    if (!err.isEmpty())
-        QMessageBox::warning(this, QStringLiteral("Ouverture"), QStringLiteral("Projet ouvert avec des avertissements :\n\n") + err);
-    m_undo->clear();
     m_forceDirty = false;
-    m_autosaveDone = false;
+    afterProjectLoaded(ui);
     QSettings s;
     s.setValue("dirs/project", QFileInfo(path).absolutePath());
     s.setValue("project/last", QFileInfo(path).absoluteFilePath());
-    const QString scr = ui.value("outputScreen").toString();
-    if (!scr.isEmpty()) {
-        m_screenName = scr;
-        buildOutputScreensMenu();
-    }
-    selectLayer(qBound(-1, ui.value("selectedLayer").toInt(0), m_engine->layerCount() - 1));
-    updateTitle();
+    if (!err.isEmpty() && m_quiet) statusBar()->showMessage(err.section('\n', 0, 0), 15000);
+    else if (!err.isEmpty())
+        QMessageBox::warning(this, QStringLiteral("Ouverture"),
+                             QStringLiteral("Projet ouvert avec des avertissements :\n\n") + err
+                                 + QStringLiteral("\n\nLes fichiers introuvables apparaissent en rouge dans le chutier : "
+                                                  "« Remplacer… » pour les retrouver."));
     return true;
 }
 
@@ -916,8 +978,7 @@ void MainWindow::offerRecovery()
     f.close();
     const QString original = ui.value("autosaveOf").toString();
     const QDateTime when = QDateTime::fromString(ui.value("autosaveTime").toString(), Qt::ISODate);
-    QMessageBox box(QMessageBox::Warning, QStringLiteral("Reprise"),
-                    QStringLiteral("Lanterne ne s'est pas fermée normalement."),
+    QMessageBox box(QMessageBox::Warning, QStringLiteral("Reprise"), QStringLiteral("Lanterne ne s'est pas fermée normalement."),
                     QMessageBox::NoButton, this);
     box.setInformativeText(QStringLiteral("Restaurer la session sauvegardée automatiquement le %1 %2 ?")
                                .arg(when.isValid() ? when.toString("dd/MM à HH:mm:ss") : QStringLiteral("(date inconnue)"),
@@ -934,23 +995,17 @@ void MainWindow::offerRecovery()
     QString err;
     m_engine->loadProject(path, &loadedUi, &err);
     m_engine->setProjectPath(original); // « Enregistrer » écrit dans le projet d'origine
-    m_undo->clear();
     m_forceDirty = ui.value("autosaveDirty").toBool(true);
-    m_autosaveDone = false;
-    const QString scr = loadedUi.value("outputScreen").toString();
-    if (!scr.isEmpty()) {
-        m_screenName = scr;
-        buildOutputScreensMenu();
-    }
-    selectLayer(qBound(-1, loadedUi.value("selectedLayer").toInt(0), m_engine->layerCount() - 1));
-    updateTitle();
+    afterProjectLoaded(loadedUi);
     if (!err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Reprise"), err);
-    if (ui.value("outputVisible").toBool()) {
-        // La sortie revient sur le projecteur, mais au noir : c'est la régie qui décide de rallumer.
-        setBlackout(true);
+    QString mode = ui.value("outputMode").toString();
+    if (mode.isEmpty() && ui.value("outputVisible").toBool()) mode = "fullscreen"; // sessions précédentes
+    if (mode == "fullscreen" || mode == "window") {
+        // La sortie revient, mais au noir : c'est la régie qui décide de rallumer.
         m_engine->fadeMaster(0.0, 0.0);
-        setOutputVisible(true);
-        statusBar()->showMessage(QStringLiteral("Session restaurée — sortie au noir : Ctrl+B pour rallumer"), 15000);
+        setBlackout(true);
+        setOutputMode(mode == "fullscreen" ? OutputFullscreen : OutputWindowed);
+        statusBar()->showMessage(QStringLiteral("Session restaurée — sortie au noir : Ctrl+B (⌘B) pour rallumer"), 15000);
     } else {
         statusBar()->showMessage(QStringLiteral("Session restaurée"), 6000);
     }
@@ -962,7 +1017,10 @@ void MainWindow::closeEvent(QCloseEvent *e)
         e->ignore();
         return;
     }
-    QSettings().setValue("ui/geometry", saveGeometry());
+    QSettings s;
+    s.setValue("ui/geometry", saveGeometry());
+    if (auto *split = findChild<QSplitter *>("mainSplit")) s.setValue("ui/mainSplit", split->saveState());
+    if (auto *top = findChild<QSplitter *>("topSplit")) s.setValue("ui/topSplit", top->saveState());
     m_output->hideOutput();
     // Fermeture normale : pas de reprise à proposer au prochain lancement.
     if (m_autosaveEnabled) QFile::remove(autosavePath());
@@ -970,7 +1028,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
 }
 
 // ---------------------------------------------------------------------------
-// Glisser-déposer
+// Glisser-déposer (fichiers du système ou du chutier)
 // ---------------------------------------------------------------------------
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *e)

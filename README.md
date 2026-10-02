@@ -19,11 +19,30 @@ Interface **Qt 6**, décodage **FFmpeg**, rendu **OpenGL 3.3**, effets et géné
   - 4 coins en perspective vraie (homographie) ;
   - grille de déformation de 2×2 à 32×32 points, interpolation lisse (Catmull-Rom) ;
   - les deux se combinent : on cale d'abord les coins, puis on affine à la grille.
-- **Sortie plein écran** sur l'écran choisi, cadencée par la synchro verticale. Sur l'écran de l'interface, elle reste fenêtrée.
+- **Sortie plein écran** sur l'écran choisi, cadencée par la synchro verticale : **⌘F / Ctrl+F** pour entrer et sortir
+  du plein écran (sur le second écran s'il est branché, sinon sur l'écran principal), aussi depuis la sortie elle-même.
+  ⌘⇧F / Ctrl+Maj+F : sortie dans une fenêtre.
 - **Rendu dans un fil dédié** : le moteur rend et présente la sortie lui-même ; un ralentissement ou un blocage
   de l'interface (chargement, dialogue, menu) n'interrompt pas l'image projetée.
-- **Master** : fader de niveau général et bouton **Noir** en fondu (durée réglable), Ctrl+B / ⌘B,
-  actif même quand la fenêtre de sortie a le focus.
+- **Onglet Master** (à côté de l'onglet Calque) : fader de niveau général et bouton **Noir** en fondu
+  (durée réglable, Ctrl+B / ⌘B, actif même depuis la sortie), écran et mode de sortie, taille de la composition,
+  publication de la sortie.
+- **Publication de la sortie** vers d'autres logiciels ou machines :
+  - **NDI** (réseau) : nécessite NDI Tools ou le NDI Runtime (ndi.video) installé sur la machine ;
+  - **OMT** — Open Media Transport (réseau, libre) : nécessite `libomt` et `libvmx`
+    (binaires sur github.com/openmediatransport/libomtnet/releases) à côté de l'application,
+    dans `/usr/local/lib`, ou dans le dossier indiqué dans l'onglet Master ;
+  - **Syphon** (macOS) et **Spout** (Windows) : partage direct de la texture sur la carte graphique,
+    compilés avec Lanterne (aucune installation).
+  NDI et OMT sont chargés au moment de l'activation : Lanterne fonctionne sans eux. L'onglet Master indique
+  pour chacun l'état (actif, nombre de récepteurs, ou ce qui manque). Les réglages sont enregistrés dans le projet.
+- **Chutier** (à gauche) : tous les fichiers images et vidéos du projet, classés par type, avec résolution,
+  durée et nombre de calques qui les utilisent (sources et images des shaders). Fichiers **introuvables** en rouge,
+  **Remplacer…** pour les retrouver (un seul remplacement corrige tous les calques, annulable) ;
+  import sans créer de calque, glisser vers la liste des calques ou l'aperçu pour créer un calque,
+  double-clic pour remplacer la source du calque sélectionné.
+- **Liste des calques en bas**, sur toute la largeur : visibilité, nom, source, effets, opacité réglable
+  directement dans la ligne, fusion, position de lecture.
 - **Annuler / rétablir** (Ctrl+Z / Ctrl+Maj+Z, ⌘ sur Mac) : mapping (poignées, flèches, boutons), paramètres ISF,
   opacité, fusion, visibilité, nom, ajout / suppression / ordre des calques, effets, changement de source.
 - **Sauvegarde automatique et reprise** : la session est sauvegardée toutes les 10 s quand elle change.
@@ -31,12 +50,17 @@ Interface **Qt 6**, décodage **FFmpeg**, rendu **OpenGL 3.3**, effets et géné
   elle revient sur le projecteur **au noir**, et la régie rallume avec Ctrl+B.
   Les enregistrements sont atomiques : un plantage pendant l'écriture ne corrompt pas le projet.
 - **Projets** `.lanterne` (JSON lisible), chemins relatifs au projet pour déplacer un dossier de spectacle d'une machine à l'autre.
+  Un fichier introuvable à l'ouverture n'est pas perdu : son chemin est conservé et signalé dans le chutier.
 - **Glisser-déposer** de vidéos, images, shaders ISF (un filtre déposé s'ajoute comme effet au calque sélectionné).
 
 Shaders fournis (dossier `isf/`) : Mire de calage, Plasma, Dégradé, Nuages, Couleur unie ;
 effets Couleur, Teinte, Flou (2 passes), Rémanence (tampon persistant), Kaléidoscope, Bords doux, Masque, Orientation, Pixels.
 
 ## Compiler
+
+Au premier `cmake`, les sources de **Syphon** (macOS) ou de **Spout** (Windows) sont téléchargées depuis GitHub
+et compilées avec Lanterne : une connexion internet est nécessaire la première fois.
+Pour s'en passer : `-DLANTERNE_SYPHON=OFF` ou `-DLANTERNE_SPOUT=OFF`.
 
 Il faut Qt 6.2 ou plus récent, FFmpeg (bibliothèques de développement), CMake 3.21+ et un compilateur C++17.
 
@@ -82,19 +106,23 @@ cmake -S . -B build && cmake --build build -j
 
 | Action | Commande |
 |---|---|
-| Nouveau calque | bouton **+** sous la liste, menu Calque, ou glisser un fichier dans la fenêtre |
-| Choisir l'écran du vidéoprojecteur | Sortie ▸ Écran de sortie |
-| Afficher / masquer la sortie | Ctrl+Maj+F (⌘⇧F sur Mac) |
+| Nouveau calque | bouton **+** de la liste des calques, menu Calque, glisser un fichier (du système ou du chutier) |
+| Importer dans le chutier | bouton Importer…, Ctrl+I (⌘I), ou déposer des fichiers / un dossier sur le chutier |
+| Retrouver un fichier déplacé | chutier ▸ sélectionner le fichier en rouge ▸ Remplacer… |
+| Choisir l'écran du vidéoprojecteur | onglet Master ▸ Sortie vidéo, ou menu Sortie ▸ Écran de sortie |
+| Plein écran / retour | Ctrl+F (⌘F sur Mac) |
+| Sortie dans une fenêtre | Ctrl+Maj+F (⌘⇧F sur Mac) |
 | Noir en fondu / retour | Ctrl+B (⌘B), ou bouton Noir du panneau Master |
 | Annuler / rétablir | Ctrl+Z / Ctrl+Maj+Z ou Ctrl+Y (⌘Z / ⌘⇧Z) |
 | Fermer la sortie depuis la sortie | Maj+Échap (Échap seul ne fait rien, par sécurité) |
-| Régler la composition sur le projecteur | Sortie ▸ Composition = résolution de l'écran de sortie |
+| Régler la composition sur le projecteur | onglet Master ▸ Composition ▸ « = écran de sortie » |
+| Publier en NDI, OMT, Syphon, Spout | onglet Master ▸ Publication de la sortie |
 | Lecture / pause du calque vidéo sélectionné | Espace |
 | Déplacer une poignée | glisser (Maj : déplacement fin) |
 | Déplacer tout le calque | glisser à l'intérieur du calque |
 | Ajuster au pixel | flèches (Maj : 10 px) |
 | Poignée suivante / désélection | Tab / Échap |
-| Mode coins ↔ grille | Inspecteur ▸ Mapping |
+| Mode coins ↔ grille | onglet Calque ▸ Mapping |
 | Recharger un shader modifié dans un éditeur | bouton ⟳ dans l'inspecteur |
 
 Méthode de calage conseillée : mettre le générateur **Mire** sur le calque, caler les 4 coins
@@ -114,13 +142,15 @@ Les 68 transitions ISF sont ignorées : la V1 n'a pas de notion de transition en
 
 ```
 src/engine/   moteur, sans aucune dépendance aux widgets (QtCore/QtGui/OpenGL + FFmpeg)
-  Engine        composition, fil de rendu, présentation de la sortie, projet JSON
+  Engine        composition, fil de rendu, présentation de la sortie, projet JSON, médias du chutier
+  Publish       publication : NDI / OMT (chargés à l'exécution), Syphon (.mm), Spout ; relecture GPU asynchrone
   Isf           parseur et rendu ISF (traduction GLSL 330 core, passes, tampons)
   VideoDecoder  décodage FFmpeg dans un thread, file d'images, boucle sans couture, positionnement
   Mapping       homographie 4 coins + grille Catmull-Rom
 src/ui/       interface Qt Widgets
   MainWindow, LayerInspector, ParamPanel, MappingView (édition), OutputWindow (projecteur)
   Commands      commandes d'annulation (QUndoStack)
+  MediaBin, LayerTable, MasterPanel   chutier, liste des calques, onglet Master
 isf/          shaders fournis
 test/         tests automatiques
 ```
@@ -137,7 +167,7 @@ On peut donc remplacer l'interface, ou piloter le moteur en OSC, sans toucher au
 test/make_media.sh                         # médias de test, une fois
 cmake --build build --target lanterne_tests
 ./build/lanterne_tests                     # projet, vidéo, ISF, annulation, fil de rendu, master
-test/ui_test.sh out/ui                     # Linux + Xvfb + xdotool : scénario complet de l'interface
+test/ui_test.sh out/ui                     # Linux + Xvfb + openbox + xdotool : scénario complet de l'interface
 ./build/Lanterne --render sortie.png projet.lanterne   # rendu sans interface d'un projet
 ```
 
@@ -153,7 +183,12 @@ génère un projet par shader et par codec. `lanterne_tests --check-isf <dossier
 - **Une seule sortie** : pas encore de sorties multiples, de découpe par projecteur ni d'edge blending automatique
   (l'effet « Bords doux » dépanne pour un blending manuel).
 - **Pas de timeline, de cues ni de pilotage OSC / MIDI / DMX.**
-- **Pas d'entrées Syphon / Spout / NDI, ni de caméra.**
+- **Pas d'entrées Syphon / Spout / NDI / OMT, ni de caméra** (la sortie, elle, peut être publiée).
+- NDI et OMT envoient l'image à la taille de la composition, relue depuis la carte graphique (une image de latence) ;
+  pour une composition 4K, comptez une charge processeur notable, surtout pour OMT qui encode l'image.
+- Sous Linux, OMT a besoin du service Avahi (`avahi-daemon`) pour la découverte ; Lanterne refuse de l'activer sans lui
+  (la bibliothèque arrêterait le programme).
+- Syphon est compilé en version OpenGL uniquement (pas de serveur Metal).
 - Entrées audio des shaders ISF non gérées (texture noire).
 - La lecture vidéo (lecture, pause, position) n'est pas annulable, volontairement ; la taille de la composition non plus.
 - Annuler une modification de la chaîne d'effets recharge les effets du calque (les tampons de rémanence repartent de zéro).

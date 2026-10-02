@@ -125,7 +125,10 @@ int main(int argc, char *argv[])
     {
         MainWindow w(&engine);
         w.show();
-        if (cli.isSet(shotOpt)) w.setAutosaveEnabled(false);
+        if (cli.isSet(shotOpt)) {
+            w.setAutosaveEnabled(false);
+            w.setQuiet(true);
+        }
         else w.offerRecovery();
         if (!project.isEmpty()) w.openProject(project);
         if (cli.isSet(shotOpt)) {

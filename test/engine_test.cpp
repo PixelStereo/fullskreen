@@ -203,6 +203,19 @@ int main(int argc, char **argv)
                     static_cast<unsigned long long>(e.frameCount() - before));
         CHECK(e.frameCount() - before >= 15);
     }
+    // L'image évolue dans le temps (générateur animé) en mode fil
+    {
+        int pl = e.addLayer("anim");
+        e.setLayerIsf(pl, root + "/../isf/generateurs/Plasma.fs", &err);
+        CHECK(waitFrames(5));
+        const QImage a = e.grabOutput();
+        QThread::msleep(400);
+        CHECK(waitFrames(5));
+        const QImage b = e.grabOutput();
+        std::printf("       images identiques à 400 ms d'écart : %s\n", a == b ? "oui" : "non");
+        CHECK(a != b);
+        e.removeLayer(pl);
+    }
     // Modifications concurrentes pendant le rendu (petite composition : le GPU logiciel des tests est lent)
     {
         e.setCompositionSize(QSize(320, 180));

@@ -60,7 +60,7 @@ option(LANTERNE_SYPHON "Publication Syphon (macOS)" ON)
 option(LANTERNE_SPOUT "Publication Spout (Windows)" ON)
 
 if(APPLE AND LANTERNE_SYPHON)
-  enable_language(OBJC OBJCXX)
+  enable_language(C OBJC OBJCXX) # Syphon : sources C et Objective-C
   FetchContent_Declare(syphon
     GIT_REPOSITORY https://github.com/Syphon/Syphon-Framework.git
     GIT_TAG f4761677a45b8034a3c2069ec0f3d2553da81fba
@@ -75,7 +75,8 @@ if(APPLE AND LANTERNE_SYPHON)
   add_library(syphon STATIC ${SYPHON_SOURCES})
   target_include_directories(syphon PUBLIC "${CMAKE_BINARY_DIR}/syphon-include" PRIVATE "${syphon_SOURCE_DIR}")
   target_compile_definitions(syphon PRIVATE SYPHON_CORE_SHARE GL_SILENCE_DEPRECATION)
-  target_compile_options(syphon PRIVATE -fobjc-arc -w "SHELL:-include ${syphon_SOURCE_DIR}/Syphon_Prefix.pch")
+  target_compile_options(syphon PRIVATE -w "SHELL:-include ${syphon_SOURCE_DIR}/Syphon_Prefix.pch"
+    $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>)
   target_link_libraries(syphon PUBLIC "-framework Cocoa" "-framework OpenGL" "-framework IOSurface" "-framework Foundation")
   target_sources(lanterne_engine PRIVATE src/engine/PublishSyphon.mm)
   set_source_files_properties(src/engine/PublishSyphon.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -118,6 +119,9 @@ set(APP_SOURCES
   src/ui/OutputWindow.cpp
   src/ui/GlDraw.cpp
   src/ui/Commands.cpp
+  src/ui/LayerTable.cpp
+  src/ui/MediaBin.cpp
+  src/ui/MasterPanel.cpp
 )
 
 if(APPLE)
