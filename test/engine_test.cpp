@@ -15,6 +15,7 @@
 #include <QLineF>
 #include <QSurfaceFormat>
 #include <QThread>
+#include <cmath>
 #include <cstdio>
 
 static int failures = 0;
@@ -388,6 +389,166 @@ int main(int argc, char **argv)
         QFile::remove(tmp + "/clip_moved.mp4");
         VideoDecoder::Info info;
         CHECK(VideoDecoder::probe(root + "/media/prores.mov", &info) && info.width == 1920 && info.codec == "prores");
+    }
+
+    // --- Sound: audio layer, sound of a video layer, synchronized with the playhead
+    {
+        CHECK(e.startAudio(QString(), &err, true)); // null device: no sound card, but the callback runs in real time
+        std::mutex capMutex;
+        std::vector<float> cap; // last second of mixed output (stereo)
+        e.audioOutput().setTap([&](const float *s, int n) {
+            std::lock_guard<std::mutex> lk(capMutex);
+            cap.insert(cap.end(), s, s + size_t(n) * 2);
+            const size_t keep = 48000 * 2;
+            if (cap.size() > keep) cap.erase(cap.begin(), cap.begin() + long(cap.size() - keep));
+        });
+        auto last = [&](double seconds) { // left channel of the last `seconds`
+            std::lock_guard<std::mutex> lk(capMutex);
+            const size_t n = std::min(cap.size() / 2, size_t(seconds * 48000));
+            std::vector<float> l(n);
+            for (size_t i = 0; i < n; ++i) l[i] = cap[cap.size() - 2 * n + 2 * i];
+            return l;
+        };
+        auto rms = [](const std::vector<float> &v) {
+            double a = 0;
+            for (float x : v) a += double(x) * x;
+            return v.empty() ? 0.0 : std::sqrt(a / double(v.size()));
+        };
+        auto freq = [](const std::vector<float> &v) { // zero crossings
+            int z = 0;
+            for (size_t i = 1; i < v.size(); ++i) z += (v[i - 1] < 0) != (v[i] < 0);
+            return v.empty() ? 0.0 : z / 2.0 / (double(v.size()) / 48000);
+        };
+        auto settle = [](int ms) { QThread::msleep(ms); };
+
+        const int a = e.addLayer("Tone");
+        CHECK(e.setLayerAudio(a, root + "/media/tone.wav", &err));
+        CHECK(e.layer(a)->type == SourceType::Audio && e.layer(a)->audio && std::abs(e.layer(a)->duration() - 4.0) < 0.05);
+        settle(600);
+        std::vector<float> s0 = last(0.25);
+        CHECK(rms(s0) > 0.2);
+        CHECK(std::abs(freq(s0) - 440) < 15);
+        double worst = 0;
+        for (int k = 0; k < 20; ++k) {
+            worst = std::max(worst, std::abs(e.layer(a)->audio->syncError()));
+            QThread::msleep(50);
+        }
+        std::printf("      worst sync error over 1 s: %.1f ms\n", worst * 1000);
+        CHECK(worst < 0.012);
+        std::printf("      sync error %.1f ms\n", e.layer(a)->audio->syncError() * 1000);
+        CHECK(std::abs(e.layer(a)->audio->syncError()) < 0.015);
+
+        e.seekLayer(a, 3.0); // the sound follows the playhead
+        settle(400);
+        CHECK(std::abs(freq(last(0.2)) - 880) < 20);
+        e.seekLayer(a, 0.5);
+        settle(400);
+        CHECK(std::abs(freq(last(0.2)) - 440) < 15);
+
+        e.setLayerPlaying(a, false); // pause: silence, the position stays put
+        settle(300);
+        CHECK(rms(last(0.2)) < 1e-4);
+        double paused;
+        {
+            Engine::Lock lk(&e.mutex());
+            paused = e.layer(a)->position();
+        }
+        settle(200);
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(std::abs(e.layer(a)->position() - paused) < 1e-9);
+        }
+        e.setLayerPlaying(a, true);
+        settle(300);
+        const double full = rms(last(0.2));
+        CHECK(full > 0.2);
+
+        e.setLayerVolume(a, 0.5f);
+        settle(250);
+        const double half = rms(last(0.2));
+        std::printf("      volume 0.5: rms ratio %.3f\n", half / full);
+        CHECK(std::abs(half / full - 0.5) < 0.05);
+        e.setLayerVolume(a, 1.0f);
+        e.setLayerMuted(a, true);
+        settle(250);
+        CHECK(rms(last(0.2)) < 1e-4);
+        e.setLayerMuted(a, false);
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(a)->visible = false; // layer off = no sound either
+        }
+        settle(250);
+        CHECK(rms(last(0.2)) < 1e-4);
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(a)->visible = true;
+        }
+        e.setAudioVolume(0.0f); // master
+        settle(250);
+        CHECK(rms(last(0.2)) < 1e-4);
+        e.setAudioVolume(1.0f);
+        settle(250);
+        CHECK(rms(last(0.2)) > 0.2);
+
+        // Loop: across the end of the file, no gap and no resync
+        e.seekLayer(a, 3.6);
+        settle(250);
+        const int resyncs = e.layer(a)->audio->resyncCount();
+        settle(500); // wraps around at 4 s
+        std::vector<float> wrapped = last(0.5);
+        double minRms = 1;
+        for (size_t k = 0; k + 2400 <= wrapped.size(); k += 2400)
+            minRms = std::min(minRms, rms(std::vector<float>(wrapped.begin() + long(k), wrapped.begin() + long(k + 2400))));
+        CHECK(minRms > 0.2);
+        CHECK(e.layer(a)->audio->resyncCount() == resyncs);
+        CHECK(std::abs(freq(last(0.1)) - 440) < 20);
+
+        // Speed: tape-style, the pitch follows
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(a)->speed = 1.5;
+        }
+        e.seekLayer(a, 0.2);
+        settle(400);
+        CHECK(std::abs(freq(last(0.2)) - 660) < 25);
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(a)->speed = 1.0;
+        }
+
+        // Save / load
+        const QJsonObject j = e.layerJson(a);
+        CHECK(j.value("source").toObject().value("type").toString() == "audio");
+        CHECK(j.contains("volume") && j.contains("muted"));
+
+        // Video with a sound track
+        e.removeLayer(a);
+        settle(200);
+        CHECK(rms(last(0.15)) < 1e-4);
+        const int v = e.addLayer("AV");
+        CHECK(e.setLayerVideo(v, root + "/media/av.mp4", &err));
+        CHECK(e.layer(v)->video && e.layer(v)->audio);
+        settle(600);
+        CHECK(std::abs(freq(last(0.25)) - 660) < 20);
+        CHECK(std::abs(e.layer(v)->audio->syncError()) < 0.015);
+        const int nv = e.addLayer("Silent video");
+        CHECK(e.setLayerVideo(nv, root + "/media/h264.mp4", &err));
+        CHECK(!e.layer(nv)->audio); // no audio track: no stream
+        e.removeLayer(nv);
+
+        // Media bin
+        e.addBinItems({root + "/media/tone.wav"});
+        bool sawAudio = false;
+        for (const auto &r : e.mediaUsage()) sawAudio |= r.path.endsWith("tone.wav") && r.audio && !r.video;
+        CHECK(sawAudio);
+        e.removeBinItem(root + "/media/tone.wav");
+        AudioStream::Info ai;
+        CHECK(AudioStream::probe(root + "/media/tone.wav", &ai) && ai.sampleRate == 44100 && ai.channels == 1);
+        CHECK(!AudioStream::probe(root + "/media/h264.mp4", &ai));
+
+        e.removeLayer(e.layerCount() > v ? v : 0);
+        e.audioOutput().setTap(nullptr);
+        e.stopAudio();
     }
 
     e.stop();

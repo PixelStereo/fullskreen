@@ -1,5 +1,6 @@
 #pragma once
 #include "Publish.h"
+#include <QTimer>
 #include <QWidget>
 
 class Engine;
@@ -11,8 +12,9 @@ class QLabel;
 class QComboBox;
 class QCheckBox;
 class QLineEdit;
+class QProgressBar;
 
-// "Master" tab: master level and blackout, composition, video output, publishing (NDI, OMT, Syphon, Spout).
+// "Master" tab: master level and blackout, audio output, composition, video output, publishing (NDI, OMT, Syphon, Spout).
 class MasterPanel : public QWidget
 {
     Q_OBJECT
@@ -29,6 +31,7 @@ public:
     void setOutputMode(int mode); // 0 hidden, 1 windowed, 2 fullscreen
     void syncFromEngine();        // composition, publishing (after opening a project)
     void refreshStatus();         // level, publishing status (called periodically)
+    void startAudio();            // opens the audio device saved in the settings (at launch)
 
 signals:
     void blackoutChanged(bool on);
@@ -38,6 +41,7 @@ signals:
     void hideRequested();
     void compositionEdited();
     void publishEdited();
+    void audioEdited(); // master volume / mute (saved in the project)
     void fitCompositionToScreenRequested();
 
 private:
@@ -45,6 +49,10 @@ private:
     QWidget *buildComposition();
     QWidget *buildOutput();
     QWidget *buildPublish();
+    QWidget *buildAudio();
+    void fillAudioDevices();
+    void openAudioDevice(const QString &name);
+    void refreshMeters();
     void applyComposition();
     void applyPublish();
 
@@ -63,6 +71,12 @@ private:
     QComboBox *m_omtQuality = nullptr;
     QLineEdit *m_libFolder = nullptr;
     QLabel *m_libInfo = nullptr;
+    QComboBox *m_audioDevice = nullptr;
+    QSlider *m_audioVolume = nullptr;
+    QLabel *m_audioVolumeLabel = nullptr, *m_audioState = nullptr;
+    QCheckBox *m_audioMute = nullptr;
+    QProgressBar *m_meter[2] = {};
+    QTimer m_meterTimer;
     bool m_syncing = false;
     unsigned m_libTick = 0;
     QString m_libCheckedFolder = QStringLiteral("\x01");

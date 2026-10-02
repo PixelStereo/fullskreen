@@ -37,7 +37,7 @@ private:
 
     Engine *m_engine;
     QTreeWidget *m_tree;
-    QTreeWidgetItem *m_videos, *m_images;
+    QTreeWidgetItem *m_videos, *m_images, *m_audios;
     QPushButton *m_relink, *m_remove, *m_reveal;
     QLabel *m_summary;
     QHash<QString, QString> m_info;  // path -> description (resolution, duration…)

@@ -13,6 +13,7 @@ class QSlider;
 class QLabel;
 class QPushButton;
 class QListWidget;
+class QProgressBar;
 
 // Inspector for the selected layer: source, video transport, ISF parameters,
 // blending, mapping and effect chain. All edits go through the undo stack.
@@ -30,7 +31,7 @@ public:
 signals:
     void layerChanged();   // name, visibility, source: the list must be refreshed
     void mappingChanged(); // the mapping view must be redrawn
-    void addSourceRequested(const QString &kind); // "video", "image"
+    void addSourceRequested(const QString &kind); // "video", "image", "audio"
 
 private:
     QWidget *buildSource(const LayerSnapshot &s);
@@ -53,4 +54,5 @@ private:
     QPointer<QSlider> m_seek;
     QPointer<QLabel> m_time;
     QPointer<QPushButton> m_play;
+    QPointer<QProgressBar> m_meter;
 };

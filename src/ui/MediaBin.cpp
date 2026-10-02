@@ -116,7 +116,8 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     tree->onDrop = [this](const QStringList &p) { importFiles(p); };
     m_videos = new QTreeWidgetItem(m_tree, {QStringLiteral("Videos")});
     m_images = new QTreeWidgetItem(m_tree, {QStringLiteral("Images")});
-    for (QTreeWidgetItem *cat : {m_videos, m_images}) {
+    m_audios = new QTreeWidgetItem(m_tree, {QStringLiteral("Audio")});
+    for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios}) {
         QFont f = cat->font(0);
         f.setBold(true);
         cat->setFont(0, f);
@@ -170,14 +171,14 @@ void MediaBin::refresh()
     const auto usage = m_engine->mediaUsage();
     const QString selected = selectedPath();
 
-    int nv = 0, ni = 0, missing = 0;
+    int nv = 0, ni = 0, na = 0, missing = 0;
     // Update in place: keep selection and scroll position.
     QHash<QString, QTreeWidgetItem *> existing;
-    for (QTreeWidgetItem *cat : {m_videos, m_images})
+    for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios})
         for (int i = 0; i < cat->childCount(); ++i) existing.insert(cat->child(i)->data(0, PathRole).toString(), cat->child(i));
     QSet<QString> seen;
     for (const auto &r : usage) {
-        QTreeWidgetItem *cat = r.video ? m_videos : m_images;
+        QTreeWidgetItem *cat = r.video ? m_videos : r.audio ? m_audios : m_images;
         QTreeWidgetItem *it = existing.value(r.path);
         if (it && it->parent() != cat) {
             delete it;
@@ -189,7 +190,7 @@ void MediaBin::refresh()
             it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
         }
         seen.insert(r.path);
-        (r.video ? nv : ni)++;
+        (r.video ? nv : r.audio ? na : ni)++;
         if (r.missing) ++missing;
         it->setData(0, MissingRole, r.missing);
         it->setData(0, UsedRole, !r.users.isEmpty());
@@ -216,14 +217,15 @@ void MediaBin::refresh()
     }
     for (auto e = existing.begin(); e != existing.end(); ++e)
         if (!seen.contains(e.key())) delete e.value();
-    for (QTreeWidgetItem *cat : {m_videos, m_images}) cat->sortChildren(0, Qt::AscendingOrder);
+    for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios}) cat->sortChildren(0, Qt::AscendingOrder);
     m_videos->setText(0, QStringLiteral("Videos (%1)").arg(nv));
     m_images->setText(0, QStringLiteral("Images (%1)").arg(ni));
+    m_audios->setText(0, QStringLiteral("Audio (%1)").arg(na));
     m_summary->setText(missing ? QStringLiteral("<span style='color:#ff6e5f'>%1 missing file(s): "
                                                 "select them, then \"Replace…\"</span>").arg(missing)
-                               : QStringLiteral("%1 file(s)").arg(nv + ni));
+                               : QStringLiteral("%1 file(s)").arg(nv + ni + na));
     if (!selected.isEmpty())
-        for (QTreeWidgetItem *cat : {m_videos, m_images})
+        for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios})
             for (int i = 0; i < cat->childCount(); ++i)
                 if (cat->child(i)->data(0, PathRole).toString() == selected) m_tree->setCurrentItem(cat->child(i));
     updateButtons();
@@ -234,22 +236,36 @@ void MediaBin::probe(const QString &path)
     if (m_probing.value(path)) return;
     m_probing[path] = true;
     QPointer<MediaBin> self(this);
-    const bool video = Engine::isVideoFile(path) || !Engine::isImageFile(path);
+    const bool image = Engine::isImageFile(path);
     // Read metadata off the UI thread (files on network drives, etc.)
-    QThreadPool::globalInstance()->start([self, path, video] {
+    QThreadPool::globalInstance()->start([self, path, image] {
         QString info;
-        if (video) {
+        AudioStream::Info ai;
+        const bool sound = !image && AudioStream::probe(path, &ai);
+        const QString soundText = sound ? QStringLiteral("%1 %2 kHz %3")
+                                              .arg(ai.codec)
+                                              .arg(ai.sampleRate / 1000.0, 0, 'g', 3)
+                                              .arg(ai.channels == 1 ? QStringLiteral("mono")
+                                                   : ai.channels == 2 ? QStringLiteral("stereo")
+                                                                      : QStringLiteral("%1 ch").arg(ai.channels))
+                                        : QString();
+        if (!image) {
             VideoDecoder::Info vi;
-            if (VideoDecoder::probe(path, &vi)) {
+            if (Engine::isAudioFile(path) || !VideoDecoder::probe(path, &vi)) {
+                // Sound only
+                info = sound ? (ai.duration > 0 ? fmtDuration(ai.duration) + QStringLiteral(" · ") : QString()) +
+                                   QStringLiteral("%1 kHz").arg(ai.sampleRate / 1000.0, 0, 'g', 3) + QStringLiteral("\t") +
+                                   soundText
+                             : QStringLiteral("unreadable");
+            } else {
                 // Short column (resolution · duration); details are in the tooltip
                 info = QStringLiteral("%1×%2").arg(vi.width).arg(vi.height);
                 if (vi.duration > 0) info += QStringLiteral(" · ") + fmtDuration(vi.duration);
                 QStringList more;
                 if (vi.fps > 0) more << QStringLiteral("%1 fps").arg(vi.fps, 0, 'g', 4);
                 if (!vi.codec.isEmpty()) more << vi.codec;
-                if (!more.isEmpty()) info += QStringLiteral("\t") + more.join(QStringLiteral(" · "));
-            } else {
-                info = QStringLiteral("unreadable");
+                more << (sound ? QStringLiteral("sound: ") + soundText : QStringLiteral("no sound"));
+                info += QStringLiteral("\t") + more.join(QStringLiteral(" · "));
             }
         } else {
             QImageReader r(path);
@@ -282,16 +298,18 @@ void MediaBin::updateButtons()
     m_reveal->setEnabled(any && !m_tree->selectedItems().first()->data(0, MissingRole).toBool());
 }
 
+static bool isMedia(const QString &p) { return Engine::isVideoFile(p) || Engine::isImageFile(p) || Engine::isAudioFile(p); }
+
 void MediaBin::importFiles(const QStringList &paths)
 {
     QStringList ok;
     for (const QString &p : paths) {
         QFileInfo fi(p);
         if (fi.isDir()) {
-            // A dropped folder: import its images and videos (top level only)
+            // A dropped folder: import its videos, images and audio files (top level only)
             for (const QFileInfo &f : QDir(p).entryInfoList(QDir::Files, QDir::Name))
-                if (Engine::isVideoFile(f.filePath()) || Engine::isImageFile(f.filePath())) ok << f.absoluteFilePath();
-        } else if (Engine::isVideoFile(p) || Engine::isImageFile(p)) {
+                if (isMedia(f.filePath())) ok << f.absoluteFilePath();
+        } else if (isMedia(p)) {
             ok << fi.absoluteFilePath();
         }
     }
@@ -305,11 +323,10 @@ void MediaBin::importDialog()
 {
     QSettings s;
     QStringList ext;
-    for (const QString &e : {"mov", "mp4", "m4v", "avi", "mkv", "webm", "mxf", "mpg", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif", "webp", "tga"})
-        ext << "*." + QString(e);
+    for (const QString &e : Engine::videoExtensions() + Engine::imageExtensions() + Engine::audioExtensions()) ext << "*." + e;
     const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Import to Media Bin"),
                                                             s.value("dirs/video").toString(),
-                                                            QStringLiteral("Images and Videos (%1);;All Files (*)").arg(ext.join(' ')));
+                                                            QStringLiteral("Videos, Images and Audio (%1);;All Files (*)").arg(ext.join(' ')));
     if (files.isEmpty()) return;
     s.setValue("dirs/video", QFileInfo(files.first()).absolutePath());
     importFiles(files);

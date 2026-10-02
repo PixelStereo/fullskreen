@@ -16,6 +16,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSignalBlocker>
@@ -38,6 +39,9 @@ struct LayerSnapshot {
     int videoW = 0, videoH = 0;
     double fps = 0, duration = 0, speed = 1;
     QString codec;
+    bool hasAudio = false, muted = false;
+    float volume = 1;
+    AudioStream::Info audio;
     bool hasGenerator = false;
     int genW = 0, genH = 0;
     struct Fx {
@@ -70,6 +74,13 @@ struct LayerSnapshot {
             s.codec = l->video->codecName();
             s.duration = l->duration();
         }
+        if (l->audio) {
+            s.hasAudio = true;
+            s.audio = l->audio->info();
+            s.duration = l->duration();
+        }
+        s.volume = l->volume;
+        s.muted = l->muted;
         s.playing = l->playing;
         s.loop = l->loop;
         s.speed = l->speed;
@@ -202,9 +213,11 @@ void LayerInspector::rebuild()
     });
 
     v->addWidget(buildSource(s));
-    v->addWidget(buildCompositing(s));
-    v->addWidget(buildMapping(s));
-    v->addWidget(buildEffects(s));
+    if (s.type != SourceType::Audio) { // a sound has no picture: no compositing, mapping or effects
+        v->addWidget(buildCompositing(s));
+        v->addWidget(buildMapping(s));
+        v->addWidget(buildEffects(s));
+    }
     v->addStretch();
     refreshDynamic();
 }
@@ -219,6 +232,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     case SourceType::Video: desc = QStringLiteral("Video — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
     case SourceType::Image: desc = QStringLiteral("Image — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
     case SourceType::Isf: desc = QStringLiteral("ISF Generator — %1").arg(QFileInfo(s.sourcePath).completeBaseName()); break;
+    case SourceType::Audio: desc = QStringLiteral("Audio — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
     default: desc = QStringLiteral("No source"); break;
     }
     auto *title = new QLabel(desc);
@@ -229,6 +243,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     auto *buttons = new QHBoxLayout;
     auto *bVideo = new QPushButton(QStringLiteral("Video…"));
     auto *bImage = new QPushButton(QStringLiteral("Image…"));
+    auto *bAudio = new QPushButton(QStringLiteral("Audio…"));
     auto *bGen = new QPushButton(QStringLiteral("Generator"));
     auto *genMenu = new QMenu(bGen);
     for (const IsfEntry &e : m_engine->library().generators()) {
@@ -241,11 +256,13 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Remove Source"));
     buttons->addWidget(bVideo);
     buttons->addWidget(bImage);
+    buttons->addWidget(bAudio);
     buttons->addWidget(bGen);
     buttons->addWidget(bClear);
     v->addLayout(buttons);
     connect(bVideo, &QPushButton::clicked, this, [this] { emit addSourceRequested("video"); });
     connect(bImage, &QPushButton::clicked, this, [this] { emit addSourceRequested("image"); });
+    connect(bAudio, &QPushButton::clicked, this, [this] { emit addSourceRequested("audio"); });
     connect(bClear, &QToolButton::clicked, this, [this] {
         editSource(QStringLiteral("Remove Source"), [this] { m_engine->clearLayerSource(m_layer); });
         emit layerChanged();
@@ -254,13 +271,26 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
 
     if (!s.error.isEmpty()) v->addWidget(errorLabel(s.error));
 
-    if (s.type == SourceType::Video && s.hasVideo) {
-        auto *info = new QLabel(QStringLiteral("%1 × %2 · %3 fps · %4 · %5")
-                                    .arg(s.videoW)
-                                    .arg(s.videoH)
-                                    .arg(s.fps, 0, 'f', 2)
-                                    .arg(s.codec)
-                                    .arg(fmtTime(s.duration)));
+    auto audioText = [](const AudioStream::Info &a) {
+        const QString ch = a.channels == 1 ? QStringLiteral("mono") : a.channels == 2 ? QStringLiteral("stereo")
+                                                                                        : QStringLiteral("%1 ch").arg(a.channels);
+        return QStringLiteral("%1 · %2 kHz · %3").arg(a.codec).arg(a.sampleRate / 1000.0, 0, 'g', 3).arg(ch);
+    };
+    const bool media = (s.type == SourceType::Video && s.hasVideo) || (s.type == SourceType::Audio && s.hasAudio);
+    if (media) {
+        QString text;
+        if (s.type == SourceType::Video) {
+            text = QStringLiteral("%1 × %2 · %3 fps · %4 · %5")
+                       .arg(s.videoW)
+                       .arg(s.videoH)
+                       .arg(s.fps, 0, 'f', 2)
+                       .arg(s.codec)
+                       .arg(fmtTime(s.duration));
+            text += s.hasAudio ? QStringLiteral("\nSound: ") + audioText(s.audio) : QStringLiteral("\nNo sound");
+        } else {
+            text = audioText(s.audio) + QStringLiteral(" · ") + fmtTime(s.duration);
+        }
+        auto *info = new QLabel(text);
         info->setStyleSheet("color:#999; font-size:11px;");
         v->addWidget(info);
 
@@ -314,6 +344,41 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         connect(m_seek, &QSlider::sliderMoved, this, seekTo);
         connect(m_seek, &QSlider::actionTriggered, this, [this, seekTo](int action) {
             if (action != QAbstractSlider::SliderMove) seekTo(m_seek->sliderPosition());
+        });
+    }
+
+    if (media && s.hasAudio) {
+        // Sound: layer volume (undoable), mute, level
+        auto *row = new QHBoxLayout;
+        auto *icon = new QLabel(QStringLiteral("Volume"));
+        auto *vol = new QSlider(Qt::Horizontal);
+        vol->setRange(0, 200);
+        vol->setValue(int(std::lround(s.volume * 100)));
+        vol->setToolTip(QStringLiteral("Layer volume (100% = original level). Hiding the layer also silences it."));
+        auto *volLabel = new QLabel(QStringLiteral("%1%").arg(vol->value()));
+        volLabel->setMinimumWidth(40);
+        volLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto *mute = new QCheckBox(QStringLiteral("Mute"));
+        mute->setChecked(s.muted);
+        row->addWidget(icon);
+        row->addWidget(vol, 1);
+        row->addWidget(volLabel);
+        row->addWidget(mute);
+        v->addLayout(row);
+        m_meter = new QProgressBar;
+        m_meter->setRange(0, 600);
+        m_meter->setTextVisible(false);
+        m_meter->setFixedHeight(5);
+        m_meter->setStyleSheet("QProgressBar { background:#1b1b1d; border:none; } QProgressBar::chunk { background:#3fae5a; }");
+        v->addWidget(m_meter);
+        connect(vol, &QSlider::valueChanged, this, [this, volLabel](int pct) {
+            volLabel->setText(QStringLiteral("%1%").arg(pct));
+            setProp(cmd::SetLayerProp::Volume, pct / 100.0);
+            emit layerChanged();
+        });
+        connect(mute, &QCheckBox::toggled, this, [this](bool on) {
+            setProp(cmd::SetLayerProp::Muted, on);
+            emit layerChanged();
         });
     }
 
@@ -617,7 +682,12 @@ void LayerInspector::refreshDynamic()
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(m_layer);
-        if (!l || l->type != SourceType::Video) return;
+        if (!l || (l->type != SourceType::Video && l->type != SourceType::Audio)) return;
+        if (m_meter) {
+            const float pk = l->audio ? l->audio->peak() : 0.0f;
+            const double db = pk > 1e-6f ? 20.0 * std::log10(pk) : -60.0;
+            m_meter->setValue(int(std::clamp(db + 60.0, 0.0, 60.0) * 10));
+        }
         playing = l->playing;
         d = l->duration();
         p = l->position();

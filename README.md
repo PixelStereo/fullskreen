@@ -7,9 +7,12 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
 
 - **Stacked layers** (the top layer is drawn on top), opacity, blend modes Normal / Add / Screen / Multiply.
 - **One source per layer**:
-  - video (H.264, HEVC, ProRes, HAP, DNxHD… anything FFmpeg reads), play / pause / loop / speed / position;
+  - video (H.264, HEVC, ProRes, HAP, DNxHD… anything FFmpeg reads), play / pause / loop / speed / position,
+    **with its sound** when the file has an audio track;
   - still image;
-  - ISF generator.
+  - ISF generator;
+  - **audio file** (WAV, AIFF, MP3, AAC/M4A, FLAC, Ogg/Opus… anything FFmpeg reads): an audio layer, with the same
+    transport as a video (play / pause / loop / speed / position) and no picture.
 - **ISF effect chain per layer**: any number of effects, reorderable, each one can be enabled or disabled.
   Parameters are generated automatically from each shader's JSON header.
 - **ISF v2 support**: multiple passes, computed pass sizes (`"$WIDTH/2"`), persistent and float buffers,
@@ -24,9 +27,15 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   ⌘⇧F / Ctrl+Shift+F: windowed output.
 - **Rendering on a dedicated thread**: the engine renders and presents the output itself; a slowdown or freeze
   of the interface (loading, dialog, menu) does not interrupt the projected image.
+- **Sound**: every layer with sound (audio layer, or video with an audio track) has a volume (0–200%, undoable),
+  a Mute switch and a level meter; hiding the layer silences it too. The sound follows the layer's playhead:
+  play, pause, seek, loop and speed (tape-style: the pitch follows the speed). Synchronization with the picture
+  is kept within a few milliseconds, small drifts are corrected inaudibly, and after an audio dropout or a seek
+  the sound realigns with a short fade. All layers are mixed to one stereo output (48 kHz).
+  Blackout does not affect the sound.
 - **Master tab** (next to the Layer tab): master level fader and **Blackout** button with fade
-  (adjustable duration, Ctrl+B / ⌘B, works from the output window too), output screen and mode, composition size,
-  output publishing.
+  (adjustable duration, Ctrl+B / ⌘B, works from the output window too), output screen and mode,
+  **audio output** (sound card, master volume, mute, stereo meters), composition size, output publishing.
 - **Output publishing** to other software or machines:
   - **NDI** (network): requires NDI Tools or the NDI Runtime (ndi.video) installed on the machine;
   - **OMT** — Open Media Transport (network, open source): requires `libomt` and `libvmx`
@@ -36,8 +45,8 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
     built into Fulskrin (nothing to install).
   NDI and OMT are loaded when enabled: Fulskrin runs without them. The Master tab shows the state of each one
   (active, number of receivers, or what is missing). Settings are saved in the project.
-- **Media Bin** (left): every image and video file used by the project, grouped by type, with resolution,
-  duration and the number of layers using them (sources and shader images). **Missing** files are shown in red;
+- **Media Bin** (left): every video, image and audio file used by the project, grouped by type, with resolution,
+  duration, sound format and the number of layers using them (sources and shader images). **Missing** files are shown in red;
   **Replace…** relinks them (a single replacement fixes every layer, and can be undone);
   import without creating a layer, drag to the layer list or the preview to create a layer,
   double-click to replace the source of the selected layer.
@@ -58,9 +67,9 @@ effects ColorCorrection, Hue, Blur (2 passes), Trails (persistent buffer), Kalei
 
 ## Building
 
-On the first `cmake` run, the **Syphon** (macOS) or **Spout** (Windows) sources are downloaded from GitHub
+On the first `cmake` run, **miniaudio** (sound output, all platforms) and the **Syphon** (macOS) or **Spout** (Windows) sources are downloaded from GitHub
 and built with Fulskrin, so an internet connection is needed the first time.
-To skip them: `-DFULSKRIN_SYPHON=OFF` or `-DFULSKRIN_SPOUT=OFF`.
+To skip Syphon or Spout: `-DFULSKRIN_SYPHON=OFF` or `-DFULSKRIN_SPOUT=OFF`.
 
 You need Qt 6.2 or newer, FFmpeg (development libraries), CMake 3.21+ and a C++17 compiler.
 
@@ -97,7 +106,7 @@ The FFmpeg DLLs are copied next to `Fulskrin.exe` automatically. Adjust the path
 
 ```bash
 sudo apt install build-essential cmake pkg-config qt6-base-dev libqt6opengl6-dev libgl1-mesa-dev \
-                 libavformat-dev libavcodec-dev libswscale-dev libavutil-dev
+                 libavformat-dev libavcodec-dev libswscale-dev libswresample-dev libavutil-dev
 cmake -S . -B build && cmake --build build -j
 ./build/Fulskrin
 ```
@@ -106,7 +115,7 @@ cmake -S . -B build && cmake --build build -j
 
 | Action | How |
 |---|---|
-| New layer | **+** button of the layer list, Layer menu, drag a file (from the system or the Media Bin) |
+| New layer (video, image, audio, generator) | **+** button of the layer list, Layer menu, drag a file (from the system or the Media Bin) |
 | Import to the Media Bin | Import… button, Ctrl+I (⌘I), or drop files / a folder onto the Media Bin |
 | Relink a moved file | Media Bin ▸ select the red file ▸ Replace… |
 | Choose the projector screen | Master tab ▸ Video Output, or Output menu ▸ Output Screen |
@@ -117,7 +126,7 @@ cmake -S . -B build && cmake --build build -j
 | Close the output from the output | Shift+Esc (Esc alone does nothing, for safety) |
 | Match the composition to the projector | Master tab ▸ Composition ▸ "= output screen" |
 | Publish via NDI, OMT, Syphon, Spout | Master tab ▸ Output Publishing |
-| Play / pause the selected video layer | Space |
+| Play / pause the selected video or audio layer | Space |
 | Move a handle | drag (Shift: fine movement) |
 | Move the whole layer | drag inside the layer |
 | Nudge by one pixel | arrow keys (Shift: 10 px) |
@@ -146,6 +155,8 @@ src/engine/   engine, with no widget dependency (QtCore/QtGui/OpenGL + FFmpeg)
   Publish       publishing: NDI / OMT (loaded at runtime), Syphon (.mm), Spout; asynchronous GPU readback
   Isf           ISF parser and renderer (GLSL 330 core translation, passes, buffers)
   VideoDecoder  FFmpeg decoding on a thread, frame queue, seamless loop, seeking
+  AudioStream   FFmpeg audio decoding + resampling on a thread, synchronized to the layer playhead
+  AudioOutput   sound card (miniaudio), mix of all layers, master volume, meters
   Mapping       4-corner homography + Catmull-Rom mesh
 src/ui/       Qt Widgets interface
   MainWindow, LayerInspector, ParamPanel, MappingView (editing), OutputWindow (projector)
@@ -180,7 +191,7 @@ generates one project per shader and per codec, plus the demo used by the UI tes
 - **CPU decoding to RGBA**: comfortable for a few HD streams. Several 4K streams will need
   YUV→RGB conversion on the GPU, compressed HAP textures (DXT) uploaded directly to the GPU,
   and hardware decoding (VideoToolbox on Mac, D3D11VA on Windows, VAAPI on Linux).
-- **No audio.**
+- **Sound**: one stereo output; no multichannel routing, per-layer output assignment, fades or audio effects yet.
 - **Single output**: no multiple outputs, per-projector slicing or automatic edge blending yet
   (the SoftEdges effect helps with manual blending).
 - **No timeline, cues, or OSC / MIDI / DMX control.**

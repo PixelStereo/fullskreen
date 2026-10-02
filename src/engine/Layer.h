@@ -1,4 +1,5 @@
 #pragma once
+#include "AudioStream.h"
 #include "Gl.h"
 #include "Isf.h"
 #include "Mapping.h"
@@ -11,7 +12,7 @@
 #include <memory>
 #include <vector>
 
-enum class SourceType { None, Video, Image, Isf };
+enum class SourceType { None, Video, Image, Isf, Audio };
 enum class BlendMode { Normal, Add, Screen, Multiply };
 
 QString blendModeName(BlendMode m);
@@ -30,11 +31,16 @@ struct Layer {
     // File missing on load: path and type are kept (save, media bin, relink)
     SourceType missingType = SourceType::None;
 
-    // Video
+    // Video and audio: transport shared by the picture and the sound
     std::unique_ptr<VideoDecoder> video;
     std::vector<uint8_t> frameBuffer;
     bool playing = true, loop = true;
     double speed = 1.0, playhead = 0.0;
+
+    // Sound: audio layer, or audio track of a video layer (null if the file has none)
+    std::shared_ptr<AudioStream> audio;
+    float volume = 1.0f; // linear gain, 0..2
+    bool muted = false;
 
     // Video / image: source texture (fed in the render thread)
     Texture2D sourceTex;
@@ -56,7 +62,9 @@ struct Layer {
     GLuint finalTex = 0;
     int finalW = 0, finalH = 0;
 
-    double duration() const { return video ? video->duration() : 0.0; }
+    bool hasTransport() const { return video || audio; }
+    double duration() const { return video ? video->duration() : audio ? audio->duration() : 0.0; }
+    float audioGain() const { return visible && !muted ? volume : 0.0f; }
     double position() const
     {
         const double d = duration();

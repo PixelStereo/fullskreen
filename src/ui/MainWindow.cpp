@@ -44,20 +44,16 @@
 
 static const QStringList kIsfExt = {"fs", "frag"};
 
-static QString videoFilter()
+static QString patterns(const QStringList &ext)
 {
     QStringList p;
-    for (const QString &e : {"mov", "mp4", "m4v", "avi", "mkv", "webm", "mxf", "mpg", "mpeg", "wmv", "flv", "ts", "hap"})
-        p << "*." + QString(e);
-    return QStringLiteral("Videos (%1);;All Files (*)").arg(p.join(' '));
+    for (const QString &e : ext) p << "*." + e;
+    return p.join(' ');
 }
 
-static QString imageFilter()
-{
-    QStringList p;
-    for (const QString &e : {"png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif", "webp", "tga"}) p << "*." + QString(e);
-    return QStringLiteral("Images (%1)").arg(p.join(' '));
-}
+static QString videoFilter() { return QStringLiteral("Videos (%1);;All Files (*)").arg(patterns(Engine::videoExtensions())); }
+static QString imageFilter() { return QStringLiteral("Images (%1)").arg(patterns(Engine::imageExtensions())); }
+static QString audioFilter() { return QStringLiteral("Audio (%1);;All Files (*)").arg(patterns(Engine::audioExtensions())); }
 
 static QScrollArea *scrolled(QWidget *w)
 {
@@ -187,6 +183,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_master, &MasterPanel::hideRequested, this, [this] { setOutputMode(OutputHidden); });
     connect(m_master, &MasterPanel::compositionEdited, this, &MainWindow::markDirty);
     connect(m_master, &MasterPanel::publishEdited, this, &MainWindow::markDirty);
+    connect(m_master, &MasterPanel::audioEdited, this, &MainWindow::markDirty);
     connect(m_master, &MasterPanel::fitCompositionToScreenRequested, this, [this] {
         if (QScreen *sc = selectedScreen()) {
             const QSize px = sc->geometry().size() * sc->devicePixelRatio();
@@ -230,6 +227,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_statusTimer.setInterval(100);
     connect(&m_statusTimer, &QTimer::timeout, this, &MainWindow::statusTick);
     m_statusTimer.start();
+    m_master->startAudio(); // sound card saved in the settings (system default otherwise)
     if (!m_engine->isThreaded()) {
         // Platform without OpenGL rendering on a separate thread: rendering is clocked by the UI.
         m_renderTimer.setTimerType(Qt::PreciseTimer);
@@ -296,7 +294,7 @@ void MainWindow::buildMenus()
         QSettings s;
         const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Import to Media Bin"),
                                                                 s.value("dirs/video").toString(),
-                                                                QStringLiteral("Images and Videos (*)"));
+                                                                QStringLiteral("Videos, Images and Audio (*)"));
         if (!files.isEmpty()) m_bin->importFiles(files);
     });
     file->addSeparator();
@@ -340,6 +338,7 @@ void MainWindow::buildMenus()
     for (QMenu *m : {layer, m_layerTable->addMenu()}) {
         m->addAction(QStringLiteral("Video Layer…"), this, &MainWindow::addVideoLayer);
         m->addAction(QStringLiteral("Image Layer…"), this, &MainWindow::addImageLayer);
+        m->addAction(QStringLiteral("Audio Layer…"), this, &MainWindow::addAudioLayer);
         QMenu *gen = m->addMenu(QStringLiteral("ISF Generator Layer"));
         gen->setProperty("generatorMenu", true);
         m->addAction(QStringLiteral("Empty Layer"), this, &MainWindow::addEmptyLayer);
@@ -524,6 +523,7 @@ static QString layerTag(SourceType t)
     case SourceType::Video: return QStringLiteral("▶");
     case SourceType::Image: return QStringLiteral("▣");
     case SourceType::Isf: return QStringLiteral("◆");
+    case SourceType::Audio: return QStringLiteral("♪");
     default: return QStringLiteral("○");
     }
 }
@@ -549,8 +549,10 @@ void MainWindow::refreshLayerList()
             r.opacity = l->opacity;
             r.blend = blendModeName(l->blend);
             r.error = !l->error.isEmpty();
+            r.noPicture = l->type == SourceType::Audio || (l->type == SourceType::None && l->missingType == SourceType::Audio);
             switch (l->type) {
             case SourceType::Video:
+            case SourceType::Audio:
             case SourceType::Image: r.source = QFileInfo(l->sourcePath).fileName(); break;
             case SourceType::Isf: r.source = QStringLiteral("generator ") + QFileInfo(l->sourcePath).completeBaseName(); break;
             default: r.source = l->missingType != SourceType::None ? QFileInfo(l->sourcePath).fileName() + QStringLiteral(" — missing")
@@ -559,7 +561,11 @@ void MainWindow::refreshLayerList()
             QStringList fx;
             for (const auto &e : l->effects) fx << (e->enabled ? e->name() : QStringLiteral("(") + e->name() + QStringLiteral(")"));
             r.effects = fx.join(QStringLiteral(" › "));
-            if (l->type == SourceType::Video) {
+            if (l->audio) {
+                const QString vol = l->muted ? QStringLiteral("muted") : QStringLiteral("%1%").arg(std::lround(l->volume * 100));
+                r.source += (l->type == SourceType::Video ? QStringLiteral("   ♪ ") : QStringLiteral("   ")) + vol;
+            }
+            if (l->type == SourceType::Video || l->type == SourceType::Audio) {
                 r.playback = QStringLiteral("%1 %2 / %3").arg(l->playing ? QStringLiteral("▶") : QStringLiteral("❚❚"),
                                                                fmtClock(l->position()), fmtClock(l->duration()));
             } else if (l->type == SourceType::Isf) {
@@ -611,9 +617,8 @@ int MainWindow::newLayerFromFile(const QString &path, int at)
     QString err;
     int idx = m_engine->addLayer(base, at);
     bool ok;
-    if (Engine::isImageFile(path)) ok = m_engine->setLayerImage(idx, path, &err);
-    else if (kIsfExt.contains(ext)) ok = (m_engine->setLayerIsf(idx, path, &err), true);
-    else ok = m_engine->setLayerVideo(idx, path, &err); // video and unknown extensions: FFmpeg decides
+    if (kIsfExt.contains(ext)) ok = (m_engine->setLayerIsf(idx, path, &err), true);
+    else ok = m_engine->setLayerFile(idx, path, &err); // video, image or audio according to the file
     if (!ok) {
         m_engine->removeLayer(idx);
         idx = -1;
@@ -624,13 +629,12 @@ int MainWindow::newLayerFromFile(const QString &path, int at)
     return idx;
 }
 
-void MainWindow::addVideoLayer()
+void MainWindow::addFileLayers(const QString &title, const QString &dirKey, const QString &filter)
 {
     QSettings s;
-    const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Video Layer"),
-                                                            s.value("dirs/video").toString(), videoFilter());
+    const QStringList files = QFileDialog::getOpenFileNames(this, title, s.value(dirKey).toString(), filter);
     if (files.isEmpty()) return;
-    s.setValue("dirs/video", QFileInfo(files.first()).absolutePath());
+    s.setValue(dirKey, QFileInfo(files.first()).absolutePath());
     int last = -1;
     for (int k = files.size() - 1; k >= 0; --k) {
         int i = newLayerFromFile(files[k], 0);
@@ -639,30 +643,21 @@ void MainWindow::addVideoLayer()
     if (last >= 0) selectLayer(last);
 }
 
-void MainWindow::addImageLayer()
-{
-    QSettings s;
-    const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Image Layer"),
-                                                            s.value("dirs/image").toString(), imageFilter());
-    if (files.isEmpty()) return;
-    s.setValue("dirs/image", QFileInfo(files.first()).absolutePath());
-    int last = -1;
-    for (int k = files.size() - 1; k >= 0; --k) {
-        int i = newLayerFromFile(files[k], 0);
-        if (i >= 0) last = i;
-    }
-    if (last >= 0) selectLayer(last);
-}
+void MainWindow::addVideoLayer() { addFileLayers(QStringLiteral("Video Layer"), "dirs/video", videoFilter()); }
+void MainWindow::addImageLayer() { addFileLayers(QStringLiteral("Image Layer"), "dirs/image", imageFilter()); }
+void MainWindow::addAudioLayer() { addFileLayers(QStringLiteral("Audio Layer"), "dirs/audio", audioFilter()); }
 
 void MainWindow::setSourceFromDialog(const QString &kind)
 {
     const int i = currentLayer();
     if (i < 0) return;
     QSettings s;
-    const bool video = kind == "video";
-    const QString key = video ? "dirs/video" : "dirs/image";
-    const QString f = QFileDialog::getOpenFileName(this, video ? QStringLiteral("Video Source") : QStringLiteral("Image Source"),
-                                                   s.value(key).toString(), video ? videoFilter() : imageFilter());
+    const QString key = "dirs/" + kind;
+    const QString title = kind == "video" ? QStringLiteral("Video Source")
+                          : kind == "audio" ? QStringLiteral("Audio Source")
+                                            : QStringLiteral("Image Source");
+    const QString filter = kind == "video" ? videoFilter() : kind == "audio" ? audioFilter() : imageFilter();
+    const QString f = QFileDialog::getOpenFileName(this, title, s.value(key).toString(), filter);
     if (f.isEmpty()) return;
     s.setValue(key, QFileInfo(f).absolutePath());
     setSourceFromFile(i, f);
@@ -672,7 +667,7 @@ void MainWindow::setSourceFromFile(int i, const QString &f)
 {
     const QJsonObject before = m_engine->layerJson(i);
     QString err;
-    const bool ok = Engine::isImageFile(f) ? m_engine->setLayerImage(i, f, &err) : m_engine->setLayerVideo(i, f, &err);
+    const bool ok = m_engine->setLayerFile(i, f, &err);
     if (!ok) {
         QMessageBox::warning(this, QStringLiteral("Source"), err);
         return;
@@ -760,7 +755,7 @@ void MainWindow::togglePlayCurrent()
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(i);
-        if (!l || !l->video) return;
+        if (!l || !l->hasTransport()) return;
         playing = l->playing;
     }
     m_engine->setLayerPlaying(i, !playing);

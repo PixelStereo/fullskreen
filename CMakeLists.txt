@@ -18,7 +18,7 @@ find_package(Qt6 6.2 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 # FFmpeg: pkg-config (macOS Homebrew, Linux) or FFMPEG_ROOT (Windows, "shared" build)
 # ---------------------------------------------------------------------------
 set(FFMPEG_ROOT "" CACHE PATH "FFmpeg folder containing include/ and lib/ (Windows)")
-set(FFMPEG_LIBS avformat avcodec swscale avutil)
+set(FFMPEG_LIBS avformat avcodec swscale swresample avutil)
 
 if(FFMPEG_ROOT)
   add_library(ffmpeg INTERFACE)
@@ -29,7 +29,7 @@ if(FFMPEG_ROOT)
   endforeach()
 else()
   find_package(PkgConfig REQUIRED)
-  pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libswscale libavutil)
+  pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libswscale libswresample libavutil)
   add_library(ffmpeg INTERFACE)
   target_link_libraries(ffmpeg INTERFACE PkgConfig::FFMPEG)
 endif()
@@ -45,17 +45,47 @@ add_library(fulskrin_engine STATIC
   src/engine/VideoDecoder.cpp
   src/engine/Engine.cpp
   src/engine/Publish.cpp
+  src/engine/AudioStream.cpp
+  src/engine/AudioOutput.cpp
+  src/engine/MiniaudioImpl.cpp
 )
 target_include_directories(fulskrin_engine PUBLIC src/engine)
 target_link_libraries(fulskrin_engine PUBLIC Qt6::Core Qt6::Gui Qt6::OpenGL ffmpeg)
 target_compile_definitions(fulskrin_engine PUBLIC GL_SILENCE_DEPRECATION)
 
 # ---------------------------------------------------------------------------
+# Audio output: miniaudio (single header, public domain / MIT-0), downloaded at configure time
+# ---------------------------------------------------------------------------
+include(FetchContent)
+FetchContent_Declare(miniaudio
+  GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+  GIT_TAG 9634bedb5b5a2ca38c1ee7108a9358a4e233f14d # 0.11.25
+  GIT_SHALLOW FALSE
+  SOURCE_SUBDIR no-cmake) # download only: compiled in src/engine/MiniaudioImpl.cpp
+FetchContent_MakeAvailable(miniaudio)
+target_include_directories(fulskrin_engine PRIVATE "${miniaudio_SOURCE_DIR}")
+target_compile_definitions(fulskrin_engine PRIVATE MA_NO_DECODING MA_NO_ENCODING MA_NO_GENERATION MA_NO_ENGINE
+  MA_NO_RESOURCE_MANAGER MA_NO_NODE_GRAPH)
+if(MSVC)
+  set_source_files_properties(src/engine/MiniaudioImpl.cpp PROPERTIES COMPILE_OPTIONS "/W0")
+else()
+  set_source_files_properties(src/engine/MiniaudioImpl.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+if(APPLE)
+  # Link the Core Audio frameworks directly rather than loading them at runtime
+  target_compile_definitions(fulskrin_engine PRIVATE MA_NO_RUNTIME_LINKING)
+  target_link_libraries(fulskrin_engine PRIVATE "-framework CoreFoundation" "-framework CoreAudio"
+    "-framework AudioToolbox")
+elseif(UNIX)
+  find_package(Threads REQUIRED)
+  target_link_libraries(fulskrin_engine PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+endif()
+
+# ---------------------------------------------------------------------------
 # Output publishing
 #  - NDI and OMT: loaded at runtime (no build-time dependency)
 #  - Syphon (macOS) and Spout (Windows): sources downloaded and built with Fulskrin
 # ---------------------------------------------------------------------------
-include(FetchContent)
 option(FULSKRIN_SYPHON "Syphon publishing (macOS)" ON)
 option(FULSKRIN_SPOUT "Spout publishing (Windows)" ON)
 

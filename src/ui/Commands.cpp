@@ -1,6 +1,7 @@
 #include "Commands.h"
 
 #include <QDateTime>
+#include <algorithm>
 
 namespace cmd {
 
@@ -56,6 +57,8 @@ static QString propText(SetLayerProp::Prop p)
     case SetLayerProp::Blend: return QStringLiteral("Change Blend Mode");
     case SetLayerProp::Speed: return QStringLiteral("Change Speed");
     case SetLayerProp::Loop: return QStringLiteral("Toggle Loop");
+    case SetLayerProp::Volume: return QStringLiteral("Change Volume");
+    case SetLayerProp::Muted: return QStringLiteral("Toggle Mute");
     }
     return {};
 }
@@ -78,6 +81,8 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
     case Blend: return int(l->blend);
     case Speed: return l->speed;
     case Loop: return l->loop;
+    case Volume: return double(l->volume);
+    case Muted: return l->muted;
     }
     return {};
 }
@@ -97,6 +102,8 @@ void SetLayerProp::apply(const QVariant &v)
     case Opacity: l->opacity = float(v.toDouble()); break;
     case Blend: l->blend = BlendMode(v.toInt()); break;
     case Speed: l->speed = v.toDouble(); break;
+    case Volume: l->volume = float(std::clamp(v.toDouble(), 0.0, 2.0)); break;
+    case Muted: l->muted = v.toBool(); break;
     default: break;
     }
 }
@@ -105,7 +112,7 @@ bool SetLayerProp::mergeWith(const QUndoCommand *other)
 {
     auto *o = static_cast<const SetLayerProp *>(other);
     if (o->m_layer != m_layer || o->m_prop != m_prop) return false;
-    if (m_prop != Name && m_prop != Opacity && m_prop != Speed) return false;
+    if (m_prop != Name && m_prop != Opacity && m_prop != Speed && m_prop != Volume) return false;
     if (o->m_time - m_time > kMergeWindowMs) return false;
     m_after = o->m_after;
     m_time = o->m_time;

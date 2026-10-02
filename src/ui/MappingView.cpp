@@ -35,10 +35,16 @@ void MappingView::setLayer(int index)
     update();
 }
 
+// An audio layer has no picture: nothing to map.
+static bool hasPicture(const Layer *l)
+{
+    return l && l->type != SourceType::Audio && !(l->type == SourceType::None && l->missingType == SourceType::Audio);
+}
+
 Mapping *MappingView::mapping() const
 {
     Layer *l = m_engine->layer(m_layer);
-    return l ? &l->mapping : nullptr;
+    return hasPicture(l) ? &l->mapping : nullptr;
 }
 
 QRectF MappingView::viewRect() const
@@ -128,7 +134,7 @@ void MappingView::paintGL()
         for (int i = 0; i < m_engine->layerCount(); ++i) {
             if (i == m_layer) continue;
             Layer *l = m_engine->layer(i);
-            if (!l->visible) continue;
+            if (!l->visible || !hasPicture(l)) continue;
             auto pts = outline(l->mapping, 16);
             for (size_t k = 0; k < pts.size(); ++k)
                 pushLine(others, toWidget(pts[k]), toWidget(pts[(k + 1) % pts.size()]));
@@ -225,7 +231,7 @@ MappingView::Handle MappingView::hitHandle(QPointF p) const
 bool MappingView::insideLayer(int index, QPointF p) const
 {
     Layer *l = m_engine->layer(index);
-    if (!l) return false;
+    if (!hasPicture(l)) return false;
     auto pts = outline(l->mapping, 16);
     bool in = false;
     for (size_t i = 0, j = pts.size() - 1; i < pts.size(); j = i++) {
