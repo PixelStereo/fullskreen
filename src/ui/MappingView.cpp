@@ -105,13 +105,13 @@ void MappingView::paintGL()
     f->glClear(GL_COLOR_BUFFER_BIT);
 
     const QRectF r = viewRect();
-    // Le viewport OpenGL a son origine en bas à gauche.
+    // The OpenGL viewport origin is at the bottom left.
     f->glViewport(int(std::round(r.left() * dpr)), int(std::round((height() - r.bottom()) * dpr)),
                   int(std::round(r.width() * dpr)), int(std::round(r.height() * dpr)));
     m_draw.drawTexture(m_engine->outputTexture());
     f->glViewport(0, 0, int(width() * dpr), int(height() * dpr));
 
-    // Cadre de la composition
+    // Composition frame
     std::vector<float> frame;
     pushLine(frame, r.topLeft(), r.topRight());
     pushLine(frame, r.topRight(), r.bottomRight());
@@ -119,10 +119,10 @@ void MappingView::paintGL()
     pushLine(frame, r.bottomLeft(), r.topLeft());
     m_draw.drawLines(frame, QColor(255, 255, 255, 40));
 
-    // Lecture des calques sous verrou (le fil de rendu les utilise en parallèle)
+    // Read layers under the lock (the render thread uses them concurrently)
     Engine::Lock lk(&m_engine->mutex());
 
-    // Contours des autres calques
+    // Outlines of the other layers
     if (m_showAll) {
         std::vector<float> others;
         for (int i = 0; i < m_engine->layerCount(); ++i) {
@@ -139,7 +139,7 @@ void MappingView::paintGL()
     Mapping *m = mapping();
     if (!m) return;
 
-    // Grille de déformation
+    // Warp mesh
     if (m->meshMode) {
         std::vector<float> grid;
         const int steps = 24;
@@ -159,7 +159,7 @@ void MappingView::paintGL()
     std::vector<float> line;
     auto pts = outline(*m, 32);
     for (size_t k = 0; k < pts.size(); ++k) pushLine(line, toWidget(pts[k]), toWidget(pts[(k + 1) % pts.size()]));
-    // Diagonales légères en mode coins, pour juger la perspective
+    // Faint diagonals in corners mode, to judge the perspective
     if (!m->meshMode) {
         pushLine(line, toWidget(m->corners[0]), toWidget(m->corners[2]));
         pushLine(line, toWidget(m->corners[1]), toWidget(m->corners[3]));
@@ -249,7 +249,7 @@ void MappingView::mousePressEvent(QMouseEvent *e)
         m_selected = Handle{};
         m_dragLayer = true;
     } else {
-        // Sélection du calque visible le plus haut sous le curseur
+        // Select the topmost visible layer under the cursor
         m_selected = Handle{};
         for (int i = 0; i < m_engine->layerCount(); ++i) {
             if (m_engine->layer(i)->visible && insideLayer(i, p)) {
@@ -271,7 +271,7 @@ void MappingView::mouseMoveEvent(QMouseEvent *e)
     const QPointF n = toNorm(e->position());
     QPointF delta = n - m_lastNorm;
     m_lastNorm = n;
-    if (e->modifiers() & Qt::ShiftModifier) delta *= 0.1; // déplacement fin
+    if (e->modifiers() & Qt::ShiftModifier) delta *= 0.1; // fine movement
     if (m_dragHandle) {
         moveHandle(m_selected, handlePos(m_selected) + delta);
         emit mappingEdited();
@@ -291,7 +291,7 @@ void MappingView::mouseReleaseEvent(QMouseEvent *)
     const Mapping after = cmd::SetMapping::read(m_engine, m_layer);
     if (after.toJson() == m_dragBefore.toJson()) return;
     m_undo->push(new cmd::SetMapping(m_engine, m_layer, m_dragBefore, after,
-                                     handle ? QStringLiteral("Déplacer une poignée") : QStringLiteral("Déplacer le calque")));
+                                     handle ? QStringLiteral("Move Handle") : QStringLiteral("Move Layer")));
 }
 
 void MappingView::keyPressEvent(QKeyEvent *e)
@@ -305,7 +305,7 @@ void MappingView::keyPressEvent(QKeyEvent *e)
     case Qt::Key_Up: d = {0, -1}; break;
     case Qt::Key_Down: d = {0, 1}; break;
     case Qt::Key_Tab: {
-        // Passe à la poignée suivante
+        // Go to the next handle
         if (!m) break;
         if (m->meshMode) {
             int k = m_selected.kind == 1 ? m_selected.j * m->cols + m_selected.i + 1 : 0;
@@ -322,7 +322,7 @@ void MappingView::keyPressEvent(QKeyEvent *e)
     }
     if (!m) return;
     const Mapping before = *m;
-    // Un pixel de composition, ×10 avec Maj
+    // One composition pixel, ×10 with Shift
     const QSize comp = m_engine->compositionSize();
     const double step = (e->modifiers() & Qt::ShiftModifier) ? 10.0 : 1.0;
     const QPointF delta(d.x() * step / comp.width(), d.y() * step / comp.height());
@@ -333,7 +333,7 @@ void MappingView::keyPressEvent(QKeyEvent *e)
     }
     const Mapping after = *m;
     lk.unlock();
-    if (m_undo) m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, QStringLiteral("Ajuster au pixel"), true));
+    if (m_undo) m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, QStringLiteral("Nudge"), true));
     emit mappingEdited();
     update();
 }

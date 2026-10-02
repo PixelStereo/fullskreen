@@ -1,6 +1,6 @@
 #pragma once
-// Dessin OpenGL côté interface (prévisualisation, sortie) : texture plein cadre,
-// lignes et triangles de couleur pour les poignées de mapping.
+// UI-side OpenGL drawing (preview, output): full-frame texture,
+// colored lines and triangles for the mapping handles.
 
 #include <QColor>
 #include <QOpenGLExtraFunctions>
@@ -9,11 +9,11 @@
 class GlDraw : protected QOpenGLExtraFunctions
 {
 public:
-    void init();    // contexte courant requis
-    void destroy(); // contexte courant requis
+    void init();    // requires a current context
+    void destroy(); // requires a current context
 
-    void drawTexture(GLuint tex);                                   // remplit le viewport courant
-    void drawLines(const std::vector<float> &ndc, const QColor &c); // paires de points (x,y) en NDC
+    void drawTexture(GLuint tex);                                   // fills the current viewport
+    void drawLines(const std::vector<float> &ndc, const QColor &c); // pairs of (x,y) points in NDC
     void drawTriangles(const std::vector<float> &ndc, const QColor &c);
 
 private:

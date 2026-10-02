@@ -6,8 +6,8 @@ class Engine;
 class QUndoStack;
 struct IsfValue;
 
-// Panneau de paramètres généré automatiquement à partir des INPUTS d'un shader ISF.
-// slot -1 = générateur du calque, sinon index de l'effet. Chaque modification passe par la pile d'annulation.
+// Parameter panel generated automatically from the INPUTS of an ISF shader.
+// slot -1 = the layer's generator, otherwise the effect index. Every edit goes through the undo stack.
 class ParamPanel : public QWidget
 {
     Q_OBJECT

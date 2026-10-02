@@ -14,8 +14,8 @@ class QLabel;
 class QPushButton;
 class QListWidget;
 
-// Inspecteur du calque sélectionné : source, transport vidéo, paramètres ISF,
-// fusion, mapping et chaîne d'effets. Les modifications passent par la pile d'annulation.
+// Inspector for the selected layer: source, video transport, ISF parameters,
+// blending, mapping and effect chain. All edits go through the undo stack.
 class LayerInspector : public QWidget
 {
     Q_OBJECT
@@ -25,11 +25,11 @@ public:
     void setLayer(int index);
     int layerIndex() const { return m_layer; }
     void rebuild();
-    void refreshDynamic(); // position de lecture (appelé périodiquement)
+    void refreshDynamic(); // playback position (called periodically)
 
 signals:
-    void layerChanged();   // nom, visibilité, source : la liste doit être rafraîchie
-    void mappingChanged(); // la vue de mapping doit être redessinée
+    void layerChanged();   // name, visibility, source: the list must be refreshed
+    void mappingChanged(); // the mapping view must be redrawn
     void addSourceRequested(const QString &kind); // "video", "image"
 
 private:

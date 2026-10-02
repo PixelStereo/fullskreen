@@ -1,16 +1,16 @@
 /*{
-    "DESCRIPTION": "Mire de calage pour le mapping : grille, croix centrale, cercles, diagonales, bords et coins colorés (orientation).",
-    "CREDIT": "Lanterne",
+    "DESCRIPTION": "Alignment test pattern for mapping: grid, center cross, circles, diagonals, border and colored corners (orientation).",
+    "CREDIT": "Fulskrin",
     "ISFVSN": "2",
-    "CATEGORIES": ["Calage"],
+    "CATEGORIES": ["Alignment"],
     "INPUTS": [
         { "NAME": "divisions", "LABEL": "Divisions", "TYPE": "float", "DEFAULT": 12, "MIN": 2, "MAX": 64 },
-        { "NAME": "lineWidth", "LABEL": "Épaisseur (px)", "TYPE": "float", "DEFAULT": 2, "MIN": 1, "MAX": 12 },
-        { "NAME": "lineColor", "LABEL": "Couleur des lignes", "TYPE": "color", "DEFAULT": [1.0, 1.0, 1.0, 1.0] },
-        { "NAME": "background", "LABEL": "Fond", "TYPE": "color", "DEFAULT": [0.04, 0.04, 0.05, 1.0] },
-        { "NAME": "showCircles", "LABEL": "Cercles", "TYPE": "bool", "DEFAULT": true },
-        { "NAME": "showDiagonals", "LABEL": "Diagonales", "TYPE": "bool", "DEFAULT": true },
-        { "NAME": "colorCorners", "LABEL": "Coins colorés", "TYPE": "bool", "DEFAULT": true }
+        { "NAME": "lineWidth", "LABEL": "Line width (px)", "TYPE": "float", "DEFAULT": 2, "MIN": 1, "MAX": 12 },
+        { "NAME": "lineColor", "LABEL": "Line color", "TYPE": "color", "DEFAULT": [1.0, 1.0, 1.0, 1.0] },
+        { "NAME": "background", "LABEL": "Background", "TYPE": "color", "DEFAULT": [0.04, 0.04, 0.05, 1.0] },
+        { "NAME": "showCircles", "LABEL": "Circles", "TYPE": "bool", "DEFAULT": true },
+        { "NAME": "showDiagonals", "LABEL": "Diagonals", "TYPE": "bool", "DEFAULT": true },
+        { "NAME": "colorCorners", "LABEL": "Colored corners", "TYPE": "bool", "DEFAULT": true }
     ]
 }*/
 
@@ -25,15 +25,15 @@ void main()
     vec2 center = RENDERSIZE * 0.5;
     float cell = RENDERSIZE.y / floor(divisions);
 
-    // Grille alignée sur le centre
+    // Grid aligned on the center
     vec2 g = abs(mod(px - center + cell * 0.5, cell) - cell * 0.5);
     float grid = lineMask(min(g.x, g.y), lineWidth);
 
-    // Croix centrale épaisse
+    // Thick center cross
     vec2 dc = abs(px - center);
     float cross = lineMask(min(dc.x, dc.y), lineWidth * 2.5);
 
-    // Bord de l'image
+    // Image border
     vec2 de = min(px, RENDERSIZE - px);
     float border = lineMask(min(de.x, de.y), lineWidth * 4.0);
 
@@ -58,7 +58,7 @@ void main()
     vec4 col = background;
     if (colorCorners) {
         vec2 uv = isf_FragNormCoord;
-        // haut-gauche rouge, haut-droit vert, bas-gauche bleu, bas-droit jaune
+        // top-left red, top-right green, bottom-left blue, bottom-right yellow
         vec3 tint = uv.x < 0.5 ? (uv.y > 0.5 ? vec3(0.85, 0.12, 0.12) : vec3(0.12, 0.3, 0.9))
                                : (uv.y > 0.5 ? vec3(0.12, 0.75, 0.25) : vec3(0.9, 0.78, 0.1));
         vec2 q = min(uv, 1.0 - uv) * vec2(RENDERSIZE.x / RENDERSIZE.y, 1.0);

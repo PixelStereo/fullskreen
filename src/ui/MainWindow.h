@@ -26,10 +26,10 @@ public:
     ~MainWindow() override;
 
     bool openProject(const QString &path);
-    // Propose de restaurer la session si l'application ne s'est pas fermée normalement.
+    // Offers to restore the session if the application did not exit normally.
     void offerRecovery();
     void setAutosaveEnabled(bool on) { m_autosaveEnabled = on; }
-    void setQuiet(bool on) { m_quiet = on; } // tests : avertissements dans la barre d'état, sans dialogue
+    void setQuiet(bool on) { m_quiet = on; } // tests: warnings in the status bar, no dialog
 
     enum OutputMode { OutputHidden = 0, OutputWindowed = 1, OutputFullscreen = 2 };
 
@@ -84,7 +84,7 @@ private:
     void rescanLibrary();
 
     void setBlackout(bool on);
-    bool handleControlKey(int key, Qt::KeyboardModifiers mods); // raccourcis de régie, aussi depuis la sortie
+    bool handleControlKey(int key, Qt::KeyboardModifiers mods); // show-control shortcuts, also from the output window
 
     Engine *m_engine;
     QUndoStack *m_undo = nullptr;
@@ -106,9 +106,9 @@ private:
     OutputMode m_outputMode = OutputHidden;
     int m_lastSelected = -1;
 
-    bool m_forceDirty = false;          // modification hors pile d'annulation (composition, publication, chutier)
+    bool m_forceDirty = false;          // change outside the undo stack (composition, publishing, media bin)
     bool m_autosaveEnabled = true;
     bool m_quiet = false;
-    int m_autosaveIndex = -1;           // position de la pile d'annulation lors de la dernière sauvegarde auto
+    int m_autosaveIndex = -1;           // undo stack index at the last autosave
     bool m_autosaveDone = false;
 };

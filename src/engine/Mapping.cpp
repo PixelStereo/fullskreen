@@ -5,7 +5,7 @@
 
 Homography Homography::squareToQuad(const QPointF q[4])
 {
-    // Heckbert, "Fundamentals of Texture Mapping" : carré unité -> quadrilatère.
+    // Heckbert, "Fundamentals of Texture Mapping": unit square -> quadrilateral.
     Homography H;
     const double x0 = q[0].x(), y0 = q[0].y(), x1 = q[1].x(), y1 = q[1].y();
     const double x2 = q[2].x(), y2 = q[2].y(), x3 = q[3].x(), y3 = q[3].y();
@@ -130,7 +130,7 @@ void Mapping::buildVertices(int n, std::vector<float> &out) const
             out[k++] = float(p.x() * 2.0 - 1.0);
             out[k++] = float(1.0 - p.y() * 2.0);
             out[k++] = float(u);
-            out[k++] = float(1.0 - v); // textures en convention OpenGL
+            out[k++] = float(1.0 - v); // textures in OpenGL convention
         }
     }
 }

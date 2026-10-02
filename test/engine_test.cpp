@@ -1,4 +1,4 @@
-// Tests du moteur sans interface : chargement/sauvegarde, vidéo, ISF (multi-passes, .vs, erreurs).
+// Headless engine tests: load/save, video, ISF (multi-pass, .vs, errors).
 #include "Commands.h"
 #include "Engine.h"
 #include <QElapsedTimer>
@@ -20,7 +20,7 @@
 static int failures = 0;
 #define CHECK(cond)                                                                 \
     do {                                                                            \
-        if (!(cond)) { std::printf("ÉCHEC %s:%d  %s\n", __FILE__, __LINE__, #cond); ++failures; } \
+        if (!(cond)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++failures; } \
         else std::printf("ok    %s\n", #cond);                                      \
     } while (0)
 
@@ -40,14 +40,14 @@ int main(int argc, char **argv)
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
     QGuiApplication app(argc, argv);
     const QString root = QString(TEST_DIR);
-    const QString tmp = QDir::tempPath() + "/lanterne_test";
+    const QString tmp = QDir::tempPath() + "/fulskrin_test";
     QDir().mkpath(tmp);
 
     Engine e;
     QString err;
     CHECK(e.initialize(&err));
 
-    // Mode compatibilité : lanterne_tests --check-isf <dossier>  -> compile et rend chaque shader du dossier
+    // Compatibility mode: fulskrin_tests --check-isf <folder>  -> compiles and renders every shader in the folder
     if (argc >= 3 && QString(argv[1]) == "--check-isf") {
         QDirIterator it(argv[2], {"*.fs"}, QDir::Files, QDirIterator::Subdirectories);
         int total = 0, ok = 0, skipped = 0;
@@ -57,7 +57,7 @@ int main(int argc, char **argv)
         while (it.hasNext()) {
             const QString path = it.next();
             IsfInstance::Header h = IsfInstance::readHeader(path);
-            if (!h.ok) { std::printf("EN-TÊTE  %s\n", qPrintable(path)); ++total; continue; }
+            if (!h.ok) { std::printf("HEADER   %s\n", qPrintable(path)); ++total; continue; }
             if (h.isTransition) { ++skipped; continue; }
             ++total;
             QString msg;
@@ -72,41 +72,41 @@ int main(int argc, char **argv)
                 for (int i = 0; i < 2; ++i) e.renderFrame();
             }
             if (valid) ++ok;
-            else std::printf("ÉCHEC    %s\n%s\n", qPrintable(QFileInfo(path).fileName()), qPrintable(msg.left(600)));
+            else std::printf("FAIL     %s\n%s\n", qPrintable(QFileInfo(path).fileName()), qPrintable(msg.left(600)));
         }
-        std::printf("\nISF : %d/%d compilés (%d transitions ignorées)\n", ok, total, skipped);
+        std::printf("\nISF: %d/%d compiled (%d transitions skipped)\n", ok, total, skipped);
         e.shutdown();
         return ok == total ? 0 : 1;
     }
 
-    // 1. Aller-retour JSON (projet construit ici : générateur + grille déformée, vidéo + effets)
+    // 1. JSON round trip (project built here: generator + warped mesh, video + effects)
     const QString isf = root + "/../isf";
-    int gen = e.addLayer("Mire");
-    CHECK(e.setLayerIsf(gen, isf + "/generateurs/Mire.fs", &err));
+    int gen = e.addLayer("Test Pattern");
+    CHECK(e.setLayerIsf(gen, isf + "/generators/TestPattern.fs", &err));
     e.layer(gen)->mapping.meshMode = true;
     e.layer(gen)->mapping.setControlPoint(1, 1, QPointF(0.4, 0.3));
     e.layer(gen)->mapping.setCorner(1, QPointF(0.9, 0.1));
-    int vid = e.addLayer("Vidéo", 1);
+    int vid = e.addLayer("Video", 1);
     CHECK(e.setLayerVideo(vid, root + "/media/h264.mp4", &err));
-    e.addEffect(vid, isf + "/effets/Couleur.fs", &err);
-    e.addEffect(vid, isf + "/effets/Remanence.fs", &err);
+    e.addEffect(vid, isf + "/effects/ColorCorrection.fs", &err);
+    e.addEffect(vid, isf + "/effects/Trails.fs", &err);
     e.layer(vid)->effects[0]->inputs()[1].fValue = 0.5;
     e.layer(vid)->blend = BlendMode::Screen;
     CHECK(e.layerCount() == 2);
     for (int i = 0; i < 10; ++i) e.renderFrame();
     const QPointF cp = e.layer(gen)->mapping.controlPoint(1, 1);
-    CHECK(e.saveProject(tmp + "/a.lanterne", {}, &err));
-    CHECK(e.loadProject(tmp + "/a.lanterne", nullptr, &err));
+    CHECK(e.saveProject(tmp + "/a.fulskrin", {}, &err));
+    CHECK(e.loadProject(tmp + "/a.fulskrin", nullptr, &err));
     CHECK(err.isEmpty());
-    CHECK(e.saveProject(tmp + "/b.lanterne", {}, &err));
-    QJsonObject a = readJson(tmp + "/a.lanterne"), b = readJson(tmp + "/b.lanterne");
+    CHECK(e.saveProject(tmp + "/b.fulskrin", {}, &err));
+    QJsonObject a = readJson(tmp + "/a.fulskrin"), b = readJson(tmp + "/b.fulskrin");
     CHECK(a.value("layers") == b.value("layers"));
     CHECK(e.layer(0)->mapping.meshMode);
     CHECK(QLineF(e.layer(0)->mapping.controlPoint(1, 1), cp).length() < 1e-9);
     CHECK(e.layer(1)->blend == BlendMode::Screen);
     CHECK(e.layer(1)->effects.size() == 2 && std::abs(e.layer(1)->effects[0]->inputs()[1].fValue - 0.5) < 1e-9);
 
-    // 2. Vidéo : positionnement et fin de lecture sans boucle
+    // 2. Video: seeking and end of playback without loop
     e.newProject();
     int v = e.addLayer("v");
     CHECK(e.setLayerVideo(v, root + "/media/h264.mp4", &err));
@@ -115,35 +115,35 @@ int main(int argc, char **argv)
     e.setLayerLoop(v, false);
     e.seekLayer(v, 3.9);
     for (int i = 0; i < 30; ++i) { e.renderFrame(); QThread::msleep(10); }
-    CHECK(!e.layer(v)->playing);           // arrêt en fin de média
-    CHECK(e.layer(v)->sourceTex.w == 1280); // une image a bien été envoyée au GPU
-    e.setLayerPlaying(v, true);             // relance depuis le début
+    CHECK(!e.layer(v)->playing);           // stops at end of media
+    CHECK(e.layer(v)->sourceTex.w == 1280); // a frame was indeed uploaded to the GPU
+    e.setLayerPlaying(v, true);             // restarts from the beginning
     CHECK(e.layer(v)->playhead < 0.01);
 
-    // 3. ISF : vertex shader personnalisé, shader cassé, passes à taille calculée
-    int fx = e.addEffect(v, root + "/isf/Decalage.fs", &err);
+    // 3. ISF: custom vertex shader, broken shader, passes with computed size
+    int fx = e.addEffect(v, root + "/isf/Offset.fs", &err);
     CHECK(e.layer(v)->effects[size_t(fx)]->isValid());
-    QFile bad(tmp + "/Casse.fs");
+    QFile bad(tmp + "/Broken.fs");
     bad.open(QIODevice::WriteOnly);
     bad.write("/*{ \"INPUTS\": [ {\"NAME\":\"inputImage\",\"TYPE\":\"image\"}, ] }*/\nvoid main(){ gl_FragColor = undefinedThing; }\n");
     bad.close();
-    int fx2 = e.addEffect(v, tmp + "/Casse.fs", &err);
+    int fx2 = e.addEffect(v, tmp + "/Broken.fs", &err);
     CHECK(!e.layer(v)->effects[size_t(fx2)]->isValid());
     CHECK(e.layer(v)->effects[size_t(fx2)]->error().contains("undefinedThing"));
-    int fx3 = e.addEffect(v, root + "/../isf/effets/Flou.fs", &err);
+    int fx3 = e.addEffect(v, root + "/../isf/effects/Blur.fs", &err);
     CHECK(e.layer(v)->effects[size_t(fx3)]->isValid());
-    for (int i = 0; i < 5; ++i) e.renderFrame(); // le shader cassé laisse passer l'image
+    for (int i = 0; i < 5; ++i) e.renderFrame(); // the broken shader passes the image through
     QImage out = e.grabOutput();
     CHECK(!out.isNull());
 
-    // 4. Annuler / rétablir (mode manuel)
+    // 4. Undo / redo (manual mode)
     {
         QUndoStack undo;
         e.newProject();
-        int g = e.addLayer("Mire");
-        e.setLayerIsf(g, root + "/../isf/generateurs/Mire.fs", &err);
-        undo.push(new cmd::AddLayer(&e, g, "ajout"));
-        // Paramètre : deux mouvements rapprochés fusionnent en une seule étape
+        int g = e.addLayer("Test Pattern");
+        e.setLayerIsf(g, root + "/../isf/generators/TestPattern.fs", &err);
+        undo.push(new cmd::AddLayer(&e, g, "add"));
+        // Parameter: two close moves merge into a single step
         IsfValue v0 = cmd::resolveIsf(&e, g, -1)->inputs()[0].value(), v1 = v0, v2 = v0;
         v1.f = 20;
         v2.f = 30;
@@ -157,33 +157,33 @@ int main(int argc, char **argv)
         // Mapping
         Mapping before = cmd::SetMapping::read(&e, g), after = before;
         after.setCorner(0, QPointF(0.2, 0.2));
-        undo.push(new cmd::SetMapping(&e, g, before, after, "coin"));
+        undo.push(new cmd::SetMapping(&e, g, before, after, "corner"));
         CHECK(e.layer(g)->mapping.corners[0] == QPointF(0.2, 0.2));
         undo.undo();
         CHECK(e.layer(g)->mapping.corners[0] == before.corners[0]);
         undo.redo();
-        // Suppression puis restauration à l'identique
+        // Delete, then restore identically
         const QJsonObject snap = e.layerJson(g);
         undo.push(new cmd::RemoveLayer(&e, g));
         CHECK(e.layerCount() == 0);
         undo.undo();
         CHECK(e.layerCount() == 1);
         CHECK(e.layerJson(0) == snap);
-        // Effets
+        // Effects
         const QJsonArray fxBefore = e.effectsJson(0);
-        e.addEffect(0, root + "/../isf/effets/Teinte.fs", &err);
-        undo.push(new cmd::SetEffects(&e, 0, fxBefore, "effet"));
+        e.addEffect(0, root + "/../isf/effects/Hue.fs", &err);
+        undo.push(new cmd::SetEffects(&e, 0, fxBefore, "effect"));
         CHECK(e.layer(0)->effects.size() == 1);
         undo.undo();
         CHECK(e.layer(0)->effects.empty());
         undo.redo();
         CHECK(e.layer(0)->effects.size() == 1);
-        // Retour au tout début de la pile
+        // Back to the very start of the stack
         while (undo.canUndo()) undo.undo();
         CHECK(e.layerCount() == 0);
     }
 
-    // 5. Fil de rendu
+    // 5. Render thread
     auto waitFrames = [&](quint64 n) {
         const quint64 target = e.frameCount() + n;
         QElapsedTimer t;
@@ -196,27 +196,27 @@ int main(int argc, char **argv)
     CHECK(e.isThreaded());
     CHECK(waitFrames(5));
     {
-        // Le fil principal « bloque » : la sortie continue d'être produite.
+        // The main thread "blocks": output keeps being produced.
         const quint64 before = e.frameCount();
         QThread::msleep(500);
-        std::printf("       %llu images pendant 500 ms de blocage du fil principal\n",
+        std::printf("       %llu frames during 500 ms of main-thread blocking\n",
                     static_cast<unsigned long long>(e.frameCount() - before));
         CHECK(e.frameCount() - before >= 15);
     }
-    // L'image évolue dans le temps (générateur animé) en mode fil
+    // The image changes over time (animated generator) in threaded mode
     {
         int pl = e.addLayer("anim");
-        e.setLayerIsf(pl, root + "/../isf/generateurs/Plasma.fs", &err);
+        e.setLayerIsf(pl, root + "/../isf/generators/Plasma.fs", &err);
         CHECK(waitFrames(5));
         const QImage a = e.grabOutput();
         QThread::msleep(400);
         CHECK(waitFrames(5));
         const QImage b = e.grabOutput();
-        std::printf("       images identiques à 400 ms d'écart : %s\n", a == b ? "oui" : "non");
+        std::printf("       identical frames 400 ms apart: %s\n", a == b ? "yes" : "no");
         CHECK(a != b);
         e.removeLayer(pl);
     }
-    // Modifications concurrentes pendant le rendu (petite composition : le GPU logiciel des tests est lent)
+    // Concurrent changes during rendering (small composition: the software GPU used for tests is slow)
     {
         e.setCompositionSize(QSize(320, 180));
         QElapsedTimer t;
@@ -224,8 +224,8 @@ int main(int argc, char **argv)
         int ops = 0;
         while (t.elapsed() < 3000) {
             int a = e.addLayer("stress");
-            e.setLayerIsf(a, root + "/../isf/generateurs/Plasma.fs", &err);
-            e.addEffect(a, root + "/../isf/effets/Flou.fs", &err);
+            e.setLayerIsf(a, root + "/../isf/generators/Plasma.fs", &err);
+            e.addEffect(a, root + "/../isf/effects/Blur.fs", &err);
             {
                 Engine::Lock lk(&e.mutex());
                 Layer *l = e.layer(a);
@@ -243,11 +243,11 @@ int main(int argc, char **argv)
             e.fadeMaster(ops % 2 ? 1.0 : 0.5, 0.1);
             ++ops;
         }
-        std::printf("       %d séries de modifications concurrentes\n", ops);
+        std::printf("       %d rounds of concurrent changes\n", ops);
         CHECK(ops >= 5);
         CHECK(waitFrames(5));
     }
-    // Vidéo en fil
+    // Video in threaded mode
     {
         e.newProject();
         e.setCompositionSize(QSize(640, 360));
@@ -257,11 +257,11 @@ int main(int argc, char **argv)
         Engine::Lock lk(&e.mutex());
         CHECK(e.layer(v2)->sourceTex.w == 1280);
     }
-    // Master : noir complet
+    // Master: full blackout
     {
         e.newProject();
-        int c = e.addLayer("blanc");
-        e.setLayerIsf(c, root + "/../isf/generateurs/CouleurUnie.fs", &err);
+        int c = e.addLayer("white");
+        e.setLayerIsf(c, root + "/../isf/generators/SolidColor.fs", &err);
         e.fadeMaster(1.0, 0);
         CHECK(waitFrames(4));
         QImage lit = e.grabOutput();
@@ -270,13 +270,13 @@ int main(int argc, char **argv)
         CHECK(waitFrames(4));
         QImage dark = e.grabOutput();
         CHECK(!dark.isNull() && qGray(dark.pixel(dark.width() / 2, dark.height() / 2)) < 2);
-        e.fadeMaster(1.0, 1.0); // remontée en 1 s
+        e.fadeMaster(1.0, 1.0); // fade back up in 1 s
         QThread::msleep(500);
         const double mid = e.masterLevel();
-        std::printf("       niveau du master à mi-fondu : %.2f\n", mid);
+        std::printf("       master level at mid-fade: %.2f\n", mid);
         CHECK(mid > 0.25 && mid < 0.75);
     }
-    // 6. Publication : relecture GPU -> fil d'envoi (BGRA, lignes de haut en bas)
+    // 6. Publishing: GPU readback -> send thread (BGRA, rows top to bottom)
     {
         e.newProject();
         e.fadeMaster(1.0, 0);
@@ -285,9 +285,9 @@ int main(int argc, char **argv)
         img.fill(QColor(255, 0, 0));
         for (int y = 16; y < 32; ++y)
             for (int x = 0; x < 64; ++x) img.setPixelColor(x, y, QColor(0, 0, 255));
-        img.save(tmp + "/hautrouge.png");
+        img.save(tmp + "/topred.png");
         int li = e.addLayer("img");
-        CHECK(e.setLayerImage(li, tmp + "/hautrouge.png", &err));
+        CHECK(e.setLayerImage(li, tmp + "/topred.png", &err));
         {
             Engine::Lock lk(&e.mutex());
             e.layer(li)->mapping.resetCorners();
@@ -302,28 +302,28 @@ int main(int argc, char **argv)
         });
         CHECK(waitFrames(20));
         std::lock_guard<std::mutex> lk(m);
-        std::printf("       %d images reçues par le fil d'envoi\n", frames);
+        std::printf("       %d frames received by the send thread\n", frames);
         CHECK(frames >= 10);
         CHECK(last.width == 64 && last.height == 32 && last.stride == 256);
         auto px = [&](int x, int y) { const uint8_t *p = last.bgra.data() + y * last.stride + x * 4; return QColor(p[2], p[1], p[0]); };
-        std::printf("       pixel haut %s, bas %s\n", qPrintable(px(10, 2).name()), qPrintable(px(10, 29).name()));
-        CHECK(px(10, 2) == QColor(255, 0, 0));  // haut : rouge
-        CHECK(px(10, 29) == QColor(0, 0, 255)); // bas : bleu
+        std::printf("       top pixel %s, bottom %s\n", qPrintable(px(10, 2).name()), qPrintable(px(10, 29).name()));
+        CHECK(px(10, 2) == QColor(255, 0, 0));  // top: red
+        CHECK(px(10, 29) == QColor(0, 0, 255)); // bottom: blue
         CHECK(last.timestamp100ns > 0);
     }
     e.setTestTap(nullptr);
     {
-        // Réglages : désactivé par défaut, Syphon/Spout signalés selon la plateforme, aller-retour JSON
+        // Settings: disabled by default, Syphon/Spout reported according to platform, JSON round trip
         PublishSettings ps;
         ps[PublishKind::Ndi].enabled = true;
-        ps[PublishKind::Ndi].name = "Scène";
+        ps[PublishKind::Ndi].name = "Stage — Main";
         ps[PublishKind::Syphon].enabled = true;
         ps.omtQuality = 50;
         CHECK(PublishSettings::fromJson(ps.toJson()) == ps);
         e.setPublishSettings(ps);
         CHECK(waitFrames(3));
         const PublishState syphon = e.publishState(PublishKind::Syphon);
-        std::printf("       Syphon : %s\n       NDI : %s\n", qPrintable(syphon.text), qPrintable(e.publishState(PublishKind::Ndi).text));
+        std::printf("       Syphon: %s\n       NDI: %s\n", qPrintable(syphon.text), qPrintable(e.publishState(PublishKind::Ndi).text));
         CHECK(publishCompiledIn(PublishKind::Syphon) ? syphon.level != PublishState::Unavailable
                                                      : syphon.level == PublishState::Unavailable);
         CHECK(e.publishState(PublishKind::Omt).level == PublishState::Off);
@@ -332,15 +332,15 @@ int main(int argc, char **argv)
         CHECK(e.publishState(PublishKind::Ndi).level == PublishState::Off);
     }
 
-    // 7. Médias : usage, fichier introuvable conservé, remplacement, chutier
+    // 7. Media: usage, missing file kept, relink, media bin
     {
         e.newProject();
         QFile::copy(root + "/media/h264.mp4", tmp + "/clip.mp4");
         int v = e.addLayer("Clip");
         CHECK(e.setLayerVideo(v, tmp + "/clip.mp4", &err));
-        int g = e.addLayer("Masque");
-        e.setLayerIsf(g, root + "/../isf/generateurs/Mire.fs", &err);
-        int fx = e.addEffect(g, root + "/../isf/effets/Masque.fs", &err);
+        int g = e.addLayer("Mask");
+        e.setLayerIsf(g, root + "/../isf/generators/TestPattern.fs", &err);
+        int fx = e.addEffect(g, root + "/../isf/effects/Mask.fs", &err);
         CHECK(fx == 0);
         {
             IsfInstance *inst;
@@ -348,7 +348,7 @@ int main(int argc, char **argv)
                 Engine::Lock lk(&e.mutex());
                 inst = e.layer(g)->effects[0].get();
             }
-            CHECK(e.setIsfImageInput(inst, 1, tmp + "/hautrouge.png", &err));
+            CHECK(e.setIsfImageInput(inst, 1, tmp + "/topred.png", &err));
         }
         e.addBinItems({root + "/media/bars.png", tmp + "/clip.mp4"});
         auto usage = e.mediaUsage();
@@ -359,17 +359,17 @@ int main(int argc, char **argv)
         };
         const Engine::MediaRef *clip = find(tmp + "/clip.mp4");
         CHECK(clip && clip->video && clip->users == QStringList{"Clip"} && clip->imported && !clip->missing);
-        const Engine::MediaRef *mask = find(tmp + "/hautrouge.png");
-        CHECK(mask && !mask->video && mask->users.size() == 1 && mask->users[0].contains("Masque"));
-        CHECK(e.layersUsingMedia(tmp + "/hautrouge.png") == QList<int>{g});
+        const Engine::MediaRef *mask = find(tmp + "/topred.png");
+        CHECK(mask && !mask->video && mask->users.size() == 1 && mask->users[0].contains("Mask"));
+        CHECK(e.layersUsingMedia(tmp + "/topred.png") == QList<int>{g});
 
-        // Enregistrer, supprimer la vidéo, rouvrir : le chemin est conservé et signalé
-        CHECK(e.saveProject(tmp + "/media.lanterne", {}, &err));
-        QFile::rename(tmp + "/clip.mp4", tmp + "/clip_deplace.mp4");
+        // Save, delete the video, reopen: the path is kept and reported
+        CHECK(e.saveProject(tmp + "/media.fulskrin", {}, &err));
+        QFile::rename(tmp + "/clip.mp4", tmp + "/clip_moved.mp4");
         QString warn;
-        CHECK(e.loadProject(tmp + "/media.lanterne", nullptr, &warn));
-        std::printf("       avertissement : %s\n", qPrintable(warn));
-        CHECK(warn.contains("introuvable"));
+        CHECK(e.loadProject(tmp + "/media.fulskrin", nullptr, &warn));
+        std::printf("       warning: %s\n", qPrintable(warn));
+        CHECK(warn.contains("not found"));
         int vi = -1;
         for (int i = 0; i < e.layerCount(); ++i) if (e.layer(i)->name == "Clip") vi = i;
         CHECK(vi >= 0);
@@ -378,24 +378,24 @@ int main(int argc, char **argv)
         CHECK(clip && clip->missing && clip->video);
         CHECK(e.layerJson(vi).value("source").toObject().value("type").toString() == "video");
         CHECK(e.binItems().size() == 2);
-        // Remplacement : la vidéo revient, le mapping est conservé
+        // Relink: the video comes back, the mapping is kept
         Mapping before = e.layer(vi)->mapping;
-        CHECK(e.relinkLayerMedia(vi, tmp + "/clip.mp4", tmp + "/clip_deplace.mp4", &err));
-        e.relinkBinItem(tmp + "/clip.mp4", tmp + "/clip_deplace.mp4");
+        CHECK(e.relinkLayerMedia(vi, tmp + "/clip.mp4", tmp + "/clip_moved.mp4", &err));
+        e.relinkBinItem(tmp + "/clip.mp4", tmp + "/clip_moved.mp4");
         CHECK(e.layer(vi)->type == SourceType::Video && e.layer(vi)->error.isEmpty());
         CHECK(e.layer(vi)->mapping.toJson() == before.toJson());
-        CHECK(e.binItems().contains(tmp + "/clip_deplace.mp4"));
-        QFile::remove(tmp + "/clip_deplace.mp4");
+        CHECK(e.binItems().contains(tmp + "/clip_moved.mp4"));
+        QFile::remove(tmp + "/clip_moved.mp4");
         VideoDecoder::Info info;
         CHECK(VideoDecoder::probe(root + "/media/prores.mov", &info) && info.width == 1920 && info.codec == "prores");
     }
 
     e.stop();
     CHECK(!e.isThreaded());
-    e.renderFrame(); // retour au mode manuel
+    e.renderFrame(); // back to manual mode
     CHECK(!e.grabOutput().isNull());
 
-    std::printf("\n%s (%d échec(s))\n", failures ? "ÉCHEC" : "TOUT EST OK", failures);
+    std::printf("\n%s (%d failure(s))\n", failures ? "FAILED" : "ALL OK", failures);
     e.shutdown();
     return failures ? 1 : 0;
 }

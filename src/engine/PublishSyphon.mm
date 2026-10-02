@@ -1,5 +1,5 @@
-// Publication Syphon (macOS) : partage de la texture de sortie avec d'autres applications, sans copie CPU.
-// Compilé uniquement sur macOS (LANTERNE_HAS_SYPHON), avec le framework Syphon (licence BSD).
+// Syphon publishing (macOS): shares the output texture with other applications, with no CPU copy.
+// Compiled only on macOS (FULSKRIN_HAS_SYPHON), with the Syphon framework (BSD license).
 
 #include "Publish.h"
 
@@ -24,13 +24,13 @@ public:
         @autoreleasepool {
             CGLContextObj ctx = CGLGetCurrentContext();
             if (!ctx) {
-                if (err) *err = QStringLiteral("Aucun contexte OpenGL actif pour Syphon.");
+                if (err) *err = QStringLiteral("No active OpenGL context for Syphon.");
                 return false;
             }
             NSString *n = [NSString stringWithUTF8String:name.toUtf8().constData()];
             m_server = [[SyphonOpenGLServer alloc] initWithName:n context:ctx options:nil];
             if (!m_server) {
-                if (err) *err = QStringLiteral("Le serveur Syphon n'a pas pu démarrer.");
+                if (err) *err = QStringLiteral("The Syphon server failed to start.");
                 return false;
             }
         }
@@ -41,7 +41,7 @@ public:
     {
         if (!m_server) return;
         @autoreleasepool {
-            // Texture OpenGL standard (origine en bas) : pas de retournement.
+            // Standard OpenGL texture (bottom-left origin): no flip.
             [m_server publishFrameTexture:texture
                             textureTarget:GL_TEXTURE_2D
                               imageRegion:NSMakeRect(0, 0, width, height)

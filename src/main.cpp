@@ -3,12 +3,10 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
-#include <QLibraryInfo>
-#include <QLocale>
-#include <QTranslator>
 #include <QMessageBox>
 #include <QPalette>
 #include <QStyleFactory>
+#include <QSettings>
 #include <QSurfaceFormat>
 #include <QThread>
 #include <QTimer>
@@ -42,7 +40,7 @@ static void applyDarkTheme(QApplication &app)
 
 int main(int argc, char *argv[])
 {
-    // OpenGL 3.3 core partout (macOS fournit alors 4.1 core). Contextes partagés entre moteur et fenêtres.
+    // OpenGL 3.3 core everywhere (macOS then provides 4.1 core). Contexts shared between engine and windows.
     QSurfaceFormat fmt;
     fmt.setRenderableType(QSurfaceFormat::OpenGL);
     fmt.setVersion(3, 3);
@@ -54,27 +52,32 @@ int main(int argc, char *argv[])
     QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
 
     QApplication app(argc, argv);
-    QApplication::setApplicationName("Lanterne");
-    QApplication::setOrganizationName("Lanterne");
+    QApplication::setApplicationName("Fulskrin");
+    QApplication::setOrganizationName("Fulskrin");
     QApplication::setApplicationVersion("0.1.0");
     applyDarkTheme(app);
 
-    // Boutons et dialogues standard de Qt dans la langue du système
-    QTranslator qtTranslator;
-    if (qtTranslator.load(QLocale::system(), "qtbase", "_", QLibraryInfo::path(QLibraryInfo::TranslationsPath)))
-        app.installTranslator(&qtTranslator);
+    // The software was called Lanterne: carry its settings over on first launch.
+    {
+        QSettings current;
+        if (current.allKeys().isEmpty()) {
+            QSettings legacy(QStringLiteral("Lanterne"), QStringLiteral("Lanterne"));
+            const QStringList keys = legacy.allKeys();
+            for (const QString &k : keys) current.setValue(k, legacy.value(k));
+        }
+    }
 
     QCommandLineParser cli;
-    cli.setApplicationDescription("Lanterne — mapping vidéo multi-calques, lecture FFmpeg, shaders ISF");
+    cli.setApplicationDescription("Fulskrin — multi-layer video mapping, FFmpeg playback, ISF shaders");
     cli.addHelpOption();
     cli.addVersionOption();
-    QCommandLineOption renderOpt("render", "Rend le projet sans interface et enregistre la sortie en PNG.", "sortie.png");
-    QCommandLineOption framesOpt("frames", "Nombre d'images à rendre avant capture (avec --render).", "n", "30");
-    QCommandLineOption shotOpt("screenshot", "Capture la fenêtre principale puis quitte (tests).", "capture.png");
+    QCommandLineOption renderOpt("render", "Render the project headless and save the output as PNG.", "output.png");
+    QCommandLineOption framesOpt("frames", "Number of frames to render before capture (with --render).", "n", "30");
+    QCommandLineOption shotOpt("screenshot", "Capture the main window, then quit (tests).", "capture.png");
     cli.addOption(renderOpt);
     cli.addOption(framesOpt);
     cli.addOption(shotOpt);
-    cli.addPositionalArgument("projet", "Projet .lanterne à ouvrir");
+    cli.addPositionalArgument("project", ".fulskrin project to open");
     cli.process(app);
     const QString project = cli.positionalArguments().value(0);
 
@@ -85,11 +88,11 @@ int main(int argc, char *argv[])
             qCritical("%s", qPrintable(err));
             return 1;
         }
-        QMessageBox::critical(nullptr, "Lanterne", QStringLiteral("Initialisation OpenGL impossible :\n") + err);
+        QMessageBox::critical(nullptr, "Fulskrin", QStringLiteral("Could not initialize OpenGL:\n") + err);
         return 1;
     }
 
-    // Mode sans interface : rend N images et écrit la sortie (tests automatiques, vérification d'un projet).
+    // Headless mode: render N frames and write the output (automated tests, project checking).
     if (cli.isSet(renderOpt)) {
         if (!project.isEmpty()) {
             QString perr;
@@ -103,14 +106,14 @@ int main(int argc, char *argv[])
         }
         for (int i = 0; i < engine.layerCount(); ++i) {
             Layer *l = engine.layer(i);
-            if (!l->error.isEmpty()) qWarning("Calque %s : %s", qPrintable(l->name), qPrintable(l->error));
+            if (!l->error.isEmpty()) qWarning("Layer %s: %s", qPrintable(l->name), qPrintable(l->error));
             for (auto &fx : l->effects)
-                if (!fx->error().isEmpty()) qWarning("Effet %s : %s", qPrintable(fx->name()), qPrintable(fx->error()));
+                if (!fx->error().isEmpty()) qWarning("Effect %s: %s", qPrintable(fx->name()), qPrintable(fx->error()));
         }
         for (int k = 0; k < kPublishKindCount; ++k) {
             const PublishState st = engine.publishState(PublishKind(k));
             if (st.level != PublishState::Off)
-                qInfo("Publication %s : %s (récepteurs : %d)", qPrintable(publishKindName(PublishKind(k))), qPrintable(st.text),
+                qInfo("Publishing %s: %s (receivers: %d)", qPrintable(publishKindName(PublishKind(k))), qPrintable(st.text),
                       st.receivers);
         }
         const bool ok = engine.grabOutput().save(cli.value(renderOpt));
@@ -118,7 +121,7 @@ int main(int argc, char *argv[])
         return ok ? 0 : 2;
     }
 
-    // Interface : le rendu tourne dans son propre fil, indépendant de l'interface.
+    // GUI: rendering runs in its own thread, independent of the UI.
     engine.start();
 
     int rc;
@@ -134,7 +137,7 @@ int main(int argc, char *argv[])
         if (cli.isSet(shotOpt)) {
             QTimer::singleShot(2500, &w, [&w, &cli, &shotOpt] {
                 w.grab().save(cli.value(shotOpt));
-                QCoreApplication::exit(0); // pas de dialogue « Enregistrer ? »
+                QCoreApplication::exit(0); // no "Save?" dialog
             });
         }
         rc = app.exec();

@@ -1,5 +1,5 @@
 /*{
-    "DESCRIPTION": "Test : shader avec vertex shader personnalisé (.vs) et varyings.",
+    "DESCRIPTION": "Test: shader with a custom vertex shader (.vs) and varyings.",
     "ISFVSN": "2",
     "INPUTS": [
         { "NAME": "inputImage", "TYPE": "image" },

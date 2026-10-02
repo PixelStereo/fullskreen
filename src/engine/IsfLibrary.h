@@ -1,6 +1,6 @@
 #pragma once
-// Bibliothèque de shaders ISF : dossier fourni avec l'application, dossiers système
-// standards (/Library/Graphics/ISF sur macOS) et dossiers ajoutés par l'utilisateur.
+// ISF shader library: folder bundled with the application, standard system folders
+// (/Library/Graphics/ISF on macOS) and folders added by the user.
 
 #include <QString>
 #include <QStringList>
@@ -23,7 +23,7 @@ public:
     const QVector<IsfEntry> &generators() const { return m_generators; }
     const QVector<IsfEntry> &filters() const { return m_filters; }
 
-    // Retrouve un shader par nom de fichier (projet déplacé d'une machine à l'autre).
+    // Finds a shader by file name (project moved from one machine to another).
     QString findByFileName(const QString &fileName) const;
 
     static QString bundledFolder();

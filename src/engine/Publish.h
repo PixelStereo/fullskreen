@@ -1,13 +1,13 @@
 #pragma once
-// Publication de la sortie vers d'autres logiciels / machines :
-//  - Syphon (macOS) et Spout (Windows) : partage de texture GPU, sans copie ;
-//  - NDI et OMT (Open Media Transport) : réseau. L'image est relue depuis le GPU (asynchrone)
-//    puis envoyée par un fil dédié pour ne jamais ralentir le rendu.
+// Output publishing to other software / machines:
+//  - Syphon (macOS) and Spout (Windows): GPU texture sharing, no copy;
+//  - NDI and OMT (Open Media Transport): network. The image is read back from the GPU (asynchronously)
+//    then sent by a dedicated thread so it never slows down rendering.
 //
-// NDI et OMT sont chargés à l'exécution : Lanterne se compile et fonctionne sans eux,
-// la publication devient disponible dès que la bibliothèque est installée sur la machine.
+// NDI and OMT are loaded at runtime: Fulskrin builds and runs without them,
+// publishing becomes available as soon as the library is installed on the machine.
 //
-// Ce fichier ne dépend d'aucun en-tête OpenGL (les implémentations Syphon / Spout ont les leurs).
+// This file depends on no OpenGL header (the Syphon / Spout implementations have their own).
 
 #include <QJsonObject>
 #include <QString>
@@ -26,15 +26,15 @@ QString publishKindName(PublishKind k);
 
 struct PublishTarget {
     bool enabled = false;
-    QString name = QStringLiteral("Lanterne");
+    QString name = QStringLiteral("Fulskrin");
     bool operator==(const PublishTarget &o) const { return enabled == o.enabled && name == o.name; }
     bool operator!=(const PublishTarget &o) const { return !(*this == o); }
 };
 
 struct PublishSettings {
     PublishTarget targets[kPublishKindCount];
-    int omtQuality = 0;    // 0 = automatique, 1 = basse, 50 = moyenne, 100 = haute
-    QString libraryFolder; // dossier supplémentaire où chercher les bibliothèques NDI / OMT
+    int omtQuality = 0;    // 0 = automatic, 1 = low, 50 = medium, 100 = high
+    QString libraryFolder; // additional folder in which to look for the NDI / OMT libraries
 
     PublishTarget &operator[](PublishKind k) { return targets[int(k)]; }
     const PublishTarget &operator[](PublishKind k) const { return targets[int(k)]; }
@@ -48,27 +48,27 @@ struct PublishState {
     enum Level { Off, Ok, Error, Unavailable };
     Level level = Off;
     QString text;
-    int receivers = -1; // -1 = inconnu
+    int receivers = -1; // -1 = unknown
 };
 
-// Disponible à la compilation (Syphon / Spout) ou toujours (NDI / OMT, chargés à l'exécution)
+// Available at compile time (Syphon / Spout) or always (NDI / OMT, loaded at runtime)
 bool publishCompiledIn(PublishKind k);
 
-// --- Publication GPU (dans le fil de rendu, contexte OpenGL courant) -------------------------
+// --- GPU publishing (in the render thread, OpenGL context current) ---------------------------
 class GpuPublisher
 {
 public:
     virtual ~GpuPublisher() = default;
     virtual bool start(const QString &name, QString *err) = 0;
-    virtual void publish(unsigned int texture, int width, int height) = 0; // texture GL_TEXTURE_2D, origine en bas
+    virtual void publish(unsigned int texture, int width, int height) = 0; // GL_TEXTURE_2D texture, bottom-left origin
     virtual int receivers() const { return -1; }
 };
-std::unique_ptr<GpuPublisher> createSyphonPublisher(); // nullptr si non compilé
-std::unique_ptr<GpuPublisher> createSpoutPublisher();  // nullptr si non compilé
+std::unique_ptr<GpuPublisher> createSyphonPublisher(); // nullptr if not compiled in
+std::unique_ptr<GpuPublisher> createSpoutPublisher();  // nullptr if not compiled in
 
-// --- Publication CPU (dans le fil d'envoi) ----------------------------------------------------
+// --- CPU publishing (in the send thread) -------------------------------------------------------
 struct CpuFrame {
-    std::vector<uint8_t> bgra; // lignes de haut en bas
+    std::vector<uint8_t> bgra; // rows top to bottom
     int width = 0, height = 0, stride = 0;
     int64_t timestamp100ns = 0;
     int fpsN = 60, fpsD = 1;
@@ -87,19 +87,19 @@ protected:
 };
 std::unique_ptr<CpuPublisher> createNdiPublisher();
 std::unique_ptr<CpuPublisher> createOmtPublisher();
-// Pour les tests : reçoit chaque image envoyée
+// For tests: receives every frame sent
 std::unique_ptr<CpuPublisher> createTapPublisher(std::function<void(const CpuFrame &)> fn);
 
-// Fil d'envoi : reçoit les images relues, les distribue aux publications CPU.
-// Trois tampons tournants : l'envoi asynchrone NDI garde une image jusqu'à l'envoi suivant.
+// Send thread: receives read-back frames and dispatches them to CPU publishers.
+// Three rotating buffers: NDI asynchronous send holds a frame until the next send.
 class CpuSendThread
 {
 public:
     CpuSendThread();
     ~CpuSendThread();
-    CpuFrame *acquire();          // tampon libre (ou l'image en attente, remplacée), jamais bloquant
+    CpuFrame *acquire();          // free buffer (or the pending frame, replaced), never blocks
     void submit(CpuFrame *f);
-    void setPublishers(std::vector<std::shared_ptr<CpuPublisher>> pubs); // détruits dans le fil d'envoi
+    void setPublishers(std::vector<std::shared_ptr<CpuPublisher>> pubs); // destroyed in the send thread
     bool hasPublishers() const { return m_active.load(); }
     uint64_t sentFrames() const { return m_sent.load(); }
 
@@ -117,6 +117,6 @@ private:
     std::thread m_thread;
 };
 
-// Chemin de la bibliothèque trouvée (vide si absente) — pour l'affichage
+// Path of the library found (empty if missing) — for display
 QString ndiLibraryPath(const QString &extraFolder);
 QString omtLibraryPath(const QString &extraFolder);

@@ -29,28 +29,28 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     v->setSpacing(4);
 
     auto *bar = new QHBoxLayout;
-    auto *title = new QLabel(QStringLiteral("<b>Calques</b>"));
-    auto *add = barButton(QStringLiteral("+"), QStringLiteral("Nouveau calque"));
+    auto *title = new QLabel(QStringLiteral("<b>Layers</b>"));
+    auto *add = barButton(QStringLiteral("+"), QStringLiteral("New Layer"));
     add->setPopupMode(QToolButton::InstantPopup);
     m_addMenu = new QMenu(add);
     add->setMenu(m_addMenu);
-    auto *remove = barButton(QStringLiteral("−"), QStringLiteral("Supprimer le calque (Suppr)"));
-    auto *dup = barButton(QStringLiteral("⧉"), QStringLiteral("Dupliquer le calque (Ctrl+D)"));
-    auto *up = barButton(QStringLiteral("▲"), QStringLiteral("Monter (Ctrl+])"));
-    auto *down = barButton(QStringLiteral("▼"), QStringLiteral("Descendre (Ctrl+[)"));
+    auto *remove = barButton(QStringLiteral("−"), QStringLiteral("Delete Layer (Del)"));
+    auto *dup = barButton(QStringLiteral("⧉"), QStringLiteral("Duplicate Layer (Ctrl+D)"));
+    auto *up = barButton(QStringLiteral("▲"), QStringLiteral("Move Up (Ctrl+])"));
+    auto *down = barButton(QStringLiteral("▼"), QStringLiteral("Move Down (Ctrl+[)"));
     bar->addWidget(title);
     bar->addSpacing(12);
     for (auto *b : {add, remove, dup, up, down}) bar->addWidget(b);
     bar->addStretch();
-    auto *hint = new QLabel(QStringLiteral("Le calque du haut s'affiche au-dessus · glissez des fichiers ici pour créer des calques"));
+    auto *hint = new QLabel(QStringLiteral("Top layer is drawn on top · drop files here to create layers"));
     hint->setStyleSheet("color:#888; font-size:11px;");
     bar->addWidget(hint);
     v->addLayout(bar);
 
     m_table = new QTableWidget(0, ColCount);
-    m_table->setHorizontalHeaderLabels({QString(), QStringLiteral("Calque"), QStringLiteral("Source"),
-                                        QStringLiteral("Effets"), QStringLiteral("Opacité"), QStringLiteral("Fusion"),
-                                        QStringLiteral("Lecture")});
+    m_table->setHorizontalHeaderLabels({QString(), QStringLiteral("Layer"), QStringLiteral("Source"),
+                                        QStringLiteral("Effects"), QStringLiteral("Opacity"), QStringLiteral("Blend"),
+                                        QStringLiteral("Playback")});
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -138,7 +138,7 @@ void LayerTable::updateRow(int r, const Row &row)
     text(ColBlend, row.blend);
     text(ColPlayback, row.playback)->setFont(QFont(QStringLiteral("monospace")));
 
-    // Opacité : curseur directement dans la ligne
+    // Opacity: slider right in the row
     auto *cell = m_table->cellWidget(r, ColOpacity);
     QSlider *slider = cell ? cell->findChild<QSlider *>() : nullptr;
     QLabel *label = cell ? cell->findChild<QLabel *>() : nullptr;
@@ -156,9 +156,9 @@ void LayerTable::updateRow(int r, const Row &row)
         h->addWidget(label);
         m_table->setCellWidget(r, ColOpacity, cell);
         connect(slider, &QSlider::valueChanged, this, [this, slider, label](int v) {
-            label->setText(QStringLiteral("%1 %").arg(v));
+            label->setText(QStringLiteral("%1%").arg(v));
             if (m_updating) return;
-            // Retrouve la ligne du curseur (les lignes peuvent avoir changé depuis sa création)
+            // Find the slider's row (rows may have changed since it was created)
             for (int k = 0; k < m_table->rowCount(); ++k) {
                 QWidget *c = m_table->cellWidget(k, ColOpacity);
                 if (c && c->isAncestorOf(slider)) {
@@ -173,7 +173,7 @@ void LayerTable::updateRow(int r, const Row &row)
         QSignalBlocker b(slider);
         slider->setValue(pct);
     }
-    label->setText(QStringLiteral("%1 %").arg(slider->value()));
+    label->setText(QStringLiteral("%1%").arg(slider->value()));
 }
 
 void LayerTable::setRows(const std::vector<Row> &rows)

@@ -1,6 +1,6 @@
 #pragma once
-// Petites briques OpenGL partagées par tout le moteur.
-// Le moteur cible OpenGL 3.3 core (macOS fournit 4.1 core, Windows/Linux 3.3+).
+// Small OpenGL building blocks shared by the whole engine.
+// The engine targets OpenGL 3.3 core (macOS provides 4.1 core, Windows/Linux 3.3+).
 
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
@@ -15,22 +15,22 @@
 
 inline QOpenGLExtraFunctions *gl() { return QOpenGLContext::currentContext()->extraFunctions(); }
 
-// Compile et lie un programme. Retourne 0 en cas d'échec (log rempli).
+// Compiles and links a program. Returns 0 on failure (log filled in).
 GLuint compileProgram(const QString &vs, const QString &fs, QString *log);
 
-// Texture + framebuffer de rendu.
+// Texture + render framebuffer.
 struct RenderTarget {
     GLuint fbo = 0, tex = 0;
     int w = 0, h = 0;
     bool isFloat = false;
-    // (Re)crée si la taille ou le format change. Retourne true si recréé (contenu effacé).
+    // (Re)creates if the size or format changes. Returns true if recreated (contents cleared).
     bool ensure(int w, int h, bool isFloat = false);
     void bind() const;
     void clear(float r = 0, float g = 0, float b = 0, float a = 0) const;
     void destroy();
 };
 
-// Texture simple alimentée depuis le CPU (vidéo, images).
+// Simple texture fed from the CPU (video, images).
 struct Texture2D {
     GLuint tex = 0;
     int w = 0, h = 0;

@@ -78,7 +78,7 @@ bool RenderTarget::ensure(int nw, int nh, bool flt)
     f->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     GLenum st = f->glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (st != GL_FRAMEBUFFER_COMPLETE)
-        qWarning() << "Framebuffer incomplet" << Qt::hex << st << w << h << flt;
+        qWarning() << "Incomplete framebuffer" << Qt::hex << st << w << h << flt;
     clear();
     return true;
 }

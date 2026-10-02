@@ -1,7 +1,7 @@
 #pragma once
-// Implémentation du format ISF (Interactive Shader Format, spec Vidvox v2) :
-// parsing de l'en-tête JSON, traduction GLSL 330 core, rendu multi-passes,
-// buffers persistants et flottants, images importées.
+// Implementation of the ISF format (Interactive Shader Format, Vidvox v2 spec):
+// JSON header parsing, translation to GLSL 330 core, multi-pass rendering,
+// persistent and float buffers, imported images.
 
 #include "Gl.h"
 #include <QJsonObject>
@@ -13,7 +13,7 @@
 #include <functional>
 #include <vector>
 
-// Valeur d'un paramètre (tous types numériques confondus), pour l'annulation.
+// Value of a parameter (any numeric type), for undo.
 struct IsfValue {
     double f = 0;
     bool b = false;
@@ -32,7 +32,7 @@ struct IsfInput {
     enum Type { Event, Bool, Long, Float, Point2D, Color, Image, Audio, AudioFFT, Unknown };
     QString name, label;
     Type type = Unknown;
-    bool isInputImage = false; // l'image d'entrée d'un filtre
+    bool isInputImage = false; // the input image of a filter
 
     double fMin = 0, fMax = 1, fDefault = 0, fValue = 0;
     bool bValue = false, bDefault = false;
@@ -44,7 +44,7 @@ struct IsfInput {
     float cValue[4] = {1, 1, 1, 1}, cDefault[4] = {1, 1, 1, 1};
     bool eventFired = false;
 
-    QString imagePath; // image choisie par l'utilisateur pour une entrée image secondaire
+    QString imagePath; // image chosen by the user for a secondary image input
     Texture2D imageTex;
 
     GLint loc = -1, sizeLoc = -1, rectLoc = -1;
@@ -89,12 +89,12 @@ struct IsfImported {
     GLint loc = -1, sizeLoc = -1, rectLoc = -1;
 };
 
-// Ressources partagées fournies par le moteur au moment du rendu.
+// Shared resources provided by the engine at render time.
 struct IsfRenderContext {
     double dt = 0;
     GLuint blackTex = 0;
-    std::function<void()> drawQuad;                                // quad plein écran (VAO lié)
-    std::function<void(GLuint tex, const RenderTarget &)> blit;   // copie simple
+    std::function<void()> drawQuad;                                // fullscreen quad (VAO bound)
+    std::function<void(GLuint tex, const RenderTarget &)> blit;   // plain copy
 };
 
 class IsfInstance
@@ -105,14 +105,14 @@ public:
     IsfInstance(const IsfInstance &) = delete;
     IsfInstance &operator=(const IsfInstance &) = delete;
 
-    // Analyse le fichier .fs (et .vs éventuel) puis compile. Le contexte GL doit être courant.
+    // Parses the .fs file (and optional .vs), then compiles. The GL context must be current.
     bool load(const QString &path);
     void releaseGl();
 
-    // Rend dans `out` (taille outW x outH). inputTex peut être 0 (générateur).
+    // Renders into `out` (size outW x outH). inputTex may be 0 (generator).
     void render(const IsfRenderContext &rc, GLuint inputTex, int inW, int inH, RenderTarget &out, int outW, int outH);
 
-    bool setImageInput(int index, const QString &path, QString *err); // contexte GL courant
+    bool setImageInput(int index, const QString &path, QString *err); // GL context current
 
     QJsonObject save(const QString &projectDir) const;
     void restoreParams(const QJsonObject &params, const QString &projectDir);
@@ -130,7 +130,7 @@ public:
     std::vector<IsfInput> &inputs() { return m_inputs; }
     const std::vector<IsfInput> &inputs() const { return m_inputs; }
 
-    // Analyse légère de l'en-tête (pour la bibliothèque, sans GL).
+    // Lightweight header parsing (for the library, no GL).
     struct Header {
         QString name, description;
         QStringList categories;

@@ -8,15 +8,15 @@ class QTreeWidgetItem;
 class QPushButton;
 class QLabel;
 
-// Chutier : tous les fichiers images / vidéos externes du projet, classés par type.
-// Fichiers utilisés par les calques (sources, images des shaders) et fichiers importés.
+// Media Bin: all external image / video files in the project, grouped by type.
+// Files used by layers (sources, shader images) and imported files.
 class MediaBin : public QWidget
 {
     Q_OBJECT
 public:
     explicit MediaBin(Engine *engine, QWidget *parent = nullptr);
 
-    void refresh();          // relit l'usage dans le moteur (appelé après chaque modification)
+    void refresh();          // re-reads usage from the engine (called after every change)
     void importFiles(const QStringList &paths);
     QString selectedPath() const;
 
@@ -24,7 +24,7 @@ signals:
     void relinkRequested(const QString &from, const QString &to);
     void useAsSourceRequested(const QString &path);
     void newLayerRequested(const QString &path);
-    void binEdited(); // import / retrait : le projet est modifié
+    void binEdited(); // import / removal: the project is modified
 
 private:
     void probe(const QString &path);
@@ -40,6 +40,6 @@ private:
     QTreeWidgetItem *m_videos, *m_images;
     QPushButton *m_relink, *m_remove, *m_reveal;
     QLabel *m_summary;
-    QHash<QString, QString> m_info;  // chemin -> description (résolution, durée…)
+    QHash<QString, QString> m_info;  // path -> description (resolution, duration…)
     QHash<QString, bool> m_probing;
 };

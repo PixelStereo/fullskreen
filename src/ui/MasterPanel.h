@@ -12,7 +12,7 @@ class QComboBox;
 class QCheckBox;
 class QLineEdit;
 
-// Onglet « Master » : niveau général et noir, composition, sortie vidéo, publication (NDI, OMT, Syphon, Spout).
+// "Master" tab: master level and blackout, composition, video output, publishing (NDI, OMT, Syphon, Spout).
 class MasterPanel : public QWidget
 {
     Q_OBJECT
@@ -21,14 +21,14 @@ public:
 
     void setBlackout(bool on);
     bool isBlackout() const;
-    double masterValue() const; // niveau choisi au fader (0..1)
+    double masterValue() const; // level set on the fader (0..1)
     double fadeTime() const;
 
-    // Écrans disponibles (nom affiché, identifiant) et écran choisi
+    // Available screens (display name, identifier) and the selected screen
     void setScreens(const QList<QPair<QString, QString>> &screens, const QString &current);
-    void setOutputMode(int mode); // 0 masquée, 1 fenêtrée, 2 plein écran
-    void syncFromEngine();        // composition, publication (après ouverture d'un projet)
-    void refreshStatus();         // niveau, état des publications (appelé périodiquement)
+    void setOutputMode(int mode); // 0 hidden, 1 windowed, 2 fullscreen
+    void syncFromEngine();        // composition, publishing (after opening a project)
+    void refreshStatus();         // level, publishing status (called periodically)
 
 signals:
     void blackoutChanged(bool on);

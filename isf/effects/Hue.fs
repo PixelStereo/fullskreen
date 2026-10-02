@@ -1,12 +1,12 @@
 /*{
-    "DESCRIPTION": "Rotation de teinte, avec animation optionnelle.",
-    "CREDIT": "Lanterne",
+    "DESCRIPTION": "Hue rotation, with optional animation.",
+    "CREDIT": "Fulskrin",
     "ISFVSN": "2",
-    "CATEGORIES": ["Couleur"],
+    "CATEGORIES": ["Color"],
     "INPUTS": [
         { "NAME": "inputImage", "TYPE": "image" },
-        { "NAME": "hue", "LABEL": "Teinte (°)", "TYPE": "float", "DEFAULT": 0.0, "MIN": -180.0, "MAX": 180.0 },
-        { "NAME": "cycle", "LABEL": "Cycle (tours/s)", "TYPE": "float", "DEFAULT": 0.0, "MIN": 0.0, "MAX": 2.0 }
+        { "NAME": "hue", "LABEL": "Hue (°)", "TYPE": "float", "DEFAULT": 0.0, "MIN": -180.0, "MAX": 180.0 },
+        { "NAME": "cycle", "LABEL": "Cycle (turns/s)", "TYPE": "float", "DEFAULT": 0.0, "MIN": 0.0, "MAX": 2.0 }
     ]
 }*/
 
