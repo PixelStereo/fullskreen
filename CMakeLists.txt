@@ -125,7 +125,10 @@ set(APP_SOURCES
 )
 
 if(APPLE)
+  enable_language(OBJCXX)
+  list(APPEND APP_SOURCES src/ui/MacPresentation.mm)
   add_executable(Fulskrin MACOSX_BUNDLE ${APP_SOURCES})
+  target_link_libraries(Fulskrin PRIVATE "-framework AppKit")
   set_target_properties(Fulskrin PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "Fulskrin"
     MACOSX_BUNDLE_GUI_IDENTIFIER "fr.fulskrin.app"

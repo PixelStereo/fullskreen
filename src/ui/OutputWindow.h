@@ -32,5 +32,6 @@ private:
     void sync();
     Engine *m_engine;
     bool m_lastExposed = false;
+    bool m_borderlessFullscreen = false; // macOS: fullscreen without a separate Space
     QSize m_lastSize;
 };
