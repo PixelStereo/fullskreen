@@ -56,6 +56,9 @@ void GlDraw::drawTexture(GLuint tex)
     glDisable(GL_BLEND);
     glUseProgram(m_texProg);
     glActiveTexture(GL_TEXTURE0);
+    // La texture est rendue par le contexte du fil de rendu : on la « relie » explicitement pour que
+    // ce contexte voie son nouveau contenu (règle de propagation des objets partagés, OpenGL §5.3).
+    glBindTexture(GL_TEXTURE_2D, 0);
     glBindTexture(GL_TEXTURE_2D, tex);
     glUniform1i(m_texLoc, 0);
     glBindVertexArray(m_quadVao);

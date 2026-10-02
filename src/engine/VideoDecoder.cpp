@@ -77,6 +77,37 @@ bool VideoDecoder::open(const QString &path, QString *err)
     return true;
 }
 
+bool VideoDecoder::probe(const QString &path, Info *info, QString *err)
+{
+    AVFormatContext *fmt = nullptr;
+    QByteArray p = QFileInfo(path).absoluteFilePath().toUtf8();
+    int r = avformat_open_input(&fmt, p.constData(), nullptr, nullptr);
+    if (r < 0) {
+        if (err) *err = avErr(r);
+        return false;
+    }
+    avformat_find_stream_info(fmt, nullptr);
+    const int s = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (s < 0) {
+        avformat_close_input(&fmt);
+        if (err) *err = QStringLiteral("Aucun flux vidéo");
+        return false;
+    }
+    AVStream *st = fmt->streams[s];
+    if (info) {
+        info->width = st->codecpar->width;
+        info->height = st->codecpar->height;
+        const AVCodecDescriptor *d = avcodec_descriptor_get(st->codecpar->codec_id);
+        info->codec = d ? QString::fromUtf8(d->name) : QString();
+        AVRational fr = av_guess_frame_rate(fmt, st, nullptr);
+        info->fps = (fr.num > 0 && fr.den > 0) ? av_q2d(fr) : 0.0;
+        if (fmt->duration > 0) info->duration = double(fmt->duration) / AV_TIME_BASE;
+        else if (st->duration > 0) info->duration = st->duration * av_q2d(st->time_base);
+    }
+    avformat_close_input(&fmt);
+    return true;
+}
+
 void VideoDecoder::close()
 {
     if (m_thread.joinable()) {

@@ -6,16 +6,16 @@
 class Engine;
 class MappingView;
 class LayerInspector;
+class LayerTable;
+class MediaBin;
+class MasterPanel;
 class OutputWindow;
-class QListWidget;
 class QLabel;
 class QMenu;
 class QAction;
 class QActionGroup;
 class QScreen;
-class QSlider;
-class QPushButton;
-class QDoubleSpinBox;
+class QTabWidget;
 class QUndoStack;
 
 class MainWindow : public QMainWindow
@@ -29,6 +29,9 @@ public:
     // Propose de restaurer la session si l'application ne s'est pas fermée normalement.
     void offerRecovery();
     void setAutosaveEnabled(bool on) { m_autosaveEnabled = on; }
+    void setQuiet(bool on) { m_quiet = on; } // tests : avertissements dans la barre d'état, sans dialogue
+
+    enum OutputMode { OutputHidden = 0, OutputWindowed = 1, OutputFullscreen = 2 };
 
 protected:
     void closeEvent(QCloseEvent *e) override;
@@ -36,7 +39,6 @@ protected:
     void dropEvent(QDropEvent *e) override;
 
 private:
-    QWidget *buildMasterPanel();
     void buildMenus();
     void buildOutputScreensMenu();
     void rebuildGeneratorMenus();
@@ -46,6 +48,7 @@ private:
     int currentLayer() const;
     void statusTick();
     void updateTitle();
+    void markDirty();
 
     void newProject();
     void openProjectDialog();
@@ -57,49 +60,55 @@ private:
     QJsonObject uiState() const;
     void autosave();
     static QString autosavePath();
+    void afterProjectLoaded(const QJsonObject &ui);
 
     int newLayerFromFile(const QString &path, int at = 0);
     void addVideoLayer();
     void addImageLayer();
     void setSourceFromDialog(const QString &kind);
+    void setSourceFromFile(int layer, const QString &path);
     void addGeneratorLayer(const QString &path);
     void addEmptyLayer();
     void removeCurrentLayer();
     void duplicateCurrentLayer();
     void moveCurrentLayer(int delta);
     void togglePlayCurrent();
+    void relinkMedia(const QString &from, const QString &to);
 
-    void setOutputVisible(bool on);
+    void setOutputMode(OutputMode mode);
+    void toggleFullscreen();
+    void toggleWindowed();
     QScreen *selectedScreen() const;
-    void compositionDialog();
+    void chooseScreen(const QString &name);
     void addIsfFolder();
     void rescanLibrary();
 
     void setBlackout(bool on);
+    bool handleControlKey(int key, Qt::KeyboardModifiers mods); // raccourcis de régie, aussi depuis la sortie
 
     Engine *m_engine;
     QUndoStack *m_undo = nullptr;
     MappingView *m_view = nullptr;
     LayerInspector *m_inspector = nullptr;
+    LayerTable *m_layerTable = nullptr;
+    MediaBin *m_bin = nullptr;
+    MasterPanel *m_master = nullptr;
+    QTabWidget *m_tabs = nullptr;
     OutputWindow *m_output = nullptr;
-    QListWidget *m_layers = nullptr;
     QLabel *m_status = nullptr;
-    QTimer m_statusTimer, m_renderTimer, m_autosaveTimer;
+    QTimer m_statusTimer, m_renderTimer, m_autosaveTimer, m_binTimer, m_inspectorTimer;
 
-    QSlider *m_masterSlider = nullptr;
-    QPushButton *m_blackoutButton = nullptr;
-    QDoubleSpinBox *m_fadeTime = nullptr;
-    QLabel *m_masterLabel = nullptr;
-    QAction *m_blackoutAction = nullptr;
-
-    QMenu *m_generatorMenu = nullptr, *m_screensMenu = nullptr, *m_addMenu = nullptr;
+    QMenu *m_generatorMenu = nullptr, *m_screensMenu = nullptr;
     QActionGroup *m_screenGroup = nullptr;
-    QAction *m_outputAction = nullptr, *m_undoAction = nullptr, *m_redoAction = nullptr;
+    QAction *m_fullscreenAction = nullptr, *m_windowedAction = nullptr, *m_undoAction = nullptr, *m_redoAction = nullptr,
+            *m_blackoutAction = nullptr;
     QString m_screenName;
-    bool m_refreshingList = false;
+    OutputMode m_outputMode = OutputHidden;
+    int m_lastSelected = -1;
 
-    bool m_forceDirty = false;          // session restaurée non enregistrée
+    bool m_forceDirty = false;          // modification hors pile d'annulation (composition, publication, chutier)
     bool m_autosaveEnabled = true;
+    bool m_quiet = false;
     int m_autosaveIndex = -1;           // position de la pile d'annulation lors de la dernière sauvegarde auto
     bool m_autosaveDone = false;
 };

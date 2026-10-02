@@ -27,6 +27,8 @@ struct Layer {
     SourceType type = SourceType::None;
     QString sourcePath;
     QString error;
+    // Fichier introuvable au chargement : le chemin et le type sont conservés (sauvegarde, chutier, remplacement)
+    SourceType missingType = SourceType::None;
 
     // Vidéo
     std::unique_ptr<VideoDecoder> video;

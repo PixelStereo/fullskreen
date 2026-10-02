@@ -75,3 +75,6 @@ Testing/
 test/media/
 test/projects/
 test/out/
+
+# Sorties de tests lancés depuis la racine
+/out/
