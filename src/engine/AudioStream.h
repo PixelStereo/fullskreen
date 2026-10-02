@@ -2,11 +2,13 @@
 // Audio track of a file (audio file, or sound of a video file), decoded with FFmpeg on a dedicated thread,
 // resampled to the output format (stereo float, output sample rate) and mixed by AudioOutput.
 //
-// Synchronization: the stream follows the layer's transport (position, play / pause, speed, loop),
+// Synchronization: the stream follows the layer's transport (position, play / pause, speed, play mode),
 // which the engine updates every frame. In the audio callback, the stream extrapolates the layer position
 // to the moment the samples will actually be heard (output latency), corrects small drifts by
 // adjusting its playback rate very slightly (at most 0.5 %, inaudible), and resynchronizes (short fade,
 // then seek) when the gap is too large: seek, speed change, render stall.
+
+#include "Timeline.h"
 
 #include <QString>
 #include <atomic>
@@ -46,8 +48,11 @@ public:
     double duration() const { return m_info.duration; }
 
     // Engine side (any thread), every frame: layer transport and gain (volume, mute, layer on/off).
-    // `stampNs`: steady_clock time at which `position` was exact (0 = now).
-    void setTransport(double position, bool playing, double speed, bool loop, float gain, int64_t stampNs = 0);
+    // `clock`: the layer's timeline clock (advances with |speed|); `timelineId` changes whenever the engine
+    // repositions the layer (seek, direction or mode change): the stream then resynchronizes.
+    // `stampNs`: steady_clock time at which `clock` was exact (0 = now).
+    void setTransport(double clock, bool playing, double speed, const Timeline &timeline, uint64_t timelineId,
+                      float gain, int64_t stampNs = 0);
     static int64_t clockNs(); // steady_clock, nanoseconds
 
     // Audio callback: adds `frames` stereo interleaved samples into `out`.
@@ -61,13 +66,15 @@ public:
 
 private:
     struct Chunk {
-        double pts = 0;            // monotonic (loops accumulate), seconds
+        double pts = 0;            // timeline clock of the first sample, seconds
         uint64_t generation = 0;
         std::vector<float> samples; // stereo interleaved
     };
     struct Transport {
-        double position = 0, speed = 1;
-        bool playing = false, loop = true;
+        double clock = 0, speed = 1;
+        bool playing = false;
+        Timeline timeline;
+        uint64_t timelineId = 0;
         float gain = 1;
         int64_t stampNs = 0;
     };
@@ -78,7 +85,11 @@ private:
     void pushSamples(const float *s, int frames, double pts);
     void pushSilence(int frames, double pts);
     void requestSeek(double t);   // audio callback
-    double wrap(double t) const;  // position in [0, duration) when looping
+    // Converted samples of the next decoded frame (start at local time *local). False at the end of the file.
+    bool decodeRaw(const float **samples, int *frames, double *local);
+    void produceBackwardWindow(); // backward leg: reversed samples of a short window
+    void startLeg(const Timeline::Leg &leg, double position);
+    double legClock(double position) const; // clock of a position on the forward leg being decoded
 
     // Decoder (decode thread)
     AVFormatContext *m_fmt = nullptr;
@@ -91,7 +102,7 @@ private:
     int m_rate = 48000;
     Info m_info;
     bool m_draining = false;
-    double m_loopBase = 0, m_nextPts = 0; // m_nextPts: local time of the next decoded sample
+    double m_nextPts = 0; // position of the next decoded sample
     std::vector<float> m_convert;
 
     std::thread m_thread;
@@ -103,7 +114,10 @@ private:
     bool m_quit = false, m_seekPending = false, m_eof = false;
     double m_seekTarget = 0;
     uint64_t m_generation = 0;
-    std::atomic<bool> m_loop{true};
+    Timeline m_timeline, m_seekTimeline; // decode thread / given with the seek request
+    Timeline::Leg m_leg;
+    double m_backEnd = 0;
+    std::vector<float> m_window;
 
     // Transport (written by the engine, read by the audio callback)
     std::mutex m_transportMutex;
@@ -120,6 +134,8 @@ private:
     bool m_fadingForSeek = false;
     float m_gain = 0;         // current gain (ramped)
     double m_drift = 0;       // filtered gap between the layer and the stream (s)
+    uint64_t m_mixTimelineId = ~0ull;
+    bool m_timelineChanged = false; // the data in the buffer belongs to an old timeline: seek
 
     std::atomic<float> m_peak{0};
     std::atomic<double> m_syncError{0};

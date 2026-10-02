@@ -6,9 +6,15 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QTabWidget>
+#include <QUrl>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -35,7 +41,8 @@ struct LayerSnapshot {
     float opacity = 1;
     BlendMode blend = BlendMode::Normal;
     SourceType type = SourceType::None;
-    bool hasVideo = false, playing = false, loop = true;
+    bool hasVideo = false, playing = false;
+    PlayMode mode = PlayMode::Loop;
     int videoW = 0, videoH = 0;
     double fps = 0, duration = 0, speed = 1;
     QString codec;
@@ -82,7 +89,7 @@ struct LayerSnapshot {
         s.volume = l->volume;
         s.muted = l->muted;
         s.playing = l->playing;
-        s.loop = l->loop;
+        s.mode = l->mode;
         s.speed = l->speed;
         s.hasGenerator = l->generator != nullptr;
         s.genW = l->genWidth;
@@ -121,6 +128,61 @@ static QToolButton *toolButton(const QString &text, const QString &tip)
     return b;
 }
 
+namespace {
+// Drop zone of the Source tab: a file from the Media Bin or the Finder is loaded into the layer.
+class DropZone : public QLabel
+{
+public:
+    std::function<void(const QString &)> onDrop;
+    explicit DropZone(const QString &text) : QLabel(text)
+    {
+        setAcceptDrops(true);
+        setAlignment(Qt::AlignCenter);
+        setWordWrap(true);
+        setMinimumHeight(64);
+        setHover(false);
+    }
+
+protected:
+    void setHover(bool on)
+    {
+        setStyleSheet(on ? "QLabel { border:2px dashed #ffa028; border-radius:6px; background:rgba(255,160,40,40);"
+                           " color:#ffd9a8; padding:8px; }"
+                         : "QLabel { border:2px dashed #55555c; border-radius:6px; color:#9a9aa0; padding:8px; }");
+    }
+    static QString firstFile(const QMimeData *m)
+    {
+        for (const QUrl &u : m->urls())
+            if (u.isLocalFile()) return u.toLocalFile();
+        return {};
+    }
+    void dragEnterEvent(QDragEnterEvent *e) override
+    {
+        if (firstFile(e->mimeData()).isEmpty()) return e->ignore();
+        setHover(true);
+        e->acceptProposedAction();
+    }
+    void dragLeaveEvent(QDragLeaveEvent *) override { setHover(false); }
+    void dropEvent(QDropEvent *e) override
+    {
+        setHover(false);
+        const QString f = firstFile(e->mimeData());
+        e->acceptProposedAction();
+        if (!f.isEmpty() && onDrop) onDrop(f);
+    }
+};
+
+QWidget *page(QWidget *content)
+{
+    auto *w = new QWidget;
+    auto *v = new QVBoxLayout(w);
+    v->setContentsMargins(0, 6, 0, 0);
+    v->addWidget(content);
+    v->addStretch();
+    return w;
+}
+} // namespace
+
 LayerInspector::LayerInspector(Engine *engine, QUndoStack *undo, QWidget *parent)
     : QWidget(parent), m_engine(engine), m_undo(undo)
 {
@@ -146,12 +208,13 @@ void LayerInspector::setProp(int prop, const QVariant &value)
     m_undo->push(new cmd::SetLayerProp(m_engine, m_layer, p, before, value));
 }
 
-void LayerInspector::editMapping(const QString &text, const std::function<void(Mapping &)> &fn)
+void LayerInspector::editMapping(const QString &text, const std::function<void(Mapping &)> &fn, bool merge)
 {
     const Mapping before = cmd::SetMapping::read(m_engine, m_layer);
     Mapping after = before;
     fn(after);
-    m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, text));
+    // merge: successive changes of the same field (spin box arrows, typing) form one undo step
+    m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, text, merge));
     emit mappingChanged();
 }
 
@@ -185,8 +248,8 @@ void LayerInspector::rebuild()
 
     const LayerSnapshot s = LayerSnapshot::take(m_engine, m_layer);
     if (!s.valid) {
-        auto *empty = new QLabel(QStringLiteral("No layer selected.\n\nAdd a layer with the + button\n"
-                                                "or drop videos, images or\nISF shaders into the window."));
+        auto *empty = new QLabel(QStringLiteral("No layer selected.\n\nCreate a layer with the + button,\n"
+                                                "then drop a video, image, sound\nor ISF generator onto it."));
         empty->setAlignment(Qt::AlignCenter);
         empty->setStyleSheet("color:#888;");
         v->addWidget(empty);
@@ -212,20 +275,32 @@ void LayerInspector::rebuild()
         emit layerChanged();
     });
 
-    v->addWidget(buildSource(s));
-    if (s.type != SourceType::Audio) { // a sound has no picture: no compositing, mapping or effects
-        v->addWidget(buildCompositing(s));
-        v->addWidget(buildMapping(s));
-        v->addWidget(buildEffects(s));
+    // Sub-tabs; the current one is kept from one layer to the next
+    auto *tabs = new QTabWidget;
+    tabs->setDocumentMode(true);
+    tabs->addTab(page(buildSource(s)), QStringLiteral("Source"));
+    tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
+    tabs->addTab(page(buildEffects(s)), QStringLiteral("Effects"));
+    tabs->addTab(page(buildCompositing(s)), QStringLiteral("Compositing"));
+    if (s.type == SourceType::Audio) { // a sound has no picture: no mapping, effects or compositing
+        for (int t = 1; t < tabs->count(); ++t) {
+            tabs->setTabEnabled(t, false);
+            tabs->setTabToolTip(t, QStringLiteral("An audio layer has no picture"));
+        }
     }
-    v->addStretch();
+    tabs->setCurrentIndex(tabs->isTabEnabled(m_subTab) ? m_subTab : 0);
+    connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int i) {
+        if (tabs->isTabEnabled(i)) m_subTab = i;
+    });
+    v->addWidget(tabs, 1);
     refreshDynamic();
 }
 
 QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
 {
-    auto *g = new QGroupBox(QStringLiteral("Source"));
+    auto *g = new QWidget;
     auto *v = new QVBoxLayout(g);
+    v->setContentsMargins(0, 0, 0, 0);
 
     QString desc;
     switch (s.type) {
@@ -235,36 +310,23 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     case SourceType::Audio: desc = QStringLiteral("Audio — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
     default: desc = QStringLiteral("No source"); break;
     }
-    auto *title = new QLabel(desc);
-    title->setWordWrap(true);
-    title->setToolTip(s.sourcePath);
-    v->addWidget(title);
-
-    auto *buttons = new QHBoxLayout;
-    auto *bVideo = new QPushButton(QStringLiteral("Video…"));
-    auto *bImage = new QPushButton(QStringLiteral("Image…"));
-    auto *bAudio = new QPushButton(QStringLiteral("Audio…"));
-    auto *bGen = new QPushButton(QStringLiteral("Generator"));
-    auto *genMenu = new QMenu(bGen);
-    for (const IsfEntry &e : m_engine->library().generators()) {
-        QAction *a = genMenu->addAction(e.name);
-        a->setToolTip(e.description);
-        connect(a, &QAction::triggered, this, [this, p = e.path] { chooseGenerator(p); });
-    }
-    if (genMenu->isEmpty()) genMenu->addAction(QStringLiteral("(library is empty)"))->setEnabled(false);
-    bGen->setMenu(genMenu);
-    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Remove Source"));
-    buttons->addWidget(bVideo);
-    buttons->addWidget(bImage);
-    buttons->addWidget(bAudio);
-    buttons->addWidget(bGen);
-    buttons->addWidget(bClear);
-    v->addLayout(buttons);
-    connect(bVideo, &QPushButton::clicked, this, [this] { emit addSourceRequested("video"); });
-    connect(bImage, &QPushButton::clicked, this, [this] { emit addSourceRequested("image"); });
-    connect(bAudio, &QPushButton::clicked, this, [this] { emit addSourceRequested("audio"); });
+    // Drop zone: the current media, replaced by whatever is dropped (Media Bin, Finder). × ejects it.
+    const bool loaded = s.type != SourceType::None;
+    auto *zoneRow = new QHBoxLayout;
+    auto *zone = new DropZone(loaded ? QStringLiteral("<b>%1</b><br><span style='font-size:11px'>Drop another media here to replace it</span>")
+                                           .arg(desc.toHtmlEscaped())
+                                     : QStringLiteral("Drop a video, image, sound or ISF generator here<br>"
+                                                      "<span style='font-size:11px'>from the Media Bin or the Finder</span>"));
+    zone->setTextFormat(Qt::RichText);
+    zone->setToolTip(s.sourcePath.isEmpty() ? QStringLiteral("Video, image, audio file or ISF generator") : s.sourcePath);
+    zone->onDrop = [this](const QString &f) { emit fileDropped(f); };
+    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Eject the media from the layer"));
+    bClear->setEnabled(loaded || s.error.size());
+    zoneRow->addWidget(zone, 1);
+    zoneRow->addWidget(bClear, 0, Qt::AlignTop);
+    v->addLayout(zoneRow);
     connect(bClear, &QToolButton::clicked, this, [this] {
-        editSource(QStringLiteral("Remove Source"), [this] { m_engine->clearLayerSource(m_layer); });
+        editSource(QStringLiteral("Eject Media"), [this] { m_engine->clearLayerSource(m_layer); });
         emit layerChanged();
         rebuild();
     });
@@ -297,20 +359,48 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         auto *transport = new QHBoxLayout;
         m_play = new QPushButton(s.playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
         auto *rewind = toolButton(QStringLiteral("⏮"), QStringLiteral("Back to Start"));
-        auto *loop = new QCheckBox(QStringLiteral("Loop"));
-        loop->setChecked(s.loop);
         auto *speed = new QDoubleSpinBox;
-        speed->setRange(0.05, 8.0);
+        speed->setRange(-8.0, 8.0); // negative: backwards
         speed->setSingleStep(0.05);
         speed->setValue(s.speed);
         speed->setSuffix(QStringLiteral(" ×"));
-        speed->setToolTip(QStringLiteral("Playback speed"));
+        speed->setToolTip(QStringLiteral("Playback speed — negative values play backwards"));
         transport->addWidget(m_play);
         transport->addWidget(rewind);
-        transport->addWidget(loop);
         transport->addStretch();
         transport->addWidget(speed);
         v->addLayout(transport);
+
+        // Play mode: four exclusive buttons, one is always selected
+        auto *modes = new QHBoxLayout;
+        modes->setSpacing(2);
+        auto *group = new QButtonGroup(g);
+        group->setExclusive(true);
+        const struct {
+            PlayMode mode;
+            const char *tip;
+        } kModes[] = {
+            {PlayMode::OneShot, "Plays once and freezes on the last frame"},
+            {PlayMode::Loop, "Starts again from the beginning"},
+            {PlayMode::PingPong, "Plays forwards, then backwards, and so on"},
+            {PlayMode::Stop, "Plays once, then goes black (and silent)"},
+        };
+        for (const auto &m : kModes) {
+            auto *b = new QToolButton;
+            b->setText(playModeName(m.mode));
+            b->setToolTip(QString::fromUtf8(m.tip));
+            b->setCheckable(true);
+            b->setChecked(s.mode == m.mode);
+            b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            b->setStyleSheet("QToolButton:checked { background:#ffa028; color:#1b1b1d; font-weight:bold; }");
+            group->addButton(b, int(m.mode));
+            modes->addWidget(b);
+        }
+        v->addLayout(modes);
+        connect(group, &QButtonGroup::idClicked, this, [this](int id) {
+            setProp(cmd::SetLayerProp::Mode, id);
+            emit layerChanged();
+        });
 
         auto *seekRow = new QHBoxLayout;
         m_seek = new QSlider(Qt::Horizontal);
@@ -334,7 +424,6 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             refreshDynamic();
         });
         connect(rewind, &QToolButton::clicked, this, [this] { m_engine->seekLayer(m_layer, 0); });
-        connect(loop, &QCheckBox::toggled, this, [this](bool on) { setProp(cmd::SetLayerProp::Loop, on); });
         connect(speed, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [this](double sp) { setProp(cmd::SetLayerProp::Speed, sp); });
         const double duration = s.duration;
@@ -425,22 +514,9 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     return g;
 }
 
-void LayerInspector::chooseGenerator(const QString &path)
-{
-    editSource(QStringLiteral("Generator %1").arg(QFileInfo(path).completeBaseName()), [this, path] {
-        QString err;
-        m_engine->setLayerIsf(m_layer, path, &err);
-        Engine::Lock lk(&m_engine->mutex());
-        if (Layer *l = m_engine->layer(m_layer))
-            if (l->name.startsWith(QStringLiteral("Layer "))) l->name = QFileInfo(path).completeBaseName();
-    });
-    emit layerChanged();
-    rebuild();
-}
-
 QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
 {
-    auto *g = new QGroupBox(QStringLiteral("Composition"));
+    auto *g = new QWidget; // titled by its sub-tab
     auto *form = new QFormLayout(g);
 
     auto *row = new QWidget;
@@ -472,8 +548,91 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
 
 QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
 {
-    auto *g = new QGroupBox(QStringLiteral("Mapping"));
+    auto *g = new QWidget; // titled by its sub-tab
     auto *v = new QVBoxLayout(g);
+
+    // Position (center, composition pixels) and scale (% of the composition) of the whole mapped layer
+    {
+        const QSize comp = m_engine->compositionSize();
+        auto *grid = new QGridLayout;
+        grid->setHorizontalSpacing(6);
+        auto spin = [](double lo, double hi, const QString &suffix, int decimals) {
+            auto *b = new QDoubleSpinBox;
+            b->setRange(lo, hi);
+            b->setDecimals(decimals);
+            b->setSuffix(suffix);
+            b->setKeyboardTracking(false);
+            b->setAccelerated(true);
+            return b;
+        };
+        m_posX = spin(-100000, 100000, QStringLiteral(" px"), 1);
+        m_posY = spin(-100000, 100000, QStringLiteral(" px"), 1);
+        m_scaleX = spin(0.1, 10000, QStringLiteral(" %"), 2);
+        m_scaleY = spin(0.1, 10000, QStringLiteral(" %"), 2);
+        m_posX->setToolTip(QStringLiteral("Horizontal position of the layer's center, in composition pixels"));
+        m_posY->setToolTip(QStringLiteral("Vertical position of the layer's center, in composition pixels"));
+        m_scaleX->setToolTip(QStringLiteral("Width of the layer, in % of the composition width"));
+        m_scaleY->setToolTip(QStringLiteral("Height of the layer, in % of the composition height"));
+        auto *link = new QToolButton;
+        link->setCheckable(true);
+        link->setChecked(m_scaleLinked);
+        link->setText(QStringLiteral("⛓"));
+        link->setToolTip(QStringLiteral("Link width and height (keep the aspect ratio)"));
+        link->setStyleSheet("QToolButton:checked { background:#ffa028; color:#1b1b1d; }");
+        grid->addWidget(new QLabel(QStringLiteral("Position")), 0, 0);
+        grid->addWidget(new QLabel(QStringLiteral("X")), 0, 1);
+        grid->addWidget(m_posX, 0, 2);
+        grid->addWidget(new QLabel(QStringLiteral("Y")), 0, 4);
+        grid->addWidget(m_posY, 0, 5);
+        grid->addWidget(new QLabel(QStringLiteral("Scale")), 1, 0);
+        grid->addWidget(new QLabel(QStringLiteral("X")), 1, 1);
+        grid->addWidget(m_scaleX, 1, 2);
+        grid->addWidget(link, 1, 3);
+        grid->addWidget(new QLabel(QStringLiteral("Y")), 1, 4);
+        grid->addWidget(m_scaleY, 1, 5);
+        grid->setColumnStretch(2, 1);
+        grid->setColumnStretch(5, 1);
+        v->addLayout(grid);
+        refreshSpatial();
+
+        connect(link, &QToolButton::toggled, this, [this](bool on) { m_scaleLinked = on; });
+        auto applyBounds = [this, comp](const QString &text, const std::function<QRectF(QRectF)> &fn) {
+            editMapping(text, [&](Mapping &m) {
+                QRectF b = m.bounds();
+                // in composition pixels
+                b = QRectF(b.left() * comp.width(), b.top() * comp.height(), b.width() * comp.width(), b.height() * comp.height());
+                b = fn(b);
+                m.setBounds(QRectF(b.left() / comp.width(), b.top() / comp.height(), b.width() / comp.width(),
+                                   b.height() / comp.height()));
+            }, true);
+        };
+        connect(m_posX, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [applyBounds](double x) {
+            applyBounds(QStringLiteral("Position"), [x](QRectF b) { b.moveCenter(QPointF(x, b.center().y())); return b; });
+        });
+        connect(m_posY, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [applyBounds](double y) {
+            applyBounds(QStringLiteral("Position"), [y](QRectF b) { b.moveCenter(QPointF(b.center().x(), y)); return b; });
+        });
+        auto scale = [this, applyBounds, comp](double sx, double sy, bool fromX) {
+            applyBounds(QStringLiteral("Scale"), [&](QRectF b) {
+                const QPointF c = b.center();
+                double w = sx / 100.0 * comp.width(), h = sy / 100.0 * comp.height();
+                if (m_scaleLinked) { // the other axis follows, keeping the aspect ratio
+                    if (fromX && b.width() > 1e-9) h = b.height() * w / b.width();
+                    if (!fromX && b.height() > 1e-9) w = b.width() * h / b.height();
+                }
+                if (fromX) h = m_scaleLinked ? h : b.height();
+                else w = m_scaleLinked ? w : b.width();
+                b.setSize(QSizeF(w, h));
+                b.moveCenter(c);
+                return b;
+            });
+            refreshSpatial();
+        };
+        connect(m_scaleX, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [scale, this](double x) { scale(x, m_scaleY->value(), true); });
+        connect(m_scaleY, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [scale, this](double y) { scale(m_scaleX->value(), y, false); });
+    }
 
     auto *modeRow = new QHBoxLayout;
     auto *corners = new QRadioButton(QStringLiteral("Corners"));
@@ -510,7 +669,11 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     v->addLayout(actions);
 
     auto *hint = new QLabel(QStringLiteral("Drag: move · Shift: fine · Arrows: 1 px (Shift: 10 px) · "
-                                           "Tab: next handle · Esc: deselect"));
+                                           "Tab: next handle · Esc: deselect\n"
+                                           "Several points: Ctrl/⌘+click to add, Ctrl/⌘+drag a rectangle, "
+                                           "Ctrl/⌘+A for all; they move together.\n"
+                                           "Preview: mouse wheel or pinch to zoom (finer moves), middle button or "
+                                           "Alt/⌥ + drag to pan, Fit to see everything."));
     hint->setWordWrap(true);
     hint->setStyleSheet("color:#888; font-size:11px;");
     v->addWidget(hint);
@@ -558,7 +721,7 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
 
 QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
 {
-    auto *g = new QGroupBox(QStringLiteral("ISF Effects"));
+    auto *g = new QWidget; // titled by its sub-tab
     auto *v = new QVBoxLayout(g);
 
     auto *bar = new QHBoxLayout;
@@ -675,8 +838,31 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     return g;
 }
 
+void LayerInspector::refreshSpatial()
+{
+    if (!m_posX) return;
+    QRectF b;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Layer *l = m_engine->layer(m_layer);
+        if (!l) return;
+        b = l->mapping.bounds();
+    }
+    const QSize comp = m_engine->compositionSize();
+    const double values[4] = {b.center().x() * comp.width(), b.center().y() * comp.height(), b.width() * 100.0,
+                              b.height() * 100.0};
+    QDoubleSpinBox *boxes[4] = {m_posX, m_posY, m_scaleX, m_scaleY};
+    for (int k = 0; k < 4; ++k) {
+        if (boxes[k]->hasFocus()) continue; // being edited
+        if (std::abs(boxes[k]->value() - values[k]) < 1e-6) continue;
+        QSignalBlocker blk(boxes[k]);
+        boxes[k]->setValue(values[k]);
+    }
+}
+
 void LayerInspector::refreshDynamic()
 {
+    refreshSpatial();
     bool playing;
     double d, p;
     {

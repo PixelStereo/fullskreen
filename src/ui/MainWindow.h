@@ -41,7 +41,6 @@ protected:
 private:
     void buildMenus();
     void buildOutputScreensMenu();
-    void rebuildGeneratorMenus();
     void refreshLayerList();
     void refreshAll();
     void selectLayer(int index);
@@ -62,14 +61,8 @@ private:
     static QString autosavePath();
     void afterProjectLoaded(const QJsonObject &ui);
 
-    int newLayerFromFile(const QString &path, int at = 0);
-    void addVideoLayer();
-    void addImageLayer();
-    void addAudioLayer();
-    void addFileLayers(const QString &title, const QString &dirKey, const QString &filter);
-    void setSourceFromDialog(const QString &kind);
-    void setSourceFromFile(int layer, const QString &path);
-    void addGeneratorLayer(const QString &path);
+    bool loadIntoLayer(int layer, const QString &path); // media, ISF generator or ISF effect (undoable)
+    void loadDropped(int layer, const QStringList &paths);
     void addEmptyLayer();
     void removeCurrentLayer();
     void duplicateCurrentLayer();
@@ -100,7 +93,7 @@ private:
     QLabel *m_status = nullptr;
     QTimer m_statusTimer, m_renderTimer, m_autosaveTimer, m_binTimer, m_inspectorTimer;
 
-    QMenu *m_generatorMenu = nullptr, *m_screensMenu = nullptr;
+    QMenu *m_screensMenu = nullptr;
     QActionGroup *m_screenGroup = nullptr;
     QAction *m_fullscreenAction = nullptr, *m_windowedAction = nullptr, *m_undoAction = nullptr, *m_redoAction = nullptr,
             *m_blackoutAction = nullptr;

@@ -7,12 +7,23 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
 
 - **Stacked layers** (the top layer is drawn on top), opacity, blend modes Normal / Add / Screen / Multiply.
 - **One source per layer**:
-  - video (H.264, HEVC, ProRes, HAP, DNxHD… anything FFmpeg reads), play / pause / loop / speed / position,
+  - video (H.264, HEVC, ProRes, HAP, DNxHD… anything FFmpeg reads), play / pause / speed / position,
     **with its sound** when the file has an audio track;
   - still image;
   - ISF generator;
   - **audio file** (WAV, AIFF, MP3, AAC/M4A, FLAC, Ogg/Opus… anything FFmpeg reads): an audio layer, with the same
-    transport as a video (play / pause / loop / speed / position) and no picture.
+    transport as a video (play / pause / play mode / speed / position) and no picture.
+- **Play modes** for videos and sounds, four exclusive buttons in the Source tab: **One-shot** (plays once,
+  freezes on the last frame), **Loop**, **Ping-pong** (forwards then backwards — the picture and the sound are
+  decoded backwards in short windows, so any codec works, all-intra codecs such as HAP or ProRes being the
+  lightest), **Stop** (plays once, then black and silent). The mode given to newly loaded media is set in the
+  **Preferences** (Loop by default).
+- **Negative speed** plays videos and sounds backwards, in every play mode (Loop goes on backwards from the end,
+  One-shot stops on the first frame…); changing direction keeps the current position.
+- **Spatial tab**: position (center, composition pixels) and scale (% of the composition, X and Y linked by
+  default) of the whole mapped layer — corners and mesh are transformed together and follow handle edits.
+- **Preview zoom**: mouse wheel / pinch around the cursor, − / + / Fit buttons; the higher the zoom, the finer
+  the moves of the layer and its points.
 - **ISF effect chain per layer**: any number of effects, reorderable, each one can be enabled or disabled.
   Parameters are generated automatically from each shader's JSON header.
 - **ISF v2 support**: multiple passes, computed pass sizes (`"$WIDTH/2"`), persistent and float buffers,
@@ -47,11 +58,17 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   (active, number of receivers, or what is missing). Settings are saved in the project.
 - **Media Bin** (left): every video, image and audio file used by the project, grouped by type, with resolution,
   duration, sound format and the number of layers using them (sources and shader images). **Missing** files are shown in red;
-  **Replace…** relinks them (a single replacement fixes every layer, and can be undone);
-  import without creating a layer, drag to the layer list or the preview to create a layer,
-  double-click to replace the source of the selected layer.
+  **Replace…** relinks them (a single replacement fixes every layer, and can be undone).
+  An **ISF › Generators** category lists the generators of the ISF library (and those used by layers).
+  Drag an item onto a layer to load it; double-click loads it into the selected layer.
+- **Layers are created empty** with **+**, then loaded with whatever is dropped onto them: a video, an image,
+  a sound or an ISF generator, from the Media Bin or the Finder / Explorer — onto the layer's row in the list,
+  or onto the drop zone of its Source tab. An ISF effect dropped onto a layer joins its effect chain.
+  The **×** next to the drop zone ejects the media.
 - **Layer list at the bottom**, full width: visibility, name, source, effects, opacity adjustable
   directly in the row, blend mode, playback position.
+- **Layer tab** with sub-tabs: **Source** (drop zone, transport, sound, generator parameters),
+  **Spatial** (mapping), **Effects** (ISF chain), **Compositing** (opacity, blend).
 - **Undo / redo** (Ctrl+Z / Ctrl+Shift+Z, ⌘ on Mac): mapping (handles, arrow keys, buttons), ISF parameters,
   opacity, blend, visibility, name, adding / deleting / reordering layers, effects, source changes.
 - **Autosave and recovery**: the session is saved every 10 s when it changes.
@@ -60,7 +77,8 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   Saves are atomic: a crash while writing does not corrupt the project.
 - **Projects** `.fulskrin` (readable JSON), with paths relative to the project so a show folder can move between machines.
   A file missing when the project opens is not lost: its path is kept and flagged in the Media Bin.
-- **Drag and drop** of videos, images, ISF shaders (a dropped filter is added as an effect on the selected layer).
+- **Drag and drop** of files from the system: onto a layer (loaded into it), onto the Media Bin (imported),
+  elsewhere in the window (loaded into the selected layer; extra files go to the Media Bin).
 
 Bundled shaders (`isf/` folder): generators TestPattern, Plasma, Gradient, Clouds, SolidColor;
 effects ColorCorrection, Hue, Blur (2 passes), Trails (persistent buffer), Kaleidoscope, SoftEdges, Mask, FlipCrop, Pixelate.
@@ -115,7 +133,9 @@ cmake -S . -B build && cmake --build build -j
 
 | Action | How |
 |---|---|
-| New layer (video, image, audio, generator) | **+** button of the layer list, Layer menu, drag a file (from the system or the Media Bin) |
+| New layer | **+** button of the layer list, or Layer ▸ New Layer (Ctrl+Shift+N): the layer is empty |
+| Load a media into a layer | drag it (Media Bin, Finder) onto the layer's row, or onto the Source tab drop zone |
+| Eject the media of a layer | **×** next to the drop zone (Source tab) |
 | Import to the Media Bin | Import… button, Ctrl+I (⌘I), or drop files / a folder onto the Media Bin |
 | Relink a moved file | Media Bin ▸ select the red file ▸ Replace… |
 | Choose the projector screen | Master tab ▸ Video Output, or Output menu ▸ Output Screen |
@@ -127,11 +147,19 @@ cmake -S . -B build && cmake --build build -j
 | Match the composition to the projector | Master tab ▸ Composition ▸ "= output screen" |
 | Publish via NDI, OMT, Syphon, Spout | Master tab ▸ Output Publishing |
 | Play / pause the selected video or audio layer | Space |
+| Play mode of a video or a sound | Source tab ▸ One-shot / Loop / Ping-pong / Stop |
+| Default play mode for newly loaded media | Preferences (⌘, on Mac, Ctrl+, elsewhere) |
+| Play backwards | negative speed (Source tab), e.g. −1 × |
+| Zoom the preview (finer moves) | mouse wheel or pinch, or the − / + / Fit buttons at the top right of the preview |
+| Pan the zoomed preview | middle button or Alt/⌥ + drag, two fingers on a trackpad |
+| Position and scale of the whole layer | Layer tab ▸ Spatial ▸ Position X / Y (px), Scale X / Y (%, linked by default) |
 | Move a handle | drag (Shift: fine movement) |
+| Select several points (mesh or corners) | Ctrl/⌘+click to add or remove, Ctrl/⌘+drag a rectangle, Ctrl/⌘+A for all |
+| Move the selected points together | drag one of them, or arrow keys |
 | Move the whole layer | drag inside the layer |
 | Nudge by one pixel | arrow keys (Shift: 10 px) |
 | Next handle / deselect | Tab / Esc |
-| Corners ↔ mesh mode | Layer tab ▸ Mapping |
+| Corners ↔ mesh mode | Layer tab ▸ Spatial |
 | Reload a shader edited in an external editor | ⟳ button in the inspector |
 
 Suggested alignment workflow: put the **TestPattern** generator on the layer, align the 4 corners

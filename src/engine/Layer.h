@@ -14,6 +14,13 @@
 
 enum class SourceType { None, Video, Image, Isf, Audio };
 enum class BlendMode { Normal, Add, Screen, Multiply };
+// What a video or a sound does at its end: freeze on the last frame, loop, play backwards and forwards,
+// or stop and go black (and silent).
+enum class PlayMode { OneShot, Loop, PingPong, Stop };
+
+QString playModeName(PlayMode m);
+QString playModeKey(PlayMode m);
+PlayMode playModeFromKey(const QString &k, PlayMode fallback = PlayMode::Loop);
 
 QString blendModeName(BlendMode m);
 QString blendModeKey(BlendMode m);
@@ -34,8 +41,15 @@ struct Layer {
     // Video and audio: transport shared by the picture and the sound
     std::unique_ptr<VideoDecoder> video;
     std::vector<uint8_t> frameBuffer;
-    bool playing = true, loop = true;
-    double speed = 1.0, playhead = 0.0;
+    bool playing = true;
+    PlayMode mode = PlayMode::Loop;
+    bool ended = false; // Stop mode: the end was reached, the layer shows nothing
+    // Transport: the clock advances with |speed| from a reposition (load, seek, direction or mode change);
+    // the Timeline turns it into a position (legs forwards / backwards). Negative speed plays backwards.
+    double speed = 1.0;
+    double clock = 0.0, origin = 0.0;
+    int dir = 1;
+    uint64_t timelineId = 1; // incremented at every reposition (the sound resynchronizes)
 
     // Sound: audio layer, or audio track of a video layer (null if the file has none)
     std::shared_ptr<AudioStream> audio;
@@ -64,13 +78,19 @@ struct Layer {
 
     bool hasTransport() const { return video || audio; }
     double duration() const { return video ? video->duration() : audio ? audio->duration() : 0.0; }
-    float audioGain() const { return visible && !muted ? volume : 0.0f; }
-    double position() const
+    float audioGain() const { return visible && !muted && !ended ? volume : 0.0f; }
+    bool repeats() const { return mode == PlayMode::Loop || mode == PlayMode::PingPong; }
+    Timeline timeline() const
     {
-        const double d = duration();
-        if (d <= 0) return playhead;
-        return loop ? std::fmod(playhead, d) : std::min(playhead, d);
+        Timeline t;
+        t.duration = duration();
+        t.mode = mode == PlayMode::Loop ? Timeline::Loop : mode == PlayMode::PingPong ? Timeline::PingPong : Timeline::Once;
+        t.origin = origin;
+        t.dir = dir;
+        return t;
     }
+    double position() const { return timeline().position(clock); }
+    bool atEnd() const { return timeline().ended(clock); } // One-shot / Stop: played to the end
     int sourceWidth() const { return type == SourceType::Isf ? genWidth : srcWidth; }
     int sourceHeight() const { return type == SourceType::Isf ? genHeight : srcHeight; }
 };

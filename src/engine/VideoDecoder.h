@@ -1,7 +1,11 @@
 #pragma once
 // FFmpeg video decoding on a dedicated thread.
-// Frames are converted to RGBA, flipped vertically (OpenGL convention)
-// and queued with a monotonic timestamp (loops accumulate).
+// Frames are converted to RGBA, flipped vertically (OpenGL convention) and queued, stamped with the
+// clock of the layer's Timeline (monotonic whatever the direction or the play mode).
+// Backward legs (negative speed, ping-pong) are produced in short windows: seek to the keyframe, decode
+// forward, deliver the frames in reverse order — bounded memory whatever the GOP length.
+
+#include "Timeline.h"
 
 #include <QString>
 #include <atomic>
@@ -43,11 +47,11 @@ public:
     double fps() const { return m_fps; }
     QString codecName() const { return m_codecName; }
 
-    void setLoop(bool on) { m_loop = on; }
-    bool loop() const { return m_loop; }
+    // Timeline followed by the next seek (mode, origin, direction). Its duration is set by the decoder.
+    void setTimeline(const Timeline &t);
 
-    // Requests a seek (asynchronous). After seek(t), the player clock must equal t.
-    void seek(double t);
+    // Repositions on the clock `c` of the timeline (asynchronous): frames are then stamped from there.
+    void seek(double c);
 
     // Fetches the most recent frame whose timestamp <= t. Returns true if a new frame was written to out.
     bool fetch(double t, std::vector<uint8_t> &out, int *w, int *h);
@@ -64,7 +68,10 @@ private:
 
     void run();
     void doSeek(double t);
-    int decodeNext(Frame &f); // 1 = frame, 0 = end, -1 = error
+    int decodeNext(Frame &f, double skipBefore = -1e9); // 1 = frame, 2 = skipped (before skipBefore), 0 = end, -1 = error
+    void produceBackwardWindow(); // decode thread, backward leg
+    void startLeg(const Timeline::Leg &leg, double position); // decode thread
+    void finishLeg();                                          // decode thread: next leg, or end
     void recycle(std::vector<uint8_t> &&buf);
 
     AVFormatContext *m_fmt = nullptr;
@@ -87,9 +94,13 @@ private:
     bool m_quit = false, m_seekPending = false, m_eof = false, m_needFirst = true;
     double m_seekTarget = 0;
     uint64_t m_generation = 0;
-    std::atomic<bool> m_loop{true};
+    Timeline m_timeline, m_pendingTimeline; // pending: applied at the next seek
 
     // Decode thread state
     bool m_draining = false;
-    double m_loopBase = 0, m_lastPts = 0, m_discardBefore = -1e9;
+    double m_lastPts = 0, m_discardBefore = -1e9;
+    Timeline::Leg m_leg;            // leg being produced
+    std::vector<Frame> m_backStack; // backward leg: frames still to deliver (reverse order)
+    double m_backEnd = 0;           // backward leg: end (position) of the next window
+    bool m_legDone = false;
 };
