@@ -2,6 +2,8 @@
 // FFmpeg video decoding on a dedicated thread.
 // Frames are converted to RGBA, flipped vertically (OpenGL convention)
 // and queued with a monotonic timestamp (loops accumulate).
+// Ping-pong: the backward legs are produced in short windows (seek to the keyframe, decode forward,
+// deliver the frames in reverse order), so memory stays bounded whatever the GOP length.
 
 #include <QString>
 #include <atomic>
@@ -43,8 +45,9 @@ public:
     double fps() const { return m_fps; }
     QString codecName() const { return m_codecName; }
 
-    void setLoop(bool on) { m_loop = on; }
-    bool loop() const { return m_loop; }
+    enum Mode { Once = 0, Loop = 1, PingPong = 2 }; // Once: stops on the last frame
+    void setMode(int mode) { m_mode = mode; }
+    int mode() const { return m_mode; }
 
     // Requests a seek (asynchronous). After seek(t), the player clock must equal t.
     void seek(double t);
@@ -64,7 +67,8 @@ private:
 
     void run();
     void doSeek(double t);
-    int decodeNext(Frame &f); // 1 = frame, 0 = end, -1 = error
+    int decodeNext(Frame &f, double skipBefore = -1e9); // 1 = frame, 2 = skipped (before skipBefore), 0 = end, -1 = error
+    void produceBackwardWindow(); // decode thread, ping-pong
     void recycle(std::vector<uint8_t> &&buf);
 
     AVFormatContext *m_fmt = nullptr;
@@ -87,9 +91,14 @@ private:
     bool m_quit = false, m_seekPending = false, m_eof = false, m_needFirst = true;
     double m_seekTarget = 0;
     uint64_t m_generation = 0;
-    std::atomic<bool> m_loop{true};
+    std::atomic<int> m_mode{Loop};
 
     // Decode thread state
     bool m_draining = false;
     double m_loopBase = 0, m_lastPts = 0, m_discardBefore = -1e9;
+    // Ping-pong backward leg: frames still to deliver (reverse order), end of the next window, leg start time
+    bool m_backward = false;
+    std::vector<Frame> m_backStack;
+    double m_backEnd = 0, m_legBase = 0;
+    double span() const { return m_duration > 0 ? m_duration : m_lastPts + 1.0 / m_fps; }
 };

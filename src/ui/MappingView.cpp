@@ -1,4 +1,6 @@
 #include "MappingView.h"
+
+#include <algorithm>
 #include "Commands.h"
 #include "Engine.h"
 
@@ -30,7 +32,10 @@ MappingView::~MappingView()
 
 void MappingView::setLayer(int index)
 {
-    if (index != m_layer) m_selected = Handle{};
+    if (index != m_layer) {
+        m_selection.clear();
+        m_primary = Handle{};
+    }
     m_layer = index;
     update();
 }
@@ -176,7 +181,7 @@ void MappingView::paintGL()
     auto addHandle = [&](const Handle &h, float half) {
         const QPointF p = toWidget(handlePos(h));
         pushRect(shadow, p, half + 1.5f);
-        pushRect(h == m_selected ? sel : handles, p, half);
+        pushRect(isSelected(h) ? sel : handles, p, half);
     };
     if (m->meshMode) {
         for (int j = 0; j < m->rows; ++j)
@@ -187,6 +192,44 @@ void MappingView::paintGL()
     m_draw.drawTriangles(shadow, QColor(0, 0, 0, 160));
     m_draw.drawTriangles(handles, kHandle);
     m_draw.drawTriangles(sel, kSelected);
+
+    if (m_rubber) { // selection rectangle
+        const QRectF r = QRectF(m_rubberStart, m_rubberEnd).normalized();
+        std::vector<float> band;
+        pushLine(band, r.topLeft(), r.topRight());
+        pushLine(band, r.topRight(), r.bottomRight());
+        pushLine(band, r.bottomRight(), r.bottomLeft());
+        pushLine(band, r.bottomLeft(), r.topLeft());
+        m_draw.drawLines(band, kSelected);
+    }
+}
+
+bool MappingView::isSelected(const Handle &h) const
+{
+    return std::find(m_selection.begin(), m_selection.end(), h) != m_selection.end();
+}
+
+std::vector<MappingView::Handle> MappingView::allHandles() const
+{
+    std::vector<Handle> out;
+    Mapping *m = mapping();
+    if (!m) return out;
+    if (m->meshMode) {
+        for (int j = 0; j < m->rows; ++j)
+            for (int i = 0; i < m->cols; ++i) out.push_back(Handle{1, i, j});
+    } else {
+        for (int i = 0; i < 4; ++i) out.push_back(Handle{0, i, 0});
+    }
+    return out;
+}
+
+// All selected handles move by the same amount. Positions are read before moving:
+// moving a corner changes the homography, hence the position of the other points.
+void MappingView::moveSelection(QPointF delta)
+{
+    std::vector<QPointF> start;
+    for (const Handle &h : m_selection) start.push_back(handlePos(h));
+    for (size_t k = 0; k < m_selection.size(); ++k) moveHandle(m_selection[k], start[k] + delta);
 }
 
 QPointF MappingView::handlePos(const Handle &h) const
@@ -248,15 +291,26 @@ void MappingView::mousePressEvent(QMouseEvent *e)
     const QPointF p = e->position();
     m_lastNorm = toNorm(p);
     Handle h = hitHandle(p);
+    const bool additive = e->modifiers() & Qt::ControlModifier; // Ctrl, ⌘ on Mac
     if (h.valid()) {
-        m_selected = h;
-        m_dragHandle = true;
+        if (additive) { // Ctrl/⌘+click: add or remove the point
+            const auto it = std::find(m_selection.begin(), m_selection.end(), h);
+            if (it != m_selection.end()) m_selection.erase(it);
+            else m_selection.push_back(h);
+        } else if (!isSelected(h)) {
+            m_selection = {h};
+        }
+        m_primary = h;
+        m_dragHandle = isSelected(h); // dragging a selected point moves the whole selection
+    } else if (additive && mapping()) { // Ctrl/⌘+drag: selection rectangle
+        m_rubber = true;
+        m_rubberStart = m_rubberEnd = p;
     } else if (m_layer >= 0 && insideLayer(m_layer, p)) {
-        m_selected = Handle{};
+        m_selection.clear();
         m_dragLayer = true;
     } else {
         // Select the topmost visible layer under the cursor
-        m_selected = Handle{};
+        m_selection.clear();
         for (int i = 0; i < m_engine->layerCount(); ++i) {
             if (m_engine->layer(i)->visible && insideLayer(i, p)) {
                 lk.unlock();
@@ -278,8 +332,10 @@ void MappingView::mouseMoveEvent(QMouseEvent *e)
     QPointF delta = n - m_lastNorm;
     m_lastNorm = n;
     if (e->modifiers() & Qt::ShiftModifier) delta *= 0.1; // fine movement
-    if (m_dragHandle) {
-        moveHandle(m_selected, handlePos(m_selected) + delta);
+    if (m_rubber) {
+        m_rubberEnd = e->position();
+    } else if (m_dragHandle) {
+        moveSelection(delta);
         emit mappingEdited();
     } else if (m_dragLayer) {
         if (Mapping *m = mapping()) m->translate(delta);
@@ -290,14 +346,25 @@ void MappingView::mouseMoveEvent(QMouseEvent *e)
 
 void MappingView::mouseReleaseEvent(QMouseEvent *)
 {
+    if (m_rubber) { // adds the points inside the rectangle to the selection
+        m_rubber = false;
+        Engine::Lock lk(&m_engine->mutex());
+        const QRectF r = QRectF(m_rubberStart, m_rubberEnd).normalized();
+        for (const Handle &h : allHandles())
+            if (r.contains(toWidget(handlePos(h))) && !isSelected(h)) m_selection.push_back(h);
+        update();
+        return;
+    }
     const bool dragging = m_dragHandle || m_dragLayer;
     const bool handle = m_dragHandle;
     m_dragHandle = m_dragLayer = false;
     if (!dragging || !m_undo) return;
     const Mapping after = cmd::SetMapping::read(m_engine, m_layer);
     if (after.toJson() == m_dragBefore.toJson()) return;
-    m_undo->push(new cmd::SetMapping(m_engine, m_layer, m_dragBefore, after,
-                                     handle ? QStringLiteral("Move Handle") : QStringLiteral("Move Layer")));
+    const QString text = !handle ? QStringLiteral("Move Layer")
+                         : m_selection.size() > 1 ? QStringLiteral("Move %1 Points").arg(m_selection.size())
+                                                  : QStringLiteral("Move Handle");
+    m_undo->push(new cmd::SetMapping(m_engine, m_layer, m_dragBefore, after, text));
 }
 
 void MappingView::keyPressEvent(QKeyEvent *e)
@@ -305,6 +372,11 @@ void MappingView::keyPressEvent(QKeyEvent *e)
     Engine::Lock lk(&m_engine->mutex());
     Mapping *m = mapping();
     QPointF d;
+    if (e->matches(QKeySequence::SelectAll)) { // Ctrl/⌘+A: every point of the current mode
+        m_selection = allHandles();
+        update();
+        return;
+    }
     switch (e->key()) {
     case Qt::Key_Left: d = {-1, 0}; break;
     case Qt::Key_Right: d = {1, 0}; break;
@@ -314,16 +386,20 @@ void MappingView::keyPressEvent(QKeyEvent *e)
         // Go to the next handle
         if (!m) break;
         if (m->meshMode) {
-            int k = m_selected.kind == 1 ? m_selected.j * m->cols + m_selected.i + 1 : 0;
+            int k = m_primary.kind == 1 ? m_primary.j * m->cols + m_primary.i + 1 : 0;
             k %= m->cols * m->rows;
-            m_selected = Handle{1, k % m->cols, k / m->cols};
+            m_primary = Handle{1, k % m->cols, k / m->cols};
         } else {
-            m_selected = Handle{0, m_selected.kind == 0 ? (m_selected.i + 1) % 4 : 0, 0};
+            m_primary = Handle{0, m_primary.kind == 0 ? (m_primary.i + 1) % 4 : 0, 0};
         }
+        m_selection = {m_primary};
         update();
         return;
     }
-    case Qt::Key_Escape: m_selected = Handle{}; update(); return;
+    case Qt::Key_Escape:
+        m_selection.clear();
+        update();
+        return;
     default: QOpenGLWidget::keyPressEvent(e); return;
     }
     if (!m) return;
@@ -332,8 +408,8 @@ void MappingView::keyPressEvent(QKeyEvent *e)
     const QSize comp = m_engine->compositionSize();
     const double step = (e->modifiers() & Qt::ShiftModifier) ? 10.0 : 1.0;
     const QPointF delta(d.x() * step / comp.width(), d.y() * step / comp.height());
-    if (m_selected.valid()) {
-        moveHandle(m_selected, handlePos(m_selected) + delta);
+    if (!m_selection.empty()) {
+        moveSelection(delta);
     } else {
         m->translate(delta);
     }

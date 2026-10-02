@@ -9,4 +9,7 @@ ffmpeg -loglevel error -y -f lavfi -i "smptebars=size=1024x768" -frames:v 1 bars
 ffmpeg -loglevel error -y -f lavfi -i "aevalsrc=0.5*sin(2*PI*if(lt(t\,2)\,440\,880)*t):s=44100:d=4" tone.wav
 ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=640x360:rate=25 -f lavfi -i "sine=frequency=660:sample_rate=48000:duration=4" \
   -t 4 -pix_fmt yuv420p -c:v libx264 -c:a aac -b:a 128k -shortest av.mp4
+# Frame index coded in the luminance (Y = 20 + 4 × frame number), 25 fps, 2 s, GOP of 25: ping-pong test
+ffmpeg -loglevel error -y -f lavfi -i "color=black:s=64x64:r=25:d=2,format=yuv420p,geq=lum='20+N*4':cb=128:cr=128" \
+  -c:v libx264 -g 25 -bf 2 -pix_fmt yuv420p index.mp4
 echo "media created in $(pwd)"

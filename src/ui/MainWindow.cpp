@@ -7,6 +7,7 @@
 #include "MasterPanel.h"
 #include "MediaBin.h"
 #include "OutputWindow.h"
+#include "PreferencesDialog.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -110,6 +111,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_output, &OutputWindow::keyPressed, this, [this](int key, Qt::KeyboardModifiers mods) { handleControlKey(key, mods); });
 
     buildMenus();
+    m_engine->setDefaultPlayMode(PreferencesDialog::defaultPlayMode());
 
     // --- Layers
     connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
@@ -313,6 +315,14 @@ void MainWindow::buildMenus()
         m_undo->redo();
         refreshAll();
     });
+    edit->addSeparator();
+    // On macOS, Qt moves it to the application menu (Fulskrin ▸ Settings…, ⌘,)
+    QAction *prefs = edit->addAction(QStringLiteral("Preferences…"), QKeySequence::Preferences, this, [this] {
+        PreferencesDialog d(this);
+        if (d.exec() == QDialog::Accepted) m_engine->setDefaultPlayMode(PreferencesDialog::defaultPlayMode());
+    });
+    prefs->setMenuRole(QAction::PreferencesRole);
+    if (prefs->shortcut().isEmpty()) prefs->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma)); // Linux / Windows
 
     QMenu *layer = menuBar()->addMenu(QStringLiteral("&Layer"));
     // A layer is created empty; media is then dropped onto it (Media Bin, Finder)
@@ -524,8 +534,11 @@ void MainWindow::refreshLayerList()
                 r.source += (l->type == SourceType::Video ? QStringLiteral("   ♪ ") : QStringLiteral("   ")) + vol;
             }
             if (l->type == SourceType::Video || l->type == SourceType::Audio) {
-                r.playback = QStringLiteral("%1 %2 / %3").arg(l->playing ? QStringLiteral("▶") : QStringLiteral("❚❚"),
-                                                               fmtClock(l->position()), fmtClock(l->duration()));
+                static const QString kModeSymbol[] = {QStringLiteral("→|"), QStringLiteral("↻"), QStringLiteral("⇄"),
+                                                      QStringLiteral("→■")};
+                r.playback = QStringLiteral("%1 %2 / %3  %4")
+                                 .arg(l->ended ? QStringLiteral("■") : l->playing ? QStringLiteral("▶") : QStringLiteral("❚❚"),
+                                      fmtClock(l->position()), fmtClock(l->duration()), kModeSymbol[int(l->mode)]);
             } else if (l->type == SourceType::Isf) {
                 r.playback = QStringLiteral("real time");
             }

@@ -56,7 +56,7 @@ static QString propText(SetLayerProp::Prop p)
     case SetLayerProp::Opacity: return QStringLiteral("Change Opacity");
     case SetLayerProp::Blend: return QStringLiteral("Change Blend Mode");
     case SetLayerProp::Speed: return QStringLiteral("Change Speed");
-    case SetLayerProp::Loop: return QStringLiteral("Toggle Loop");
+    case SetLayerProp::Mode: return QStringLiteral("Change Play Mode");
     case SetLayerProp::Volume: return QStringLiteral("Change Volume");
     case SetLayerProp::Muted: return QStringLiteral("Toggle Mute");
     }
@@ -80,7 +80,7 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
     case Opacity: return double(l->opacity);
     case Blend: return int(l->blend);
     case Speed: return l->speed;
-    case Loop: return l->loop;
+    case Mode: return int(l->mode);
     case Volume: return double(l->volume);
     case Muted: return l->muted;
     }
@@ -89,8 +89,8 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
 
 void SetLayerProp::apply(const QVariant &v)
 {
-    if (m_prop == Loop) {
-        m_e->setLayerLoop(m_layer, v.toBool());
+    if (m_prop == Mode) {
+        m_e->setLayerPlayMode(m_layer, PlayMode(v.toInt()));
         return;
     }
     Engine::Lock lk(&m_e->mutex());

@@ -40,7 +40,8 @@ struct LayerSnapshot {
     float opacity = 1;
     BlendMode blend = BlendMode::Normal;
     SourceType type = SourceType::None;
-    bool hasVideo = false, playing = false, loop = true;
+    bool hasVideo = false, playing = false;
+    PlayMode mode = PlayMode::Loop;
     int videoW = 0, videoH = 0;
     double fps = 0, duration = 0, speed = 1;
     QString codec;
@@ -87,7 +88,7 @@ struct LayerSnapshot {
         s.volume = l->volume;
         s.muted = l->muted;
         s.playing = l->playing;
-        s.loop = l->loop;
+        s.mode = l->mode;
         s.speed = l->speed;
         s.hasGenerator = l->generator != nullptr;
         s.genW = l->genWidth;
@@ -356,8 +357,6 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         auto *transport = new QHBoxLayout;
         m_play = new QPushButton(s.playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
         auto *rewind = toolButton(QStringLiteral("⏮"), QStringLiteral("Back to Start"));
-        auto *loop = new QCheckBox(QStringLiteral("Loop"));
-        loop->setChecked(s.loop);
         auto *speed = new QDoubleSpinBox;
         speed->setRange(0.05, 8.0);
         speed->setSingleStep(0.05);
@@ -366,10 +365,40 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         speed->setToolTip(QStringLiteral("Playback speed"));
         transport->addWidget(m_play);
         transport->addWidget(rewind);
-        transport->addWidget(loop);
         transport->addStretch();
         transport->addWidget(speed);
         v->addLayout(transport);
+
+        // Play mode: four exclusive buttons, one is always selected
+        auto *modes = new QHBoxLayout;
+        modes->setSpacing(2);
+        auto *group = new QButtonGroup(g);
+        group->setExclusive(true);
+        const struct {
+            PlayMode mode;
+            const char *tip;
+        } kModes[] = {
+            {PlayMode::OneShot, "Plays once and freezes on the last frame"},
+            {PlayMode::Loop, "Starts again from the beginning"},
+            {PlayMode::PingPong, "Plays forwards, then backwards, and so on"},
+            {PlayMode::Stop, "Plays once, then goes black (and silent)"},
+        };
+        for (const auto &m : kModes) {
+            auto *b = new QToolButton;
+            b->setText(playModeName(m.mode));
+            b->setToolTip(QString::fromUtf8(m.tip));
+            b->setCheckable(true);
+            b->setChecked(s.mode == m.mode);
+            b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            b->setStyleSheet("QToolButton:checked { background:#ffa028; color:#1b1b1d; font-weight:bold; }");
+            group->addButton(b, int(m.mode));
+            modes->addWidget(b);
+        }
+        v->addLayout(modes);
+        connect(group, &QButtonGroup::idClicked, this, [this](int id) {
+            setProp(cmd::SetLayerProp::Mode, id);
+            emit layerChanged();
+        });
 
         auto *seekRow = new QHBoxLayout;
         m_seek = new QSlider(Qt::Horizontal);
@@ -393,7 +422,6 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             refreshDynamic();
         });
         connect(rewind, &QToolButton::clicked, this, [this] { m_engine->seekLayer(m_layer, 0); });
-        connect(loop, &QCheckBox::toggled, this, [this](bool on) { setProp(cmd::SetLayerProp::Loop, on); });
         connect(speed, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [this](double sp) { setProp(cmd::SetLayerProp::Speed, sp); });
         const double duration = s.duration;
@@ -556,7 +584,9 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     v->addLayout(actions);
 
     auto *hint = new QLabel(QStringLiteral("Drag: move · Shift: fine · Arrows: 1 px (Shift: 10 px) · "
-                                           "Tab: next handle · Esc: deselect"));
+                                           "Tab: next handle · Esc: deselect\n"
+                                           "Several points: Ctrl/⌘+click to add, Ctrl/⌘+drag a rectangle, "
+                                           "Ctrl/⌘+A for all; they move together."));
     hint->setWordWrap(true);
     hint->setStyleSheet("color:#888; font-size:11px;");
     v->addWidget(hint);

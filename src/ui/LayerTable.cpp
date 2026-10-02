@@ -141,7 +141,7 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     h->setSectionResizeMode(ColBlend, QHeaderView::Fixed);
     m_table->setColumnWidth(ColBlend, 90);
     h->setSectionResizeMode(ColPlayback, QHeaderView::Fixed);
-    m_table->setColumnWidth(ColPlayback, 160);
+    m_table->setColumnWidth(ColPlayback, 200);
     v->addWidget(m_table, 1);
 
     connect(m_table, &QTableWidget::currentCellChanged, this, [this](int row, int, int prev, int) {

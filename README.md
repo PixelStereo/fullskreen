@@ -7,12 +7,17 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
 
 - **Stacked layers** (the top layer is drawn on top), opacity, blend modes Normal / Add / Screen / Multiply.
 - **One source per layer**:
-  - video (H.264, HEVC, ProRes, HAP, DNxHD… anything FFmpeg reads), play / pause / loop / speed / position,
+  - video (H.264, HEVC, ProRes, HAP, DNxHD… anything FFmpeg reads), play / pause / speed / position,
     **with its sound** when the file has an audio track;
   - still image;
   - ISF generator;
   - **audio file** (WAV, AIFF, MP3, AAC/M4A, FLAC, Ogg/Opus… anything FFmpeg reads): an audio layer, with the same
-    transport as a video (play / pause / loop / speed / position) and no picture.
+    transport as a video (play / pause / play mode / speed / position) and no picture.
+- **Play modes** for videos and sounds, four exclusive buttons in the Source tab: **One-shot** (plays once,
+  freezes on the last frame), **Loop**, **Ping-pong** (forwards then backwards — the picture and the sound are
+  decoded backwards in short windows, so any codec works, all-intra codecs such as HAP or ProRes being the
+  lightest), **Stop** (plays once, then black and silent). The mode given to newly loaded media is set in the
+  **Preferences** (Loop by default).
 - **ISF effect chain per layer**: any number of effects, reorderable, each one can be enabled or disabled.
   Parameters are generated automatically from each shader's JSON header.
 - **ISF v2 support**: multiple passes, computed pass sizes (`"$WIDTH/2"`), persistent and float buffers,
@@ -136,7 +141,11 @@ cmake -S . -B build && cmake --build build -j
 | Match the composition to the projector | Master tab ▸ Composition ▸ "= output screen" |
 | Publish via NDI, OMT, Syphon, Spout | Master tab ▸ Output Publishing |
 | Play / pause the selected video or audio layer | Space |
+| Play mode of a video or a sound | Source tab ▸ One-shot / Loop / Ping-pong / Stop |
+| Default play mode for newly loaded media | Preferences (⌘, on Mac, Ctrl+, elsewhere) |
 | Move a handle | drag (Shift: fine movement) |
+| Select several points (mesh or corners) | Ctrl/⌘+click to add or remove, Ctrl/⌘+drag a rectangle, Ctrl/⌘+A for all |
+| Move the selected points together | drag one of them, or arrow keys |
 | Move the whole layer | drag inside the layer |
 | Nudge by one pixel | arrow keys (Shift: 10 px) |
 | Next handle / deselect | Tab / Esc |

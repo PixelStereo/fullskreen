@@ -52,6 +52,35 @@ QString blendModeKey(BlendMode m)
     }
 }
 
+QString playModeName(PlayMode m)
+{
+    switch (m) {
+    case PlayMode::OneShot: return QStringLiteral("One-shot");
+    case PlayMode::PingPong: return QStringLiteral("Ping-pong");
+    case PlayMode::Stop: return QStringLiteral("Stop");
+    default: return QStringLiteral("Loop");
+    }
+}
+
+QString playModeKey(PlayMode m)
+{
+    switch (m) {
+    case PlayMode::OneShot: return "oneshot";
+    case PlayMode::PingPong: return "pingpong";
+    case PlayMode::Stop: return "stop";
+    default: return "loop";
+    }
+}
+
+PlayMode playModeFromKey(const QString &k, PlayMode fallback)
+{
+    if (k == "oneshot") return PlayMode::OneShot;
+    if (k == "loop") return PlayMode::Loop;
+    if (k == "pingpong") return PlayMode::PingPong;
+    if (k == "stop") return PlayMode::Stop;
+    return fallback;
+}
+
 BlendMode blendModeFromKey(const QString &k)
 {
     if (k == "add") return BlendMode::Add;
@@ -110,7 +139,7 @@ void Engine::attachAudio(Layer &l, std::shared_ptr<AudioStream> s)
     releaseAudio(*m_audio, l.audio);
     l.audio = std::move(s);
     if (!l.audio) return;
-    l.audio->setTransport(l.position(), l.playing, l.speed, l.loop, l.audioGain());
+    l.audio->setTransport(l.phase(), l.playing, l.speed, l.decoderMode(), l.audioGain());
     m_audio->addStream(l.audio);
 }
 
@@ -719,7 +748,9 @@ bool Engine::setLayerVideo(int i, const QString &path, QString *err)
         Layer *l = layer(i);
         if (!l) return false;
         g = detachSource(*l);
-        dec->setLoop(l->loop);
+        l->mode = m_defaultPlayMode; // a newly loaded video takes the default mode (preferences)
+        l->ended = false;
+        dec->setMode(l->decoderMode());
         l->srcWidth = dec->width();
         l->srcHeight = dec->height();
         l->video = std::move(dec);
@@ -763,6 +794,8 @@ bool Engine::setLayerAudio(int i, const QString &path, QString *err)
         g = detachSource(*l);
         l->type = SourceType::Audio;
         l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+        l->mode = m_defaultPlayMode;
+        l->ended = false;
         l->playhead = 0;
         l->playing = true;
         attachAudio(*l, std::move(sound));
@@ -838,20 +871,22 @@ void Engine::setLayerPlaying(int i, bool playing)
     Lock lk(&m_mutex);
     Layer *l = layer(i);
     if (!l || !l->hasTransport()) return;
-    if (playing && !l->loop && l->duration() > 0 && l->playhead >= l->duration() - 1e-3) seekLayer(i, 0);
+    if (playing && !l->repeats() && l->duration() > 0 && l->playhead >= l->duration() - 1e-3) seekLayer(i, 0);
     l->playing = playing;
+    if (playing) l->ended = false;
 }
 
-void Engine::setLayerLoop(int i, bool loop)
+void Engine::setLayerPlayMode(int i, PlayMode mode)
 {
     Lock lk(&m_mutex);
     Layer *l = layer(i);
     if (!l) return;
     const double pos = l->position();
-    l->loop = loop;
+    l->mode = mode;
+    l->ended = false;
     if (l->hasTransport()) {
-        if (l->video) l->video->setLoop(loop);
-        if (!loop) seekLayer(i, pos); // brings the monotonic clock back into [0, duration]
+        if (l->video) l->video->setMode(l->decoderMode());
+        seekLayer(i, pos); // the monotonic clock restarts at the same place, in the new mode
     }
 }
 
@@ -863,8 +898,9 @@ void Engine::seekLayer(int i, double t)
     const double d = l->duration();
     if (d > 0) t = std::clamp(t, 0.0, d);
     l->playhead = t;
+    l->ended = false;
     if (l->video) l->video->seek(t);
-    if (l->audio) l->audio->setTransport(l->position(), l->playing, l->speed, l->loop, l->audioGain());
+    if (l->audio) l->audio->setTransport(l->phase(), l->playing, l->speed, l->decoderMode(), l->audioGain());
 }
 
 void Engine::setLayerVolume(int i, float volume)
@@ -998,12 +1034,13 @@ void Engine::updateSource(Layer &l, double dt)
         // Real time (not the clamped animation step): after a render stall, picture and sound stay together.
         l.playhead += m_realDt * l.speed;
         const double d = l.duration();
-        if (!l.loop && d > 0 && l.playhead >= d) {
+        if (!l.repeats() && d > 0 && l.playhead >= d) {
             l.playhead = d;
             l.playing = false;
+            l.ended = l.mode == PlayMode::Stop; // Stop: black (and silent) at the end; One-shot: last frame
         }
     }
-    if (l.audio) l.audio->setTransport(l.position(), l.playing, l.speed, l.loop, l.audioGain(), m_frameStampNs);
+    if (l.audio) l.audio->setTransport(l.phase(), l.playing, l.speed, l.decoderMode(), l.audioGain(), m_frameStampNs);
     if (!l.video) return;
     int w = 0, h = 0;
     if (l.video->fetch(l.playhead, l.frameBuffer, &w, &h) && w > 0 && h > 0)
@@ -1013,6 +1050,7 @@ void Engine::updateSource(Layer &l, double dt)
 void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
 {
     l.finalTex = 0;
+    if (l.ended) return; // Stop mode, after the end: nothing
     GLuint tex = 0;
     int w = 0, h = 0;
     switch (l.type) {
@@ -1247,13 +1285,13 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     switch (l.type) {
     case SourceType::Video:
         src["type"] = "video";
-        src["loop"] = l.loop;
+        src["playMode"] = playModeKey(l.mode);
         src["speed"] = l.speed;
         src["playing"] = l.playing;
         break;
     case SourceType::Audio:
         src["type"] = "audio";
-        src["loop"] = l.loop;
+        src["playMode"] = playModeKey(l.mode);
         src["speed"] = l.speed;
         src["playing"] = l.playing;
         break;
@@ -1268,7 +1306,7 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         // Missing file: keep what was intended, so nothing is lost on save.
         if (l.missingType == SourceType::Video || l.missingType == SourceType::Audio) {
             src["type"] = l.missingType == SourceType::Video ? "video" : "audio";
-            src["loop"] = l.loop;
+            src["playMode"] = playModeKey(l.mode);
             src["speed"] = l.speed;
             src["playing"] = l.playing;
         } else if (l.missingType == SourceType::Image) {
@@ -1314,15 +1352,17 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         const bool video = type == "video";
         {
             Lock lk(&m_mutex);
-            layer(index)->loop = src.value("loop").toBool(true);
             layer(index)->speed = src.value("speed").toDouble(1.0);
         }
         const bool ok = video ? setLayerVideo(index, path, &err) : setLayerAudio(index, path, &err);
         if (!ok && warnings) *warnings << name + ": " + missingMessage(path, err);
+        // Saved mode ("loop": true / false in projects older than the play modes)
+        const PlayMode fallback = src.value("loop").toBool(true) ? PlayMode::Loop : PlayMode::OneShot;
+        setLayerPlayMode(index, playModeFromKey(src.value("playMode").toString(), fallback));
         Lock lk(&m_mutex);
         Layer *l = layer(index);
         l->playing = src.value("playing").toBool(true);
-        if (l->audio) l->audio->setTransport(l->position(), l->playing, l->speed, l->loop, l->audioGain());
+        if (l->audio) l->audio->setTransport(l->phase(), l->playing, l->speed, l->decoderMode(), l->audioGain());
         if (!ok) markMissing(*l, video ? SourceType::Video : SourceType::Audio, path, err);
     } else if (type == "image") {
         const bool ok = setLayerImage(index, path, &err);
@@ -1569,6 +1609,7 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
 {
     SourceType kind = SourceType::None;
     Mapping mapping;
+    PlayMode mode = PlayMode::Loop;
     std::vector<std::pair<IsfInstance *, int>> inputs;
     {
         Lock lk(&m_mutex);
@@ -1577,6 +1618,7 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
         const SourceType t = l->type != SourceType::None ? l->type : l->missingType;
         if (l->sourcePath == from && (t == SourceType::Video || t == SourceType::Image || t == SourceType::Audio)) kind = t;
         mapping = l->mapping;
+        mode = l->mode;
         auto collect = [&](IsfInstance *inst) {
             if (!inst) return;
             for (int k = 0; k < int(inst->inputs().size()); ++k) {
@@ -1598,6 +1640,7 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
              : target == SourceType::Audio ? setLayerAudio(i, to, err)
                                            : setLayerImage(i, to, err);
         if (ok) {
+            setLayerPlayMode(i, mode); // the layer keeps its play mode
             Lock lk(&m_mutex);
             if (Layer *l = layer(i)) {
                 const unsigned rev = l->mapping.revision;

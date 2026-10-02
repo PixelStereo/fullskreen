@@ -88,7 +88,10 @@ public:
     void setGeneratorSize(int i, int w, int h);
 
     void setLayerPlaying(int i, bool playing);
-    void setLayerLoop(int i, bool loop);
+    void setLayerPlayMode(int i, PlayMode mode);
+    // Mode given to a video or a sound when it is loaded into a layer (preference)
+    void setDefaultPlayMode(PlayMode m) { m_defaultPlayMode = m; }
+    PlayMode defaultPlayMode() const { return m_defaultPlayMode; }
     void seekLayer(int i, double t);
     void setLayerVolume(int i, float volume);
     void setLayerMuted(int i, bool muted);
@@ -246,6 +249,7 @@ private:
     int64_t m_frameStampNs = 0; // steady_clock time the playheads of the current frame correspond to
 
     std::unique_ptr<AudioOutput> m_audio;
+    PlayMode m_defaultPlayMode = PlayMode::Loop;
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
     std::atomic<quint64> m_frameCount{0};
