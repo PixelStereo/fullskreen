@@ -89,6 +89,10 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
 
 void SetLayerProp::apply(const QVariant &v)
 {
+    if (m_prop == Speed) {
+        m_e->setLayerSpeed(m_layer, v.toDouble());
+        return;
+    }
     if (m_prop == Mode) {
         m_e->setLayerPlayMode(m_layer, PlayMode(v.toInt()));
         return;

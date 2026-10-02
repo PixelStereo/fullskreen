@@ -6,8 +6,13 @@
 
 #include <QUndoStack>
 
+#include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
+#include <QToolButton>
+#include <QWheelEvent>
 #include <cmath>
 
 static const QColor kSelected(255, 150, 40);
@@ -21,7 +26,102 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(false);
     setMinimumSize(320, 200);
+
+    // Zoom buttons, top right of the preview
+    m_zoomBar = new QWidget(this);
+    m_zoomBar->setStyleSheet("QWidget { background:rgba(20,20,22,200); border-radius:4px; }"
+                             "QToolButton { color:#ddd; min-width:24px; padding:2px 6px; }"
+                             "QToolButton:hover { background:#3a3a3e; } QLabel { color:#aaa; padding:0 4px; }");
+    auto *h = new QHBoxLayout(m_zoomBar);
+    h->setContentsMargins(3, 2, 3, 2);
+    h->setSpacing(1);
+    auto button = [&](const QString &text, const QString &tip) {
+        auto *b = new QToolButton;
+        b->setText(text);
+        b->setToolTip(tip);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setAutoRaise(true);
+        h->addWidget(b);
+        return b;
+    };
+    QToolButton *out = button(QStringLiteral("−"), QStringLiteral("Zoom out (mouse wheel)"));
+    m_zoomLabel = new QLabel;
+    m_zoomLabel->setMinimumWidth(44);
+    m_zoomLabel->setAlignment(Qt::AlignCenter);
+    h->addWidget(m_zoomLabel);
+    QToolButton *in = button(QStringLiteral("+"), QStringLiteral("Zoom in (mouse wheel)"));
+    QToolButton *fit = button(QStringLiteral("Fit"), QStringLiteral("Whole composition in view\n"
+                                                                     "Pan: middle button, Alt/⌥ + drag, or two fingers on a trackpad"));
+    connect(out, &QToolButton::clicked, this, [this] { zoomBy(1 / 1.25); });
+    connect(in, &QToolButton::clicked, this, [this] { zoomBy(1.25); });
+    connect(fit, &QToolButton::clicked, this, &MappingView::zoomToFit);
+    updateZoomLabel();
 }
+
+void MappingView::updateZoomLabel()
+{
+    m_zoomLabel->setText(QStringLiteral("%1%").arg(int(std::lround(m_zoom * 100))));
+    m_zoomBar->adjustSize();
+    m_zoomBar->move(width() - m_zoomBar->width() - 8, 8);
+}
+
+void MappingView::resizeEvent(QResizeEvent *e)
+{
+    QOpenGLWidget::resizeEvent(e);
+    updateZoomLabel();
+}
+
+// The point of the composition under `widgetPos` stays under it.
+void MappingView::zoomAt(QPointF widgetPos, double factor)
+{
+    const QPointF n = toNorm(widgetPos);
+    m_zoom = std::clamp(m_zoom * factor, 0.25, 64.0);
+    const QRectF fit = fitRect();
+    const double w = fit.width() * m_zoom, h = fit.height() * m_zoom;
+    const QPointF center(widgetPos.x() - n.x() * w + w / 2, widgetPos.y() - n.y() * h + h / 2);
+    m_pan = center - fit.center();
+    updateZoomLabel();
+    update();
+}
+
+void MappingView::zoomBy(double factor) { zoomAt(QPointF(width() / 2.0, height() / 2.0), factor); }
+
+void MappingView::zoomToFit()
+{
+    m_zoom = 1.0;
+    m_pan = QPointF();
+    updateZoomLabel();
+    update();
+}
+
+void MappingView::wheelEvent(QWheelEvent *e)
+{
+    // Trackpad (continuous scroll): two fingers pan, pinch or Ctrl/⌘ + scroll zooms.
+    // Mouse wheel: zooms around the cursor.
+    const bool trackpad = e->phase() != Qt::NoScrollPhase && !e->pixelDelta().isNull();
+    if (trackpad && !(e->modifiers() & Qt::ControlModifier)) {
+        m_pan += QPointF(e->pixelDelta());
+        update();
+    } else {
+        const double steps = e->angleDelta().y() != 0 ? e->angleDelta().y() : e->pixelDelta().y() * 2.0;
+        zoomAt(e->position(), std::pow(1.0015, steps));
+    }
+    e->accept();
+}
+
+bool MappingView::event(QEvent *e)
+{
+    if (e->type() == QEvent::NativeGesture) { // macOS trackpad pinch
+        auto *g = static_cast<QNativeGestureEvent *>(e);
+        if (g->gestureType() == Qt::ZoomNativeGesture) {
+            zoomAt(g->position(), 1.0 + g->value());
+            return true;
+        }
+    }
+    return QOpenGLWidget::event(e);
+}
+
+
 
 MappingView::~MappingView()
 {
@@ -53,6 +153,14 @@ Mapping *MappingView::mapping() const
 }
 
 QRectF MappingView::viewRect() const
+{
+    const QRectF fit = fitRect();
+    QRectF r(0, 0, fit.width() * m_zoom, fit.height() * m_zoom);
+    r.moveCenter(fit.center() + m_pan);
+    return r;
+}
+
+QRectF MappingView::fitRect() const
 {
     const QSize comp = m_engine->compositionSize();
     const double margin = 24;
@@ -287,6 +395,13 @@ bool MappingView::insideLayer(int index, QPointF p) const
 
 void MappingView::mousePressEvent(QMouseEvent *e)
 {
+    // Pan: middle button, or Alt / ⌥ + drag (Space is play / pause)
+    if (e->button() == Qt::MiddleButton || (e->button() == Qt::LeftButton && (e->modifiers() & Qt::AltModifier))) {
+        m_panning = true;
+        m_panLast = e->position();
+        setCursor(Qt::ClosedHandCursor);
+        return;
+    }
     Engine::Lock lk(&m_engine->mutex());
     const QPointF p = e->position();
     m_lastNorm = toNorm(p);
@@ -327,6 +442,12 @@ void MappingView::mousePressEvent(QMouseEvent *e)
 
 void MappingView::mouseMoveEvent(QMouseEvent *e)
 {
+    if (m_panning) {
+        m_pan += e->position() - m_panLast;
+        m_panLast = e->position();
+        update();
+        return;
+    }
     Engine::Lock lk(&m_engine->mutex());
     const QPointF n = toNorm(e->position());
     QPointF delta = n - m_lastNorm;
@@ -346,6 +467,11 @@ void MappingView::mouseMoveEvent(QMouseEvent *e)
 
 void MappingView::mouseReleaseEvent(QMouseEvent *)
 {
+    if (m_panning) {
+        m_panning = false;
+        unsetCursor();
+        return;
+    }
     if (m_rubber) { // adds the points inside the rectangle to the selection
         m_rubber = false;
         Engine::Lock lk(&m_engine->mutex());

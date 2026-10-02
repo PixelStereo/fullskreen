@@ -134,12 +134,35 @@ static void releaseAudio(AudioOutput &out, std::shared_ptr<AudioStream> &a)
     a.reset();
 }
 
+// Restarts the layer's clock at `position`, in direction `dir`: decoders follow the new timeline.
+static void reposition(Layer &l, double position, int dir)
+{
+    const double d = l.duration();
+    l.origin = d > 0 ? std::clamp(position, 0.0, d) : std::max(0.0, position);
+    l.dir = dir >= 0 ? 1 : -1;
+    l.clock = 0;
+    l.ended = false;
+    ++l.timelineId;
+    if (l.video) {
+        l.video->setTimeline(l.timeline());
+        l.video->seek(0);
+    }
+    if (l.audio) l.audio->setTransport(0, l.playing, std::abs(l.speed), l.timeline(), l.timelineId, l.audioGain());
+}
+
+// A newly loaded media starts at its beginning — the end when the speed is negative.
+static void startMedia(Layer &l)
+{
+    l.dir = l.speed < 0 ? -1 : 1;
+    reposition(l, l.dir < 0 ? l.duration() : 0.0, l.dir);
+}
+
 void Engine::attachAudio(Layer &l, std::shared_ptr<AudioStream> s)
 {
     releaseAudio(*m_audio, l.audio);
     l.audio = std::move(s);
     if (!l.audio) return;
-    l.audio->setTransport(l.phase(), l.playing, l.speed, l.decoderMode(), l.audioGain());
+    l.audio->setTransport(l.clock, l.playing, std::abs(l.speed), l.timeline(), l.timelineId, l.audioGain());
     m_audio->addStream(l.audio);
 }
 
@@ -750,15 +773,14 @@ bool Engine::setLayerVideo(int i, const QString &path, QString *err)
         g = detachSource(*l);
         l->mode = m_defaultPlayMode; // a newly loaded video takes the default mode (preferences)
         l->ended = false;
-        dec->setMode(l->decoderMode());
         l->srcWidth = dec->width();
         l->srcHeight = dec->height();
         l->video = std::move(dec);
         l->type = SourceType::Video;
         l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
-        l->playhead = 0;
         l->playing = true;
         attachAudio(*l, std::move(sound));
+        startMedia(*l);
         if (isDefaultMapping(l->mapping) && l->srcHeight > 0)
             l->mapping.fitAspect(double(l->srcWidth) / l->srcHeight, double(m_compSize.width()) / m_compSize.height());
     }
@@ -796,9 +818,9 @@ bool Engine::setLayerAudio(int i, const QString &path, QString *err)
         l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
         l->mode = m_defaultPlayMode;
         l->ended = false;
-        l->playhead = 0;
         l->playing = true;
         attachAudio(*l, std::move(sound));
+        startMedia(*l);
     }
     releaseGarbage(g);
     return true;
@@ -871,7 +893,7 @@ void Engine::setLayerPlaying(int i, bool playing)
     Lock lk(&m_mutex);
     Layer *l = layer(i);
     if (!l || !l->hasTransport()) return;
-    if (playing && !l->repeats() && l->duration() > 0 && l->playhead >= l->duration() - 1e-3) seekLayer(i, 0);
+    if (playing && l->atEnd()) startMedia(*l); // played to the end: starts again
     l->playing = playing;
     if (playing) l->ended = false;
 }
@@ -884,10 +906,19 @@ void Engine::setLayerPlayMode(int i, PlayMode mode)
     const double pos = l->position();
     l->mode = mode;
     l->ended = false;
-    if (l->hasTransport()) {
-        if (l->video) l->video->setMode(l->decoderMode());
-        seekLayer(i, pos); // the monotonic clock restarts at the same place, in the new mode
-    }
+    if (l->hasTransport()) reposition(*l, pos, l->dir); // same place, new mode
+}
+
+void Engine::setLayerSpeed(int i, double speed)
+{
+    Lock lk(&m_mutex);
+    Layer *l = layer(i);
+    if (!l) return;
+    const int dir = speed < 0 ? -1 : speed > 0 ? 1 : l->dir;
+    const bool turn = dir != l->dir;
+    const double pos = l->position();
+    l->speed = speed;
+    if (turn && l->hasTransport()) reposition(*l, pos, dir); // the other way from the same place
 }
 
 void Engine::seekLayer(int i, double t)
@@ -895,12 +926,7 @@ void Engine::seekLayer(int i, double t)
     Lock lk(&m_mutex);
     Layer *l = layer(i);
     if (!l || !l->hasTransport()) return;
-    const double d = l->duration();
-    if (d > 0) t = std::clamp(t, 0.0, d);
-    l->playhead = t;
-    l->ended = false;
-    if (l->video) l->video->seek(t);
-    if (l->audio) l->audio->setTransport(l->phase(), l->playing, l->speed, l->decoderMode(), l->audioGain());
+    reposition(*l, t, l->dir);
 }
 
 void Engine::setLayerVolume(int i, float volume)
@@ -1032,18 +1058,18 @@ void Engine::updateSource(Layer &l, double dt)
     if ((l.type != SourceType::Video && l.type != SourceType::Audio) || !l.hasTransport()) return;
     if (l.playing) {
         // Real time (not the clamped animation step): after a render stall, picture and sound stay together.
-        l.playhead += m_realDt * l.speed;
-        const double d = l.duration();
-        if (!l.repeats() && d > 0 && l.playhead >= d) {
-            l.playhead = d;
+        l.clock += m_realDt * std::abs(l.speed);
+        if (l.atEnd()) { // One-shot / Stop: end of the media (the end, or the start when playing backwards)
+            l.clock = l.timeline().firstLeg().clockEnd();
             l.playing = false;
-            l.ended = l.mode == PlayMode::Stop; // Stop: black (and silent) at the end; One-shot: last frame
+            l.ended = l.mode == PlayMode::Stop; // Stop: black (and silent); One-shot: last frame
         }
     }
-    if (l.audio) l.audio->setTransport(l.phase(), l.playing, l.speed, l.decoderMode(), l.audioGain(), m_frameStampNs);
+    if (l.audio)
+        l.audio->setTransport(l.clock, l.playing, std::abs(l.speed), l.timeline(), l.timelineId, l.audioGain(), m_frameStampNs);
     if (!l.video) return;
     int w = 0, h = 0;
-    if (l.video->fetch(l.playhead, l.frameBuffer, &w, &h) && w > 0 && h > 0)
+    if (l.video->fetch(l.clock, l.frameBuffer, &w, &h) && w > 0 && h > 0)
         l.sourceTex.upload(l.frameBuffer.data(), w, h);
 }
 
@@ -1362,7 +1388,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         Lock lk(&m_mutex);
         Layer *l = layer(index);
         l->playing = src.value("playing").toBool(true);
-        if (l->audio) l->audio->setTransport(l->phase(), l->playing, l->speed, l->decoderMode(), l->audioGain());
+        if (l->hasTransport()) startMedia(*l); // saved speed: backwards starts from the end
         if (!ok) markMissing(*l, video ? SourceType::Video : SourceType::Audio, path, err);
     } else if (type == "image") {
         const bool ok = setLayerImage(index, path, &err);

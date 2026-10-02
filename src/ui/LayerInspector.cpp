@@ -14,6 +14,7 @@
 #include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -207,12 +208,13 @@ void LayerInspector::setProp(int prop, const QVariant &value)
     m_undo->push(new cmd::SetLayerProp(m_engine, m_layer, p, before, value));
 }
 
-void LayerInspector::editMapping(const QString &text, const std::function<void(Mapping &)> &fn)
+void LayerInspector::editMapping(const QString &text, const std::function<void(Mapping &)> &fn, bool merge)
 {
     const Mapping before = cmd::SetMapping::read(m_engine, m_layer);
     Mapping after = before;
     fn(after);
-    m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, text));
+    // merge: successive changes of the same field (spin box arrows, typing) form one undo step
+    m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, text, merge));
     emit mappingChanged();
 }
 
@@ -358,11 +360,11 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         m_play = new QPushButton(s.playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
         auto *rewind = toolButton(QStringLiteral("⏮"), QStringLiteral("Back to Start"));
         auto *speed = new QDoubleSpinBox;
-        speed->setRange(0.05, 8.0);
+        speed->setRange(-8.0, 8.0); // negative: backwards
         speed->setSingleStep(0.05);
         speed->setValue(s.speed);
         speed->setSuffix(QStringLiteral(" ×"));
-        speed->setToolTip(QStringLiteral("Playback speed"));
+        speed->setToolTip(QStringLiteral("Playback speed — negative values play backwards"));
         transport->addWidget(m_play);
         transport->addWidget(rewind);
         transport->addStretch();
@@ -549,6 +551,89 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     auto *g = new QWidget; // titled by its sub-tab
     auto *v = new QVBoxLayout(g);
 
+    // Position (center, composition pixels) and scale (% of the composition) of the whole mapped layer
+    {
+        const QSize comp = m_engine->compositionSize();
+        auto *grid = new QGridLayout;
+        grid->setHorizontalSpacing(6);
+        auto spin = [](double lo, double hi, const QString &suffix, int decimals) {
+            auto *b = new QDoubleSpinBox;
+            b->setRange(lo, hi);
+            b->setDecimals(decimals);
+            b->setSuffix(suffix);
+            b->setKeyboardTracking(false);
+            b->setAccelerated(true);
+            return b;
+        };
+        m_posX = spin(-100000, 100000, QStringLiteral(" px"), 1);
+        m_posY = spin(-100000, 100000, QStringLiteral(" px"), 1);
+        m_scaleX = spin(0.1, 10000, QStringLiteral(" %"), 2);
+        m_scaleY = spin(0.1, 10000, QStringLiteral(" %"), 2);
+        m_posX->setToolTip(QStringLiteral("Horizontal position of the layer's center, in composition pixels"));
+        m_posY->setToolTip(QStringLiteral("Vertical position of the layer's center, in composition pixels"));
+        m_scaleX->setToolTip(QStringLiteral("Width of the layer, in % of the composition width"));
+        m_scaleY->setToolTip(QStringLiteral("Height of the layer, in % of the composition height"));
+        auto *link = new QToolButton;
+        link->setCheckable(true);
+        link->setChecked(m_scaleLinked);
+        link->setText(QStringLiteral("⛓"));
+        link->setToolTip(QStringLiteral("Link width and height (keep the aspect ratio)"));
+        link->setStyleSheet("QToolButton:checked { background:#ffa028; color:#1b1b1d; }");
+        grid->addWidget(new QLabel(QStringLiteral("Position")), 0, 0);
+        grid->addWidget(new QLabel(QStringLiteral("X")), 0, 1);
+        grid->addWidget(m_posX, 0, 2);
+        grid->addWidget(new QLabel(QStringLiteral("Y")), 0, 4);
+        grid->addWidget(m_posY, 0, 5);
+        grid->addWidget(new QLabel(QStringLiteral("Scale")), 1, 0);
+        grid->addWidget(new QLabel(QStringLiteral("X")), 1, 1);
+        grid->addWidget(m_scaleX, 1, 2);
+        grid->addWidget(link, 1, 3);
+        grid->addWidget(new QLabel(QStringLiteral("Y")), 1, 4);
+        grid->addWidget(m_scaleY, 1, 5);
+        grid->setColumnStretch(2, 1);
+        grid->setColumnStretch(5, 1);
+        v->addLayout(grid);
+        refreshSpatial();
+
+        connect(link, &QToolButton::toggled, this, [this](bool on) { m_scaleLinked = on; });
+        auto applyBounds = [this, comp](const QString &text, const std::function<QRectF(QRectF)> &fn) {
+            editMapping(text, [&](Mapping &m) {
+                QRectF b = m.bounds();
+                // in composition pixels
+                b = QRectF(b.left() * comp.width(), b.top() * comp.height(), b.width() * comp.width(), b.height() * comp.height());
+                b = fn(b);
+                m.setBounds(QRectF(b.left() / comp.width(), b.top() / comp.height(), b.width() / comp.width(),
+                                   b.height() / comp.height()));
+            }, true);
+        };
+        connect(m_posX, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [applyBounds](double x) {
+            applyBounds(QStringLiteral("Position"), [x](QRectF b) { b.moveCenter(QPointF(x, b.center().y())); return b; });
+        });
+        connect(m_posY, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [applyBounds](double y) {
+            applyBounds(QStringLiteral("Position"), [y](QRectF b) { b.moveCenter(QPointF(b.center().x(), y)); return b; });
+        });
+        auto scale = [this, applyBounds, comp](double sx, double sy, bool fromX) {
+            applyBounds(QStringLiteral("Scale"), [&](QRectF b) {
+                const QPointF c = b.center();
+                double w = sx / 100.0 * comp.width(), h = sy / 100.0 * comp.height();
+                if (m_scaleLinked) { // the other axis follows, keeping the aspect ratio
+                    if (fromX && b.width() > 1e-9) h = b.height() * w / b.width();
+                    if (!fromX && b.height() > 1e-9) w = b.width() * h / b.height();
+                }
+                if (fromX) h = m_scaleLinked ? h : b.height();
+                else w = m_scaleLinked ? w : b.width();
+                b.setSize(QSizeF(w, h));
+                b.moveCenter(c);
+                return b;
+            });
+            refreshSpatial();
+        };
+        connect(m_scaleX, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [scale, this](double x) { scale(x, m_scaleY->value(), true); });
+        connect(m_scaleY, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [scale, this](double y) { scale(m_scaleX->value(), y, false); });
+    }
+
     auto *modeRow = new QHBoxLayout;
     auto *corners = new QRadioButton(QStringLiteral("Corners"));
     auto *mesh = new QRadioButton(QStringLiteral("Mesh"));
@@ -586,7 +671,9 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     auto *hint = new QLabel(QStringLiteral("Drag: move · Shift: fine · Arrows: 1 px (Shift: 10 px) · "
                                            "Tab: next handle · Esc: deselect\n"
                                            "Several points: Ctrl/⌘+click to add, Ctrl/⌘+drag a rectangle, "
-                                           "Ctrl/⌘+A for all; they move together."));
+                                           "Ctrl/⌘+A for all; they move together.\n"
+                                           "Preview: mouse wheel or pinch to zoom (finer moves), middle button or "
+                                           "Alt/⌥ + drag to pan, Fit to see everything."));
     hint->setWordWrap(true);
     hint->setStyleSheet("color:#888; font-size:11px;");
     v->addWidget(hint);
@@ -751,8 +838,31 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     return g;
 }
 
+void LayerInspector::refreshSpatial()
+{
+    if (!m_posX) return;
+    QRectF b;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Layer *l = m_engine->layer(m_layer);
+        if (!l) return;
+        b = l->mapping.bounds();
+    }
+    const QSize comp = m_engine->compositionSize();
+    const double values[4] = {b.center().x() * comp.width(), b.center().y() * comp.height(), b.width() * 100.0,
+                              b.height() * 100.0};
+    QDoubleSpinBox *boxes[4] = {m_posX, m_posY, m_scaleX, m_scaleY};
+    for (int k = 0; k < 4; ++k) {
+        if (boxes[k]->hasFocus()) continue; // being edited
+        if (std::abs(boxes[k]->value() - values[k]) < 1e-6) continue;
+        QSignalBlocker blk(boxes[k]);
+        boxes[k]->setValue(values[k]);
+    }
+}
+
 void LayerInspector::refreshDynamic()
 {
+    refreshSpatial();
     bool playing;
     double d, p;
     {

@@ -89,6 +89,7 @@ public:
 
     void setLayerPlaying(int i, bool playing);
     void setLayerPlayMode(int i, PlayMode mode);
+    void setLayerSpeed(int i, double speed); // negative: backwards (changing direction keeps the position)
     // Mode given to a video or a sound when it is loaded into a layer (preference)
     void setDefaultPlayMode(PlayMode m) { m_defaultPlayMode = m; }
     PlayMode defaultPlayMode() const { return m_defaultPlayMode; }

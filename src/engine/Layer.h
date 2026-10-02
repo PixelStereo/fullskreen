@@ -44,7 +44,12 @@ struct Layer {
     bool playing = true;
     PlayMode mode = PlayMode::Loop;
     bool ended = false; // Stop mode: the end was reached, the layer shows nothing
-    double speed = 1.0, playhead = 0.0; // playhead: monotonic (loops and ping-pong cycles accumulate)
+    // Transport: the clock advances with |speed| from a reposition (load, seek, direction or mode change);
+    // the Timeline turns it into a position (legs forwards / backwards). Negative speed plays backwards.
+    double speed = 1.0;
+    double clock = 0.0, origin = 0.0;
+    int dir = 1;
+    uint64_t timelineId = 1; // incremented at every reposition (the sound resynchronizes)
 
     // Sound: audio layer, or audio track of a video layer (null if the file has none)
     std::shared_ptr<AudioStream> audio;
@@ -75,26 +80,17 @@ struct Layer {
     double duration() const { return video ? video->duration() : audio ? audio->duration() : 0.0; }
     float audioGain() const { return visible && !muted && !ended ? volume : 0.0f; }
     bool repeats() const { return mode == PlayMode::Loop || mode == PlayMode::PingPong; }
-    int decoderMode() const { return mode == PlayMode::Loop ? 1 : mode == PlayMode::PingPong ? 2 : 0; } // decoders' Mode
-    // Time within the cycle of the mode (what the decoders follow): 0..2d for ping-pong
-    double phase() const
+    Timeline timeline() const
     {
-        const double d = duration();
-        if (d <= 0) return playhead;
-        if (mode == PlayMode::Loop) return std::fmod(playhead, d);
-        if (mode == PlayMode::PingPong) return std::fmod(playhead, 2 * d);
-        return std::min(playhead, d);
+        Timeline t;
+        t.duration = duration();
+        t.mode = mode == PlayMode::Loop ? Timeline::Loop : mode == PlayMode::PingPong ? Timeline::PingPong : Timeline::Once;
+        t.origin = origin;
+        t.dir = dir;
+        return t;
     }
-    double position() const
-    {
-        const double d = duration();
-        if (d <= 0) return playhead;
-        if (mode == PlayMode::PingPong) {
-            const double p = std::fmod(playhead, 2 * d);
-            return p <= d ? p : 2 * d - p;
-        }
-        return mode == PlayMode::Loop ? std::fmod(playhead, d) : std::min(playhead, d);
-    }
+    double position() const { return timeline().position(clock); }
+    bool atEnd() const { return timeline().ended(clock); } // One-shot / Stop: played to the end
     int sourceWidth() const { return type == SourceType::Isf ? genWidth : srcWidth; }
     int sourceHeight() const { return type == SourceType::Isf ? genHeight : srcHeight; }
 };
