@@ -50,6 +50,7 @@ struct Layer {
     double clock = 0.0, origin = 0.0;
     int dir = 1;
     uint64_t timelineId = 1; // incremented at every reposition (the sound resynchronizes)
+    double inPoint = 0, outPoint = -1; // played range (out < 0: end of the media)
 
     // Sound: audio layer, or audio track of a video layer (null if the file has none)
     std::shared_ptr<AudioStream> audio;
@@ -87,6 +88,8 @@ struct Layer {
         t.mode = mode == PlayMode::Loop ? Timeline::Loop : mode == PlayMode::PingPong ? Timeline::PingPong : Timeline::Once;
         t.origin = origin;
         t.dir = dir;
+        t.in = inPoint;
+        t.out = outPoint;
         return t;
     }
     double position() const { return timeline().position(clock); }

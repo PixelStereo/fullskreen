@@ -33,6 +33,7 @@ signals:
     void layerChanged();   // name, visibility, source: the list must be refreshed
     void mappingChanged(); // the mapping view must be redrawn
     void fileDropped(const QString &path); // media or ISF dropped on the Source tab: load it into the layer
+    void setInOutRequested(bool in);       // in / out point at the current position
 
 private:
     QWidget *buildSource(const LayerSnapshot &s);

@@ -18,6 +18,8 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   decoded backwards in short windows, so any codec works, all-intra codecs such as HAP or ProRes being the
   lightest), **Stop** (plays once, then black and silent). The mode given to newly loaded media is set in the
   **Preferences** (Loop by default).
+- **In / out points** per video or sound layer: playback, loops and ping-pong stay within them, in both
+  directions; One-shot / Stop end at the out point (the in point backwards). Saved in the project.
 - **Negative speed** plays videos and sounds backwards, in every play mode (Loop goes on backwards from the end,
   One-shot stops on the first frame…); changing direction keeps the current position.
 - **Spatial tab**: position (center, composition pixels) and scale (% of the composition, X and Y linked by
@@ -59,7 +61,8 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
 - **Media Bin** (left): every video, image and audio file used by the project, grouped by type, with resolution,
   duration, sound format and the number of layers using them (sources and shader images). **Missing** files are shown in red;
   **Replace…** relinks them (a single replacement fixes every layer, and can be undone).
-  An **ISF › Generators** category lists the generators of the ISF library (and those used by layers).
+  An **ISF › Generators** category lists the generators of the ISF library (and those used by layers),
+  filed by their ISF category (Alignment, Generative, Noise…).
   Drag an item onto a layer to load it; double-click loads it into the selected layer.
 - **Layers are created empty** with **+**, then loaded with whatever is dropped onto them: a video, an image,
   a sound or an ISF generator, from the Media Bin or the Finder / Explorer — onto the layer's row in the list,
@@ -150,6 +153,7 @@ cmake -S . -B build && cmake --build build -j
 | Play mode of a video or a sound | Source tab ▸ One-shot / Loop / Ping-pong / Stop |
 | Default play mode for newly loaded media | Preferences (⌘, on Mac, Ctrl+, elsewhere) |
 | Play backwards | negative speed (Source tab), e.g. −1 × |
+| In / out points of a video or a sound | I / O keys at the current position, or Source tab ▸ In / Out (↺: whole media) |
 | Zoom the preview (finer moves) | mouse wheel or pinch, or the − / + / Fit buttons at the top right of the preview |
 | Pan the zoomed preview | middle button or Alt/⌥ + drag, two fingers on a trackpad |
 | Position and scale of the whole layer | Layer tab ▸ Spatial ▸ Position X / Y (px), Scale X / Y (%, linked by default) |

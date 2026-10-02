@@ -68,6 +68,7 @@ private:
     void duplicateCurrentLayer();
     void moveCurrentLayer(int delta);
     void togglePlayCurrent();
+    void setInOutAtPosition(bool in);
     void relinkMedia(const QString &from, const QString &to);
 
     void setOutputMode(OutputMode mode);
