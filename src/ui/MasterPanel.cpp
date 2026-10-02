@@ -2,6 +2,7 @@
 #include "Engine.h"
 
 #include <QCheckBox>
+#include <algorithm>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -11,11 +12,13 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <cmath>
 
@@ -34,10 +37,16 @@ MasterPanel::MasterPanel(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     v->setSpacing(10);
     v->addWidget(buildMaster());
     v->addWidget(buildOutput());
+    v->addWidget(buildAudio());
     v->addWidget(buildComposition());
     v->addWidget(buildPublish());
     v->addStretch();
     syncFromEngine();
+    // Long screen or sound card names must not widen the panel beyond its column (they are elided).
+    for (QComboBox *c : findChildren<QComboBox *>()) {
+        c->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        c->setMinimumContentsLength(8);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +113,128 @@ void MasterPanel::setBlackout(bool on)
 bool MasterPanel::isBlackout() const { return m_blackout->isChecked(); }
 double MasterPanel::masterValue() const { return m_master->value() / 100.0; }
 double MasterPanel::fadeTime() const { return m_fade->value(); }
+
+// ---------------------------------------------------------------------------
+// Audio
+// ---------------------------------------------------------------------------
+
+static QString volumeText(int pct)
+{
+    if (pct <= 0) return QStringLiteral("−∞ dB");
+    const double db = 20.0 * std::log10(pct / 100.0);
+    return QStringLiteral("%1%2 dB").arg(db > 0.05 ? "+" : "").arg(db, 0, 'f', 1);
+}
+
+QWidget *MasterPanel::buildAudio()
+{
+    auto *g = new QGroupBox(QStringLiteral("Audio Output"));
+    auto *v = new QVBoxLayout(g);
+
+    auto *devRow = new QHBoxLayout;
+    m_audioDevice = new QComboBox;
+    m_audioDevice->setToolTip(QStringLiteral("Sound card or audio interface used for the sound of every layer"));
+    auto *rescan = new QToolButton;
+    rescan->setText(QStringLiteral("⟳"));
+    rescan->setToolTip(QStringLiteral("Refresh the list of audio devices"));
+    devRow->addWidget(m_audioDevice, 1);
+    devRow->addWidget(rescan);
+    v->addLayout(devRow);
+
+    auto *volRow = new QHBoxLayout;
+    m_audioVolume = new QSlider(Qt::Horizontal);
+    m_audioVolume->setRange(0, 200);
+    m_audioVolume->setValue(100);
+    m_audioVolume->setToolTip(QStringLiteral("Master volume (100% = unity gain)"));
+    m_audioVolumeLabel = new QLabel(volumeText(100));
+    m_audioVolumeLabel->setMinimumWidth(64);
+    m_audioVolumeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_audioMute = new QCheckBox(QStringLiteral("Mute"));
+    volRow->addWidget(m_audioVolume, 1);
+    volRow->addWidget(m_audioVolumeLabel);
+    volRow->addWidget(m_audioMute);
+    v->addLayout(volRow);
+
+    for (int c = 0; c < 2; ++c) {
+        m_meter[c] = new QProgressBar;
+        m_meter[c]->setRange(0, 600); // -60 dB .. 0 dB, in tenths of a dB
+        m_meter[c]->setTextVisible(false);
+        m_meter[c]->setFixedHeight(6);
+        m_meter[c]->setStyleSheet("QProgressBar { background:#1b1b1d; border:none; }"
+                                  "QProgressBar::chunk { background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+                                  "stop:0 #3fae5a, stop:0.8 #3fae5a, stop:0.93 #e0b43a, stop:1 #e5483c); }");
+        v->addWidget(m_meter[c]);
+    }
+    m_audioState = note(QString());
+    v->addWidget(m_audioState);
+
+    connect(rescan, &QToolButton::clicked, this, [this] { fillAudioDevices(); });
+    connect(m_audioDevice, qOverload<int>(&QComboBox::activated), this, [this](int) {
+        const QString name = m_audioDevice->currentData().toString();
+        QSettings().setValue("audio/device", name);
+        openAudioDevice(name);
+    });
+    connect(m_audioVolume, &QSlider::valueChanged, this, [this](int pct) {
+        m_audioVolumeLabel->setText(volumeText(pct));
+        if (m_syncing) return;
+        m_engine->setAudioVolume(pct / 100.0f);
+        emit audioEdited();
+    });
+    connect(m_audioMute, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_syncing) return;
+        m_engine->setAudioMuted(on);
+        emit audioEdited();
+    });
+    m_meterTimer.setInterval(33);
+    connect(&m_meterTimer, &QTimer::timeout, this, &MasterPanel::refreshMeters);
+    m_meterTimer.start();
+    return g;
+}
+
+void MasterPanel::fillAudioDevices()
+{
+    const QString saved = QSettings().value("audio/device").toString();
+    QSignalBlocker b(m_audioDevice);
+    m_audioDevice->clear();
+    m_audioDevice->addItem(QStringLiteral("System default"), QString());
+    for (const QString &n : AudioOutput::deviceNames()) m_audioDevice->addItem(n, n);
+    int idx = m_audioDevice->findData(saved);
+    if (idx < 0 && !saved.isEmpty()) { // saved device currently unplugged: keep it visible
+        m_audioDevice->addItem(saved + QStringLiteral(" (not connected)"), saved);
+        idx = m_audioDevice->count() - 1;
+    }
+    m_audioDevice->setCurrentIndex(qMax(0, idx));
+}
+
+void MasterPanel::openAudioDevice(const QString &name)
+{
+    QString err;
+    if (m_engine->startAudio(name, &err)) {
+        m_audioState->setText(QStringLiteral("Playing on \"%1\" · %2 kHz · latency %3 ms")
+                                  .arg(m_engine->audioOutput().deviceName())
+                                  .arg(AudioOutput::kSampleRate / 1000)
+                                  .arg(int(std::lround(m_engine->audioOutput().latency() * 1000))));
+        m_audioState->setStyleSheet("color:#888; font-size:11px;");
+    } else {
+        m_audioState->setText(err);
+        m_audioState->setStyleSheet("color:#ff6b5b; font-size:11px;");
+    }
+}
+
+void MasterPanel::startAudio()
+{
+    fillAudioDevices();
+    openAudioDevice(QSettings().value("audio/device").toString());
+}
+
+void MasterPanel::refreshMeters()
+{
+    if (!isVisible()) return;
+    for (int c = 0; c < 2; ++c) {
+        const float pk = m_engine->audioOutput().peak(c);
+        const double db = pk > 1e-6f ? 20.0 * std::log10(pk) : -60.0;
+        m_meter[c]->setValue(int(std::clamp(db + 60.0, 0.0, 60.0) * 10));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Video Output
@@ -312,6 +443,9 @@ void MasterPanel::syncFromEngine()
     }
     m_omtQuality->setCurrentIndex(qMax(0, m_omtQuality->findData(s.omtQuality)));
     m_libFolder->setText(s.libraryFolder);
+    m_audioVolume->setValue(int(std::lround(m_engine->audioVolume() * 100)));
+    m_audioVolumeLabel->setText(volumeText(m_audioVolume->value()));
+    m_audioMute->setChecked(m_engine->audioMuted());
     m_syncing = false;
     refreshStatus();
 }

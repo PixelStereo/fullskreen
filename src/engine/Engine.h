@@ -14,6 +14,7 @@
 //    which runs it on the render thread. These tasks never take the lock: it is safe to wait
 //    on a task while holding the lock, with no risk of deadlock.
 
+#include "AudioOutput.h"
 #include "IsfLibrary.h"
 #include "Layer.h"
 #include "Publish.h"
@@ -80,12 +81,17 @@ public:
     bool setLayerVideo(int i, const QString &path, QString *err = nullptr);
     bool setLayerImage(int i, const QString &path, QString *err = nullptr);
     bool setLayerIsf(int i, const QString &path, QString *err = nullptr);
+    bool setLayerAudio(int i, const QString &path, QString *err = nullptr);
+    // Video, image or audio according to the file: a video file without a picture becomes an audio layer.
+    bool setLayerFile(int i, const QString &path, QString *err = nullptr);
     void clearLayerSource(int i);
     void setGeneratorSize(int i, int w, int h);
 
     void setLayerPlaying(int i, bool playing);
     void setLayerLoop(int i, bool loop);
     void seekLayer(int i, double t);
+    void setLayerVolume(int i, float volume);
+    void setLayerMuted(int i, bool muted);
 
     int addEffect(int layerIndex, const QString &path, QString *err = nullptr);
     void removeEffect(int layerIndex, int fx);
@@ -96,7 +102,8 @@ public:
     // --- External media (media bin)
     struct MediaRef {
         QString path;
-        bool video = false;      // otherwise image
+        bool video = false;      // video file
+        bool audio = false;      // audio file (neither: image)
         bool missing = false;
         bool imported = false;   // added to the media bin by the user
         QStringList users;       // "Layer" or "Layer › Effect"
@@ -111,6 +118,19 @@ public:
     void relinkBinItem(const QString &from, const QString &to);
     static bool isVideoFile(const QString &path);
     static bool isImageFile(const QString &path);
+    static bool isAudioFile(const QString &path);
+    static QStringList videoExtensions();
+    static QStringList imageExtensions();
+    static QStringList audioExtensions();
+
+    // --- Sound: one output device, mixing the audio of every layer
+    bool startAudio(const QString &device, QString *err, bool nullDevice = false); // empty = system default
+    void stopAudio();
+    AudioOutput &audioOutput() { return *m_audio; }
+    float audioVolume() const { return m_audio->masterVolume(); }
+    void setAudioVolume(float v) { m_audio->setMasterVolume(v); }
+    bool audioMuted() const { return m_audio->muted(); }
+    void setAudioMuted(bool m) { m_audio->setMuted(m); }
 
     // --- Output publishing (NDI, OMT, Syphon, Spout)
     void setPublishSettings(const PublishSettings &s);
@@ -222,6 +242,11 @@ private:
 
     QElapsedTimer m_clock;
     qint64 m_lastNs = 0;
+    double m_realDt = 0; // unclamped frame interval: playheads follow real time, as the sound does
+    int64_t m_frameStampNs = 0; // steady_clock time the playheads of the current frame correspond to
+
+    std::unique_ptr<AudioOutput> m_audio;
+    void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
     std::atomic<quint64> m_frameCount{0};
     bool m_initialized = false;

@@ -79,6 +79,7 @@ private:
 // Resources removed from the composition (under lock), then released in the render thread.
 struct Engine::Garbage {
     std::unique_ptr<VideoDecoder> video;
+    std::shared_ptr<AudioStream> audio;
     Texture2D tex;
     std::unique_ptr<IsfInstance> generator;
     RenderTarget generatorTarget;
@@ -93,7 +94,32 @@ struct ScopedCurrent {
     ~ScopedCurrent() { e->doneCurrent(); }
 };
 
-Engine::Engine(QObject *parent) : QObject(parent) {}
+Engine::Engine(QObject *parent) : QObject(parent), m_audio(std::make_unique<AudioOutput>()) {}
+
+// The stream leaves the mix before its decode thread stops.
+static void releaseAudio(AudioOutput &out, std::shared_ptr<AudioStream> &a)
+{
+    if (!a) return;
+    out.removeStream(a.get());
+    a->close();
+    a.reset();
+}
+
+void Engine::attachAudio(Layer &l, std::shared_ptr<AudioStream> s)
+{
+    releaseAudio(*m_audio, l.audio);
+    l.audio = std::move(s);
+    if (!l.audio) return;
+    l.audio->setTransport(l.position(), l.playing, l.speed, l.loop, l.audioGain());
+    m_audio->addStream(l.audio);
+}
+
+bool Engine::startAudio(const QString &device, QString *err, bool nullDevice)
+{
+    return m_audio->start(device, err, nullDevice);
+}
+
+void Engine::stopAudio() { m_audio->stop(); }
 
 Engine::~Engine() { shutdown(); }
 
@@ -250,6 +276,7 @@ void Engine::stop()
 
 void Engine::shutdown()
 {
+    m_audio->stop();
     if (!m_initialized) return;
     stop();
     if (m_quadVao) { // not yet released by the render thread
@@ -502,6 +529,7 @@ void Engine::releaseLayer(Layer &l)
 {
     if (l.video) l.video->close();
     l.video.reset();
+    releaseAudio(*m_audio, l.audio);
     l.sourceTex.destroy();
     if (l.generator) l.generator->releaseGl();
     l.generator.reset();
@@ -523,6 +551,7 @@ void Engine::removeLayer(int i)
         m_layers.erase(m_layers.begin() + i);
     }
     if (g->layer->video) g->layer->video->close(); // stop the decode thread outside the render thread
+    releaseAudio(*m_audio, g->layer->audio);
     runGl([this, g] { releaseLayer(*g->layer); }, false);
     emit layersChanged();
 }
@@ -611,6 +640,7 @@ std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
 {
     auto g = std::make_shared<Garbage>();
     g->video = std::move(l.video);
+    g->audio = std::move(l.audio);
     g->tex = l.sourceTex;
     l.sourceTex = Texture2D{};
     g->generator = std::move(l.generator);
@@ -630,6 +660,7 @@ std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
 void Engine::releaseGarbage(const std::shared_ptr<Garbage> &g)
 {
     if (g->video) g->video->close();
+    releaseAudio(*m_audio, g->audio);
     runGl([g] {
         g->tex.destroy();
         if (g->generator) g->generator->releaseGl();
@@ -680,6 +711,8 @@ bool Engine::setLayerVideo(int i, const QString &path, QString *err)
         if (err) *err = e;
         return false;
     }
+    auto sound = std::make_shared<AudioStream>(); // the file's sound, if it has any
+    if (!sound->open(path, AudioOutput::kSampleRate, nullptr)) sound.reset();
     std::shared_ptr<Garbage> g;
     {
         Lock lk(&m_mutex);
@@ -694,8 +727,45 @@ bool Engine::setLayerVideo(int i, const QString &path, QString *err)
         l->sourcePath = QFileInfo(path).absoluteFilePath();
         l->playhead = 0;
         l->playing = true;
+        attachAudio(*l, std::move(sound));
         if (isDefaultMapping(l->mapping) && l->srcHeight > 0)
             l->mapping.fitAspect(double(l->srcWidth) / l->srcHeight, double(m_compSize.width()) / m_compSize.height());
+    }
+    releaseGarbage(g);
+    return true;
+}
+
+bool Engine::setLayerFile(int i, const QString &path, QString *err)
+{
+    if (isImageFile(path)) return setLayerImage(i, path, err);
+    if (isAudioFile(path)) return setLayerAudio(i, path, err);
+    QString e;
+    if (setLayerVideo(i, path, &e)) return true; // video and unknown extensions: FFmpeg decides
+    if (AudioStream::probe(path, nullptr) && setLayerAudio(i, path, err)) return true; // sound only
+    if (err) *err = e;
+    return false;
+}
+
+bool Engine::setLayerAudio(int i, const QString &path, QString *err)
+{
+    if (!layer(i)) return false;
+    auto sound = std::make_shared<AudioStream>();
+    QString e;
+    if (!sound->open(path, AudioOutput::kSampleRate, &e)) {
+        if (err) *err = e;
+        return false;
+    }
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        g = detachSource(*l);
+        l->type = SourceType::Audio;
+        l->sourcePath = QFileInfo(path).absoluteFilePath();
+        l->playhead = 0;
+        l->playing = true;
+        attachAudio(*l, std::move(sound));
     }
     releaseGarbage(g);
     return true;
@@ -767,7 +837,7 @@ void Engine::setLayerPlaying(int i, bool playing)
 {
     Lock lk(&m_mutex);
     Layer *l = layer(i);
-    if (!l || !l->video) return;
+    if (!l || !l->hasTransport()) return;
     if (playing && !l->loop && l->duration() > 0 && l->playhead >= l->duration() - 1e-3) seekLayer(i, 0);
     l->playing = playing;
 }
@@ -779,8 +849,8 @@ void Engine::setLayerLoop(int i, bool loop)
     if (!l) return;
     const double pos = l->position();
     l->loop = loop;
-    if (l->video) {
-        l->video->setLoop(loop);
+    if (l->hasTransport()) {
+        if (l->video) l->video->setLoop(loop);
         if (!loop) seekLayer(i, pos); // brings the monotonic clock back into [0, duration]
     }
 }
@@ -789,11 +859,24 @@ void Engine::seekLayer(int i, double t)
 {
     Lock lk(&m_mutex);
     Layer *l = layer(i);
-    if (!l || !l->video) return;
+    if (!l || !l->hasTransport()) return;
     const double d = l->duration();
     if (d > 0) t = std::clamp(t, 0.0, d);
     l->playhead = t;
-    l->video->seek(t);
+    if (l->video) l->video->seek(t);
+    if (l->audio) l->audio->setTransport(l->position(), l->playing, l->speed, l->loop, l->audioGain());
+}
+
+void Engine::setLayerVolume(int i, float volume)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->volume = std::clamp(volume, 0.0f, 2.0f);
+}
+
+void Engine::setLayerMuted(int i, bool muted)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->muted = muted;
 }
 
 int Engine::addEffect(int li, const QString &path, QString *err)
@@ -909,15 +992,19 @@ void Engine::updateSource(Layer &l, double dt)
         l.sourceTex.upload(l.pendingImage.constBits(), l.pendingImage.width(), l.pendingImage.height());
         l.pendingImage = QImage();
     }
-    if (l.type != SourceType::Video || !l.video) return;
+    (void)dt;
+    if ((l.type != SourceType::Video && l.type != SourceType::Audio) || !l.hasTransport()) return;
     if (l.playing) {
-        l.playhead += dt * l.speed;
+        // Real time (not the clamped animation step): after a render stall, picture and sound stay together.
+        l.playhead += m_realDt * l.speed;
         const double d = l.duration();
         if (!l.loop && d > 0 && l.playhead >= d) {
             l.playhead = d;
             l.playing = false;
         }
     }
+    if (l.audio) l.audio->setTransport(l.position(), l.playing, l.speed, l.loop, l.audioGain(), m_frameStampNs);
+    if (!l.video) return;
     int w = 0, h = 0;
     if (l.video->fetch(l.playhead, l.frameBuffer, &w, &h) && w > 0 && h > 0)
         l.sourceTex.upload(l.frameBuffer.data(), w, h);
@@ -1010,6 +1097,10 @@ double Engine::nextDt()
     const qint64 now = m_clock.nsecsElapsed();
     double dt = (now - m_lastNs) / 1e9;
     m_lastNs = now;
+    m_frameStampNs = AudioStream::clockNs();
+    // Render thread: playheads follow real time (up to 2 s), so that after a stall picture and sound stay together.
+    // Manual mode (tests, command-line rendering): frames are rendered on demand, the step stays clamped.
+    m_realDt = m_threaded ? std::clamp(dt, 0.0, 2.0) : std::clamp(dt, 0.0, 0.25);
     dt = std::clamp(dt, 0.0, 0.25);
     if (dt > 0) m_fps = m_fps.load() * 0.95 + (1.0 / dt) * 0.05;
     return dt;
@@ -1107,6 +1198,8 @@ void Engine::newProject()
         old.swap(m_layers);
         m_projectPath.clear();
         m_binItems.clear();
+        m_audio->setMasterVolume(1.0f);
+        m_audio->setMuted(false);
         if (m_publish != PublishSettings()) {
             m_publish = PublishSettings();
             m_publishDirty = true;
@@ -1114,6 +1207,7 @@ void Engine::newProject()
     }
     for (auto &l : old) {
         if (l->video) l->video->close();
+        releaseAudio(*m_audio, l->audio);
         auto g = std::make_shared<Garbage>();
         g->layer = std::move(l);
         runGl([this, g] { releaseLayer(*g->layer); }, false);
@@ -1147,10 +1241,18 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     o["visible"] = l.visible;
     o["opacity"] = l.opacity;
     o["blend"] = blendModeKey(l.blend);
+    o["volume"] = l.volume;
+    o["muted"] = l.muted;
     QJsonObject src;
     switch (l.type) {
     case SourceType::Video:
         src["type"] = "video";
+        src["loop"] = l.loop;
+        src["speed"] = l.speed;
+        src["playing"] = l.playing;
+        break;
+    case SourceType::Audio:
+        src["type"] = "audio";
         src["loop"] = l.loop;
         src["speed"] = l.speed;
         src["playing"] = l.playing;
@@ -1164,8 +1266,8 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         break;
     default:
         // Missing file: keep what was intended, so nothing is lost on save.
-        if (l.missingType == SourceType::Video) {
-            src["type"] = "video";
+        if (l.missingType == SourceType::Video || l.missingType == SourceType::Audio) {
+            src["type"] = l.missingType == SourceType::Video ? "video" : "audio";
             src["loop"] = l.loop;
             src["speed"] = l.speed;
             src["playing"] = l.playing;
@@ -1199,6 +1301,8 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         l->visible = o.value("visible").toBool(true);
         l->opacity = float(o.value("opacity").toDouble(1.0));
         l->blend = blendModeFromKey(o.value("blend").toString());
+        l->volume = float(std::clamp(o.value("volume").toDouble(1.0), 0.0, 2.0));
+        l->muted = o.value("muted").toBool(false);
         name = l->name;
     }
 
@@ -1206,17 +1310,20 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
     const QString type = src.value("type").toString();
     const QString path = type != "none" ? resolvePath(src, projectDir) : QString();
     QString err;
-    if (type == "video") {
+    if (type == "video" || type == "audio") {
+        const bool video = type == "video";
         {
             Lock lk(&m_mutex);
             layer(index)->loop = src.value("loop").toBool(true);
             layer(index)->speed = src.value("speed").toDouble(1.0);
         }
-        const bool ok = setLayerVideo(index, path, &err);
+        const bool ok = video ? setLayerVideo(index, path, &err) : setLayerAudio(index, path, &err);
         if (!ok && warnings) *warnings << name + ": " + missingMessage(path, err);
         Lock lk(&m_mutex);
-        layer(index)->playing = src.value("playing").toBool(true);
-        if (!ok) markMissing(*layer(index), SourceType::Video, path, err);
+        Layer *l = layer(index);
+        l->playing = src.value("playing").toBool(true);
+        if (l->audio) l->audio->setTransport(l->position(), l->playing, l->speed, l->loop, l->audioGain());
+        if (!ok) markMissing(*l, video ? SourceType::Video : SourceType::Audio, path, err);
     } else if (type == "image") {
         const bool ok = setLayerImage(index, path, &err);
         if (!ok && warnings) *warnings << name + ": " + missingMessage(path, err);
@@ -1278,6 +1385,7 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
             bin.append(QJsonObject{{"path", p}, {"relativePath", QDir(dir).relativeFilePath(p)}});
         root["bin"] = bin;
         root["publish"] = m_publish.toJson();
+        root["audio"] = QJsonObject{{"volume", double(m_audio->masterVolume())}, {"muted", m_audio->muted()}};
     }
     root["ui"] = uiState;
     // Atomic write: a crash during save does not corrupt the existing file.
@@ -1322,6 +1430,9 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     for (const QJsonValue &v : root.value("bin").toArray()) bin << resolvePath(v.toObject(), dir);
     addBinItems(bin);
     if (root.contains("publish")) setPublishSettings(PublishSettings::fromJson(root.value("publish").toObject()));
+    const QJsonObject audio = root.value("audio").toObject();
+    m_audio->setMasterVolume(float(std::clamp(audio.value("volume").toDouble(1.0), 0.0, 2.0)));
+    m_audio->setMuted(audio.value("muted").toBool(false));
     if (uiState) *uiState = root.value("ui").toObject();
     setProjectPath(QFileInfo(path).absoluteFilePath());
     emit layersChanged();
@@ -1333,25 +1444,34 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
 // External media (media bin)
 // ---------------------------------------------------------------------------
 
-static const QStringList &videoExtensions()
+QStringList Engine::videoExtensions()
 {
     static const QStringList e = {"mov", "mp4", "m4v", "avi", "mkv", "webm", "mxf", "mpg", "mpeg", "wmv", "flv", "ts", "hap", "mts", "m2ts"};
     return e;
 }
 
-static const QStringList &imageExtensions()
+QStringList Engine::imageExtensions()
 {
     static const QStringList e = {"png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif", "webp", "tga", "exr", "psd"};
     return e;
 }
 
+QStringList Engine::audioExtensions()
+{
+    static const QStringList e = {"wav", "aif", "aiff", "aifc", "mp3", "m4a", "aac", "flac", "ogg", "oga", "opus", "wma", "caf", "w64"};
+    return e;
+}
+
+bool Engine::isAudioFile(const QString &path) { return audioExtensions().contains(QFileInfo(path).suffix().toLower()); }
 bool Engine::isVideoFile(const QString &path) { return videoExtensions().contains(QFileInfo(path).suffix().toLower()); }
 bool Engine::isImageFile(const QString &path) { return imageExtensions().contains(QFileInfo(path).suffix().toLower()); }
 
 std::vector<Engine::MediaRef> Engine::mediaUsage() const
 {
     std::vector<MediaRef> out;
-    auto add = [&](const QString &path, bool video, const QString &user, bool imported) {
+    enum Kind { ImageKind, VideoKind, AudioKind };
+    auto kindOf = [](const QString &p) { return isVideoFile(p) ? VideoKind : isAudioFile(p) ? AudioKind : ImageKind; };
+    auto add = [&](const QString &path, Kind kind, const QString &user, bool imported) {
         if (path.isEmpty()) return;
         for (MediaRef &r : out) {
             if (r.path == path) {
@@ -1362,7 +1482,8 @@ std::vector<Engine::MediaRef> Engine::mediaUsage() const
         }
         MediaRef r;
         r.path = path;
-        r.video = video;
+        r.video = kind == VideoKind;
+        r.audio = kind == AudioKind;
         r.imported = imported;
         if (!user.isEmpty()) r.users << user;
         out.push_back(r);
@@ -1371,17 +1492,19 @@ std::vector<Engine::MediaRef> Engine::mediaUsage() const
         Lock lk(&m_mutex);
         for (const auto &l : m_layers) {
             const SourceType t = l->type != SourceType::None ? l->type : l->missingType;
-            if (t == SourceType::Video || t == SourceType::Image) add(l->sourcePath, t == SourceType::Video, l->name, false);
+            if (t == SourceType::Video || t == SourceType::Image || t == SourceType::Audio)
+                add(l->sourcePath, t == SourceType::Video ? VideoKind : t == SourceType::Audio ? AudioKind : ImageKind,
+                    l->name, false);
             auto scan = [&](const IsfInstance *inst, const QString &user) {
                 if (!inst) return;
                 for (const IsfInput &in : inst->inputs())
                     if (in.type == IsfInput::Image && !in.isInputImage && !in.imagePath.isEmpty())
-                        add(in.imagePath, isVideoFile(in.imagePath), user, false);
+                        add(in.imagePath, isVideoFile(in.imagePath) ? VideoKind : ImageKind, user, false);
             };
             scan(l->generator.get(), l->name);
             for (const auto &fx : l->effects) scan(fx.get(), l->name + QStringLiteral(" › ") + fx->name());
         }
-        for (const QString &p : m_binItems) add(p, isVideoFile(p), QString(), true);
+        for (const QString &p : m_binItems) add(p, kindOf(p), QString(), true);
     }
     for (MediaRef &r : out) r.missing = !QFileInfo::exists(r.path);
     return out;
@@ -1433,7 +1556,8 @@ QList<int> Engine::layersUsingMedia(const QString &path) const
     Lock lk(&m_mutex);
     for (int i = 0; i < int(m_layers.size()); ++i) {
         const Layer &l = *m_layers[size_t(i)];
-        bool uses = l.sourcePath == path && (l.type == SourceType::Video || l.type == SourceType::Image || l.missingType != SourceType::None);
+        bool uses = l.sourcePath == path && (l.type == SourceType::Video || l.type == SourceType::Image ||
+                                             l.type == SourceType::Audio || l.missingType != SourceType::None);
         uses |= isfUsesImage(l.generator.get(), path);
         for (const auto &fx : l.effects) uses |= isfUsesImage(fx.get(), path);
         if (uses) out << i;
@@ -1451,7 +1575,7 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
         Layer *l = layer(i);
         if (!l) return false;
         const SourceType t = l->type != SourceType::None ? l->type : l->missingType;
-        if (l->sourcePath == from && (t == SourceType::Video || t == SourceType::Image)) kind = t;
+        if (l->sourcePath == from && (t == SourceType::Video || t == SourceType::Image || t == SourceType::Audio)) kind = t;
         mapping = l->mapping;
         auto collect = [&](IsfInstance *inst) {
             if (!inst) return;
@@ -1465,9 +1589,14 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
     }
     bool changed = false, ok = true;
     if (kind != SourceType::None) {
-        // The new file may be of another type (video replaced by an image, or vice versa)
-        const bool video = isImageFile(to) ? false : (isVideoFile(to) ? true : kind == SourceType::Video);
-        ok = video ? setLayerVideo(i, to, err) : setLayerImage(i, to, err);
+        // The new file may be of another type (video replaced by an image, an audio file…)
+        SourceType target = kind;
+        if (isImageFile(to)) target = SourceType::Image;
+        else if (isVideoFile(to)) target = SourceType::Video;
+        else if (isAudioFile(to)) target = SourceType::Audio;
+        ok = target == SourceType::Video   ? setLayerVideo(i, to, err)
+             : target == SourceType::Audio ? setLayerAudio(i, to, err)
+                                           : setLayerImage(i, to, err);
         if (ok) {
             Lock lk(&m_mutex);
             if (Layer *l = layer(i)) {

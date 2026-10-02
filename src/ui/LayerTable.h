@@ -7,7 +7,7 @@ class QTableWidget;
 class QToolButton;
 
 // Layer list, full width at the bottom of the window.
-// The layer at the top of the list is drawn above the others.
+// The layer at the top of the list is drawn above the others. Audio layers have no picture: no opacity or blend.
 class LayerTable : public QWidget
 {
     Q_OBJECT
@@ -15,6 +15,7 @@ public:
     struct Row {
         QString name, tag, source, effects, blend, playback;
         bool visible = true, error = false;
+        bool noPicture = false; // audio layer: no opacity or blend
         float opacity = 1.f;
     };
 

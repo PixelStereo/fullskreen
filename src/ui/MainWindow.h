@@ -65,6 +65,8 @@ private:
     int newLayerFromFile(const QString &path, int at = 0);
     void addVideoLayer();
     void addImageLayer();
+    void addAudioLayer();
+    void addFileLayers(const QString &title, const QString &dirKey, const QString &filter);
     void setSourceFromDialog(const QString &kind);
     void setSourceFromFile(int layer, const QString &path);
     void addGeneratorLayer(const QString &path);

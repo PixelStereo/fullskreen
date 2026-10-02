@@ -135,7 +135,7 @@ void LayerTable::updateRow(int r, const Row &row)
     src->setForeground(row.error ? QColor(255, 110, 95) : QColor(170, 170, 175));
     name->setForeground(row.error ? QColor(255, 110, 95) : QColor(230, 230, 233));
     text(ColEffects, row.effects)->setForeground(QColor(170, 170, 175));
-    text(ColBlend, row.blend);
+    text(ColBlend, row.noPicture ? QStringLiteral("—") : row.blend);
     text(ColPlayback, row.playback)->setFont(QFont(QStringLiteral("monospace")));
 
     // Opacity: slider right in the row
@@ -167,6 +167,11 @@ void LayerTable::updateRow(int r, const Row &row)
                 }
             }
         });
+    }
+    slider->setVisible(!row.noPicture);
+    if (row.noPicture) {
+        label->setText(QStringLiteral("—"));
+        return;
     }
     const int pct = int(std::lround(row.opacity * 100));
     if (!slider->isSliderDown() && slider->value() != pct) {
