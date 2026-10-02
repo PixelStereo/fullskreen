@@ -73,6 +73,8 @@ bool VideoDecoder::open(const QString &path, QString *err)
     m_loopBase = 0;
     m_lastPts = 0;
     m_discardBefore = -1e9;
+    m_backward = false;
+    m_backStack.clear();
     m_thread = std::thread(&VideoDecoder::run, this);
     return true;
 }
@@ -195,7 +197,7 @@ void VideoDecoder::doSeek(double t)
     m_draining = false;
 }
 
-int VideoDecoder::decodeNext(Frame &f)
+int VideoDecoder::decodeNext(Frame &f, double skipBefore)
 {
     for (;;) {
         int r = avcodec_receive_frame(m_codec, m_frame);
@@ -205,6 +207,10 @@ int VideoDecoder::decodeNext(Frame &f)
             double local = ts != AV_NOPTS_VALUE ? ts * m_timeBase - m_startTime : m_lastPts + 1.0 / m_fps;
             m_lastPts = local;
             f.pts = local + m_loopBase;
+            if (local < skipBefore - 0.25 / m_fps) { // not needed: no conversion
+                av_frame_unref(m_frame);
+                return 2;
+            }
 
             const int w = m_frame->width, h = m_frame->height;
             m_sws = sws_getCachedContext(m_sws, w, h, AVPixelFormat(m_frame->format), w, h, AV_PIX_FMT_RGBA,
@@ -241,6 +247,34 @@ int VideoDecoder::decodeNext(Frame &f)
     }
 }
 
+// Ping-pong: delivers the frames of [a, m_backEnd) in reverse order, a = one short window earlier.
+// Monotonic time of a frame at local time L on the backward leg: legBase + span - L - frame duration.
+void VideoDecoder::produceBackwardWindow()
+{
+    const double dt = 1.0 / m_fps;
+    const double window = std::max(4.0, std::min(12.0, m_fps * 0.3)) * dt; // a few frames: bounded memory
+    const double a = std::max(0.0, m_backEnd - window);
+    doSeek(a);
+    std::vector<Frame> got;
+    for (;;) {
+        Frame f;
+        const int r = decodeNext(f, a);
+        if (r == 2) continue;
+        if (r != 1) break;
+        const double local = f.pts - m_loopBase;
+        if (local >= m_backEnd - 0.25 * dt) {
+            recycle(std::move(f.rgba));
+            break;
+        }
+        f.pts = m_legBase + span() - local - dt;
+        got.push_back(std::move(f));
+    }
+    // The stack is delivered from its end: the latest local time first
+    m_backStack = std::move(got);
+    m_backEnd = a;
+    if (a <= 1e-9) m_backEnd = -1; // leg finished once the stack is delivered
+}
+
 void VideoDecoder::run()
 {
     uint64_t gen = 0;
@@ -258,11 +292,35 @@ void VideoDecoder::run()
                 const double t = m_seekTarget;
                 gen = m_generation;
                 lk.unlock();
+                for (Frame &f : m_backStack) recycle(std::move(f.rgba));
+                m_backStack.clear();
+                m_backward = false;
                 doSeek(t);
                 m_loopBase = 0;
                 m_discardBefore = t - 0.5 / m_fps;
                 continue;
             }
+        }
+
+        if (m_backward) {
+            if (!m_backStack.empty()) {
+                Frame f = std::move(m_backStack.back());
+                m_backStack.pop_back();
+                std::lock_guard<std::mutex> lk(m_mutex);
+                if (gen != m_generation) m_pool.push_back(std::move(f.rgba));
+                else m_queue.push_back(std::move(f));
+                continue;
+            }
+            if (m_backEnd > 0 && m_mode == PingPong) {
+                produceBackwardWindow();
+                continue;
+            }
+            // Back at the start: forward again
+            m_backward = false;
+            m_loopBase = m_legBase + span();
+            doSeek(0);
+            m_discardBefore = -1e9;
+            continue;
         }
 
         Frame f;
@@ -272,22 +330,31 @@ void VideoDecoder::run()
                 recycle(std::move(f.rgba));
                 continue;
             }
-            std::lock_guard<std::mutex> lk(m_mutex);
-            if (gen != m_generation) {
-                m_pool.push_back(std::move(f.rgba));
-                continue;
-            }
-            m_queue.push_back(std::move(f));
-        } else {
-            // End of file (or error)
-            if (r == 0 && m_loop) {
-                m_loopBase += m_lastPts + 1.0 / m_fps;
-                doSeek(0);
-                m_discardBefore = -1e9;
+            if (m_mode != Once && m_duration > 0 && f.pts - m_loopBase >= m_duration) { // beyond the layer's length
+                recycle(std::move(f.rgba));
+                r = 0;
             } else {
                 std::lock_guard<std::mutex> lk(m_mutex);
-                m_eof = true;
+                if (gen != m_generation) {
+                    m_pool.push_back(std::move(f.rgba));
+                    continue;
+                }
+                m_queue.push_back(std::move(f));
+                continue;
             }
+        }
+        // End of file (or error)
+        if (r == 0 && m_mode == Loop) {
+            m_loopBase += span();
+            doSeek(0);
+            m_discardBefore = -1e9;
+        } else if (r == 0 && m_mode == PingPong) {
+            m_backward = true;
+            m_legBase = m_loopBase + span();
+            m_backEnd = span();
+        } else {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            m_eof = true;
         }
     }
 }

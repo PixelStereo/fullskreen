@@ -115,7 +115,7 @@ int main(int argc, char **argv)
     CHECK(e.setLayerVideo(v, root + "/media/h264.mp4", &err));
     CHECK(std::abs(e.layer(v)->duration() - 4.0) < 0.1);
     CHECK(e.layer(v)->video->width() == 1280);
-    e.setLayerLoop(v, false);
+    e.setLayerPlayMode(v, PlayMode::OneShot);
     e.seekLayer(v, 3.9);
     { // until the end of the media is reached and a frame uploaded (slow machines: up to 5 s)
         QElapsedTimer t;
@@ -563,6 +563,110 @@ int main(int argc, char **argv)
         AudioStream::Info ai;
         CHECK(AudioStream::probe(root + "/media/tone.wav", &ai) && ai.sampleRate == 44100 && ai.channels == 1);
         CHECK(!AudioStream::probe(root + "/media/h264.mp4", &ai));
+
+        // --- Play modes (the video with sound of the previous test is muted meanwhile)
+        e.setLayerMuted(v, true);
+        { // Video ping-pong: the backward leg delivers the frames in reverse order (across GOPs)
+            VideoDecoder d;
+            CHECK(d.open(root + "/media/index.mp4", &err));
+            d.setMode(VideoDecoder::PingPong);
+            d.seek(0);
+            std::vector<uint8_t> buf;
+            int w = 0, h = 0, wrong = 0, missing = 0;
+            const double dt = 1.0 / 25, span = 2.0;
+            for (int k = 0; k < 150; ++k) { // forward, backward, forward again
+                const double t = k * dt + dt / 2;
+                QElapsedTimer tm;
+                tm.start();
+                bool got = false;
+                while (!(got = d.fetch(t, buf, &w, &h)) && tm.elapsed() < 3000) QThread::msleep(1);
+                if (!got) {
+                    ++missing;
+                    continue;
+                }
+                const double x = std::fmod(t, 2 * span);
+                const int expected = x < span ? int(x / dt) : std::min(49, int((2 * span - x) / dt));
+                const int r = buf[size_t((h / 2) * w + w / 2) * 4];
+                const int frame = int(std::lround((r * 219.0 / 255.0 + 16.0 - 20.0) / 4.0));
+                if (std::abs(frame - expected) > 1) {
+                    if (wrong < 5) std::printf("      t=%.2f frame %d expected %d\n", t, frame, expected);
+                    ++wrong;
+                }
+            }
+            CHECK(missing == 0);
+            CHECK(wrong == 0);
+        }
+        { // Sound in ping-pong: backwards after the end (880 Hz part), then the start (440 Hz), no resync at the turns
+            const int p = e.addLayer("Ping-pong");
+            CHECK(e.setLayerAudio(p, root + "/media/tone.wav", &err));
+            e.setLayerPlayMode(p, PlayMode::PingPong);
+            e.seekLayer(p, 3.5);
+            CHECK(tone(880, 20));
+            settle(200);
+            const int resyncs = e.layer(p)->audio->resyncCount();
+            QElapsedTimer t;
+            t.start();
+            double minRms = 1;
+            while (t.elapsed() < 1000) { // the turn at 4 s
+                minRms = std::min(minRms, rms(last(0.05)));
+                QThread::msleep(40);
+            }
+            double phase;
+            {
+                Engine::Lock lk(&e.mutex());
+                phase = e.layer(p)->phase();
+                CHECK(e.layer(p)->position() > 2.5 && e.layer(p)->position() < 3.9); // on the way back
+            }
+            std::printf("      ping-pong phase %.2f, min rms %.3f\n", phase, minRms);
+            CHECK(minRms > 0.2);
+            CHECK(std::abs(freq(last(0.15)) - 880) < 20);
+            CHECK(tone(440, 15)); // backwards below 2 s
+            CHECK(e.layer(p)->audio->resyncCount() == resyncs);
+            e.removeLayer(p);
+        }
+        { // Stop: black and silent at the end; One-shot: last frame kept
+            const int s1 = e.addLayer("Stop");
+            CHECK(e.setLayerVideo(s1, root + "/media/av.mp4", &err));
+            e.setLayerPlayMode(s1, PlayMode::Stop);
+            e.seekLayer(s1, 3.7);
+            CHECK(waitFor([&] {
+                Engine::Lock lk(&e.mutex());
+                return e.layer(s1)->ended;
+            }));
+            settle(100);
+            {
+                Engine::Lock lk(&e.mutex());
+                CHECK(!e.layer(s1)->playing && e.layer(s1)->finalTex == 0);
+            }
+            CHECK(silent());
+            e.setLayerPlayMode(s1, PlayMode::OneShot);
+            e.seekLayer(s1, 3.7);
+            e.setLayerPlaying(s1, true);
+            CHECK(waitFor([&] {
+                Engine::Lock lk(&e.mutex());
+                return !e.layer(s1)->playing;
+            }));
+            settle(100);
+            {
+                Engine::Lock lk(&e.mutex());
+                CHECK(!e.layer(s1)->ended && e.layer(s1)->finalTex != 0);
+            }
+            CHECK(e.layerJson(s1).value("source").toObject().value("playMode").toString() == "oneshot");
+            // Default mode (preference) given to a newly loaded video; projects saved with "loop" still load
+            e.setDefaultPlayMode(PlayMode::PingPong);
+            CHECK(e.setLayerVideo(s1, root + "/media/h264.mp4", &err));
+            CHECK(e.layer(s1)->mode == PlayMode::PingPong);
+            e.setDefaultPlayMode(PlayMode::Loop);
+            QJsonObject legacy = e.layerJson(s1);
+            QJsonObject src = legacy.value("source").toObject();
+            src.remove("playMode");
+            src["loop"] = false;
+            legacy["source"] = src;
+            e.replaceLayerJson(s1, legacy);
+            CHECK(e.layer(s1)->mode == PlayMode::OneShot);
+            e.removeLayer(s1);
+        }
+        e.setLayerMuted(v, false);
 
         e.removeLayer(e.layerCount() > v ? v : 0);
         e.audioOutput().setTap(nullptr);

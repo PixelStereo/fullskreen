@@ -152,6 +152,7 @@ set(APP_SOURCES
   src/ui/LayerTable.cpp
   src/ui/MediaBin.cpp
   src/ui/MasterPanel.cpp
+  src/ui/PreferencesDialog.cpp
 )
 
 if(APPLE)

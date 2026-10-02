@@ -174,14 +174,14 @@ void AudioStream::close()
 
 int64_t AudioStream::clockNs() { return nowNs(); }
 
-void AudioStream::setTransport(double position, bool playing, double speed, bool loop, float gain, int64_t stampNs)
+void AudioStream::setTransport(double phase, bool playing, double speed, int mode, float gain, int64_t stampNs)
 {
-    m_loop = loop;
+    m_mode = mode;
     std::lock_guard<std::mutex> lk(m_transportMutex);
-    m_transport.position = position;
+    m_transport.position = phase;
     m_transport.playing = playing;
     m_transport.speed = speed;
-    m_transport.loop = loop;
+    m_transport.mode = mode;
     m_transport.gain = gain;
     m_transport.stampNs = stampNs ? stampNs : nowNs();
 }
@@ -225,15 +225,14 @@ void AudioStream::pushSilence(int frames, double pts)
     pushSamples(m_convert.data(), frames, pts);
 }
 
-bool AudioStream::decodeFrame()
+bool AudioStream::decodeRaw(const float **samples, int *frames, double *local)
 {
-    const double d = m_info.duration;
     for (;;) {
         int r = avcodec_receive_frame(m_codec, m_frame);
         if (r == 0) {
             int64_t ts = m_frame->best_effort_timestamp;
             if (ts == AV_NOPTS_VALUE) ts = m_frame->pts;
-            double local = ts != AV_NOPTS_VALUE ? ts * m_timeBase - m_startTime : m_nextPts;
+            double t = ts != AV_NOPTS_VALUE ? ts * m_timeBase - m_startTime : m_nextPts;
             const int maxOut = swr_get_out_samples(m_swr, m_frame->nb_samples) + 32;
             if (m_convert.size() < size_t(maxOut) * 2) m_convert.resize(size_t(maxOut) * 2);
             uint8_t *outp = reinterpret_cast<uint8_t *>(m_convert.data());
@@ -242,20 +241,16 @@ bool AudioStream::decodeFrame()
             av_frame_unref(m_frame);
             if (n <= 0) continue;
             const float *s = m_convert.data();
-            if (local < 0) { // before the start of the file (encoder priming)
-                const int skip = std::min(n, int(std::ceil(-local * m_rate)));
+            if (t < 0) { // before the start of the file (encoder priming)
+                const int skip = std::min(n, int(std::ceil(-t * m_rate)));
                 s += size_t(skip) * 2;
                 n -= skip;
-                local = 0;
-            }
-            // When looping, the audio loop is exactly as long as the layer (container duration).
-            if (m_loop && d > 0) {
-                if (local >= d) n = 0;
-                else n = std::min(n, int(std::ceil((d - local) * m_rate)));
+                t = 0;
             }
             if (n <= 0) continue;
-            m_nextPts = local + double(n) / m_rate;
-            pushSamples(s, n, local + m_loopBase);
+            *samples = s;
+            *frames = n;
+            *local = t;
             return true;
         }
         if (r == AVERROR_EOF) return false;
@@ -272,6 +267,56 @@ bool AudioStream::decodeFrame()
     }
 }
 
+bool AudioStream::decodeFrame()
+{
+    const double d = m_info.duration;
+    const float *s = nullptr;
+    int n = 0;
+    double local = 0;
+    for (;;) {
+        if (!decodeRaw(&s, &n, &local)) return false;
+        // When the mode repeats, the audio cycle is exactly as long as the layer (container duration).
+        if (m_mode != Once && d > 0) {
+            if (local >= d) n = 0;
+            else n = std::min(n, int(std::ceil((d - local) * m_rate)));
+        }
+        if (n <= 0) continue;
+        m_nextPts = local + double(n) / m_rate;
+        pushSamples(s, n, local + m_loopBase);
+        return true;
+    }
+}
+
+// Ping-pong backward leg: samples of [a, m_backEnd) reversed, a = 0.25 s earlier. Silence where the track has none.
+// Monotonic time of local time L on that leg: legBase + duration - L.
+void AudioStream::produceBackwardWindow()
+{
+    const double a = std::max(0.0, m_backEnd - 0.25);
+    const int n = int(std::lround((m_backEnd - a) * m_rate));
+    m_window.assign(size_t(std::max(n, 0)) * 2, 0.0f);
+    doSeek(a);
+    const float *s = nullptr;
+    int frames = 0;
+    double local = 0;
+    while (n > 0 && decodeRaw(&s, &frames, &local)) {
+        const long first = std::lround((local - a) * m_rate);
+        if (first >= n) break;
+        for (int k = 0; k < frames; ++k) {
+            const long idx = first + k;
+            if (idx < 0) continue;
+            if (idx >= n) break;
+            m_window[size_t(idx) * 2] = s[k * 2];
+            m_window[size_t(idx) * 2 + 1] = s[k * 2 + 1];
+        }
+    }
+    for (int k = 0; k < n / 2; ++k) { // reverse the frame order (channels stay in place)
+        std::swap(m_window[size_t(k) * 2], m_window[size_t(n - 1 - k) * 2]);
+        std::swap(m_window[size_t(k) * 2 + 1], m_window[size_t(n - 1 - k) * 2 + 1]);
+    }
+    if (n > 0) pushSamples(m_window.data(), n, m_legBase + m_info.duration - m_backEnd);
+    m_backEnd = a;
+}
+
 void AudioStream::run()
 {
     const size_t maxFrames = size_t(m_rate * kBufferSeconds);
@@ -285,20 +330,41 @@ void AudioStream::run()
                 const double t = m_seekTarget;
                 lk.unlock();
                 m_loopBase = 0;
-                doSeek(t);
+                m_backward = false;
+                const double d = m_info.duration;
+                if (m_mode == PingPong && d > 0 && t >= d) {
+                    // Target on the backward leg (phase in [d, 2d)): start a backward leg at local time 2d - t
+                    m_backward = true;
+                    m_legBase = d;
+                    m_backEnd = std::max(0.0, 2 * d - t);
+                } else {
+                    doSeek(t);
+                }
                 atEnd = false;
                 lk.lock();
                 m_seekPending = false; // chunks pushed from now on belong to the new generation
                 continue;
             }
         }
+        const double d = m_info.duration;
+        if (m_backward) {
+            if (m_backEnd > 1e-9 && m_mode == PingPong) {
+                produceBackwardWindow();
+                continue;
+            }
+            // Back at the start: forward again
+            m_backward = false;
+            m_loopBase = m_legBase + d;
+            doSeek(0);
+            atEnd = false;
+            continue;
+        }
         if (!atEnd) {
             if (decodeFrame()) continue;
             atEnd = true;
         }
         // End of file
-        const double d = m_info.duration;
-        if (!m_loop) {
+        if (m_mode == Once) {
             std::lock_guard<std::mutex> lk(m_mutex);
             m_eof = true;
             continue;
@@ -308,6 +374,12 @@ void AudioStream::run()
             const int frames = std::max(1, std::min(int(m_rate * 0.1), int(std::ceil((d - m_nextPts) * m_rate))));
             pushSilence(frames, m_nextPts + m_loopBase);
             m_nextPts += double(frames) / m_rate;
+            continue;
+        }
+        if (m_mode == PingPong && d > 0) {
+            m_backward = true;
+            m_legBase = m_loopBase + d;
+            m_backEnd = d;
             continue;
         }
         m_loopBase += d > 0 ? d : m_nextPts;
@@ -320,12 +392,19 @@ void AudioStream::run()
 // Audio callback
 // ---------------------------------------------------------------------------
 
-double AudioStream::wrap(double t) const
+double AudioStream::period() const
 {
     const double d = m_info.duration;
-    if (!m_snapshot.loop || d <= 0) return t;
-    t = std::fmod(t, d);
-    return t < 0 ? t + d : t;
+    if (d <= 0 || m_snapshot.mode == Once) return 0;
+    return m_snapshot.mode == PingPong ? 2 * d : d;
+}
+
+double AudioStream::wrap(double t) const
+{
+    const double p = period();
+    if (p <= 0) return t;
+    t = std::fmod(t, p);
+    return t < 0 ? t + p : t;
 }
 
 void AudioStream::requestSeek(double t)
@@ -362,13 +441,14 @@ void AudioStream::mix(float *out, int frames, double latency)
     // Layer position at the moment these samples will be heard
     double target = t.position;
     if (running) target += (double(nowNs() - t.stampNs) / 1e9 + latency) * t.speed;
-    if (t.loop && d > 0) target = wrap(target);
+    const double cycle = period();
+    if (cycle > 0) target = wrap(target);
     else if (d > 0) target = std::min(target, d);
     auto gap = [&](double readPts) { // > 0: the stream is behind the layer
         double g = target - wrap(readPts);
-        if (t.loop && d > 0) {
-            if (g > d / 2) g -= d;
-            else if (g < -d / 2) g += d;
+        if (cycle > 0) {
+            if (g > cycle / 2) g -= cycle;
+            else if (g < -cycle / 2) g += cycle;
         }
         return g;
     };
@@ -425,7 +505,7 @@ void AudioStream::mix(float *out, int frames, double latency)
     double drift = 0;
     if (!m_aligning && m_bufFrames > 0) {
         const double raw = gap(m_bufPts + m_bufPos / m_rate);
-        const bool ended = !t.loop && d > 0 && target >= d;
+        const bool ended = cycle <= 0 && d > 0 && target >= d;
         if (std::abs(raw) > kJumpThreshold && !ended) m_fadingForSeek = true; // seek, audio dropout, stall
         // The measure jitters with callback scheduling: correct on a smoothed value
         m_drift += (raw - m_drift) * 0.05;

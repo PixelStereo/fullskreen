@@ -2,7 +2,7 @@
 // Audio track of a file (audio file, or sound of a video file), decoded with FFmpeg on a dedicated thread,
 // resampled to the output format (stereo float, output sample rate) and mixed by AudioOutput.
 //
-// Synchronization: the stream follows the layer's transport (position, play / pause, speed, loop),
+// Synchronization: the stream follows the layer's transport (position, play / pause, speed, play mode),
 // which the engine updates every frame. In the audio callback, the stream extrapolates the layer position
 // to the moment the samples will actually be heard (output latency), corrects small drifts by
 // adjusting its playback rate very slightly (at most 0.5 %, inaudible), and resynchronizes (short fade,
@@ -47,7 +47,10 @@ public:
 
     // Engine side (any thread), every frame: layer transport and gain (volume, mute, layer on/off).
     // `stampNs`: steady_clock time at which `position` was exact (0 = now).
-    void setTransport(double position, bool playing, double speed, bool loop, float gain, int64_t stampNs = 0);
+    // `phase`: layer time in the monotonic domain of the mode — position for Once / Loop, time within the
+    // forward + backward cycle (0 .. 2 × duration) for PingPong.
+    enum Mode { Once = 0, Loop = 1, PingPong = 2 };
+    void setTransport(double phase, bool playing, double speed, int mode, float gain, int64_t stampNs = 0);
     static int64_t clockNs(); // steady_clock, nanoseconds
 
     // Audio callback: adds `frames` stereo interleaved samples into `out`.
@@ -67,7 +70,8 @@ private:
     };
     struct Transport {
         double position = 0, speed = 1;
-        bool playing = false, loop = true;
+        bool playing = false;
+        int mode = Loop;
         float gain = 1;
         int64_t stampNs = 0;
     };
@@ -78,7 +82,11 @@ private:
     void pushSamples(const float *s, int frames, double pts);
     void pushSilence(int frames, double pts);
     void requestSeek(double t);   // audio callback
-    double wrap(double t) const;  // position in [0, duration) when looping
+    double wrap(double t) const;  // time within the cycle when the mode repeats
+    double period() const;        // cycle length: duration (Loop), 2 × duration (PingPong), 0 (Once)
+    // Converted samples of the next decoded frame (start at local time *local). False at the end of the file.
+    bool decodeRaw(const float **samples, int *frames, double *local);
+    void produceBackwardWindow(); // ping-pong: reversed samples of a short window
 
     // Decoder (decode thread)
     AVFormatContext *m_fmt = nullptr;
@@ -103,7 +111,10 @@ private:
     bool m_quit = false, m_seekPending = false, m_eof = false;
     double m_seekTarget = 0;
     uint64_t m_generation = 0;
-    std::atomic<bool> m_loop{true};
+    std::atomic<int> m_mode{Loop};
+    bool m_backward = false;
+    double m_backEnd = 0, m_legBase = 0;
+    std::vector<float> m_window;
 
     // Transport (written by the engine, read by the audio callback)
     std::mutex m_transportMutex;

@@ -4,6 +4,7 @@
 #include <QOpenGLWidget>
 #include <QPointF>
 #include <QRectF>
+#include <vector>
 
 class Engine;
 class QUndoStack;
@@ -60,7 +61,12 @@ private:
     int m_layer = -1;
     bool m_showAll = true;
 
-    Handle m_selected;
-    bool m_dragHandle = false, m_dragLayer = false;
-    QPointF m_lastNorm;
+    // Selection: one or several handles (Ctrl/⌘+click, Ctrl/⌘+drag a rectangle, Ctrl/⌘+A); moved together
+    std::vector<Handle> m_selection;
+    Handle m_primary; // last handle clicked (Tab goes on from it)
+    bool isSelected(const Handle &h) const;
+    std::vector<Handle> allHandles() const;
+    void moveSelection(QPointF delta);
+    bool m_dragHandle = false, m_dragLayer = false, m_rubber = false;
+    QPointF m_lastNorm, m_rubberStart, m_rubberEnd;
 };
