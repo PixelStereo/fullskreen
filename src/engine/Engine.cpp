@@ -724,7 +724,7 @@ bool Engine::setLayerVideo(int i, const QString &path, QString *err)
         l->srcHeight = dec->height();
         l->video = std::move(dec);
         l->type = SourceType::Video;
-        l->sourcePath = QFileInfo(path).absoluteFilePath();
+        l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
         l->playhead = 0;
         l->playing = true;
         attachAudio(*l, std::move(sound));
@@ -762,7 +762,7 @@ bool Engine::setLayerAudio(int i, const QString &path, QString *err)
         if (!l) return false;
         g = detachSource(*l);
         l->type = SourceType::Audio;
-        l->sourcePath = QFileInfo(path).absoluteFilePath();
+        l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
         l->playhead = 0;
         l->playing = true;
         attachAudio(*l, std::move(sound));
@@ -790,7 +790,7 @@ bool Engine::setLayerImage(int i, const QString &path, QString *err)
         l->srcWidth = img.width();
         l->srcHeight = img.height();
         l->type = SourceType::Image;
-        l->sourcePath = QFileInfo(path).absoluteFilePath();
+        l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
         if (isDefaultMapping(l->mapping))
             l->mapping.fitAspect(double(img.width()) / img.height(), double(m_compSize.width()) / m_compSize.height());
     }
@@ -815,7 +815,7 @@ bool Engine::setLayerIsf(int i, const QString &path, QString *err)
         }
         g = detachSource(*l);
         l->type = SourceType::Isf;
-        l->sourcePath = QFileInfo(path).absoluteFilePath();
+        l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
         l->error = inst->error();
         l->generator = std::move(inst);
         if (!ok && err) *err = l->error;

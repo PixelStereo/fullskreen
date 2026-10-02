@@ -44,17 +44,6 @@
 
 static const QStringList kIsfExt = {"fs", "frag"};
 
-static QString patterns(const QStringList &ext)
-{
-    QStringList p;
-    for (const QString &e : ext) p << "*." + e;
-    return p.join(' ');
-}
-
-static QString videoFilter() { return QStringLiteral("Videos (%1);;All Files (*)").arg(patterns(Engine::videoExtensions())); }
-static QString imageFilter() { return QStringLiteral("Images (%1)").arg(patterns(Engine::imageExtensions())); }
-static QString audioFilter() { return QStringLiteral("Audio (%1);;All Files (*)").arg(patterns(Engine::audioExtensions())); }
-
 static QScrollArea *scrolled(QWidget *w)
 {
     auto *s = new QScrollArea;
@@ -121,7 +110,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_output, &OutputWindow::keyPressed, this, [this](int key, Qt::KeyboardModifiers mods) { handleControlKey(key, mods); });
 
     buildMenus();
-    rebuildGeneratorMenus();
 
     // --- Layers
     connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
@@ -152,17 +140,10 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 
     // --- Media bin
     connect(m_bin, &MediaBin::relinkRequested, this, &MainWindow::relinkMedia);
-    connect(m_bin, &MediaBin::useAsSourceRequested, this, [this](const QString &p) {
-        if (currentLayer() < 0) {
-            const int i = newLayerFromFile(p, 0);
-            if (i >= 0) selectLayer(i);
-        } else {
-            setSourceFromFile(currentLayer(), p);
-        }
-    });
-    connect(m_bin, &MediaBin::newLayerRequested, this, [this](const QString &p) {
-        const int i = newLayerFromFile(p, 0);
-        if (i >= 0) selectLayer(i);
+    connect(m_bin, &MediaBin::useAsSourceRequested, this, [this](const QString &p) { loadIntoLayer(currentLayer(), p); });
+    connect(m_layerTable, &LayerTable::addClicked, this, &MainWindow::addEmptyLayer);
+    connect(m_layerTable, &LayerTable::filesDropped, this, [this](int row, const QStringList &paths) {
+        loadDropped(row >= 0 ? row : currentLayer(), paths);
     });
     connect(m_bin, &MediaBin::binEdited, this, &MainWindow::markDirty);
     m_binTimer.setSingleShot(true);
@@ -198,7 +179,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_view, &MappingView::layerPicked, this, &MainWindow::selectLayer);
     connect(m_inspector, &LayerInspector::layerChanged, this, &MainWindow::refreshLayerList);
     connect(m_inspector, &LayerInspector::mappingChanged, m_view, qOverload<>(&QWidget::update));
-    connect(m_inspector, &LayerInspector::addSourceRequested, this, &MainWindow::setSourceFromDialog);
+    connect(m_inspector, &LayerInspector::fileDropped, this, [this](const QString &p) { loadIntoLayer(m_inspector->layerIndex(), p); });
     connect(m_engine, &Engine::layersChanged, this, &MainWindow::refreshLayerList);
     connect(m_engine, &Engine::compositionSizeChanged, this, [this] { m_view->update(); });
     // The preview follows rendering (at most one update per rendered frame)
@@ -334,17 +315,9 @@ void MainWindow::buildMenus()
     });
 
     QMenu *layer = menuBar()->addMenu(QStringLiteral("&Layer"));
-    // Same content in the "+" menu of the layer list
-    for (QMenu *m : {layer, m_layerTable->addMenu()}) {
-        m->addAction(QStringLiteral("Video Layer…"), this, &MainWindow::addVideoLayer);
-        m->addAction(QStringLiteral("Image Layer…"), this, &MainWindow::addImageLayer);
-        m->addAction(QStringLiteral("Audio Layer…"), this, &MainWindow::addAudioLayer);
-        QMenu *gen = m->addMenu(QStringLiteral("ISF Generator Layer"));
-        gen->setProperty("generatorMenu", true);
-        m->addAction(QStringLiteral("Empty Layer"), this, &MainWindow::addEmptyLayer);
-        if (m == layer) m_generatorMenu = gen;
-    }
-    layer->addSeparator();
+    // A layer is created empty; media is then dropped onto it (Media Bin, Finder)
+    layer->addAction(QStringLiteral("New Layer"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N), this,
+                     &MainWindow::addEmptyLayer);
     QAction *dup = layer->addAction(QStringLiteral("Duplicate"), this, &MainWindow::duplicateCurrentLayer);
     dup->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
     layer->addAction(QStringLiteral("Delete (Del in list)"), this, &MainWindow::removeCurrentLayer);
@@ -406,21 +379,6 @@ void MainWindow::buildMenus()
             a->setProperty("folderInfo", true);
         }
     });
-}
-
-void MainWindow::rebuildGeneratorMenus()
-{
-    const QList<QMenu *> menus = findChildren<QMenu *>();
-    for (QMenu *m : menus) {
-        if (!m->property("generatorMenu").toBool()) continue;
-        m->clear();
-        for (const IsfEntry &e : m_engine->library().generators()) {
-            QAction *a = m->addAction(e.name);
-            a->setToolTip(e.description);
-            connect(a, &QAction::triggered, this, [this, p = e.path] { addGeneratorLayer(p); });
-        }
-        if (m->isEmpty()) m->addAction(QStringLiteral("(no generators)"))->setEnabled(false);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -610,75 +568,70 @@ int MainWindow::currentLayer() const { return m_layerTable->currentRow(); }
 // Layer actions (all undoable)
 // ---------------------------------------------------------------------------
 
-int MainWindow::newLayerFromFile(const QString &path, int at)
+bool MainWindow::loadIntoLayer(int i, const QString &path)
 {
-    const QString ext = QFileInfo(path).suffix().toLower();
-    const QString base = QFileInfo(path).completeBaseName();
-    QString err;
-    int idx = m_engine->addLayer(base, at);
-    bool ok;
-    if (kIsfExt.contains(ext)) ok = (m_engine->setLayerIsf(idx, path, &err), true);
-    else ok = m_engine->setLayerFile(idx, path, &err); // video, image or audio according to the file
-    if (!ok) {
-        m_engine->removeLayer(idx);
-        idx = -1;
-    } else {
-        m_undo->push(new cmd::AddLayer(m_engine, idx, QStringLiteral("Add \"%1\"").arg(base)));
+    if (i < 0 || i >= m_engine->layerCount()) {
+        statusBar()->showMessage(QStringLiteral("Create a layer with + first, then drop the media onto it."), 6000);
+        return false;
     }
-    if (!err.isEmpty()) statusBar()->showMessage(QFileInfo(path).fileName() + ": " + err.section('\n', 0, 0), 8000);
-    return idx;
-}
-
-void MainWindow::addFileLayers(const QString &title, const QString &dirKey, const QString &filter)
-{
-    QSettings s;
-    const QStringList files = QFileDialog::getOpenFileNames(this, title, s.value(dirKey).toString(), filter);
-    if (files.isEmpty()) return;
-    s.setValue(dirKey, QFileInfo(files.first()).absolutePath());
-    int last = -1;
-    for (int k = files.size() - 1; k >= 0; --k) {
-        int i = newLayerFromFile(files[k], 0);
-        if (i >= 0) last = i;
+    const QFileInfo fi(path);
+    const QString ext = fi.suffix().toLower();
+    auto fail = [&](const QString &err) {
+        const QString msg = fi.fileName() + QStringLiteral(": ") + err.section('\n', 0, 0);
+        if (m_quiet) statusBar()->showMessage(msg, 8000);
+        else QMessageBox::warning(this, QStringLiteral("Load"), msg);
+        return false;
+    };
+    if (kIsfExt.contains(ext)) {
+        const IsfInstance::Header h = IsfInstance::readHeader(path);
+        if (!h.ok) return fail(QStringLiteral("not a valid ISF shader."));
+        if (h.isFilter) { // an ISF effect joins the layer's effect chain
+            const QJsonArray before = m_engine->effectsJson(i);
+            m_engine->addEffect(i, path);
+            m_undo->push(new cmd::SetEffects(m_engine, i, before, QStringLiteral("Add Effect %1").arg(fi.completeBaseName())));
+            selectLayer(i);
+            refreshAll();
+            return true;
+        }
     }
-    if (last >= 0) selectLayer(last);
-}
-
-void MainWindow::addVideoLayer() { addFileLayers(QStringLiteral("Video Layer"), "dirs/video", videoFilter()); }
-void MainWindow::addImageLayer() { addFileLayers(QStringLiteral("Image Layer"), "dirs/image", imageFilter()); }
-void MainWindow::addAudioLayer() { addFileLayers(QStringLiteral("Audio Layer"), "dirs/audio", audioFilter()); }
-
-void MainWindow::setSourceFromDialog(const QString &kind)
-{
-    const int i = currentLayer();
-    if (i < 0) return;
-    QSettings s;
-    const QString key = "dirs/" + kind;
-    const QString title = kind == "video" ? QStringLiteral("Video Source")
-                          : kind == "audio" ? QStringLiteral("Audio Source")
-                                            : QStringLiteral("Image Source");
-    const QString filter = kind == "video" ? videoFilter() : kind == "audio" ? audioFilter() : imageFilter();
-    const QString f = QFileDialog::getOpenFileName(this, title, s.value(key).toString(), filter);
-    if (f.isEmpty()) return;
-    s.setValue(key, QFileInfo(f).absolutePath());
-    setSourceFromFile(i, f);
-}
-
-void MainWindow::setSourceFromFile(int i, const QString &f)
-{
     const QJsonObject before = m_engine->layerJson(i);
     QString err;
-    const bool ok = m_engine->setLayerFile(i, f, &err);
-    if (!ok) {
-        QMessageBox::warning(this, QStringLiteral("Source"), err);
-        return;
-    }
+    if (kIsfExt.contains(ext)) m_engine->setLayerIsf(i, path, &err); // a broken shader still loads (error shown)
+    else if (!m_engine->setLayerFile(i, path, &err)) return fail(err);
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(i);
-        if (l && l->name.startsWith(QStringLiteral("Layer "))) l->name = QFileInfo(f).completeBaseName();
+        if (l && l->name.startsWith(QStringLiteral("Layer "))) l->name = fi.completeBaseName();
     }
-    m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Source \"%1\"").arg(QFileInfo(f).fileName())));
+    m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Load \"%1\"").arg(fi.fileName())));
+    selectLayer(i);
     refreshAll();
+    if (!err.isEmpty()) statusBar()->showMessage(fi.fileName() + QStringLiteral(": ") + err.section('\n', 0, 0), 8000);
+    return true;
+}
+
+void MainWindow::loadDropped(int layer, const QStringList &paths)
+{
+    // The first source file is loaded into the layer, ISF effects join its chain,
+    // the other media go to the Media Bin (only "+" creates layers).
+    bool sourceLoaded = false;
+    QStringList toBin;
+    for (const QString &p : paths) {
+        const QString ext = QFileInfo(p).suffix().toLower();
+        const bool effect = kIsfExt.contains(ext) && IsfInstance::readHeader(p).isFilter;
+        if (effect) {
+            loadIntoLayer(layer, p);
+        } else if (!sourceLoaded) {
+            sourceLoaded = loadIntoLayer(layer, p);
+            if (!kIsfExt.contains(ext)) toBin << p;
+        } else if (!kIsfExt.contains(ext)) {
+            toBin << p;
+        }
+    }
+    if (toBin.size() > 1 || (!sourceLoaded && !toBin.isEmpty())) {
+        m_bin->importFiles(toBin);
+        if (toBin.size() > 1) statusBar()->showMessage(QStringLiteral("%1 file(s) added to the Media Bin").arg(toBin.size()), 5000);
+    }
 }
 
 void MainWindow::relinkMedia(const QString &from, const QString &to)
@@ -702,16 +655,6 @@ void MainWindow::relinkMedia(const QString &from, const QString &to)
     refreshAll();
     if (!errors.isEmpty()) QMessageBox::warning(this, QStringLiteral("Relink"), errors.join('\n'));
     else statusBar()->showMessage(QStringLiteral("\"%1\" relinked in %2 layer(s)").arg(QFileInfo(from).fileName()).arg(layers.size()), 5000);
-}
-
-void MainWindow::addGeneratorLayer(const QString &path)
-{
-    QString err;
-    const QString name = QFileInfo(path).completeBaseName();
-    int i = m_engine->addLayer(name, 0);
-    m_engine->setLayerIsf(i, path, &err);
-    m_undo->push(new cmd::AddLayer(m_engine, i, QStringLiteral("Add \"%1\"").arg(name)));
-    selectLayer(i);
 }
 
 void MainWindow::addEmptyLayer()
@@ -806,7 +749,7 @@ void MainWindow::addIsfFolder()
 void MainWindow::rescanLibrary()
 {
     m_engine->library().scan();
-    rebuildGeneratorMenus();
+    m_bin->refresh();
     m_inspector->rebuild();
     statusBar()->showMessage(QStringLiteral("ISF Library: %1 generators, %2 effects")
                                  .arg(m_engine->library().generators().size())
@@ -1033,29 +976,18 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *e)
 
 void MainWindow::dropEvent(QDropEvent *e)
 {
-    int last = -1;
-    const QList<QUrl> urls = e->mimeData()->urls();
-    for (int k = urls.size() - 1; k >= 0; --k) {
-        const QString path = urls[k].toLocalFile();
+    // Elsewhere than on a layer (preview, empty area): loaded into the selected layer
+    QStringList paths;
+    for (const QUrl &u : e->mimeData()->urls()) {
+        const QString path = u.toLocalFile();
         if (path.isEmpty()) continue;
-        const QString ext = QFileInfo(path).suffix().toLower();
-        if (ext == "fulskrin") {
+        if (QFileInfo(path).suffix().toLower() == "fulskrin") {
             if (maybeSave()) openProject(path);
+            e->acceptProposedAction();
             return;
         }
-        // A dropped ISF filter is added as an effect on the selected layer
-        const int cur = currentLayer();
-        if (kIsfExt.contains(ext) && IsfInstance::readHeader(path).isFilter && cur >= 0) {
-            const QJsonArray before = m_engine->effectsJson(cur);
-            m_engine->addEffect(cur, path);
-            m_undo->push(new cmd::SetEffects(m_engine, cur, before,
-                                             QStringLiteral("Add Effect %1").arg(QFileInfo(path).completeBaseName())));
-            m_inspector->rebuild();
-            continue;
-        }
-        int i = newLayerFromFile(path, 0);
-        if (i >= 0) last = i;
+        paths << path;
     }
-    if (last >= 0) selectLayer(last);
+    if (!paths.isEmpty()) loadDropped(currentLayer(), paths);
     e->acceptProposedAction();
 }

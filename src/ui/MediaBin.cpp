@@ -14,6 +14,7 @@
 #include <QHeaderView>
 #include <QImageReader>
 #include <QLabel>
+#include <QMap>
 #include <QMenu>
 #include <QMimeData>
 #include <QPointer>
@@ -26,7 +27,7 @@
 #include <QVBoxLayout>
 
 namespace {
-enum Role { PathRole = Qt::UserRole + 1, MissingRole, UsedRole };
+enum Role { PathRole = Qt::UserRole + 1, MissingRole, UsedRole, IsfRole };
 
 // Media Bin tree: drag items onto layers, drop files to import them.
 class BinTree : public QTreeWidget
@@ -88,7 +89,7 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     head->addWidget(new QLabel(QStringLiteral("<b>Media Bin</b>")));
     head->addStretch();
     auto *import = new QPushButton(QStringLiteral("Import…"));
-    import->setToolTip(QStringLiteral("Add images or videos to the Media Bin (without creating a layer)"));
+    import->setToolTip(QStringLiteral("Add videos, images or sounds to the Media Bin"));
     head->addWidget(import);
     v->addLayout(head);
 
@@ -111,13 +112,16 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     m_tree->setColumnWidth(1, 120);
     m_tree->setColumnWidth(2, 56);
     m_tree->setTextElideMode(Qt::ElideMiddle);
-    m_tree->setToolTip(QStringLiteral("Drag a file onto the layer list or the preview to create a layer.\n"
-                                      "Double-click: replace the source of the selected layer."));
+    m_tree->setToolTip(QStringLiteral("Drag an item onto a layer (layer list, or the Source tab of the layer) to load it.\n"
+                                      "ISF effects dragged onto a layer join its effect chain.\n"
+                                      "Double-click: load into the selected layer."));
     tree->onDrop = [this](const QStringList &p) { importFiles(p); };
     m_videos = new QTreeWidgetItem(m_tree, {QStringLiteral("Videos")});
     m_images = new QTreeWidgetItem(m_tree, {QStringLiteral("Images")});
     m_audios = new QTreeWidgetItem(m_tree, {QStringLiteral("Audio")});
-    for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios}) {
+    m_isf = new QTreeWidgetItem(m_tree, {QStringLiteral("ISF")});
+    m_isfGenerators = new QTreeWidgetItem(m_isf, {QStringLiteral("Generators")});
+    for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios, m_isf, m_isfGenerators}) {
         QFont f = cat->font(0);
         f.setBold(true);
         cat->setFont(0, f);
@@ -224,11 +228,65 @@ void MediaBin::refresh()
     m_summary->setText(missing ? QStringLiteral("<span style='color:#ff6e5f'>%1 missing file(s): "
                                                 "select them, then \"Replace…\"</span>").arg(missing)
                                : QStringLiteral("%1 file(s)").arg(nv + ni + na));
+    refreshIsf();
     if (!selected.isEmpty())
-        for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios})
+        for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios, m_isfGenerators})
             for (int i = 0; i < cat->childCount(); ++i)
                 if (cat->child(i)->data(0, PathRole).toString() == selected) m_tree->setCurrentItem(cat->child(i));
     updateButtons();
+}
+
+// ISF > Generators: the shaders of the library (bundled, system and added folders) and those used by layers.
+void MediaBin::refreshIsf()
+{
+    struct Gen {
+        QString name, category, description;
+        QStringList users;
+        bool inLibrary = false;
+    };
+    QMap<QString, Gen> gens;
+    for (const IsfEntry &e : m_engine->library().generators())
+        gens[QDir::cleanPath(e.path)] = {e.name, e.categories.join(QStringLiteral(", ")), e.description, {}, true};
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        for (int i = 0; i < m_engine->layerCount(); ++i) {
+            const Layer *l = m_engine->layer(i);
+            if (l->type != SourceType::Isf || l->sourcePath.isEmpty()) continue;
+            Gen &g = gens[QDir::cleanPath(QFileInfo(l->sourcePath).absoluteFilePath())];
+            if (g.name.isEmpty()) g.name = QFileInfo(l->sourcePath).completeBaseName();
+            g.users << l->name;
+        }
+    }
+    QHash<QString, QTreeWidgetItem *> existing;
+    for (int i = 0; i < m_isfGenerators->childCount(); ++i)
+        existing.insert(m_isfGenerators->child(i)->data(0, PathRole).toString(), m_isfGenerators->child(i));
+    for (auto g = gens.cbegin(); g != gens.cend(); ++g) {
+        QTreeWidgetItem *it = existing.take(g.key());
+        if (!it) {
+            it = new QTreeWidgetItem(m_isfGenerators);
+            it->setData(0, PathRole, g.key());
+            it->setData(0, IsfRole, true);
+            it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
+        }
+        const bool missing = !QFileInfo::exists(g.key());
+        it->setData(0, MissingRole, missing);
+        it->setData(0, UsedRole, true); // library shaders are not removed from the Media Bin
+        it->setText(0, g->name);
+        it->setText(1, missing ? QStringLiteral("missing") : g->inLibrary ? g->category : QStringLiteral("outside library"));
+        it->setText(2, g->users.isEmpty() ? QStringLiteral("—") : QString::number(g->users.size()));
+        it->setTextAlignment(2, Qt::AlignCenter);
+        const QString usedBy = g->users.isEmpty() ? QStringLiteral("Not used by any layer")
+                                                  : QStringLiteral("Used by:\n") + g->users.join('\n');
+        it->setToolTip(0, g.key() + (g->description.isEmpty() ? QString() : QStringLiteral("\n\n") + g->description) +
+                              QStringLiteral("\n\n") + usedBy);
+        it->setToolTip(1, g->description.isEmpty() ? g->category : g->description);
+        it->setToolTip(2, usedBy);
+        const QColor fg = missing ? QColor(255, 110, 95) : (g->users.isEmpty() ? QColor(170, 170, 175) : QColor(225, 225, 228));
+        for (int c = 0; c < 3; ++c) it->setForeground(c, fg);
+    }
+    qDeleteAll(existing);
+    m_isfGenerators->sortChildren(0, Qt::AscendingOrder);
+    m_isfGenerators->setText(0, QStringLiteral("Generators (%1)").arg(m_isfGenerators->childCount()));
 }
 
 void MediaBin::probe(const QString &path)
@@ -287,13 +345,14 @@ void MediaBin::probe(const QString &path)
 
 void MediaBin::updateButtons()
 {
-    bool any = false, removable = false;
+    bool any = false, removable = false, isf = false;
     for (QTreeWidgetItem *it : m_tree->selectedItems()) {
         if (it->data(0, PathRole).toString().isEmpty()) continue;
         any = true;
+        isf |= it->data(0, IsfRole).toBool();
         removable |= !it->data(0, UsedRole).toBool();
     }
-    m_relink->setEnabled(m_tree->selectedItems().size() == 1 && any);
+    m_relink->setEnabled(m_tree->selectedItems().size() == 1 && any && !isf);
     m_remove->setEnabled(removable);
     m_reveal->setEnabled(any && !m_tree->selectedItems().first()->data(0, MissingRole).toBool());
 }
@@ -372,12 +431,11 @@ void MediaBin::contextMenu(const QPoint &pos)
     QMenu menu(this);
     if (!p.isEmpty()) {
         const bool missing = it->data(0, MissingRole).toBool();
-        QAction *a = menu.addAction(QStringLiteral("New Layer with This File"), this, [this, p] { emit newLayerRequested(p); });
-        a->setEnabled(!missing);
-        a = menu.addAction(QStringLiteral("Use as Source of Selected Layer"), this, [this, p] { emit useAsSourceRequested(p); });
+        const bool isf = it->data(0, IsfRole).toBool();
+        QAction *a = menu.addAction(QStringLiteral("Load into Selected Layer"), this, [this, p] { emit useAsSourceRequested(p); });
         a->setEnabled(!missing);
         menu.addSeparator();
-        menu.addAction(QStringLiteral("Relink File…"), this, &MediaBin::relinkSelected);
+        menu.addAction(QStringLiteral("Relink File…"), this, &MediaBin::relinkSelected)->setEnabled(!isf);
         menu.addAction(m_reveal->text(), this, &MediaBin::revealSelected)->setEnabled(!missing);
         menu.addAction(QStringLiteral("Remove from Media Bin"), this, &MediaBin::removeSelected)->setEnabled(!it->data(0, UsedRole).toBool());
         menu.addSeparator();

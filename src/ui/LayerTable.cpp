@@ -1,17 +1,81 @@
 #include "LayerTable.h"
 
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QHBoxLayout>
+#include <QMimeData>
+#include <QPainter>
+#include <QUrl>
 #include <QHeaderView>
 #include <QLabel>
-#include <QMenu>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QTableWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <cmath>
+#include <functional>
 
 enum Col { ColVisible, ColName, ColSource, ColEffects, ColOpacity, ColBlend, ColPlayback, ColCount };
+
+namespace {
+// Layer grid accepting files: the row under the cursor is outlined, the drop loads the file into that layer.
+class LayerGrid : public QTableWidget
+{
+public:
+    using QTableWidget::QTableWidget;
+    std::function<void(int, const QStringList &)> onDrop;
+
+protected:
+    static QStringList paths(const QMimeData *m)
+    {
+        QStringList out;
+        for (const QUrl &u : m->urls())
+            if (u.isLocalFile()) out << u.toLocalFile();
+        return out;
+    }
+    void dragEnterEvent(QDragEnterEvent *e) override
+    {
+        if (paths(e->mimeData()).isEmpty()) return e->ignore();
+        e->acceptProposedAction();
+    }
+    void dragMoveEvent(QDragMoveEvent *e) override
+    {
+        const int row = rowAt(e->position().toPoint().y());
+        if (row != m_dropRow) {
+            m_dropRow = row;
+            viewport()->update();
+        }
+        e->acceptProposedAction();
+    }
+    void dragLeaveEvent(QDragLeaveEvent *) override
+    {
+        m_dropRow = -2;
+        viewport()->update();
+    }
+    void dropEvent(QDropEvent *e) override
+    {
+        const int row = rowAt(e->position().toPoint().y());
+        m_dropRow = -2;
+        viewport()->update();
+        if (onDrop) onDrop(row, paths(e->mimeData()));
+        e->acceptProposedAction();
+    }
+    void paintEvent(QPaintEvent *e) override
+    {
+        QTableWidget::paintEvent(e);
+        if (m_dropRow < 0) return;
+        QPainter p(viewport());
+        p.setPen(QPen(QColor(255, 160, 40), 2));
+        p.setBrush(QColor(255, 160, 40, 40));
+        const int y = rowViewportPosition(m_dropRow);
+        p.drawRect(QRect(1, y + 1, viewport()->width() - 3, rowHeight(m_dropRow) - 3));
+    }
+
+private:
+    int m_dropRow = -2;
+};
+} // namespace
 
 static QToolButton *barButton(const QString &text, const QString &tip)
 {
@@ -30,10 +94,7 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
 
     auto *bar = new QHBoxLayout;
     auto *title = new QLabel(QStringLiteral("<b>Layers</b>"));
-    auto *add = barButton(QStringLiteral("+"), QStringLiteral("New Layer"));
-    add->setPopupMode(QToolButton::InstantPopup);
-    m_addMenu = new QMenu(add);
-    add->setMenu(m_addMenu);
+    auto *add = barButton(QStringLiteral("+"), QStringLiteral("New Layer (empty: drop a media onto it)"));
     auto *remove = barButton(QStringLiteral("−"), QStringLiteral("Delete Layer (Del)"));
     auto *dup = barButton(QStringLiteral("⧉"), QStringLiteral("Duplicate Layer (Ctrl+D)"));
     auto *up = barButton(QStringLiteral("▲"), QStringLiteral("Move Up (Ctrl+])"));
@@ -42,12 +103,19 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     bar->addSpacing(12);
     for (auto *b : {add, remove, dup, up, down}) bar->addWidget(b);
     bar->addStretch();
-    auto *hint = new QLabel(QStringLiteral("Top layer is drawn on top · drop files here to create layers"));
+    auto *hint = new QLabel(QStringLiteral("Top layer is drawn on top · drop a media onto a layer to load it"));
     hint->setStyleSheet("color:#888; font-size:11px;");
     bar->addWidget(hint);
     v->addLayout(bar);
 
-    m_table = new QTableWidget(0, ColCount);
+    auto *grid = new LayerGrid(0, ColCount);
+    grid->setAcceptDrops(true);
+    grid->viewport()->setAcceptDrops(true);
+    grid->setDragDropMode(QAbstractItemView::DropOnly);
+    grid->onDrop = [this](int row, const QStringList &p) {
+        if (!p.isEmpty()) emit filesDropped(row, p);
+    };
+    m_table = grid;
     m_table->setHorizontalHeaderLabels({QString(), QStringLiteral("Layer"), QStringLiteral("Source"),
                                         QStringLiteral("Effects"), QStringLiteral("Opacity"), QStringLiteral("Blend"),
                                         QStringLiteral("Playback")});
@@ -83,7 +151,7 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
         if (m_updating || it->column() != ColVisible) return;
         emit visibilityToggled(it->row(), it->checkState() == Qt::Checked);
     });
-    connect(add, &QToolButton::clicked, add, &QToolButton::showMenu);
+    connect(add, &QToolButton::clicked, this, &LayerTable::addClicked);
     connect(remove, &QToolButton::clicked, this, &LayerTable::removeClicked);
     connect(dup, &QToolButton::clicked, this, &LayerTable::duplicateClicked);
     connect(up, &QToolButton::clicked, this, [this] { emit moveClicked(-1); });
