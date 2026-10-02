@@ -6,7 +6,6 @@
 #include <QMessageBox>
 #include <QPalette>
 #include <QStyleFactory>
-#include <QSettings>
 #include <QSurfaceFormat>
 #include <QThread>
 #include <QTimer>
@@ -56,16 +55,6 @@ int main(int argc, char *argv[])
     QApplication::setOrganizationName("Fulskrin");
     QApplication::setApplicationVersion("0.1.0");
     applyDarkTheme(app);
-
-    // The software was called Lanterne: carry its settings over on first launch.
-    {
-        QSettings current;
-        if (current.allKeys().isEmpty()) {
-            QSettings legacy(QStringLiteral("Lanterne"), QStringLiteral("Lanterne"));
-            const QStringList keys = legacy.allKeys();
-            for (const QString &k : keys) current.setValue(k, legacy.value(k));
-        }
-    }
 
     QCommandLineParser cli;
     cli.setApplicationDescription("Fulskrin — multi-layer video mapping, FFmpeg playback, ISF shaders");

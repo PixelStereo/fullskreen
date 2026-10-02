@@ -36,7 +36,7 @@ same() { # number of differing pixels between two screenshots, within an area
 }
 PREVIEW=""
 
-../build/Fulskrin projects/demo.lanterne >"$OUT/log1.txt" 2>&1 & APP=$!
+../build/Fulskrin projects/demo.fulskrin >"$OUT/log1.txt" 2>&1 & APP=$!
 sleep 5
 xdotool key Return; sleep 1                      # "file not found" warning
 origin; PREVIEW=$(crop 400 180 700 380)

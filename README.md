@@ -3,10 +3,6 @@
 Video mapping application for stage and installation work, on Mac / Windows / Linux.
 **Qt 6** interface, **FFmpeg** decoding, **OpenGL 3.3** rendering, effects and generators in the **ISF** format.
 
-> Fulskrin was previously called *Lanterne*. Projects saved as `.lanterne` still open, and references to the
-> former French names of the bundled shaders (`Mire.fs`, `Flou.fs`…) are resolved automatically.
-> Settings from Lanterne are carried over on first launch.
-
 ## What V1 does
 
 - **Stacked layers** (the top layer is drawn on top), opacity, blend modes Normal / Add / Screen / Multiply.
@@ -177,8 +173,7 @@ test/ui_test.sh out/ui                     # Linux + Xvfb + openbox + xdotool: f
 ```
 
 `test/make_media.sh` creates the test media with FFmpeg (H.264, ProRes, HAP, image); `test/make_tests.py`
-generates one project per shader and per codec, plus the demo used by the UI test (saved in the legacy Lanterne
-format on purpose). `fulskrin_tests --check-isf <folder>` compiles and renders every shader in a folder.
+generates one project per shader and per codec, plus the demo used by the UI test. `fulskrin_tests --check-isf <folder>` compiles and renders every shader in a folder.
 
 ## Known V1 limitations (and next steps)
 
