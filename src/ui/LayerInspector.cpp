@@ -15,6 +15,7 @@
 #include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -146,6 +147,16 @@ static QString fmtTime(double s)
     const int m = int(s) / 60;
     const double r = s - m * 60;
     return QStringLiteral("%1:%2").arg(m, 2, 10, QLatin1Char('0')).arg(r, 5, 'f', 2, QLatin1Char('0'));
+}
+
+// Thin rule between the blocks of a panel
+static QWidget *separator()
+{
+    auto *line = new QFrame;
+    line->setFrameShape(QFrame::HLine);
+    line->setStyleSheet("color:#3a3a3f;");
+    line->setFixedHeight(1);
+    return line;
 }
 
 static QLabel *errorLabel(const QString &text)
@@ -478,175 +489,237 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     };
     const bool media = (s.type == SourceType::Video && s.hasVideo) || (s.type == SourceType::Audio && s.hasAudio);
     if (media) {
-        QString text;
+        // What the media is
+        auto *facts = new QFormLayout;
+        facts->setContentsMargins(0, 2, 0, 2);
+        facts->setHorizontalSpacing(10);
+        facts->setVerticalSpacing(2);
+        facts->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto fact = [&](const QString &name, const QString &value) {
+            auto *k = new QLabel(name);
+            k->setStyleSheet("color:#8a8a8e;");
+            auto *val = new QLabel(value);
+            val->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            facts->addRow(k, val);
+        };
+        fact(QStringLiteral("Name"), QFileInfo(s.sourcePath).fileName());
         if (s.type == SourceType::Video) {
-            text = QStringLiteral("%1 × %2 · %3 fps · %4 · %5")
-                       .arg(s.videoW)
-                       .arg(s.videoH)
-                       .arg(s.fps, 0, 'f', 2)
-                       .arg(s.codec)
-                       .arg(fmtTime(s.duration));
-            text += s.hasAudio ? QStringLiteral("\nSound: ") + audioText(s.audio) : QStringLiteral("\nNo sound");
-        } else {
-            text = audioText(s.audio) + QStringLiteral(" · ") + fmtTime(s.duration);
+            fact(QStringLiteral("Resolution"), QStringLiteral("%1 × %2").arg(s.videoW).arg(s.videoH));
+            fact(QStringLiteral("FPS"), QString::number(s.fps, 'f', 2));
         }
-        auto *info = new QLabel(text);
-        info->setStyleSheet("color:#999; font-size:11px;");
-        v->addWidget(info);
+        fact(QStringLiteral("Duration"), fmtTime(s.duration));
+        fact(QStringLiteral("Codec"), s.type == SourceType::Video ? s.codec : s.audio.codec);
+        fact(QStringLiteral("Sound"), s.hasAudio ? audioText(s.audio) : QStringLiteral("none"));
+        v->addLayout(facts);
+        v->addWidget(separator());
 
-        auto *transport = new QHBoxLayout;
-        m_play = new QPushButton(s.playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
-        m_play->setProperty("allowLocked", true);
-        auto *rewind = toolButton(QStringLiteral("⏮"), QStringLiteral("Back to Start"));
-        rewind->setProperty("allowLocked", true);
-        auto *speed = new QDoubleSpinBox;
-        auto *speedLabel = new ResetLabel(QStringLiteral("Speed"), [speed] { speed->setValue(1.0); });
-        speed->setRange(-8.0, 8.0); // negative: backwards
-        speed->setSingleStep(0.05);
-        speed->setValue(s.speed);
-        speed->setSuffix(QStringLiteral(" ×"));
-        speed->setToolTip(QStringLiteral("Playback speed — negative values play backwards"));
-        transport->addWidget(m_play);
-        transport->addWidget(rewind);
-        transport->addStretch();
-        transport->addWidget(speedLabel);
-        transport->addWidget(speed);
-        v->addLayout(transport);
+        auto *grid = new QGridLayout;
+        grid->setHorizontalSpacing(8);
+        grid->setVerticalSpacing(4);
+        grid->setColumnStretch(1, 1);
+        auto rowLabel = [&](int row, const QString &text, std::function<void()> reset = {}) {
+            QLabel *l = reset ? static_cast<QLabel *>(new ResetLabel(text, std::move(reset))) : new QLabel(text);
+            l->setStyleSheet("color:#8a8a8e;");
+            l->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            grid->addWidget(l, row, 0);
+        };
+        auto iconButton = [&](const QIcon &icon, const QString &tip, bool checkable) {
+            auto *b = new QToolButton;
+            b->setIcon(icon);
+            b->setIconSize(QSize(18, 18));
+            b->setToolTip(tip);
+            b->setCheckable(checkable);
+            b->setAutoRaise(true);
+            b->setStyleSheet("QToolButton { padding:3px 7px; border-radius:3px; }"
+                             "QToolButton:checked { background:#ffa028; }"
+                             "QToolButton:hover { background:#3a3a3f; }");
+            return b;
+        };
 
-        // Play mode: four exclusive buttons, one is always selected
-        auto *modes = new QHBoxLayout;
-        modes->setSpacing(2);
-        auto *group = new QButtonGroup(g);
-        group->setExclusive(true);
-        const struct {
-            PlayMode mode;
-            const char *tip;
-        } kModes[] = {
-            {PlayMode::OneShot, "Plays once and freezes on the last frame"},
-            {PlayMode::Loop, "Starts again from the beginning"},
-            {PlayMode::PingPong, "Plays forwards, then backwards, and so on"},
-            {PlayMode::Stop, "Plays once, then goes black (and silent)"},
+        // Play: direction and pause, then go to start and step one frame
+        rowLabel(0, QStringLiteral("Play"));
+        auto *playRow = new QHBoxLayout;
+        playRow->setSpacing(2);
+        m_playButtons = new QButtonGroup(g);
+        const struct { TransportIcon icon; const char *tip; } kPlay[] = {
+            {TransportIcon::PlayBack, "Play backwards"},
+            {TransportIcon::Pause, "Pause"},
+            {TransportIcon::PlayForward, "Play"},
+        };
+        for (int i = 0; i < 3; ++i) {
+            auto *b = iconButton(transportIcon(kPlay[i].icon), QString::fromUtf8(kPlay[i].tip), true);
+            b->setProperty("allowLocked", true); // the transport stays available on a locked layer
+            m_playButtons->addButton(b, i);
+            playRow->addWidget(b);
+        }
+        m_playButtons->setExclusive(true);
+        playRow->addSpacing(10);
+        const double frame = 1.0 / std::max(1.0, s.fps > 0 ? s.fps : 25.0);
+        const struct { TransportIcon icon; const char *tip; double step; } kStep[] = {
+            {TransportIcon::ToStart, "Back to the in point", 0},
+            {TransportIcon::StepBack, "One frame back", -1},
+            {TransportIcon::StepForward, "One frame on", +1},
+        };
+        for (const auto &k : kStep) {
+            auto *b = iconButton(transportIcon(k.icon), QString::fromUtf8(k.tip), false);
+            b->setProperty("allowLocked", true);
+            playRow->addWidget(b);
+            const double step = k.step;
+            connect(b, &QToolButton::clicked, this, [this, step, frame] {
+                double to = 0;
+                {
+                    Engine::Lock lk(&m_engine->mutex());
+                    Layer *l = m_engine->layer(m_layer);
+                    if (!l) return;
+                    to = step == 0 ? l->inPoint : l->position() + step * frame;
+                }
+                m_engine->seekLayer(m_layer, to);
+                refreshDynamic();
+            });
+        }
+        playRow->addStretch();
+        grid->addLayout(playRow, 0, 1);
+
+        // Mode: what happens at the end, then the in / out points at the playhead
+        rowLabel(1, QStringLiteral("Mode"));
+        auto *modeRow = new QHBoxLayout;
+        modeRow->setSpacing(2);
+        auto *modes = new QButtonGroup(g);
+        modes->setExclusive(true);
+        const struct { PlayMode mode; const char *tip; } kModes[] = {
+            {PlayMode::Loop, "Loop: starts again from the beginning"},
+            {PlayMode::OneShot, "One-shot: plays once and freezes on the last frame"},
+            {PlayMode::PingPong, "Ping-pong: forwards, then backwards, and so on"},
+            {PlayMode::Stop, "Stop: plays once, then goes black (and silent)"},
         };
         for (const auto &m : kModes) {
-            auto *b = new QToolButton;
-            b->setText(playModeName(m.mode));
-            b->setToolTip(QString::fromUtf8(m.tip));
-            b->setCheckable(true);
+            auto *b = iconButton(playModeIcon(int(m.mode)), QString::fromUtf8(m.tip), true);
             b->setChecked(s.mode == m.mode);
-            b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-            b->setStyleSheet("QToolButton:checked { background:#ffa028; color:#1b1b1d; font-weight:bold; }");
-            group->addButton(b, int(m.mode));
-            modes->addWidget(b);
+            modes->addButton(b, int(m.mode));
+            modeRow->addWidget(b);
         }
-        v->addLayout(modes);
-        connect(group, &QButtonGroup::idClicked, this, [this](int id) {
+        modeRow->addSpacing(10);
+        auto *markIn = iconButton(transportIcon(TransportIcon::MarkIn),
+                                  QStringLiteral("In point at the playhead (I)"), false);
+        auto *markOut = iconButton(transportIcon(TransportIcon::MarkOut),
+                                   QStringLiteral("Out point at the playhead (O)"), false);
+        modeRow->addWidget(markIn);
+        modeRow->addWidget(markOut);
+        modeRow->addStretch();
+        grid->addLayout(modeRow, 1, 1);
+        connect(modes, &QButtonGroup::idClicked, this, [this](int id) {
             setProp(cmd::SetLayerProp::Mode, id);
             emit layerChanged();
         });
+        connect(markIn, &QToolButton::clicked, this, [this] { emit setInOutRequested(true); });
+        connect(markOut, &QToolButton::clicked, this, [this] { emit setInOutRequested(false); });
+        v->addLayout(grid);
+        v->addWidget(separator());
 
-        // Playback bar on its own line, the numbers on the line below (position left, duration right)
-        m_seek = new SeekBar;
-        m_seek->setDuration(s.duration);
-        m_seek->setInOut(s.inPoint, s.outPoint);
-        m_seek->setProperty("allowLocked", true); // seeking is not an edit; the markers are disabled when locked
-        m_seek->setMarkersEditable(!m_locked);
-        v->addWidget(m_seek);
-        auto *timeRow = new QHBoxLayout;
-        timeRow->setContentsMargins(2, 0, 2, 0);
-        m_time = new QLabel;
-        m_duration = new QLabel;
-        for (QLabel *l : {m_time.data(), m_duration.data()}) l->setStyleSheet("font-family:monospace; color:#aaa;");
-        timeRow->addWidget(m_time);
-        timeRow->addStretch();
-        timeRow->addWidget(m_duration);
-        v->addLayout(timeRow);
-
-        // In / out points: the played range (loops and ping-pong stay within it). Keys I / O.
-        auto *range = new QHBoxLayout;
-        range->setSpacing(4);
-        auto timeBox = [&](double value) {
-            auto *b = new QDoubleSpinBox;
-            b->setRange(0, std::max(0.01, s.duration));
-            b->setDecimals(2);
-            b->setSingleStep(1.0 / std::max(1.0, s.fps > 0 ? s.fps : 25.0));
-            b->setSuffix(QStringLiteral(" s"));
-            b->setKeyboardTracking(false);
-            b->setValue(value);
-            return b;
+        // Position, speed and played range: one bar each, dragged or typed
+        auto *bars = new QGridLayout;
+        bars->setHorizontalSpacing(8);
+        bars->setVerticalSpacing(4);
+        bars->setColumnStretch(1, 1);
+        auto barLabel = [&](int row, const QString &text, std::function<void()> reset) {
+            auto *l = new ResetLabel(text, std::move(reset));
+            l->setStyleSheet("color:#8a8a8e;");
+            l->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            bars->addWidget(l, row, 0);
         };
-        auto *inBox = timeBox(s.inPoint);
-        auto *outBox = timeBox(s.outPoint < 0 ? s.duration : s.outPoint);
-        inBox->setToolTip(QStringLiteral("In point: playback starts here (I sets it at the current position)"));
-        outBox->setToolTip(QStringLiteral("Out point: playback ends here (O sets it at the current position)"));
-        auto *setIn = toolButton(QStringLiteral("Set"), QStringLiteral("In point at the current position (I)"));
-        auto *setOut = toolButton(QStringLiteral("Set"), QStringLiteral("Out point at the current position (O)"));
-        auto *resetRange = toolButton(QStringLiteral("↺"), QStringLiteral("Whole media (clear in / out points)"));
-        range->addWidget(new ResetLabel(QStringLiteral("In"), [inBox] { inBox->setValue(0); }));
-        range->addWidget(inBox, 1);
-        range->addWidget(setIn);
-        range->addSpacing(8);
-        range->addWidget(new ResetLabel(QStringLiteral("Out"), [outBox] { outBox->setValue(outBox->maximum()); }));
-        range->addWidget(outBox, 1);
-        range->addWidget(setOut);
-        range->addWidget(resetRange);
-        v->addLayout(range);
+
+        m_position = new SliderField;
+        m_position->setRange(0, std::max(0.01, s.duration));
+        m_position->setDecimals(2);
+        m_position->setSuffix(QStringLiteral(" s"));
+        m_position->setSingleStep(frame);
+        m_position->setTicks(10);
+        m_position->setSnaps({0});
+        m_position->setProperty("allowLocked", true); // seeking is not an edit
+        m_position->setToolTip(QStringLiteral("Playhead — drag the bar, type the time, or use the wheel"));
+        barLabel(0, QStringLiteral("Position"), [this] { m_engine->seekLayer(m_layer, 0); });
+        bars->addWidget(m_position, 0, 1);
+
+        m_speed = new SliderField;
+        m_speed->setRange(-200, 200);        // the bar: the speeds actually used
+        m_speed->setTypedRange(-800, 800); // faster or more backwards: typed
+        m_speed->setDecimals(0);
+        m_speed->setSuffix(QStringLiteral(" %"));
+        m_speed->setSingleStep(5);
+        m_speed->setOrigin(0); // the fill grows either side of a standstill
+        m_speed->setTicks(8);
+        m_speed->setSnaps({-200, -100, 0, 100, 200});
+        m_speed->setValue(s.speed * 100);
+        m_speed->setToolTip(QStringLiteral("Playback speed — below 0 the media plays backwards, 100 % is its own rate"));
+        barLabel(1, QStringLiteral("Speed"), [this] { setProp(cmd::SetLayerProp::Speed, 1.0); m_speed->setValue(100); });
+        bars->addWidget(m_speed, 1, 1);
+
+        m_loop = new RangeField;
+        m_loop->setRange(0, std::max(0.01, s.duration));
+        m_loop->setDecimals(2);
+        m_loop->setSuffix(QStringLiteral(" s"));
+        m_loop->setValues(s.inPoint, s.outPoint < 0 ? s.duration : s.outPoint);
+        m_loop->setToolTip(QStringLiteral("Played range: playback, loops and ping-pong stay between these two points"));
         const double duration0 = s.duration;
-        connect(inBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
-                [this](double t) { setProp(cmd::SetLayerProp::InPoint, t); });
-        connect(outBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, duration0](double t) {
-            setProp(cmd::SetLayerProp::OutPoint, t >= duration0 - 1e-6 ? -1.0 : t);
-        });
-        connect(setIn, &QToolButton::clicked, this, [this] { emit setInOutRequested(true); });
-        connect(setOut, &QToolButton::clicked, this, [this] { emit setInOutRequested(false); });
-        connect(resetRange, &QToolButton::clicked, this, [this] {
+        barLabel(2, QStringLiteral("Loop"), [this] {
             m_undo->beginMacro(QStringLiteral("Clear In / Out Points"));
             setProp(cmd::SetLayerProp::InPoint, 0.0);
             setProp(cmd::SetLayerProp::OutPoint, -1.0);
             m_undo->endMacro();
             rebuild();
         });
+        bars->addWidget(m_loop, 2, 1);
+        v->addLayout(bars);
 
-        // Playback is not a project edit: no undo.
-        connect(m_play, &QPushButton::clicked, this, [this] {
-            bool playing;
+        // Playback is not a project edit: no undo on play, pause or seek.
+        connect(m_playButtons, &QButtonGroup::idClicked, this, [this](int id) {
+            double speed = 1;
             {
                 Engine::Lock lk(&m_engine->mutex());
-                Layer *ly = m_engine->layer(m_layer);
-                if (!ly) return;
-                playing = ly->playing;
+                Layer *l = m_engine->layer(m_layer);
+                if (!l) return;
+                speed = std::abs(l->speed) < 1e-6 ? 1.0 : std::abs(l->speed);
             }
-            m_engine->setLayerPlaying(m_layer, !playing);
+            if (id == 1) {
+                m_engine->setLayerPlaying(m_layer, false);
+            } else {
+                m_engine->setLayerSpeed(m_layer, id == 0 ? -speed : speed);
+                m_engine->setLayerPlaying(m_layer, true);
+            }
             refreshDynamic();
+            emit layerChanged();
         });
-        connect(rewind, &QToolButton::clicked, this, [this] { m_engine->seekLayer(m_layer, 0); });
-        connect(speed, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
-                [this](double sp) { setProp(cmd::SetLayerProp::Speed, sp); });
-        connect(m_seek, &SeekBar::seekRequested, this, [this](double t) { m_engine->seekLayer(m_layer, t); });
-        // Markers dragged on the bar: in / out points (successive moves merge into one undo step)
-        connect(m_seek, &SeekBar::inOutEdited, this, [this, inBox, outBox](bool in, double t) {
-            setProp(in ? cmd::SetLayerProp::InPoint : cmd::SetLayerProp::OutPoint, t);
-            QSignalBlocker b1(inBox), b2(outBox);
-            if (in) inBox->setValue(t);
-            else outBox->setValue(t < 0 ? outBox->maximum() : t);
+        connect(m_position, &SliderField::valueEdited, this, [this](double t) { m_engine->seekLayer(m_layer, t); });
+        connect(m_speed, &SliderField::valueEdited, this, [this](double pct) {
+            setProp(cmd::SetLayerProp::Speed, pct / 100.0);
+            emit layerChanged();
+        });
+        connect(m_loop, &RangeField::edited, this, [this, duration0](bool low, double t) {
+            setProp(low ? cmd::SetLayerProp::InPoint : cmd::SetLayerProp::OutPoint,
+                    low ? t : (t >= duration0 - 1e-6 ? -1.0 : t));
         });
     }
 
     if (media && s.hasAudio) {
         // Sound: layer volume (undoable), mute, level
         auto *row = new QHBoxLayout;
-        auto *vol = new QSlider(Qt::Horizontal);
-        auto *icon = new ResetLabel(QStringLiteral("Volume"), [vol] { vol->setValue(100); });
+        row->setSpacing(8);
+        auto *vol = new SliderField;
         vol->setRange(0, 200);
-        vol->setValue(int(std::lround(s.volume * 100)));
+        vol->setDecimals(0);
+        vol->setSuffix(QStringLiteral(" %"));
+        vol->setSingleStep(5);
+        vol->setTicks(8);
+        vol->setSnaps({100});
+        vol->setValue(s.volume * 100);
         vol->setToolTip(QStringLiteral("Layer volume (100% = original level). Hiding the layer also silences it."));
-        auto *volLabel = new QLabel(QStringLiteral("%1%").arg(vol->value()));
-        volLabel->setMinimumWidth(40);
-        volLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto *icon = new ResetLabel(QStringLiteral("Volume"), [vol] { vol->setValue(100); emit vol->valueEdited(100); });
+        icon->setStyleSheet("color:#8a8a8e;");
+        icon->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         auto *mute = new QCheckBox(QStringLiteral("Mute"));
         mute->setChecked(s.muted);
         row->addWidget(icon);
         row->addWidget(vol, 1);
-        row->addWidget(volLabel);
         row->addWidget(mute);
         v->addLayout(row);
         m_meter = new QProgressBar;
@@ -655,8 +728,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         m_meter->setFixedHeight(5);
         m_meter->setStyleSheet("QProgressBar { background:#1b1b1d; border:none; } QProgressBar::chunk { background:#3fae5a; }");
         v->addWidget(m_meter);
-        connect(vol, &QSlider::valueChanged, this, [this, volLabel](int pct) {
-            volLabel->setText(QStringLiteral("%1%").arg(pct));
+        connect(vol, &SliderField::valueEdited, this, [this](double pct) {
             setProp(cmd::SetLayerProp::Volume, pct / 100.0);
             emit layerChanged();
         });
@@ -1300,7 +1372,7 @@ void LayerInspector::refreshDynamic()
         if (m_colorRemove) m_colorRemove->setColor(remove);
     }
     bool playing;
-    double d, p, in, out;
+    double d, p, in, out, speed;
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(m_layer);
@@ -1313,15 +1385,23 @@ void LayerInspector::refreshDynamic()
             m_meter->setValue(int(std::clamp(db + 60.0, 0.0, 60.0) * 10));
         }
         playing = l->playing;
+        speed = l->speed;
         d = l->duration();
         p = l->position();
     }
-    if (m_play) m_play->setText(playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
-    if (m_seek) {
-        m_seek->setDuration(d);
-        m_seek->setPosition(p);
-        m_seek->setInOut(in, out);
+    // The transport follows what the engine does (play from a key, OSC, the end of a one-shot)
+    if (m_playButtons) {
+        const int on = !playing ? 1 : (speed < 0 ? 0 : 2);
+        if (QAbstractButton *b = m_playButtons->button(on); b && !b->isChecked()) b->setChecked(true);
     }
-    if (m_time) m_time->setText(fmtTime(p));
-    if (m_duration) m_duration->setText(fmtTime(d));
+    if (m_position && !m_position->isDragging()) {
+        m_position->setRange(0, std::max(0.01, d));
+        m_position->setValue(p);
+    }
+    if (m_speed && !m_speed->isDragging() && std::abs(m_speed->value() - speed * 100) > 0.5)
+        m_speed->setValue(speed * 100);
+    if (m_loop && !m_loop->isDragging()) {
+        m_loop->setRange(0, std::max(0.01, d));
+        m_loop->setValues(in, out < 0 ? d : out);
+    }
 }

@@ -15,7 +15,9 @@ class QPushButton;
 class QListWidget;
 class QProgressBar;
 class QDoubleSpinBox;
-class SeekBar;
+class SliderField;
+class RangeField;
+class QButtonGroup;
 class RoiEditor;
 class ColorEditor;
 class QComboBox;
@@ -65,13 +67,13 @@ private:
     QVBoxLayout *m_layout = nullptr;
     QWidget *m_content = nullptr;
 
-    QPointer<SeekBar> m_seek;
+    QPointer<SliderField> m_position, m_speed;
+    QPointer<RangeField> m_loop;
+    QPointer<QButtonGroup> m_playButtons;
     QPointer<RoiEditor> m_roi;
     QPointer<ColorEditor> m_colorAdd, m_colorRemove;
     QPointer<QDoubleSpinBox> m_temp, m_tint;
     bool m_previewing = false;
-    QPointer<QLabel> m_time, m_duration;
-    QPointer<QPushButton> m_play;
     QPointer<QProgressBar> m_meter;
     QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY;
     bool m_scaleLinked = true;
