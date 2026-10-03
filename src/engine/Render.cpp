@@ -417,6 +417,11 @@ void Engine::frame(double dt)
     }
     m_mutex.unlock();
 
+    // Syphon (and Spout) copy each viewport's picture from OpenGL contexts of their own. Another context only
+    // sees a texture whole once the commands that drew it are complete (OpenGL spec; glFlush is enough on
+    // macOS, not everywhere). Without it the last viewport's picture, last in the queue, was copied before it
+    // was drawn: Syphon sent black, or the frame before, depending on how full the queue was.
+    gl()->glFinish();
     if (publishChanged) applyPublishing();
     {
         std::vector<std::pair<Publication *, const RenderTarget *>> outs;
