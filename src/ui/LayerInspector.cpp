@@ -45,6 +45,7 @@ struct LayerSnapshot {
     PlayMode mode = PlayMode::Loop;
     int videoW = 0, videoH = 0;
     double fps = 0, duration = 0, speed = 1;
+    double inPoint = 0, outPoint = -1;
     QString codec;
     bool hasAudio = false, muted = false;
     float volume = 1;
@@ -91,6 +92,8 @@ struct LayerSnapshot {
         s.playing = l->playing;
         s.mode = l->mode;
         s.speed = l->speed;
+        s.inPoint = l->inPoint;
+        s.outPoint = l->outPoint;
         s.hasGenerator = l->generator != nullptr;
         s.genW = l->genWidth;
         s.genH = l->genHeight;
@@ -410,6 +413,51 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         seekRow->addWidget(m_seek, 1);
         seekRow->addWidget(m_time);
         v->addLayout(seekRow);
+
+        // In / out points: the played range (loops and ping-pong stay within it). Keys I / O.
+        auto *range = new QHBoxLayout;
+        range->setSpacing(4);
+        auto timeBox = [&](double value) {
+            auto *b = new QDoubleSpinBox;
+            b->setRange(0, std::max(0.01, s.duration));
+            b->setDecimals(2);
+            b->setSingleStep(1.0 / std::max(1.0, s.fps > 0 ? s.fps : 25.0));
+            b->setSuffix(QStringLiteral(" s"));
+            b->setKeyboardTracking(false);
+            b->setValue(value);
+            return b;
+        };
+        auto *inBox = timeBox(s.inPoint);
+        auto *outBox = timeBox(s.outPoint < 0 ? s.duration : s.outPoint);
+        inBox->setToolTip(QStringLiteral("In point: playback starts here (I sets it at the current position)"));
+        outBox->setToolTip(QStringLiteral("Out point: playback ends here (O sets it at the current position)"));
+        auto *setIn = toolButton(QStringLiteral("Set"), QStringLiteral("In point at the current position (I)"));
+        auto *setOut = toolButton(QStringLiteral("Set"), QStringLiteral("Out point at the current position (O)"));
+        auto *resetRange = toolButton(QStringLiteral("↺"), QStringLiteral("Whole media (clear in / out points)"));
+        range->addWidget(new QLabel(QStringLiteral("In")));
+        range->addWidget(inBox, 1);
+        range->addWidget(setIn);
+        range->addSpacing(8);
+        range->addWidget(new QLabel(QStringLiteral("Out")));
+        range->addWidget(outBox, 1);
+        range->addWidget(setOut);
+        range->addWidget(resetRange);
+        v->addLayout(range);
+        const double duration0 = s.duration;
+        connect(inBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [this](double t) { setProp(cmd::SetLayerProp::InPoint, t); });
+        connect(outBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, duration0](double t) {
+            setProp(cmd::SetLayerProp::OutPoint, t >= duration0 - 1e-6 ? -1.0 : t);
+        });
+        connect(setIn, &QToolButton::clicked, this, [this] { emit setInOutRequested(true); });
+        connect(setOut, &QToolButton::clicked, this, [this] { emit setInOutRequested(false); });
+        connect(resetRange, &QToolButton::clicked, this, [this] {
+            m_undo->beginMacro(QStringLiteral("Clear In / Out Points"));
+            setProp(cmd::SetLayerProp::InPoint, 0.0);
+            setProp(cmd::SetLayerProp::OutPoint, -1.0);
+            m_undo->endMacro();
+            rebuild();
+        });
 
         // Playback is not a project edit: no undo.
         connect(m_play, &QPushButton::clicked, this, [this] {

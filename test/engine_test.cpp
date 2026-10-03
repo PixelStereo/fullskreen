@@ -741,6 +741,103 @@ int main(int argc, char **argv)
             CHECK(e.layerJson(r).value("source").toObject().value("speed").toDouble() == -2.0);
             e.removeLayer(r);
         }
+        { // In / out points, video: the loop stays within [0.4, 1.2] s, frame by frame
+            VideoDecoder d;
+            CHECK(d.open(root + "/media/index.mp4", &err));
+            Timeline tl;
+            tl.mode = Timeline::Loop;
+            tl.in = 0.4;
+            tl.out = 1.2;
+            tl.origin = 0.4;
+            d.setTimeline(tl);
+            d.seek(0);
+            tl.duration = 2.0;
+            std::vector<uint8_t> buf;
+            int w = 0, h = 0, wrong = 0, missing = 0, outside = 0;
+            const double dt = 1.0 / 25;
+            for (int k = 0; k < 60; ++k) { // 3 loops of 0.8 s
+                const double c = k * dt + dt / 2;
+                QElapsedTimer tm;
+                tm.start();
+                bool got = false;
+                while (!(got = d.fetch(c, buf, &w, &h)) && tm.elapsed() < 3000) QThread::msleep(1);
+                if (!got) {
+                    ++missing;
+                    continue;
+                }
+                const int expected = int(tl.position(c) / dt);
+                const int r = buf[size_t((h / 2) * w + w / 2) * 4];
+                const int frame = int(std::lround((r * 219.0 / 255.0 + 16.0 - 20.0) / 4.0));
+                if (frame < 10 - 1 || frame > 29 + 1) ++outside;
+                if (std::abs(frame - expected) > 1) {
+                    if (wrong < 5) std::printf("      in/out c=%.2f frame %d expected %d\n", c, frame, expected);
+                    ++wrong;
+                }
+            }
+            CHECK(missing == 0);
+            CHECK(wrong == 0 && outside == 0);
+        }
+        { // In / out points, sound: loop over [1.5, 2.5] s straddling the 440 / 880 Hz change, seamless
+            const int a2 = e.addLayer("Range");
+            CHECK(e.setLayerAudio(a2, root + "/media/tone.wav", &err));
+            e.setLayerInOut(a2, 1.5, 2.5);
+            {
+                Engine::Lock lk(&e.mutex());
+                CHECK(e.layer(a2)->position() >= 1.5 - 1e-9 && e.layer(a2)->position() <= 2.5 + 1e-9);
+            }
+            e.seekLayer(a2, 1.6);
+            CHECK(tone(440, 15));
+            settle(150);
+            const int resyncs = e.layer(a2)->audio->resyncCount();
+            bool saw880 = false, saw440After = false, outside = false;
+            double minRms = 1;
+            QElapsedTimer t;
+            t.start();
+            while (t.elapsed() < 1800) { // more than one loop
+                double pos;
+                {
+                    Engine::Lock lk(&e.mutex());
+                    pos = e.layer(a2)->position();
+                }
+                outside |= pos < 1.5 - 1e-6 || pos > 2.5 + 1e-6;
+                const double f = freq(last(0.08));
+                if (std::abs(f - 880) < 30) saw880 = true;
+                if (saw880 && std::abs(f - 440) < 20) saw440After = true; // back to the in point
+                minRms = std::min(minRms, rms(last(0.05)));
+                QThread::msleep(40);
+            }
+            CHECK(!outside);
+            CHECK(saw880 && saw440After);
+            CHECK(minRms > 0.2);
+            CHECK(e.layer(a2)->audio->resyncCount() == resyncs);
+            // One-shot stops at the out point; backwards, at the in point
+            e.setLayerPlayMode(a2, PlayMode::OneShot);
+            e.seekLayer(a2, 2.3);
+            e.setLayerPlaying(a2, true);
+            CHECK(waitFor([&] {
+                Engine::Lock lk(&e.mutex());
+                return !e.layer(a2)->playing;
+            }));
+            {
+                Engine::Lock lk(&e.mutex());
+                CHECK(std::abs(e.layer(a2)->position() - 2.5) < 1e-6);
+            }
+            e.setLayerSpeed(a2, -1.0);
+            e.setLayerPlaying(a2, true); // at its end: starts again from the out point, backwards
+            CHECK(waitFor([&] {
+                Engine::Lock lk(&e.mutex());
+                return !e.layer(a2)->playing;
+            }));
+            {
+                Engine::Lock lk(&e.mutex());
+                CHECK(std::abs(e.layer(a2)->position() - 1.5) < 1e-6);
+            }
+            const QJsonObject j = e.layerJson(a2).value("source").toObject();
+            CHECK(std::abs(j.value("in").toDouble() - 1.5) < 1e-9 && std::abs(j.value("out").toDouble() - 2.5) < 1e-9);
+            CHECK(e.setLayerAudio(a2, root + "/media/tone.wav", &err)); // a new media is played whole
+            CHECK(e.layer(a2)->inPoint == 0 && e.layer(a2)->outPoint < 0);
+            e.removeLayer(a2);
+        }
         { // Stop: black and silent at the end; One-shot: last frame kept
             const int s1 = e.addLayer("Stop");
             CHECK(e.setLayerVideo(s1, root + "/media/av.mp4", &err));

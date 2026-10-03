@@ -280,13 +280,20 @@ double AudioStream::legClock(double position) const { return m_leg.clockStart + 
 bool AudioStream::decodeFrame()
 {
     const double d = m_info.duration;
-    const bool repeats = m_timeline.mode != Timeline::Once && d > 0;
+    const bool bounded = d > 0; // the leg ends at the out point (or the end of the media)
     const float *s = nullptr;
     int n = 0;
     double local = 0;
     for (;;) {
         if (!decodeRaw(&s, &n, &local)) return false;
-        if (repeats) {
+        if (local < m_trimBefore) { // before the start of the leg (the seek lands on an earlier packet)
+            const int skip = std::min(n, int(std::ceil((m_trimBefore - local) * m_rate)));
+            s += size_t(skip) * 2;
+            n -= skip;
+            local += double(skip) / m_rate;
+            if (n <= 0) continue;
+        }
+        if (bounded) {
             if (local >= m_leg.to) return false;
             n = std::min(n, int(std::ceil((m_leg.to - local) * m_rate)));
         }
@@ -300,8 +307,12 @@ bool AudioStream::decodeFrame()
 void AudioStream::startLeg(const Timeline::Leg &leg, double position)
 {
     m_leg = leg;
-    if (leg.forward) doSeek(position);
-    else m_backEnd = position;
+    if (leg.forward) {
+        doSeek(position);
+        m_trimBefore = position;
+    } else {
+        m_backEnd = position;
+    }
 }
 
 // Backward leg: samples of [a, m_backEnd) reversed, a = 0.25 s earlier. Silence where the track has none.

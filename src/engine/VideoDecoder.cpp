@@ -279,8 +279,7 @@ void VideoDecoder::finishLeg()
         return;
     }
     const Timeline::Leg next = m_timeline.nextLeg(m_leg);
-    startLeg(next, next.from);
-    m_discardBefore = -1e9;
+    startLeg(next, next.from); // frames before the in point (from the keyframe) are discarded
 }
 
 // Backward leg: the frames of [a, m_backEnd) in reverse order, a = one short window earlier.
@@ -355,7 +354,7 @@ void VideoDecoder::run()
                 recycle(std::move(f.rgba));
                 continue;
             }
-            if (m_duration > 0 && m_timeline.mode != Timeline::Once && local >= m_leg.to) { // end of the leg
+            if (m_duration > 0 && local >= m_leg.to) { // end of the leg (out point, or the end of the media)
                 recycle(std::move(f.rgba));
                 finishLeg();
                 continue;

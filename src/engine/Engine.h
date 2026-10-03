@@ -90,6 +90,8 @@ public:
     void setLayerPlaying(int i, bool playing);
     void setLayerPlayMode(int i, PlayMode mode);
     void setLayerSpeed(int i, double speed); // negative: backwards (changing direction keeps the position)
+    // In / out points (seconds; out < 0: end of the media). Playback, loops and ping-pong stay within them.
+    void setLayerInOut(int i, double in, double out);
     // Mode given to a video or a sound when it is loaded into a layer (preference)
     void setDefaultPlayMode(PlayMode m) { m_defaultPlayMode = m; }
     PlayMode defaultPlayMode() const { return m_defaultPlayMode; }

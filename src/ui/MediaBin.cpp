@@ -23,11 +23,12 @@
 #include <QSettings>
 #include <QThreadPool>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QUrl>
 #include <QVBoxLayout>
 
 namespace {
-enum Role { PathRole = Qt::UserRole + 1, MissingRole, UsedRole, IsfRole };
+enum Role { PathRole = Qt::UserRole + 1, MissingRole, UsedRole, IsfRole, CategoryRole };
 
 // Media Bin tree: drag items onto layers, drop files to import them.
 class BinTree : public QTreeWidget
@@ -105,6 +106,7 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     m_tree->setDefaultDropAction(Qt::CopyAction);
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_tree->setUniformRowHeights(true);
+    m_tree->setIndentation(12); // ISF > Generators > category > shader: keep room for the names
     m_tree->header()->setStretchLastSection(false);
     m_tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_tree->header()->setSectionResizeMode(1, QHeaderView::Interactive);
@@ -230,13 +232,29 @@ void MediaBin::refresh()
                                : QStringLiteral("%1 file(s)").arg(nv + ni + na));
     refreshIsf();
     if (!selected.isEmpty())
-        for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios, m_isfGenerators})
-            for (int i = 0; i < cat->childCount(); ++i)
-                if (cat->child(i)->data(0, PathRole).toString() == selected) m_tree->setCurrentItem(cat->child(i));
+        for (QTreeWidgetItemIterator it(m_tree); *it; ++it) // ISF items are one level deeper (category)
+            if ((*it)->data(0, PathRole).toString() == selected) {
+                m_tree->setCurrentItem(*it);
+                break;
+            }
     updateButtons();
 }
 
 // ISF > Generators: the shaders of the library (bundled, system and added folders) and those used by layers.
+// Category a generator is filed under: its first ISF category, "Generator" aside (they all are).
+static QString isfCategory(const QStringList &categories)
+{
+    for (const QString &c : categories) {
+        const QString t = c.trimmed();
+        if (!t.isEmpty() && t.compare(QStringLiteral("Generator"), Qt::CaseInsensitive) != 0 &&
+            t.compare(QStringLiteral("Generators"), Qt::CaseInsensitive) != 0)
+            return t;
+    }
+    return QStringLiteral("Other");
+}
+
+// ISF > Generators > <category>: the shaders of the library (bundled, system and added folders) and those used
+// by layers, filed by their ISF category.
 void MediaBin::refreshIsf()
 {
     struct Gen {
@@ -246,24 +264,52 @@ void MediaBin::refreshIsf()
     };
     QMap<QString, Gen> gens;
     for (const IsfEntry &e : m_engine->library().generators())
-        gens[QDir::cleanPath(e.path)] = {e.name, e.categories.join(QStringLiteral(", ")), e.description, {}, true};
+        gens[QDir::cleanPath(e.path)] = {e.name, isfCategory(e.categories), e.description, {}, true};
     {
         Engine::Lock lk(&m_engine->mutex());
         for (int i = 0; i < m_engine->layerCount(); ++i) {
             const Layer *l = m_engine->layer(i);
             if (l->type != SourceType::Isf || l->sourcePath.isEmpty()) continue;
             Gen &g = gens[QDir::cleanPath(QFileInfo(l->sourcePath).absoluteFilePath())];
-            if (g.name.isEmpty()) g.name = QFileInfo(l->sourcePath).completeBaseName();
+            if (g.name.isEmpty()) {
+                const IsfInstance::Header h = IsfInstance::readHeader(l->sourcePath);
+                g.name = QFileInfo(l->sourcePath).completeBaseName();
+                g.category = isfCategory(h.categories);
+                g.description = h.description;
+            }
             g.users << l->name;
         }
     }
-    QHash<QString, QTreeWidgetItem *> existing;
-    for (int i = 0; i < m_isfGenerators->childCount(); ++i)
-        existing.insert(m_isfGenerators->child(i)->data(0, PathRole).toString(), m_isfGenerators->child(i));
+    // Existing items (kept: selection, expanded categories), by path and by category
+    QHash<QString, QTreeWidgetItem *> existing, categories;
+    for (int c = 0; c < m_isfGenerators->childCount(); ++c) {
+        QTreeWidgetItem *cat = m_isfGenerators->child(c);
+        categories.insert(cat->data(0, CategoryRole).toString(), cat);
+        for (int i = 0; i < cat->childCount(); ++i) existing.insert(cat->child(i)->data(0, PathRole).toString(), cat->child(i));
+    }
+    QSet<QString> usedCategories;
     for (auto g = gens.cbegin(); g != gens.cend(); ++g) {
+        QTreeWidgetItem *cat = categories.value(g->category);
+        if (!cat) {
+            cat = new QTreeWidgetItem(m_isfGenerators);
+            cat->setData(0, CategoryRole, g->category);
+            cat->setFlags(Qt::ItemIsEnabled);
+            cat->setFirstColumnSpanned(true);
+            cat->setExpanded(true);
+            QFont f = cat->font(0);
+            f.setItalic(true);
+            cat->setFont(0, f);
+            cat->setForeground(0, QColor(200, 200, 205));
+            categories.insert(g->category, cat);
+        }
+        usedCategories.insert(g->category);
         QTreeWidgetItem *it = existing.take(g.key());
+        if (it && it->parent() != cat) { // category changed
+            delete it;
+            it = nullptr;
+        }
         if (!it) {
-            it = new QTreeWidgetItem(m_isfGenerators);
+            it = new QTreeWidgetItem(cat);
             it->setData(0, PathRole, g.key());
             it->setData(0, IsfRole, true);
             it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
@@ -272,21 +318,30 @@ void MediaBin::refreshIsf()
         it->setData(0, MissingRole, missing);
         it->setData(0, UsedRole, true); // library shaders are not removed from the Media Bin
         it->setText(0, g->name);
-        it->setText(1, missing ? QStringLiteral("missing") : g->inLibrary ? g->category : QStringLiteral("outside library"));
+        it->setText(1, missing ? QStringLiteral("missing") : g->inLibrary ? QString() : QStringLiteral("outside library"));
         it->setText(2, g->users.isEmpty() ? QStringLiteral("—") : QString::number(g->users.size()));
         it->setTextAlignment(2, Qt::AlignCenter);
         const QString usedBy = g->users.isEmpty() ? QStringLiteral("Not used by any layer")
                                                   : QStringLiteral("Used by:\n") + g->users.join('\n');
         it->setToolTip(0, g.key() + (g->description.isEmpty() ? QString() : QStringLiteral("\n\n") + g->description) +
                               QStringLiteral("\n\n") + usedBy);
-        it->setToolTip(1, g->description.isEmpty() ? g->category : g->description);
+        it->setToolTip(1, g->description);
         it->setToolTip(2, usedBy);
         const QColor fg = missing ? QColor(255, 110, 95) : (g->users.isEmpty() ? QColor(170, 170, 175) : QColor(225, 225, 228));
         for (int c = 0; c < 3; ++c) it->setForeground(c, fg);
     }
     qDeleteAll(existing);
+    for (auto c = categories.begin(); c != categories.end(); ++c)
+        if (!usedCategories.contains(c.key())) delete c.value();
+    int total = 0;
+    for (int c = 0; c < m_isfGenerators->childCount(); ++c) {
+        QTreeWidgetItem *cat = m_isfGenerators->child(c);
+        cat->sortChildren(0, Qt::AscendingOrder);
+        cat->setText(0, QStringLiteral("%1 (%2)").arg(cat->data(0, CategoryRole).toString()).arg(cat->childCount()));
+        total += cat->childCount();
+    }
     m_isfGenerators->sortChildren(0, Qt::AscendingOrder);
-    m_isfGenerators->setText(0, QStringLiteral("Generators (%1)").arg(m_isfGenerators->childCount()));
+    m_isfGenerators->setText(0, QStringLiteral("Generators (%1)").arg(total));
 }
 
 void MediaBin::probe(const QString &path)

@@ -138,7 +138,8 @@ static void releaseAudio(AudioOutput &out, std::shared_ptr<AudioStream> &a)
 static void reposition(Layer &l, double position, int dir)
 {
     const double d = l.duration();
-    l.origin = d > 0 ? std::clamp(position, 0.0, d) : std::max(0.0, position);
+    const Timeline t = l.timeline();
+    l.origin = d > 0 ? std::clamp(position, t.lo(), t.hi()) : std::max(0.0, position);
     l.dir = dir >= 0 ? 1 : -1;
     l.clock = 0;
     l.ended = false;
@@ -150,11 +151,12 @@ static void reposition(Layer &l, double position, int dir)
     if (l.audio) l.audio->setTransport(0, l.playing, std::abs(l.speed), l.timeline(), l.timelineId, l.audioGain());
 }
 
-// A newly loaded media starts at its beginning — the end when the speed is negative.
+// A media starts at its in point — its out point when the speed is negative.
 static void startMedia(Layer &l)
 {
     l.dir = l.speed < 0 ? -1 : 1;
-    reposition(l, l.dir < 0 ? l.duration() : 0.0, l.dir);
+    const Timeline t = l.timeline();
+    reposition(l, l.dir < 0 ? t.hi() : t.lo(), l.dir);
 }
 
 void Engine::attachAudio(Layer &l, std::shared_ptr<AudioStream> s)
@@ -779,6 +781,8 @@ bool Engine::setLayerVideo(int i, const QString &path, QString *err)
         l->type = SourceType::Video;
         l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
         l->playing = true;
+        l->inPoint = 0; // a new media is played whole
+        l->outPoint = -1;
         attachAudio(*l, std::move(sound));
         startMedia(*l);
         if (isDefaultMapping(l->mapping) && l->srcHeight > 0)
@@ -819,6 +823,8 @@ bool Engine::setLayerAudio(int i, const QString &path, QString *err)
         l->mode = m_defaultPlayMode;
         l->ended = false;
         l->playing = true;
+        l->inPoint = 0; // a new media is played whole
+        l->outPoint = -1;
         attachAudio(*l, std::move(sound));
         startMedia(*l);
     }
@@ -907,6 +913,26 @@ void Engine::setLayerPlayMode(int i, PlayMode mode)
     l->mode = mode;
     l->ended = false;
     if (l->hasTransport()) reposition(*l, pos, l->dir); // same place, new mode
+}
+
+void Engine::setLayerInOut(int i, double in, double out)
+{
+    Lock lk(&m_mutex);
+    Layer *l = layer(i);
+    if (!l) return;
+    const double d = l->duration();
+    in = std::max(0.0, in);
+    if (d > 0) {
+        in = std::min(in, d);
+        if (out >= 0) out = std::clamp(out, 0.0, d);
+        if (out >= d - 1e-6) out = -1; // up to the end: follows the media
+    }
+    if (out >= 0 && out < in + 0.01) out = in + 0.01; // at least a few milliseconds
+    if (std::abs(l->inPoint - in) < 1e-9 && std::abs(l->outPoint - out) < 1e-9) return;
+    const double pos = l->position();
+    l->inPoint = in;
+    l->outPoint = out;
+    if (l->hasTransport()) reposition(*l, pos, l->dir); // clamped into the new range
 }
 
 void Engine::setLayerSpeed(int i, double speed)
@@ -1312,12 +1338,16 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     case SourceType::Video:
         src["type"] = "video";
         src["playMode"] = playModeKey(l.mode);
+        src["in"] = l.inPoint;
+        src["out"] = l.outPoint;
         src["speed"] = l.speed;
         src["playing"] = l.playing;
         break;
     case SourceType::Audio:
         src["type"] = "audio";
         src["playMode"] = playModeKey(l.mode);
+        src["in"] = l.inPoint;
+        src["out"] = l.outPoint;
         src["speed"] = l.speed;
         src["playing"] = l.playing;
         break;
@@ -1333,6 +1363,10 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         if (l.missingType == SourceType::Video || l.missingType == SourceType::Audio) {
             src["type"] = l.missingType == SourceType::Video ? "video" : "audio";
             src["playMode"] = playModeKey(l.mode);
+            src["in"] = l.inPoint;
+            src["out"] = l.outPoint;
+        src["in"] = l.inPoint;
+        src["out"] = l.outPoint;
             src["speed"] = l.speed;
             src["playing"] = l.playing;
         } else if (l.missingType == SourceType::Image) {
@@ -1385,6 +1419,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         // Saved mode ("loop": true / false in projects older than the play modes)
         const PlayMode fallback = src.value("loop").toBool(true) ? PlayMode::Loop : PlayMode::OneShot;
         setLayerPlayMode(index, playModeFromKey(src.value("playMode").toString(), fallback));
+        setLayerInOut(index, src.value("in").toDouble(0), src.value("out").toDouble(-1));
         Lock lk(&m_mutex);
         Layer *l = layer(index);
         l->playing = src.value("playing").toBool(true);
@@ -1636,6 +1671,7 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
     SourceType kind = SourceType::None;
     Mapping mapping;
     PlayMode mode = PlayMode::Loop;
+    double in = 0, out = -1;
     std::vector<std::pair<IsfInstance *, int>> inputs;
     {
         Lock lk(&m_mutex);
@@ -1645,6 +1681,8 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
         if (l->sourcePath == from && (t == SourceType::Video || t == SourceType::Image || t == SourceType::Audio)) kind = t;
         mapping = l->mapping;
         mode = l->mode;
+        in = l->inPoint;
+        out = l->outPoint;
         auto collect = [&](IsfInstance *inst) {
             if (!inst) return;
             for (int k = 0; k < int(inst->inputs().size()); ++k) {
@@ -1666,7 +1704,8 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
              : target == SourceType::Audio ? setLayerAudio(i, to, err)
                                            : setLayerImage(i, to, err);
         if (ok) {
-            setLayerPlayMode(i, mode); // the layer keeps its play mode
+            setLayerPlayMode(i, mode); // the layer keeps its play mode and its in / out points
+            setLayerInOut(i, in, out);
             Lock lk(&m_mutex);
             if (Layer *l = layer(i)) {
                 const unsigned rev = l->mapping.revision;

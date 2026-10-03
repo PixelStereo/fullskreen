@@ -197,6 +197,12 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         m_binTimer.start();   // the media bin follows sources and shader images
     });
 
+    // I / O: in / out point of the selected video or sound at its current position
+    auto *keyIn = new QShortcut(QKeySequence(Qt::Key_I), this);
+    connect(keyIn, &QShortcut::activated, this, [this] { setInOutAtPosition(true); });
+    auto *keyOut = new QShortcut(QKeySequence(Qt::Key_O), this);
+    connect(keyOut, &QShortcut::activated, this, [this] { setInOutAtPosition(false); });
+    connect(m_inspector, &LayerInspector::setInOutRequested, this, &MainWindow::setInOutAtPosition);
     auto *space = new QShortcut(QKeySequence(Qt::Key_Space), this);
     connect(space, &QShortcut::activated, this, &MainWindow::togglePlayCurrent);
 
@@ -702,6 +708,24 @@ void MainWindow::moveCurrentLayer(int delta)
     if (i < 0 || to < 0 || to >= m_engine->layerCount()) return;
     m_undo->push(new cmd::MoveLayer(m_engine, i, to));
     selectLayer(to);
+}
+
+void MainWindow::setInOutAtPosition(bool in)
+{
+    const int i = currentLayer();
+    double pos;
+    QVariant before;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Layer *l = m_engine->layer(i);
+        if (!l || !l->hasTransport()) return;
+        pos = l->position();
+        before = in ? l->inPoint : l->outPoint;
+    }
+    const auto prop = in ? cmd::SetLayerProp::InPoint : cmd::SetLayerProp::OutPoint;
+    m_undo->push(new cmd::SetLayerProp(m_engine, i, prop, before, pos));
+    m_inspector->rebuild();
+    statusBar()->showMessage((in ? QStringLiteral("In point: %1 s") : QStringLiteral("Out point: %1 s")).arg(pos, 0, 'f', 2), 3000);
 }
 
 void MainWindow::togglePlayCurrent()

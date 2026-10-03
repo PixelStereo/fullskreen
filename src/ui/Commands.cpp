@@ -59,6 +59,8 @@ static QString propText(SetLayerProp::Prop p)
     case SetLayerProp::Mode: return QStringLiteral("Change Play Mode");
     case SetLayerProp::Volume: return QStringLiteral("Change Volume");
     case SetLayerProp::Muted: return QStringLiteral("Toggle Mute");
+    case SetLayerProp::InPoint: return QStringLiteral("Set In Point");
+    case SetLayerProp::OutPoint: return QStringLiteral("Set Out Point");
     }
     return {};
 }
@@ -83,12 +85,27 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
     case Mode: return int(l->mode);
     case Volume: return double(l->volume);
     case Muted: return l->muted;
+    case InPoint: return l->inPoint;
+    case OutPoint: return l->outPoint;
     }
     return {};
 }
 
 void SetLayerProp::apply(const QVariant &v)
 {
+    if (m_prop == InPoint || m_prop == OutPoint) {
+        double in, out;
+        {
+            Engine::Lock lk(&m_e->mutex());
+            Layer *l = m_e->layer(m_layer);
+            if (!l) return;
+            in = l->inPoint;
+            out = l->outPoint;
+        }
+        (m_prop == InPoint ? in : out) = v.toDouble();
+        m_e->setLayerInOut(m_layer, in, out);
+        return;
+    }
     if (m_prop == Speed) {
         m_e->setLayerSpeed(m_layer, v.toDouble());
         return;
@@ -116,7 +133,9 @@ bool SetLayerProp::mergeWith(const QUndoCommand *other)
 {
     auto *o = static_cast<const SetLayerProp *>(other);
     if (o->m_layer != m_layer || o->m_prop != m_prop) return false;
-    if (m_prop != Name && m_prop != Opacity && m_prop != Speed && m_prop != Volume) return false;
+    if (m_prop != Name && m_prop != Opacity && m_prop != Speed && m_prop != Volume && m_prop != InPoint &&
+        m_prop != OutPoint)
+        return false;
     if (o->m_time - m_time > kMergeWindowMs) return false;
     m_after = o->m_after;
     m_time = o->m_time;

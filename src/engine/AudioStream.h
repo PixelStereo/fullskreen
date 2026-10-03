@@ -116,6 +116,7 @@ private:
     uint64_t m_generation = 0;
     Timeline m_timeline, m_seekTimeline; // decode thread / given with the seek request
     Timeline::Leg m_leg;
+    double m_trimBefore = 0; // forward leg: samples before this position are dropped (seek lands earlier)
     double m_backEnd = 0;
     std::vector<float> m_window;
 
