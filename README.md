@@ -79,7 +79,9 @@ layer to load it, or right-click it and pick the layer from **Load into Layer**.
 **Memories** (the scenes / cues of MadMapper). A grid of thumbnails storing the state of the layers; a click
 shows the content in the inspector, double-click or GO recalls it. Each layer of a memory **unfolds** — source,
 ROI, color, mapping, effects and ISF parameters — and **every stored value can be edited there**, without moving
-the composition. Numbers fade to the memory's values in its fade time; sources and effect chains switch at once;
+the composition. Numbers fade to the memory's values in its fade time, unless the **Time** column gives one of
+them its own: *Transition* (the memory's fade), *Cut*, or a number of seconds — one time for the whole ROI, the
+whole mapping, each color control and each ISF parameter. Sources and effect chains switch at once;
 a layer deleted since is recreated; unchecked and locked layers are left alone.
 
 **Look.** The accent — the selected layer, the bars, the controls that are on, the links — is a very light grey

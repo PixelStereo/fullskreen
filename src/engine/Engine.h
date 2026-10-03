@@ -170,11 +170,15 @@ public:
     void removeMemory(int i);
     QJsonArray captureLayers() const; // state of every layer, all included
     // Applies layer states (those not excluded): opacity, volume, roi, color, mapping and ISF numbers fade in
-    // `fade` seconds; sources and effect chains change at once; a layer that became visible fades in from 0,
+    // `fade` seconds, or in the time a state gives them ("timing": key → seconds, 0 a cut); sources and effect chains change at once; a layer that became visible fades in from 0,
     // one that becomes hidden fades out; layers removed since are recreated. Other layers are left alone.
     void applyLayers(const QJsonArray &layers, double fade);
     void recallMemory(int i); // with its fade
     bool isFading() const;
+    void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
+    // Key under which a memory stores the time of a stored value (its path in the layer state), empty for a value
+    // that does not fade: "opacity", "roi", "color/temp", "mapping", "effects/0/params/radius"…
+    static QString timingKey(const QStringList &path);
 
     // --- External media (media bin)
     struct MediaRef {
@@ -386,7 +390,7 @@ private:
     std::vector<Memory> m_memories;
     struct FadeJob;
     std::vector<std::shared_ptr<FadeJob>> m_fades;
-    double m_fadeT = 1, m_fadeDuration = 0;
+    double m_fadeElapsed = 0; // seconds since the last recall
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
     std::atomic<quint64> m_frameCount{0};
