@@ -69,6 +69,7 @@ struct Layer {
     quint64 parent = 0; // id of the group containing the layer (0: top level)
     bool isGroup = false;
     bool collapsed = false; // group folded in the layer list
+    int colorModels = 1;    // models shown by the Color tab for this layer (interface state, saved)
 
     QString name;
     bool visible = true;

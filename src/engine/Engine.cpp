@@ -589,6 +589,7 @@ int Engine::addLayer(const QString &name, int at)
         Lock lk(&m_mutex);
         auto l = std::make_unique<Layer>();
         l->id = newIdLocked();
+        l->colorModels = m_defaultColorModels;
         l->name = name.isEmpty() ? QStringLiteral("Layer %1").arg(m_layers.size() + 1) : name;
         l->genWidth = m_compSize.width();
         l->genHeight = m_compSize.height();
@@ -1532,6 +1533,7 @@ void Engine::frame(double dt)
             l->parentVisible = !(l->parent && group && group->id == l->parent && !group->visible);
         }
     }
+    stepFade(m_realDt);
     for (auto &l : m_layers) updateSource(*l, dt);
     for (auto &l : m_layers) renderLayer(*l, rc);
     for (size_t i = 0; i < m_layers.size(); ++i) {
@@ -1638,6 +1640,8 @@ void Engine::newProject()
         old.swap(m_layers);
         m_projectPath.clear();
         m_binItems.clear();
+        m_memories.clear();
+        m_fades.clear();
         m_audio->setMasterVolume(1.0f);
         m_audio->setMuted(false);
         if (m_publish != PublishSettings()) {
@@ -1654,6 +1658,7 @@ void Engine::newProject()
     }
     setCompositionSize(QSize(1920, 1080));
     emit layersChanged();
+    emit memoriesChanged();
 }
 
 QString Engine::resolvePath(const QJsonObject &o, const QString &projectDir) const
@@ -1745,6 +1750,7 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     for (const auto &e : l.effects) fx.append(e->save(projectDir));
     o["effects"] = fx;
     o["effectsEnabled"] = l.effectsEnabled;
+    o["colorModels"] = l.colorModels;
     o["mapping"] = l.mapping.toJson();
     return o;
 }
@@ -1766,6 +1772,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         l->isGroup = o.value("group").toBool(false);
         l->collapsed = o.value("collapsed").toBool(false);
         l->effectsEnabled = o.value("effectsEnabled").toBool(true);
+        l->colorModels = o.value("colorModels").toInt(l->colorModels);
         // Saved id kept unless another layer already has it
         const quint64 id = o.value("id").toString().toULongLong();
         bool taken = false;
@@ -1873,6 +1880,9 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         root["bin"] = bin;
         root["publish"] = m_publish.toJson();
         root["audio"] = QJsonObject{{"volume", double(m_audio->masterVolume())}, {"muted", m_audio->muted()}};
+        QJsonArray mems;
+        for (const Memory &m : m_memories) mems.append(memoryToJson(m, dir));
+        root["memories"] = mems;
     }
     root["ui"] = uiState;
     // Atomic write: a crash during save does not corrupt the existing file.
@@ -1924,6 +1934,11 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     const QJsonObject audio = root.value("audio").toObject();
     m_audio->setMasterVolume(float(std::clamp(audio.value("volume").toDouble(1.0), 0.0, 2.0)));
     m_audio->setMuted(audio.value("muted").toBool(false));
+    {
+        Lock lk(&m_mutex);
+        for (const QJsonValue &v : root.value("memories").toArray()) m_memories.push_back(memoryFromJson(v.toObject(), dir));
+    }
+    emit memoriesChanged();
     if (uiState) *uiState = root.value("ui").toObject();
     setProjectPath(QFileInfo(path).absoluteFilePath());
     emit layersChanged();

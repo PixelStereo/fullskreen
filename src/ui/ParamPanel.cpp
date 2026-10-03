@@ -81,6 +81,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             auto *h = new QHBoxLayout(w);
             h->setContentsMargins(0, 0, 0, 0);
             auto *slider = new QSlider(Qt::Horizontal);
+            slider->setFocusPolicy(Qt::ClickFocus); // Tab / Shift+Tab go from field to field
             slider->setRange(0, 1000);
             auto *spin = new QDoubleSpinBox;
             spin->setRange(in.fMin, in.fMax);

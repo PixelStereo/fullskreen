@@ -105,6 +105,8 @@ public:
     void setLayerSpeed(int i, double speed); // negative: backwards (changing direction keeps the position)
     // In / out points (seconds; out < 0: end of the media). Playback, loops and ping-pong stay within them.
     void setLayerInOut(int i, double in, double out);
+    // Color models shown by the Color tab of a new layer (preference); each layer then keeps its own
+    void setDefaultColorModels(int m) { m_defaultColorModels = m; }
     // Mode given to a video or a sound when it is loaded into a layer (preference)
     void setDefaultPlayMode(PlayMode m) { m_defaultPlayMode = m; }
     PlayMode defaultPlayMode() const { return m_defaultPlayMode; }
@@ -117,6 +119,26 @@ public:
     void moveEffect(int layerIndex, int from, int to);
     bool setIsfImageInput(IsfInstance *inst, int input, const QString &path, QString *err = nullptr);
     bool reloadIsf(IsfInstance *inst); // reloads from disk (live editing)
+
+    // --- Memories (cues, as in MadMapper): snapshots of the layers, recalled with a fade
+    struct Memory {
+        QString name;
+        double fade = 1.0;  // seconds
+        QImage thumbnail;   // output at the time it was stored
+        QJsonArray layers;  // layerJson of the layers, with "included" (false: left alone by the recall)
+    };
+    int memoryCount() const;
+    Memory memory(int i) const;
+    void setMemory(int i, const Memory &m);
+    int addMemory(const Memory &m, int at = -1);
+    void removeMemory(int i);
+    QJsonArray captureLayers() const; // state of every layer, all included
+    // Applies layer states (those not excluded): opacity, volume, crop, color, mapping and ISF numbers fade in
+    // `fade` seconds; sources and effect chains change at once; a layer that became visible fades in from 0,
+    // one that becomes hidden fades out; layers removed since are recreated. Other layers are left alone.
+    void applyLayers(const QJsonArray &layers, double fade);
+    void recallMemory(int i); // with its fade
+    bool isFading() const;
 
     // --- External media (media bin)
     struct MediaRef {
@@ -199,6 +221,8 @@ public:
 signals:
     void layersChanged();
     void compositionSizeChanged(QSize size);
+    void memoriesChanged();
+    void memoryRecalled(int index);
     void frameRendered(); // emitted from the render thread, at most once per frame displayed by the UI
 
 public:
@@ -226,6 +250,9 @@ private:
     void compositeLayers(const RenderTarget &target, const std::vector<Layer *> &topToBottom);
     void composite();
     void readSourcePreview();
+    void stepFade(double dt); // memory fades (render thread, lock held)
+    QJsonObject memoryToJson(const Memory &m, const QString &projectDir) const;
+    Memory memoryFromJson(const QJsonObject &o, const QString &projectDir) const;
     void normalizeLocked(); // restores the structure invariants (lock held)
     quint64 newIdLocked();
     void drawQuad();
@@ -297,6 +324,11 @@ private:
 
     std::unique_ptr<AudioOutput> m_audio;
     PlayMode m_defaultPlayMode = PlayMode::Loop;
+    int m_defaultColorModels = 1;
+    std::vector<Memory> m_memories;
+    struct FadeJob;
+    std::vector<std::shared_ptr<FadeJob>> m_fades;
+    double m_fadeT = 1, m_fadeDuration = 0;
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
     std::atomic<quint64> m_frameCount{0};

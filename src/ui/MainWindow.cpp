@@ -6,6 +6,7 @@
 #include "MappingView.h"
 #include "MasterPanel.h"
 #include "MediaBin.h"
+#include "MemoryPanel.h"
 #include "OutputWindow.h"
 #include "Osc.h"
 #include "SettingsPanel.h"
@@ -26,7 +27,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
+#include <QAbstractSpinBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -39,6 +42,7 @@
 #include <QSplitter>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QThread>
 #include <QUndoStack>
@@ -83,29 +87,46 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_tabs->addTab(scrolled(m_settings), QStringLiteral("Settings"));
     connect(m_settings, &SettingsPanel::playModeChanged, this,
             [this] { m_engine->setDefaultPlayMode(SettingsPanel::defaultPlayMode()); });
-    connect(m_settings, &SettingsPanel::colorModelsChanged, this, [this] { m_inspector->rebuild(); });
+    // For the layers created from now on; each layer keeps its own choice
+    connect(m_settings, &SettingsPanel::colorModelsChanged, this,
+            [this] { m_engine->setDefaultColorModels(SettingsPanel::colorModels()); });
+    m_engine->setDefaultColorModels(SettingsPanel::colorModels());
     connect(m_settings, &SettingsPanel::oscChanged, this, &MainWindow::startOsc);
     m_tabs->setMinimumWidth(390);
 
+    // Left: Media Bin and Layers, two tabs (Shift+1 / Shift+2). Dragging a media over the Layers tab opens it.
+    m_layerTable = new LayerTable;
+    m_leftTabs = new QTabWidget;
+    m_leftTabs->addTab(m_bin, QStringLiteral("Media Bin"));
+    m_leftTabs->addTab(m_layerTable, QStringLiteral("Layers"));
+    m_leftTabs->setTabToolTip(0, QStringLiteral("Media Bin (Shift+1)"));
+    m_leftTabs->setTabToolTip(1, QStringLiteral("Layers (Shift+2)"));
+    m_leftTabs->tabBar()->setChangeCurrentOnDrag(true);
+    m_leftTabs->tabBar()->setAcceptDrops(true);
+    m_leftTabs->setCurrentIndex(1);
+
     auto *top = new QSplitter(Qt::Horizontal);
-    top->addWidget(m_bin);
+    top->addWidget(m_leftTabs);
     top->addWidget(m_view);
     top->addWidget(m_tabs);
     top->setStretchFactor(0, 0);
     top->setStretchFactor(1, 1);
     top->setStretchFactor(2, 0);
-    top->setSizes({330, 840, 430});
+    top->setSizes({560, 610, 430});
 
-    // --- Bottom: layers across the full width
-    m_layerTable = new LayerTable;
+    // --- Bottom: memories (grid + inspector)
+    m_memories = new MemoryPanel(m_engine, m_undo);
     auto *split = new QSplitter(Qt::Vertical);
     split->addWidget(top);
-    split->addWidget(m_layerTable);
+    split->addWidget(m_memories);
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 0);
-    split->setSizes({700, 240});
-    split->setObjectName("mainSplit");
-    top->setObjectName("topSplit");
+    split->setSizes({720, 220});
+    split->setObjectName("mainSplit2"); // (layout changed: earlier saved states are not restored)
+    top->setObjectName("topSplit2");
+    connect(m_memories, &MemoryPanel::edited, this, &MainWindow::markDirty);
+    connect(m_memories, &MemoryPanel::recalled, this, [this] { refreshAll(); });
+    qApp->installEventFilter(this); // Shift+1 / Shift+2: left tabs
     setCentralWidget(split);
 
     m_status = new QLabel;
@@ -221,6 +242,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     // --- General sync
     connect(m_view, &MappingView::layerPicked, this, &MainWindow::selectLayer);
     connect(m_inspector, &LayerInspector::layerChanged, this, &MainWindow::refreshLayerList);
+    connect(m_inspector, &LayerInspector::projectEdited, this, &MainWindow::markDirty);
     connect(m_inspector, &LayerInspector::mappingChanged, m_view, qOverload<>(&QWidget::update));
     connect(m_inspector, &LayerInspector::fileDropped, this, [this](const QString &p) { loadIntoLayer(m_inspector->layerIndex(), p); });
     connect(m_engine, &Engine::layersChanged, this, &MainWindow::refreshLayerList);
@@ -273,8 +295,8 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     updateTitle();
     startOsc();
     restoreGeometry(s.value("ui/geometry").toByteArray());
-    split->restoreState(s.value("ui/mainSplit").toByteArray());
-    top->restoreState(s.value("ui/topSplit").toByteArray());
+    split->restoreState(s.value("ui/mainSplit2").toByteArray());
+    top->restoreState(s.value("ui/topSplit2").toByteArray());
 }
 
 MainWindow::~MainWindow()
@@ -293,6 +315,28 @@ MainWindow::~MainWindow()
 // ---------------------------------------------------------------------------
 // Show-control shortcuts
 // ---------------------------------------------------------------------------
+
+bool MainWindow::eventFilter(QObject *o, QEvent *e)
+{
+    // Shift+1 / Shift+2 switch the left tabs (Media Bin / Layers), whatever the keyboard: the digit with Shift
+    // (AZERTY) or the symbol it gives (QWERTY "!" "@", UK "\""). Not while typing in a text field.
+    if (e->type() == QEvent::KeyPress && isActiveWindow()) {
+        auto *k = static_cast<QKeyEvent *>(e);
+        QWidget *f = QApplication::focusWidget();
+        const bool typing = qobject_cast<QLineEdit *>(f) || qobject_cast<QAbstractSpinBox *>(f) ||
+                            (f && f->inherits("QTextEdit")) || (f && f->inherits("QPlainTextEdit"));
+        if (!typing && (k->modifiers() & Qt::ShiftModifier) && !(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+            int tab = -1;
+            if (k->key() == Qt::Key_1 || k->key() == Qt::Key_Exclam) tab = 0;
+            if (k->key() == Qt::Key_2 || k->key() == Qt::Key_At || k->key() == Qt::Key_QuoteDbl) tab = 1;
+            if (tab >= 0 && !k->isAutoRepeat()) {
+                m_leftTabs->setCurrentIndex(tab);
+                return true;
+            }
+        }
+    }
+    return QMainWindow::eventFilter(o, e);
+}
 
 bool MainWindow::handleControlKey(int key, Qt::KeyboardModifiers mods)
 {
@@ -610,6 +654,7 @@ void MainWindow::refreshLayerList()
             QStringList fx;
             for (const auto &e : l->effects) fx << (e->enabled ? e->name() : QStringLiteral("(") + e->name() + QStringLiteral(")"));
             r.effects = fx.join(QStringLiteral(" › "));
+            r.effectCount = int(l->effects.size());
             if (l->audio) {
                 const QString vol = l->muted ? QStringLiteral("muted") : QStringLiteral("%1%").arg(std::lround(l->volume * 100));
                 r.source += (l->type == SourceType::Video ? QStringLiteral("   ♪ ") : QStringLiteral("   ")) + vol;
@@ -1266,8 +1311,8 @@ void MainWindow::closeEvent(QCloseEvent *e)
     }
     QSettings s;
     s.setValue("ui/geometry", saveGeometry());
-    if (auto *split = findChild<QSplitter *>("mainSplit")) s.setValue("ui/mainSplit", split->saveState());
-    if (auto *top = findChild<QSplitter *>("topSplit")) s.setValue("ui/topSplit", top->saveState());
+    if (auto *split = findChild<QSplitter *>("mainSplit2")) s.setValue("ui/mainSplit2", split->saveState());
+    if (auto *top = findChild<QSplitter *>("topSplit2")) s.setValue("ui/topSplit2", top->saveState());
     m_output->hideOutput();
     // Normal exit: no recovery to offer on next launch.
     if (m_autosaveEnabled) QFile::remove(autosavePath());

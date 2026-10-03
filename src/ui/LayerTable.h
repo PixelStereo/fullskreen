@@ -23,6 +23,7 @@ public:
         float opacity = 1.f;
         bool group = false, member = false, collapsed = false; // collapsed: the group, or the group of the member
         bool locked = false, lockedByGroup = false, effectsOn = true;
+        int effectCount = 0;
     };
 
     explicit LayerTable(QWidget *parent = nullptr);

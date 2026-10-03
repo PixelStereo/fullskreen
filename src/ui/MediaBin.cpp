@@ -22,6 +22,8 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QThreadPool>
+#include <QLineEdit>
+#include <functional>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QUrl>
@@ -93,6 +95,12 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     import->setToolTip(QStringLiteral("Add videos, images or sounds to the Media Bin"));
     head->addWidget(import);
     v->addLayout(head);
+    m_search = new QLineEdit;
+    m_search->setPlaceholderText(QStringLiteral("Search…"));
+    m_search->setClearButtonEnabled(true);
+    m_search->setToolTip(QStringLiteral("Shows only the media and generators whose name contains this text"));
+    v->addWidget(m_search);
+    connect(m_search, &QLineEdit::textChanged, this, &MediaBin::applyFilter);
 
     auto *tree = new BinTree;
     m_tree = tree;
@@ -238,6 +246,7 @@ void MediaBin::refresh()
                 break;
             }
     updateButtons();
+    applyFilter();
 }
 
 // ISF > Generators: the shaders of the library (bundled, system and added folders) and those used by layers.
@@ -333,6 +342,13 @@ void MediaBin::refreshIsf()
     qDeleteAll(existing);
     for (auto c = categories.begin(); c != categories.end(); ++c)
         if (!usedCategories.contains(c.key())) delete c.value();
+    // Opened at the first fill: an item expanded while still empty may stay folded
+    if (!m_isfOpened && m_isfGenerators->childCount() > 0) {
+        m_isfOpened = true;
+        m_isf->setExpanded(true);
+        m_isfGenerators->setExpanded(true);
+        for (int c = 0; c < m_isfGenerators->childCount(); ++c) m_isfGenerators->child(c)->setExpanded(true);
+    }
     int total = 0;
     for (int c = 0; c < m_isfGenerators->childCount(); ++c) {
         QTreeWidgetItem *cat = m_isfGenerators->child(c);
@@ -497,4 +513,24 @@ void MediaBin::contextMenu(const QPoint &pos)
     }
     menu.addAction(QStringLiteral("Import…"), this, &MediaBin::importDialog);
     menu.exec(m_tree->viewport()->mapToGlobal(pos));
+}
+
+void MediaBin::applyFilter()
+{
+    const QString f = m_search ? m_search->text().trimmed() : QString();
+    // Leaves (media, shaders) match by name; a category stays visible if one of its items does
+    std::function<bool(QTreeWidgetItem *)> visit = [&](QTreeWidgetItem *it) -> bool {
+        if (it->childCount() == 0 && (it->data(0, PathRole).isValid() || it->parent())) {
+            const bool show = f.isEmpty() || it->text(0).contains(f, Qt::CaseInsensitive) ||
+                              QFileInfo(it->data(0, PathRole).toString()).fileName().contains(f, Qt::CaseInsensitive);
+            it->setHidden(!show);
+            return show;
+        }
+        bool any = false;
+        for (int c = 0; c < it->childCount(); ++c) any |= visit(it->child(c));
+        it->setHidden(!f.isEmpty() && !any);
+        if (!f.isEmpty() && any) it->setExpanded(true);
+        return any || f.isEmpty();
+    };
+    for (int t = 0; t < m_tree->topLevelItemCount(); ++t) visit(m_tree->topLevelItem(t));
 }
