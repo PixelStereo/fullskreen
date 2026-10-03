@@ -67,6 +67,11 @@ static QString propText(SetLayerProp::Prop p)
     case SetLayerProp::ColorAdd: return QStringLiteral("Change Added Color");
     case SetLayerProp::ColorRemove: return QStringLiteral("Change Removed Color");
     case SetLayerProp::Crop: return QStringLiteral("Change Crop");
+    case SetLayerProp::ColorOn: return QStringLiteral("Switch Color");
+    case SetLayerProp::TempOn: return QStringLiteral("Switch Temperature");
+    case SetLayerProp::TintOn: return QStringLiteral("Switch Tint");
+    case SetLayerProp::AddOn: return QStringLiteral("Switch Added Color");
+    case SetLayerProp::RemoveOn: return QStringLiteral("Switch Removed Color");
     case SetLayerProp::Temp: return QStringLiteral("Change Temperature");
     case SetLayerProp::Tint: return QStringLiteral("Change Tint");
     }
@@ -100,6 +105,11 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
     case ColorAdd: return QColor::fromRgbF(l->color.add[0], l->color.add[1], l->color.add[2]);
     case ColorRemove: return QColor::fromRgbF(l->color.remove[0], l->color.remove[1], l->color.remove[2]);
     case Crop: return l->crop;
+    case ColorOn: return l->color.enabled;
+    case TempOn: return l->color.tempOn;
+    case TintOn: return l->color.tintOn;
+    case AddOn: return l->color.addOn;
+    case RemoveOn: return l->color.removeOn;
     case Temp: return double(l->color.temp);
     case Tint: return double(l->color.tint);
     }
@@ -151,6 +161,11 @@ void SetLayerProp::apply(const QVariant &v)
         dst[2] = float(c.blueF());
         break;
     }
+    case ColorOn: l->color.enabled = v.toBool(); break;
+    case TempOn: l->color.tempOn = v.toBool(); break;
+    case TintOn: l->color.tintOn = v.toBool(); break;
+    case AddOn: l->color.addOn = v.toBool(); break;
+    case RemoveOn: l->color.removeOn = v.toBool(); break;
     case Temp: l->color.temp = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTempRange), double(ColorAdjust::kTempRange))); break;
     case Tint: l->color.tint = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTintRange), double(ColorAdjust::kTintRange))); break;
     case Crop: {

@@ -743,6 +743,27 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
             n.range = {minMax(-range, range)};
             n.clip = "both";
         }
+        // Color: switches (the whole section, then each parameter)
+        {
+            struct Sw {
+                const char *path, *label;
+                bool ColorAdjust::*member;
+            };
+            static const Sw kSwitches[] = {{"/color/enabled", "Color", &ColorAdjust::enabled},
+                                           {"/color/tempEnabled", "Temperature On", &ColorAdjust::tempOn},
+                                           {"/color/tintEnabled", "Tint On", &ColorAdjust::tintOn},
+                                           {"/color/addEnabled", "Add On", &ColorAdjust::addOn},
+                                           {"/color/removeEnabled", "Remove On", &ColorAdjust::removeOn}};
+            for (const Sw &sw : kSwitches) {
+                auto member = sw.member;
+                L.method(P + sw.path, "T", 3, sw.label, [member](Layer &l) { return QVariantList{l.color.*member}; },
+                         L.edit([member](Layer &l, const QVariantList &a) {
+                             l.color.*member = truth(a.value(0));
+                             return true;
+                         }));
+            }
+        }
+
         // Color: added and removed
         for (int which = 0; which < 2; ++which) {
             OscNode &n = L.method(P + (which ? "/color/remove" : "/color/add"), "fff", 3,
