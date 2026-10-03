@@ -627,6 +627,40 @@ int main(int argc, char **argv)
         CHECK(e.memory(0).thumbnail.width() == 16 && e.memory(0).layers.size() == 2);
         e.recallMemory(0);
         CHECK(std::abs(e.layer(0)->opacity - 0.8f) < 1e-6);
+
+        // The inspector edits what a memory holds (its layers' JSON): the recall then applies the new values,
+        // and the composition does not move until it is recalled.
+        {
+            Engine::Memory edited = e.memory(0);
+            QJsonObject l0 = edited.layers[0].toObject();
+            l0["opacity"] = 0.25;
+            l0["blend"] = "screen";
+            QJsonObject l1 = edited.layers[1].toObject();
+            QJsonObject src = l1.value("source").toObject();
+            QJsonObject params = src.value("params").toObject();
+            params["color"] = QJsonArray{0.25, 0.5, 0.75, 1.0}; // SolidColor
+            src["params"] = params;
+            l1["source"] = src;
+            l1["visible"] = true;
+            edited.layers[0] = l0;
+            edited.layers[1] = l1;
+            e.layer(0)->opacity = 0.8f;
+            e.setMemory(0, edited);
+            CHECK(std::abs(e.layer(0)->opacity - 0.8f) < 1e-6); // editing a memory does not touch the layers
+            CHECK(std::abs(e.memory(0).layers[0].toObject().value("opacity").toDouble() - 0.25) < 1e-9);
+            e.recallMemory(0);
+            CHECK(std::abs(e.layer(0)->opacity - 0.25f) < 1e-6 && e.layer(0)->blend == BlendMode::Screen);
+            CHECK(e.layer(1)->visible);
+            const IsfInstance *gen = e.layer(1)->generator.get();
+            double r = -1;
+            for (const IsfInput &in : gen->inputs())
+                if (in.name == "color") r = in.cValue[0];
+            CHECK(std::abs(r - 0.25) < 1e-6);
+            // Still edited after a save / load round trip
+            CHECK(e.saveProject(tmp + "/memories.fulskrin", {}, &err));
+            CHECK(e.loadProject(tmp + "/memories.fulskrin", nullptr, &err));
+            CHECK(std::abs(e.memory(0).layers[0].toObject().value("opacity").toDouble() - 0.25) < 1e-9);
+        }
         e.newProject();
         CHECK(e.memoryCount() == 0);
     }

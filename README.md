@@ -97,7 +97,9 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
 - **Memories** at the bottom of the window, as the scenes / cues of MadMapper: a grid of thumbnails ending with **+**,
   which stores the current state of the layers. A click selects a memory and shows its content in the inspector
   next to the grid (name, fade time, layers with their visibility, opacity and source); double-click, Enter or GO
-  recalls it (undoable). Opacity, volume, crop, color, mapping and ISF numbers fade to the memory's values in its fade
+  recalls it (undoable). **Each layer of a memory unfolds** — source, crop, color, mapping, effects and their ISF
+  parameters — and **every value it holds can be changed there** (double-click; check boxes for the switches):
+  the memory changes, the composition does not move until it is recalled. Opacity, volume, crop, color, mapping and ISF numbers fade to the memory's values in its fade
   time; sources and effect chains change at once; a layer shown by the memory fades in, a hidden one fades out;
   a layer deleted since is recreated. Unchecked layers, and locked ones, are left alone. Update stores the current
   state into a memory. Memories are saved in the project and recalled by OSC.
@@ -185,6 +187,7 @@ cmake -S . -B build && cmake --build build -j
 | Undo / redo | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y (⌘Z / ⌘⇧Z) |
 | Media Bin / Layers tab | Shift+1 / Shift+2 |
 | Store / recall a memory | + in the Memories grid / double-click, Enter or GO |
+| Change what a memory holds | unfold its layer in the inspector, double-click a value |
 | Next / previous field of an effect, handle of the mapping | Tab / Shift+Tab |
 | Group layers | select them, then ⊞ or Ctrl+G (⌘G); empty group: click the empty area of the list first |
 | Move layers into / out of a group | drag them onto the group's row, or between rows (below a group's last layer, at the left: out of it) |
