@@ -1,0 +1,860 @@
+// Engine: the layers — creation, order and groups, sources (video, image, sound, ISF generator, another
+// layer), transport, effect chain, and the copy of parameters from one layer to another.
+#include "EngineInternal.h"
+
+#include <QDir>
+#include <QFileInfo>
+#include <QImage>
+#include <QJsonArray>
+#include <cmath>
+
+QString blendModeName(BlendMode m)
+{
+    switch (m) {
+    case BlendMode::Add: return QStringLiteral("Add");
+    case BlendMode::Screen: return QStringLiteral("Screen");
+    case BlendMode::Multiply: return QStringLiteral("Multiply");
+    default: return QStringLiteral("Normal");
+    }
+}
+
+QString blendModeKey(BlendMode m)
+{
+    switch (m) {
+    case BlendMode::Add: return "add";
+    case BlendMode::Screen: return "screen";
+    case BlendMode::Multiply: return "multiply";
+    default: return "normal";
+    }
+}
+
+QString playModeName(PlayMode m)
+{
+    switch (m) {
+    case PlayMode::OneShot: return QStringLiteral("One-shot");
+    case PlayMode::PingPong: return QStringLiteral("Ping-pong");
+    case PlayMode::Stop: return QStringLiteral("Stop");
+    default: return QStringLiteral("Loop");
+    }
+}
+
+QString playModeKey(PlayMode m)
+{
+    switch (m) {
+    case PlayMode::OneShot: return "oneshot";
+    case PlayMode::PingPong: return "pingpong";
+    case PlayMode::Stop: return "stop";
+    default: return "loop";
+    }
+}
+
+PlayMode playModeFromKey(const QString &k, PlayMode fallback)
+{
+    if (k == "oneshot") return PlayMode::OneShot;
+    if (k == "loop") return PlayMode::Loop;
+    if (k == "pingpong") return PlayMode::PingPong;
+    if (k == "stop") return PlayMode::Stop;
+    return fallback;
+}
+
+QString layerTapKey(LayerTap t) { return t == LayerTap::PreFx ? QStringLiteral("prefx") : QStringLiteral("postfx"); }
+
+LayerTap layerTapFromKey(const QString &k) { return k == "prefx" ? LayerTap::PreFx : LayerTap::PostFx; }
+
+BlendMode blendModeFromKey(const QString &k)
+{
+    if (k == "add") return BlendMode::Add;
+    if (k == "screen") return BlendMode::Screen;
+    if (k == "multiply") return BlendMode::Multiply;
+    return BlendMode::Normal;
+}
+
+void Engine::attachAudio(Layer &l, std::shared_ptr<AudioStream> s)
+{
+    releaseAudio(*m_audio, l.audio);
+    l.audio = std::move(s);
+    if (!l.audio) return;
+    l.audio->setTransport(l.clock, l.playing, std::abs(l.speed), l.timeline(), l.timelineId, l.audioGain());
+    m_audio->addStream(l.audio);
+}
+
+int Engine::layerCount() const
+{
+    Lock lk(&m_mutex);
+    return int(m_layers.size());
+}
+
+Layer *Engine::layer(int i)
+{
+    Lock lk(&m_mutex);
+    return (i >= 0 && i < int(m_layers.size())) ? m_layers[size_t(i)].get() : nullptr;
+}
+
+int Engine::indexOf(const Layer *l) const
+{
+    Lock lk(&m_mutex);
+    for (size_t i = 0; i < m_layers.size(); ++i)
+        if (m_layers[i].get() == l) return int(i);
+    return -1;
+}
+
+int Engine::addLayer(const QString &name, int at)
+{
+    {
+        Lock lk(&m_mutex);
+        auto l = std::make_unique<Layer>();
+        l->id = newIdLocked();
+        l->colorModels = m_defaultColorModels;
+        l->name = name.isEmpty() ? QStringLiteral("Layer %1").arg(m_layers.size() + 1) : name;
+        l->genWidth = m_compSize.width();
+        l->genHeight = m_compSize.height();
+        at = std::clamp(at, 0, int(m_layers.size()));
+        // Inserted inside a group's block: the new layer joins that group
+        if (at > 0 && at < int(m_layers.size())) {
+            const Layer &below = *m_layers[size_t(at)];
+            if (below.parent) l->parent = below.parent;
+        }
+        m_layers.insert(m_layers.begin() + at, std::move(l));
+    }
+    emit layersChanged();
+    return at;
+}
+
+int Engine::addGroup(const QString &name, int at)
+{
+    {
+        Lock lk(&m_mutex);
+        int groups = 0;
+        for (const auto &l : m_layers) groups += l->isGroup;
+        auto l = std::make_unique<Layer>();
+        l->id = newIdLocked();
+        l->isGroup = true;
+        l->name = name.isEmpty() ? QStringLiteral("Group %1").arg(groups + 1) : name;
+        at = std::clamp(at, 0, int(m_layers.size()));
+        // A group is never inside a group: placed before the block it would split
+        while (at > 0 && at < int(m_layers.size()) && m_layers[size_t(at)]->parent) --at;
+        m_layers.insert(m_layers.begin() + at, std::move(l));
+    }
+    emit layersChanged();
+    return at;
+}
+
+quint64 Engine::newIdLocked()
+{
+    for (const auto &l : m_layers) m_nextId = std::max(m_nextId, l->id + 1);
+    return m_nextId++;
+}
+
+quint64 Engine::layerId(int i) const
+{
+    Lock lk(&m_mutex);
+    return (i >= 0 && i < int(m_layers.size())) ? m_layers[size_t(i)]->id : 0;
+}
+
+int Engine::indexOfId(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    if (!id) return -1;
+    for (size_t i = 0; i < m_layers.size(); ++i)
+        if (m_layers[i]->id == id) return int(i);
+    return -1;
+}
+
+LayerTree Engine::structure() const
+{
+    Lock lk(&m_mutex);
+    LayerTree t;
+    t.reserve(m_layers.size());
+    for (const auto &l : m_layers) t.push_back({l->id, l->parent, l->isGroup});
+    return t;
+}
+
+void Engine::normalizeLocked()
+{
+    LayerTree t;
+    for (const auto &l : m_layers) t.push_back({l->id, l->parent, l->isGroup});
+    const LayerTree n = tree::normalized(t);
+    if (n == t) return;
+    std::vector<std::unique_ptr<Layer>> out;
+    out.reserve(m_layers.size());
+    for (const TreeNode &node : n) {
+        for (auto &l : m_layers) {
+            if (l && l->id == node.id) {
+                l->parent = node.parent;
+                out.push_back(std::move(l));
+                break;
+            }
+        }
+    }
+    m_layers.swap(out);
+}
+
+void Engine::setStructure(const LayerTree &t)
+{
+    {
+        Lock lk(&m_mutex);
+        std::vector<std::unique_ptr<Layer>> out;
+        out.reserve(m_layers.size());
+        for (const TreeNode &node : t) {
+            for (auto &l : m_layers) {
+                if (l && l->id == node.id) {
+                    l->parent = node.parent;
+                    out.push_back(std::move(l));
+                    break;
+                }
+            }
+        }
+        for (auto &l : m_layers) // layers missing from the structure keep their place at the end
+            if (l) out.push_back(std::move(l));
+        m_layers.swap(out);
+        normalizeLocked();
+    }
+    emit layersChanged();
+}
+
+int Engine::groupIndexOf(int i) const
+{
+    Lock lk(&m_mutex);
+    if (i < 0 || i >= int(m_layers.size()) || !m_layers[size_t(i)]->parent) return -1;
+    return indexOfId(m_layers[size_t(i)]->parent);
+}
+
+QList<int> Engine::groupMembers(int g) const
+{
+    Lock lk(&m_mutex);
+    QList<int> out;
+    if (g < 0 || g >= int(m_layers.size()) || !m_layers[size_t(g)]->isGroup) return out;
+    const quint64 id = m_layers[size_t(g)]->id;
+    for (int i = 0; i < int(m_layers.size()); ++i)
+        if (m_layers[size_t(i)]->parent == id) out << i;
+    return out;
+}
+
+bool Engine::isLocked(int i) const
+{
+    Lock lk(&m_mutex);
+    if (i < 0 || i >= int(m_layers.size())) return false;
+    const Layer &l = *m_layers[size_t(i)];
+    if (l.locked) return true;
+    const int g = groupIndexOf(i);
+    return g >= 0 && m_layers[size_t(g)]->locked;
+}
+
+void Engine::releaseLayer(Layer &l)
+{
+    if (l.video) l.video->close();
+    l.video.reset();
+    releaseAudio(*m_audio, l.audio);
+    l.sourceTex.destroy();
+    if (l.generator) l.generator->releaseGl();
+    l.generator.reset();
+    l.generatorTarget.destroy();
+    for (auto &fx : l.effects) fx->releaseGl();
+    l.effects.clear();
+    l.fxTarget[0].destroy();
+    l.fxTarget[1].destroy();
+    l.groupTarget.destroy();
+    l.prepTarget.destroy();
+    l.finalTex = l.rawTex = 0;
+}
+
+void Engine::removeLayer(int i)
+{
+    auto g = std::make_shared<Garbage>();
+    {
+        Lock lk(&m_mutex);
+        if (i < 0 || i >= int(m_layers.size())) return;
+        g->layer = std::move(m_layers[size_t(i)]);
+        m_layers.erase(m_layers.begin() + i);
+        if (g->layer->isGroup) // its members go back to the top level, where they are
+            for (auto &l : m_layers)
+                if (l->parent == g->layer->id) l->parent = 0;
+        normalizeLocked();
+    }
+    if (g->layer->video) g->layer->video->close(); // stop the decode thread outside the render thread
+    releaseAudio(*m_audio, g->layer->audio);
+    runGl([this, g] { releaseLayer(*g->layer); }, false);
+    emit layersChanged();
+}
+
+void Engine::moveLayer(int from, int to)
+{
+    {
+        Lock lk(&m_mutex);
+        const int n = int(m_layers.size());
+        if (from < 0 || from >= n) return;
+        to = std::clamp(to, 0, n - 1);
+        if (from == to) return;
+        auto l = std::move(m_layers[size_t(from)]);
+        m_layers.erase(m_layers.begin() + from);
+        m_layers.insert(m_layers.begin() + to, std::move(l));
+        normalizeLocked();
+    }
+    emit layersChanged();
+}
+
+QJsonObject Engine::layerJson(int i) const
+{
+    Lock lk(&m_mutex);
+    if (i < 0 || i >= int(m_layers.size())) return {};
+    return layerToJson(*m_layers[size_t(i)], QString());
+}
+
+int Engine::insertLayerJson(int at, const QJsonObject &o)
+{
+    const int idx = addLayer(QString(), at);
+    layerFromJson(idx, o, QString(), nullptr);
+    quint64 id;
+    {
+        Lock lk(&m_mutex);
+        id = m_layers[size_t(idx)]->id;
+        normalizeLocked();
+    }
+    emit layersChanged();
+    return indexOfId(id);
+}
+
+void Engine::replaceLayerJson(int i, const QJsonObject &o)
+{
+    if (i < 0 || i >= layerCount()) return;
+    const QList<int> members = groupMembers(i);
+    std::vector<quint64> memberIds;
+    for (int m : members) memberIds.push_back(layerId(m));
+    removeLayer(i);
+    const int ni = insertLayerJson(i, o);
+    if (memberIds.empty()) return;
+    {
+        Lock lk(&m_mutex);
+        const quint64 gid = layerId(ni);
+        for (auto &l : m_layers)
+            if (std::find(memberIds.begin(), memberIds.end(), l->id) != memberIds.end()) l->parent = gid;
+        normalizeLocked();
+    }
+    emit layersChanged();
+}
+
+bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
+{
+    if (i < 0 || i >= layerCount() || o.isEmpty() || !parts || isLocked(i)) return false;
+    bool group = false;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        group = l->isGroup;
+    }
+    if (group) parts &= ~PartSource; // a group has no source of its own: it composites its layers
+
+    // With the source, the layer is rebuilt from a merged state (the media is opened again, as when one is
+    // loaded); the target keeps its identity and whatever the paste does not carry.
+    if (parts & PartSource) {
+        QJsonObject merged = layerJson(i), src = o.value("source").toObject();
+        if (!(parts & PartRoi)) src["roi"] = merged.value("source").toObject().value("roi");
+        merged["source"] = src;
+        if (parts & PartColor) merged["color"] = o.value("color");
+        if (parts & PartSpatial) merged["mapping"] = o.value("mapping");
+        if (parts & PartEffects) {
+            merged["effects"] = o.value("effects");
+            merged["effectsEnabled"] = o.value("effectsEnabled");
+        }
+        if (parts & PartCompositing)
+            for (const char *k : {"opacity", "blend"}) merged[QLatin1String(k)] = o.value(QLatin1String(k));
+        replaceLayerJson(i, merged);
+        fixLayerReferences(); // a pasted layer source must not make the picture feed back
+        return true;
+    }
+
+    // Everything else is set in place: the media goes on playing.
+    if (parts & PartEffects) setEffectsJson(i, o.value("effects").toArray());
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        if (parts & PartEffects) l->effectsEnabled = o.value("effectsEnabled").toBool(true);
+        if (parts & PartRoi) l->roi = roiFromJson(o.value("source").toObject());
+        if (parts & PartColor) colorFromJson(l->color, o.value("color").toObject());
+        if (parts & PartSpatial) l->mapping.fromJson(o.value("mapping").toObject());
+        if (parts & PartCompositing) {
+            l->opacity = float(std::clamp(o.value("opacity").toDouble(l->opacity), 0.0, 1.0));
+            l->blend = blendModeFromKey(o.value("blend").toString());
+        }
+    }
+    emit layersChanged();
+    return true;
+}
+
+int Engine::duplicateLayer(int i)
+{
+    QJsonObject o = layerJson(i);
+    if (o.isEmpty()) return -1;
+    const QList<int> members = groupMembers(i);
+    QList<QJsonObject> mem;
+    for (int m : members) mem << layerJson(m);
+    o["name"] = o.value("name").toString() + QStringLiteral(" copy");
+    o.remove("id"); // the copy gets its own id
+    const int gi = insertLayerJson(i, o);
+    const quint64 gid = layerId(gi);
+    for (int k = 0; k < mem.size(); ++k) {
+        QJsonObject m = mem[k];
+        m.remove("id");
+        m["parent"] = QString::number(gid);
+        insertLayerJson(gi + 1 + k, m);
+    }
+    return gi;
+}
+
+QJsonArray Engine::effectsJson(int i) const
+{
+    Lock lk(&m_mutex);
+    QJsonArray a;
+    if (i < 0 || i >= int(m_layers.size())) return a;
+    for (const auto &e : m_layers[size_t(i)]->effects) a.append(e->save(QString()));
+    return a;
+}
+
+void Engine::setEffectsJson(int i, const QJsonArray &a)
+{
+    auto g = std::make_shared<Garbage>();
+    {
+        Lock lk(&m_mutex);
+        if (i < 0 || i >= int(m_layers.size())) return;
+        g->effects = std::move(m_layers[size_t(i)]->effects);
+        m_layers[size_t(i)]->effects.clear();
+    }
+    runGl([g] { for (auto &e : g->effects) e->releaseGl(); }, false);
+    for (const QJsonValue &v : a) {
+        const QJsonObject e = v.toObject();
+        const int fi = addEffect(i, resolvePath(e, QString()));
+        if (fi < 0) continue;
+        IsfInstance *inst;
+        {
+            Lock lk(&m_mutex);
+            inst = m_layers[size_t(i)]->effects[size_t(fi)].get();
+        }
+        runGl([inst, e] {
+            inst->enabled = e.value("enabled").toBool(true);
+            inst->restoreParams(e.value("params").toObject(), QString());
+        });
+    }
+}
+
+std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
+{
+    auto g = std::make_shared<Garbage>();
+    g->video = std::move(l.video);
+    g->audio = std::move(l.audio);
+    g->tex = l.sourceTex;
+    l.sourceTex = Texture2D{};
+    g->generator = std::move(l.generator);
+    g->generatorTarget = l.generatorTarget;
+    l.generatorTarget = RenderTarget{};
+    l.pendingImage = QImage();
+    l.type = SourceType::None;
+    l.sourcePath.clear();
+    l.error.clear();
+    l.srcWidth = l.srcHeight = 0;
+    l.missingType = SourceType::None;
+    l.sourceLayer = 0;
+    l.finalTex = 0;
+    l.preFxTex = 0;
+    return g;
+}
+
+// Releases a detached source: decode thread stopped here, GL resources in the render thread.
+void Engine::releaseGarbage(const std::shared_ptr<Garbage> &g)
+{
+    if (g->video) g->video->close();
+    releaseAudio(*m_audio, g->audio);
+    runGl([g] {
+        g->tex.destroy();
+        if (g->generator) g->generator->releaseGl();
+        g->generatorTarget.destroy();
+    }, false);
+}
+
+void Engine::clearLayerSource(int i)
+{
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return;
+        g = detachSource(*l);
+    }
+    releaseGarbage(g);
+}
+
+// True when the picture of layer `id` depends on layer `onId`: directly (it is used as its source),
+// through a chain of such references, or because `id` is a group and one of its members depends on it.
+// The lock must be held.
+bool Engine::layerDependsOn(quint64 id, quint64 onId) const
+{
+    if (!id || !onId) return false;
+    std::vector<quint64> seen;
+    std::function<bool(quint64)> visit = [&](quint64 cur) -> bool {
+        if (cur == onId) return true;
+        if (std::find(seen.begin(), seen.end(), cur) != seen.end()) return false;
+        seen.push_back(cur);
+        for (const auto &l : m_layers) {
+            if (l->id != cur) continue;
+            if (l->type == SourceType::Layer && l->sourceLayer && visit(l->sourceLayer)) return true;
+            if (l->isGroup)
+                for (const auto &m : m_layers)
+                    if (m->parent == cur && visit(m->id)) return true;
+            break;
+        }
+        return false;
+    };
+    return visit(id);
+}
+
+// After a project is read (or a layer re-created): drops the references to a layer that is not there, and any
+// that would make a picture feed back on itself — a project edited by hand must not be able to do that.
+void Engine::fixLayerReferences(QStringList *warnings)
+{
+    Lock lk(&m_mutex);
+    for (auto &l : m_layers) {
+        if (l->type != SourceType::Layer) continue;
+        const bool exists = indexOfId(l->sourceLayer) >= 0;
+        if (exists && l->sourceLayer != l->id && !layerDependsOn(l->sourceLayer, l->id)) continue;
+        if (warnings)
+            *warnings << l->name + (exists ? QStringLiteral(": the layer it used feeds back on it, source dropped.")
+                                           : QStringLiteral(": the layer it used is gone, source dropped."));
+        l->type = SourceType::None;
+        l->sourceLayer = 0;
+    }
+}
+
+bool Engine::setLayerSourceLayer(int i, quint64 sourceId, LayerTap tap, QString *err)
+{
+    auto fail = [err](const QString &m) {
+        if (err) *err = m;
+        return false;
+    };
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        if (l->isGroup) return fail(QStringLiteral("A group has no source: its picture is the composite of its layers."));
+        const int si = indexOfId(sourceId);
+        if (si < 0) return fail(QStringLiteral("That layer no longer exists."));
+        if (sourceId == l->id) return fail(QStringLiteral("A layer cannot be its own source."));
+        if (layerDependsOn(sourceId, l->id))
+            return fail(QStringLiteral("\"%1\" already uses this layer: the picture would feed back on itself.")
+                            .arg(m_layers[size_t(si)]->name));
+        g = detachSource(*l);
+        l->type = SourceType::Layer;
+        l->sourceLayer = sourceId;
+        l->sourceTap = tap;
+    }
+    releaseGarbage(g);
+    emit layersChanged();
+    return true;
+}
+
+// Tap of a layer already using another layer as its source
+bool Engine::setLayerTap(int i, LayerTap tap)
+{
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || l->type != SourceType::Layer) return false;
+        if (l->sourceTap == tap) return true;
+        l->sourceTap = tap;
+    }
+    emit layersChanged();
+    return true;
+}
+
+static bool isDefaultMapping(const Mapping &m)
+{
+    const QPointF def[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (int i = 0; i < 4; ++i)
+        if (m.corners[i] != def[i]) return false;
+    for (const QPointF &o : m.offsets)
+        if (!o.isNull()) return false;
+    return true;
+}
+
+bool Engine::setLayerVideo(int i, const QString &path, QString *err)
+{
+    if (!layer(i)) return false;
+    auto dec = std::make_unique<VideoDecoder>();
+    QString e;
+    if (!dec->open(path, &e)) { // opened outside the lock: may take a while
+        if (err) *err = e;
+        return false;
+    }
+    auto sound = std::make_shared<AudioStream>(); // the file's sound, if it has any
+    if (!sound->open(path, AudioOutput::kSampleRate, nullptr)) sound.reset();
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        g = detachSource(*l);
+        l->mode = m_defaultPlayMode; // a newly loaded video takes the default mode (preferences)
+        l->ended = false;
+        l->srcWidth = dec->width();
+        l->srcHeight = dec->height();
+        l->video = std::move(dec);
+        l->type = SourceType::Video;
+        l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+        l->playing = true;
+        l->inPoint = 0; // a new media is played whole
+        l->outPoint = -1;
+        attachAudio(*l, std::move(sound));
+        startMedia(*l);
+        if (isDefaultMapping(l->mapping) && l->srcHeight > 0)
+            l->mapping.fitAspect(double(l->srcWidth) / l->srcHeight, double(m_compSize.width()) / m_compSize.height());
+    }
+    releaseGarbage(g);
+    return true;
+}
+
+bool Engine::setLayerFile(int i, const QString &path, QString *err)
+{
+    if (isImageFile(path)) return setLayerImage(i, path, err);
+    if (isAudioFile(path)) return setLayerAudio(i, path, err);
+    QString e;
+    if (setLayerVideo(i, path, &e)) return true; // video and unknown extensions: FFmpeg decides
+    if (AudioStream::probe(path, nullptr) && setLayerAudio(i, path, err)) return true; // sound only
+    if (err) *err = e;
+    return false;
+}
+
+bool Engine::setLayerAudio(int i, const QString &path, QString *err)
+{
+    if (!layer(i)) return false;
+    auto sound = std::make_shared<AudioStream>();
+    QString e;
+    if (!sound->open(path, AudioOutput::kSampleRate, &e)) {
+        if (err) *err = e;
+        return false;
+    }
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        g = detachSource(*l);
+        l->type = SourceType::Audio;
+        l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+        l->mode = m_defaultPlayMode;
+        l->ended = false;
+        l->playing = true;
+        l->inPoint = 0; // a new media is played whole
+        l->outPoint = -1;
+        attachAudio(*l, std::move(sound));
+        startMedia(*l);
+    }
+    releaseGarbage(g);
+    return true;
+}
+
+bool Engine::setLayerImage(int i, const QString &path, QString *err)
+{
+    if (!layer(i)) return false;
+    QImage img(path);
+    if (img.isNull()) {
+        if (err) *err = QStringLiteral("Unreadable image: ") + path;
+        return false;
+    }
+    img = img.convertToFormat(QImage::Format_RGBA8888).mirrored(false, true);
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        g = detachSource(*l);
+        l->pendingImage = img; // uploaded to the GPU by the render thread
+        l->srcWidth = img.width();
+        l->srcHeight = img.height();
+        l->type = SourceType::Image;
+        l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+        if (isDefaultMapping(l->mapping))
+            l->mapping.fitAspect(double(img.width()) / img.height(), double(m_compSize.width()) / m_compSize.height());
+    }
+    releaseGarbage(g);
+    return true;
+}
+
+bool Engine::setLayerIsf(int i, const QString &path, QString *err)
+{
+    if (!layer(i)) return false;
+    auto inst = std::make_unique<IsfInstance>();
+    IsfInstance *raw = inst.get();
+    bool ok = false;
+    runGl([raw, path, &ok] { ok = raw->load(path); });
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) {
+            runGl([raw] { raw->releaseGl(); });
+            return false;
+        }
+        g = detachSource(*l);
+        l->type = SourceType::Isf;
+        l->sourcePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+        l->error = inst->error();
+        l->generator = std::move(inst);
+        if (!ok && err) *err = l->error;
+    }
+    releaseGarbage(g);
+    return ok;
+}
+
+void Engine::setGeneratorSize(int i, int w, int h)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) {
+        l->genWidth = std::clamp(w, 1, 16384);
+        l->genHeight = std::clamp(h, 1, 16384);
+    }
+}
+
+void Engine::setLayerPlaying(int i, bool playing)
+{
+    Lock lk(&m_mutex);
+    Layer *l = layer(i);
+    if (!l || !l->hasTransport()) return;
+    if (playing && l->atEnd()) startMedia(*l); // played to the end: starts again
+    l->playing = playing;
+    if (playing) l->ended = false;
+}
+
+void Engine::setLayerPlayMode(int i, PlayMode mode)
+{
+    Lock lk(&m_mutex);
+    Layer *l = layer(i);
+    if (!l) return;
+    const double pos = l->position();
+    l->mode = mode;
+    l->ended = false;
+    if (l->hasTransport()) reposition(*l, pos, l->dir); // same place, new mode
+}
+
+void Engine::setLayerInOut(int i, double in, double out)
+{
+    Lock lk(&m_mutex);
+    Layer *l = layer(i);
+    if (!l) return;
+    const double d = l->duration();
+    in = std::max(0.0, in);
+    if (d > 0) {
+        in = std::min(in, d);
+        if (out >= 0) out = std::clamp(out, 0.0, d);
+        if (out >= d - 1e-6) out = -1; // up to the end: follows the media
+    }
+    if (out >= 0 && out < in + 0.01) out = in + 0.01; // at least a few milliseconds
+    if (std::abs(l->inPoint - in) < 1e-9 && std::abs(l->outPoint - out) < 1e-9) return;
+    const double pos = l->position();
+    l->inPoint = in;
+    l->outPoint = out;
+    if (l->hasTransport()) reposition(*l, pos, l->dir); // clamped into the new range
+}
+
+void Engine::setLayerSpeed(int i, double speed)
+{
+    Lock lk(&m_mutex);
+    Layer *l = layer(i);
+    if (!l) return;
+    const int dir = speed < 0 ? -1 : speed > 0 ? 1 : l->dir;
+    const bool turn = dir != l->dir;
+    const double pos = l->position();
+    l->speed = speed;
+    if (turn && l->hasTransport()) reposition(*l, pos, dir); // the other way from the same place
+}
+
+void Engine::seekLayer(int i, double t)
+{
+    Lock lk(&m_mutex);
+    Layer *l = layer(i);
+    if (!l || !l->hasTransport()) return;
+    reposition(*l, t, l->dir);
+}
+
+void Engine::setLayerVolume(int i, float volume)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->volume = std::clamp(volume, 0.0f, 2.0f);
+}
+
+void Engine::setLayerMuted(int i, bool muted)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->muted = muted;
+}
+
+int Engine::addEffect(int li, const QString &path, QString *err)
+{
+    if (!layer(li)) return -1;
+    auto inst = std::make_unique<IsfInstance>();
+    IsfInstance *raw = inst.get();
+    runGl([raw, path] { raw->load(path); });
+    if (!raw->isValid() && err) *err = raw->error();
+    Lock lk(&m_mutex);
+    Layer *l = layer(li);
+    if (!l) {
+        runGl([raw] { raw->releaseGl(); });
+        return -1;
+    }
+    l->effects.push_back(std::move(inst));
+    return int(l->effects.size()) - 1;
+}
+
+void Engine::removeEffect(int li, int fx)
+{
+    std::shared_ptr<IsfInstance> victim;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(li);
+        if (!l || fx < 0 || fx >= int(l->effects.size())) return;
+        victim.reset(l->effects[size_t(fx)].release());
+        l->effects.erase(l->effects.begin() + fx);
+    }
+    runGl([victim] { victim->releaseGl(); }, false);
+}
+
+void Engine::moveEffect(int li, int from, int to)
+{
+    Lock lk(&m_mutex);
+    Layer *l = layer(li);
+    if (!l) return;
+    const int n = int(l->effects.size());
+    if (from < 0 || from >= n) return;
+    to = std::clamp(to, 0, n - 1);
+    if (from == to) return;
+    auto e = std::move(l->effects[size_t(from)]);
+    l->effects.erase(l->effects.begin() + from);
+    l->effects.insert(l->effects.begin() + to, std::move(e));
+}
+
+bool Engine::setIsfImageInput(IsfInstance *inst, int input, const QString &path, QString *err)
+{
+    if (!inst) return false;
+    bool ok = false;
+    QString e;
+    runGl([&] { ok = inst->setImageInput(input, path, &e); });
+    if (err) *err = e;
+    return ok;
+}
+
+bool Engine::reloadIsf(IsfInstance *inst)
+{
+    if (!inst) return false;
+    bool ok = false;
+    runGl([&] {
+        // Keep parameter values across the reload.
+        const QJsonObject saved = inst->save(QString());
+        ok = inst->load(inst->path());
+        inst->restoreParams(saved.value("params").toObject(), QString());
+        inst->enabled = saved.value("enabled").toBool(true);
+    });
+    Lock lk(&m_mutex);
+    for (auto &l : m_layers)
+        if (l->generator.get() == inst) l->error = inst->error();
+    return ok;
+}
