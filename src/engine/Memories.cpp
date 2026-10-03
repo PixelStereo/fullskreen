@@ -14,9 +14,25 @@ struct LayerNumbers {
     std::vector<std::vector<IsfValue>> isf; // [0] generator, [1 + k] effect k
 };
 
+// How long each of those numbers takes to reach the memory's value (seconds; 0: a cut). By default the
+// memory's fade; a memory can give any of them a time of its own ("timing" in its layer state).
+struct LayerTimes {
+    double opacity = 0, volume = 0, roi = 0, temp = 0, tint = 0, add = 0, remove = 0, mapping = 0;
+    std::vector<std::vector<double>> isf; // as LayerNumbers::isf
+
+    double longest() const
+    {
+        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping});
+        for (const auto &v : isf)
+            for (double d : v) m = std::max(m, d);
+        return m;
+    }
+};
+
 struct Engine::FadeJob {
     quint64 id = 0;
     LayerNumbers from, to;
+    LayerTimes times;
     bool hideAtEnd = false;
     float finalOpacity = 1;
 };
@@ -61,33 +77,87 @@ static double mixd(double a, double b, double t) { return a + (b - a) * t; }
 static float mixf(float a, float b, double t) { return float(a + (b - a) * t); }
 static QPointF mixp(QPointF a, QPointF b, double t) { return a + (b - a) * t; }
 
-static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, double t)
+// Progress of a number `elapsed` seconds into its own time: 1 for a cut, eased at both ends otherwise
+static double progress(double elapsed, double duration)
 {
+    if (duration <= 0) return 1.0;
+    const double t = std::min(1.0, elapsed / duration);
+    return t * t * (3 - 2 * t);
+}
+
+static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, const LayerTimes &d, double elapsed)
+{
+    auto t = [elapsed](double duration) { return progress(elapsed, duration); };
     LayerNumbers n = b;
-    n.opacity = mixf(a.opacity, b.opacity, t);
-    n.volume = mixf(a.volume, b.volume, t);
-    n.roi = QRectF(mixp(a.roi.topLeft(), b.roi.topLeft(), t), mixp(a.roi.bottomRight(), b.roi.bottomRight(), t));
-    n.color.temp = mixf(a.color.temp, b.color.temp, t);
-    n.color.tint = mixf(a.color.tint, b.color.tint, t);
+    n.opacity = mixf(a.opacity, b.opacity, t(d.opacity));
+    n.volume = mixf(a.volume, b.volume, t(d.volume));
+    const double tr = t(d.roi);
+    n.roi = QRectF(mixp(a.roi.topLeft(), b.roi.topLeft(), tr), mixp(a.roi.bottomRight(), b.roi.bottomRight(), tr));
+    n.color.temp = mixf(a.color.temp, b.color.temp, t(d.temp));
+    n.color.tint = mixf(a.color.tint, b.color.tint, t(d.tint));
     for (int c = 0; c < 3; ++c) {
-        n.color.add[c] = mixf(a.color.add[c], b.color.add[c], t);
-        n.color.remove[c] = mixf(a.color.remove[c], b.color.remove[c], t);
+        n.color.add[c] = mixf(a.color.add[c], b.color.add[c], t(d.add));
+        n.color.remove[c] = mixf(a.color.remove[c], b.color.remove[c], t(d.remove));
     }
     if (a.mapping.cols == b.mapping.cols && a.mapping.rows == b.mapping.rows) {
-        for (int k = 0; k < 4; ++k) n.mapping.corners[k] = mixp(a.mapping.corners[k], b.mapping.corners[k], t);
+        const double tm = t(d.mapping);
+        for (int k = 0; k < 4; ++k) n.mapping.corners[k] = mixp(a.mapping.corners[k], b.mapping.corners[k], tm);
         for (size_t k = 0; k < n.mapping.offsets.size() && k < a.mapping.offsets.size(); ++k)
-            n.mapping.offsets[k] = mixp(a.mapping.offsets[k], b.mapping.offsets[k], t);
+            n.mapping.offsets[k] = mixp(a.mapping.offsets[k], b.mapping.offsets[k], tm);
     }
     for (size_t i = 0; i < n.isf.size() && i < a.isf.size(); ++i)
         for (size_t k = 0; k < n.isf[i].size() && k < a.isf[i].size(); ++k) {
+            const double tk = i < d.isf.size() && k < d.isf[i].size() ? t(d.isf[i][k]) : 1.0;
             IsfValue &v = n.isf[i][k];
             const IsfValue &f = a.isf[i][k];
-            v.f = mixd(f.f, v.f, t);
-            v.p = mixp(f.p, v.p, t);
-            for (int c = 0; c < 4; ++c) v.c[c] = mixf(f.c[c], v.c[c], t);
+            v.f = mixd(f.f, v.f, tk);
+            v.p = mixp(f.p, v.p, tk);
+            for (int c = 0; c < 4; ++c) v.c[c] = mixf(f.c[c], v.c[c], tk);
             // bools and lists: the target, at once
         }
     return n;
+}
+
+// Times of a layer's numbers: the memory's fade, or the time the memory gives that value (key → seconds)
+static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade)
+{
+    auto time = [&](const QString &key) {
+        const QJsonValue v = timing.value(key);
+        return v.isDouble() ? std::clamp(v.toDouble(), 0.0, 600.0) : fade;
+    };
+    LayerTimes d;
+    d.opacity = time(QStringLiteral("opacity"));
+    d.volume = time(QStringLiteral("volume"));
+    d.roi = time(QStringLiteral("roi"));
+    d.temp = time(QStringLiteral("color/temp"));
+    d.tint = time(QStringLiteral("color/tint"));
+    d.add = time(QStringLiteral("color/add"));
+    d.remove = time(QStringLiteral("color/remove"));
+    d.mapping = time(QStringLiteral("mapping"));
+    auto params = [&](const IsfInstance *inst, const QString &base) {
+        std::vector<double> v;
+        if (inst)
+            for (const IsfInput &in : inst->inputs()) v.push_back(time(base + in.name));
+        return v;
+    };
+    d.isf.push_back(params(l.generator.get(), QStringLiteral("source/params/")));
+    for (size_t k = 0; k < l.effects.size(); ++k)
+        d.isf.push_back(params(l.effects[k].get(), QStringLiteral("effects/%1/params/").arg(k)));
+    return d;
+}
+
+QString Engine::timingKey(const QStringList &path)
+{
+    if (path.isEmpty()) return {};
+    const QString &a = path[0];
+    if (a == "opacity" || a == "volume" || a == "mapping") return a;
+    if (a == "source" && path.size() >= 2 && path[1] == "roi") return QStringLiteral("roi");
+    if (a == "source" && path.size() >= 3 && path[1] == "params") return QStringLiteral("source/params/") + path[2];
+    if (a == "color" && path.size() >= 2 && (path[1] == "temp" || path[1] == "tint" || path[1] == "add" || path[1] == "remove"))
+        return QStringLiteral("color/") + path[1];
+    if (a == "effects" && path.size() >= 4 && path[2] == "params")
+        return QStringLiteral("effects/%1/params/%2").arg(path[1], path[3]);
+    return {};
 }
 
 // ISF parameter values of a saved instance, onto the current values (by input name)
@@ -248,6 +318,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
         auto job = std::make_shared<FadeJob>();
         job->id = id;
         job->from = numbersOf(*l);
+        job->times = timesOf(*l, o.value("timing").toObject(), std::max(0.0, fade));
         LayerNumbers &to = job->to;
         to = job->from;
         to.opacity = float(o.value("opacity").toDouble(to.opacity));
@@ -279,42 +350,57 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
             job->finalOpacity = to.opacity;
             to.opacity = 0;
         }
-        if (fade <= 0) {
+        if (job->times.longest() <= 0) {
             setNumbers(*l, to);
             if (job->hideAtEnd) {
                 l->visible = false;
                 l->opacity = job->finalOpacity;
             }
         } else {
-            // Bools and lists reach their target at once; the numbers start from where they are
-            setNumbers(*l, mixNumbers(job->from, to, 0));
+            // Bools and lists reach their target at once; the numbers start from where they are (a cut: there)
+            setNumbers(*l, mixNumbers(job->from, to, job->times, 0));
+            if (job->hideAtEnd && job->times.opacity <= 0) { // hidden by a cut
+                l->visible = false;
+                l->opacity = job->finalOpacity;
+                job->hideAtEnd = false;
+                job->from.opacity = job->to.opacity = job->finalOpacity;
+            }
             jobs.push_back(job);
         }
     }
     fixLayerReferences(); // layers re-created or sources changed: no reference left dangling or looping
     Lock lk(&m_mutex);
     m_fades = std::move(jobs);
-    m_fadeT = 0;
-    m_fadeDuration = std::max(0.0, fade);
+    m_fadeElapsed = 0;
 }
 
+// Every number moves on its own time; a layer that fades out is hidden once its opacity got there
 void Engine::stepFade(double dt)
 {
     if (m_fades.empty()) return;
-    m_fadeT = m_fadeDuration > 0 ? std::min(1.0, m_fadeT + dt / m_fadeDuration) : 1.0;
-    const double t = m_fadeT * m_fadeT * (3 - 2 * m_fadeT); // smooth start and end
+    m_fadeElapsed += std::max(0.0, dt);
+    bool running = false;
     for (const auto &job : m_fades) {
         Layer *l = nullptr;
         for (auto &x : m_layers)
             if (x->id == job->id) l = x.get();
         if (!l) continue;
-        setNumbers(*l, mixNumbers(job->from, job->to, t));
-        if (m_fadeT >= 1.0 && job->hideAtEnd) {
+        setNumbers(*l, mixNumbers(job->from, job->to, job->times, m_fadeElapsed));
+        if (job->hideAtEnd && m_fadeElapsed >= job->times.opacity) {
             l->visible = false;
             l->opacity = job->finalOpacity;
+            job->hideAtEnd = false;
+            job->from.opacity = job->to.opacity = job->finalOpacity; // stays as stored while the rest moves on
         }
+        running = running || m_fadeElapsed < job->times.longest();
     }
-    if (m_fadeT >= 1.0) m_fades.clear();
+    if (!running) m_fades.clear();
+}
+
+void Engine::advanceFades(double dt)
+{
+    Lock lk(&m_mutex);
+    stepFade(dt);
 }
 
 // ---------------------------------------------------------------------------

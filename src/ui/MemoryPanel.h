@@ -34,7 +34,8 @@ struct MemField {
 // Click: select (inspector) · double-click, Enter or GO: recall (with the memory's fade; undoable).
 // In the inspector, a layer can be left out of the memory (unchecked): the recall does not touch it.
 // Each layer unfolds (source, roi, color, mapping, effects): every stored value can be read and edited there,
-// which changes what the memory will apply, without touching the composition.
+// which changes what the memory will apply, without touching the composition. Each value that fades has a Time:
+// the memory's fade (Transition), a cut, or a time of its own.
 class MemoryPanel : public QWidget
 {
     Q_OBJECT
@@ -55,6 +56,7 @@ private:
     void fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject &layer);
     QTreeWidgetItem *addField(QTreeWidgetItem *parent, const QString &label, const MemField &f, const QJsonValue &value);
     void applyField(const MemField &f, const QJsonValue &value); // writes it into the selected memory
+    void applyTime(int row, const QString &key, double seconds); // < 0: the memory's fade
     void setInclusion(int i, quint64 layerId, bool included);
     int selected() const;
 
