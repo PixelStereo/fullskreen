@@ -681,6 +681,64 @@ int main(int argc, char **argv)
                   Engine::timingKey({"source", "speed"}).isEmpty());
             e.removeLayer(e.indexOfId(tid));
         }
+        // Another source by a memory: the outgoing one stays, invisible, and a transition mixes the two
+        {
+            for (const auto &[name, rgb] : {std::pair<QString, QRgb>{"red", qRgb(255, 0, 0)}, {"blue", qRgb(0, 0, 255)}}) {
+                QImage im(32, 16, QImage::Format_RGB32);
+                im.fill(rgb);
+                im.save(tmp + "/" + name + ".png");
+            }
+            const int ti = e.addLayer("Trans", V);
+            const quint64 tid = e.layerId(ti);
+            CHECK(e.setLayerImage(ti, tmp + "/red.png", &err));
+            e.layer(ti)->mapping.resetCorners();
+            QJsonObject red = e.layerJson(ti);
+            red["included"] = true;
+            CHECK(e.setLayerImage(ti, tmp + "/blue.png", &err));
+            const quint64 vp = e.mainViewportId();
+            auto center = [&] {
+                e.renderFrame();
+                const QImage g = e.grabViewport(vp);
+                return g.pixelColor(g.width() / 2, g.height() / 2);
+            };
+            CHECK(center().blue() > 250);
+            e.applyLayers(QJsonArray{red}, 1.0);
+            CHECK(e.isTransitioning(tid) && e.layerJson(e.indexOfId(tid)).value("source").toObject().value("path").toString().endsWith("red.png"));
+            e.advanceFades(0.5);
+            CHECK(std::abs(e.layer(e.indexOfId(tid))->transitionGain - 0.5f) < 0.01f); // the sound crosses too
+            QColor c = center();
+            CHECK(c.red() > 90 && c.red() < 170 && c.blue() > 90 && c.blue() < 170); // halfway: both
+            e.advanceFades(0.6);
+            c = center();
+            CHECK(!e.isTransitioning(tid) && c.red() > 250 && c.blue() < 5 && e.layer(e.indexOfId(tid))->transitionGain == 1.0f);
+            // An ISF transition chosen for the layer: fade out, fade in — halfway, only what is beneath shows
+            e.layer(e.indexOfId(tid))->visible = false;
+            const QColor under = center();
+            e.layer(e.indexOfId(tid))->visible = true;
+            QJsonObject blue = e.layerJson(e.indexOfId(tid));
+            blue["source"] = [&] {
+                QJsonObject src = blue.value("source").toObject();
+                src["path"] = tmp + "/blue.png";
+                src["transition"] = root + "/../isf/transitions/FadeOutIn.fs";
+                return src;
+            }();
+            e.applyLayers(QJsonArray{blue}, 1.0);
+            e.advanceFades(0.5);
+            c = center();
+            CHECK(e.isTransitioning(tid) && std::abs(c.red() - under.red()) < 30 && std::abs(c.blue() - under.blue()) < 30);
+            e.advanceFades(0.6);
+            CHECK(center().blue() > 250);
+            // The source's own time: a cut, no transition
+            red["timing"] = QJsonObject{{"source", 0}};
+            e.applyLayers(QJsonArray{red}, 1.0);
+            CHECK(!e.isTransitioning(tid) && center().red() > 250);
+            // A transition running when the layer goes: it goes with it
+            blue["timing"] = QJsonObject{{"source", 2.0}};
+            e.applyLayers(QJsonArray{blue}, 0.0); // its own time even with no memory fade
+            CHECK(e.isTransitioning(tid));
+            e.removeLayer(e.indexOfId(tid));
+            CHECK(!e.isTransitioning(tid));
+        }
         // Saved with the project
         CHECK(e.saveProject(tmp + "/memories.fulskrin", {}, &err));
         CHECK(e.loadProject(tmp + "/memories.fulskrin", nullptr, &err));

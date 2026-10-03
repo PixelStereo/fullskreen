@@ -51,6 +51,7 @@ void IsfLibrary::scan()
 {
     m_generators.clear();
     m_filters.clear();
+    m_transitions.clear();
     QSet<QString> seen;
     for (const QString &folder : allFolders()) {
         QDirIterator it(folder, {"*.fs", "*.frag"}, QDir::Files, QDirIterator::Subdirectories);
@@ -59,24 +60,26 @@ void IsfLibrary::scan()
             if (seen.contains(path)) continue;
             seen.insert(path);
             IsfInstance::Header h = IsfInstance::readHeader(path);
-            if (!h.ok || h.isTransition) continue;
+            if (!h.ok) continue;
             IsfEntry e;
             e.name = h.name;
             e.path = path;
             e.description = h.description;
             e.categories = h.categories;
             e.isFilter = h.isFilter;
-            (e.isFilter ? m_filters : m_generators).push_back(e);
+            (h.isTransition ? m_transitions : e.isFilter ? m_filters : m_generators).push_back(e);
         }
     }
     auto byName = [](const IsfEntry &a, const IsfEntry &b) { return a.name.localeAwareCompare(b.name) < 0; };
     std::sort(m_generators.begin(), m_generators.end(), byName);
     std::sort(m_filters.begin(), m_filters.end(), byName);
+    std::sort(m_transitions.begin(), m_transitions.end(), byName);
 }
 
 QString IsfLibrary::findByFileName(const QString &fileName) const
 {
     for (const IsfEntry &e : m_generators) if (QFileInfo(e.path).fileName() == fileName) return e.path;
     for (const IsfEntry &e : m_filters) if (QFileInfo(e.path).fileName() == fileName) return e.path;
+    for (const IsfEntry &e : m_transitions) if (QFileInfo(e.path).fileName() == fileName) return e.path;
     return {};
 }

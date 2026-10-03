@@ -145,6 +145,11 @@ public:
     void setDefaultColorModels(int m) { m_defaultColorModels = m; }
     // Mode given to a video or a sound when it is loaded into a layer (preference)
     void setDefaultPlayMode(PlayMode m) { m_defaultPlayMode = m; }
+    // Transition used when a memory gives a layer another source, for the layers that do not choose one
+    // (ISF transition; empty: a crossfade)
+    void setDefaultTransition(const QString &path);
+    QString defaultTransition() const;
+    bool isTransitioning(quint64 layer) const; // a source transition is running on it
     PlayMode defaultPlayMode() const { return m_defaultPlayMode; }
     void seekLayer(int i, double t);
     void setLayerVolume(int i, float volume);
@@ -390,6 +395,22 @@ private:
     std::vector<Memory> m_memories;
     struct FadeJob;
     std::vector<std::shared_ptr<FadeJob>> m_fades;
+    // A memory gives a layer another source: the outgoing one keeps playing, invisible, and the two pictures
+    // are mixed by an ISF transition into the layer's picture (before its mapping) until it is over
+    struct SourceTransition {
+        std::unique_ptr<Layer> from; // the outgoing source, with its own ROI, color and effects
+        QString shaderPath;
+        std::unique_ptr<IsfInstance> shader; // loaded by the render thread (none: a crossfade)
+        bool loaded = false;
+        RenderTarget target;
+        double elapsed = 0, duration = 1;
+    };
+    std::map<quint64, std::unique_ptr<SourceTransition>> m_transitions; // by layer id
+    QString m_defaultTransition;
+    void startSourceTransition(int index, const QJsonObject &state, double duration);
+    void stepTransitions(double dt);                                      // render thread, lock held
+    void renderTransition(Layer &l, SourceTransition &t, const IsfRenderContext &rc);
+    void retireTransition(std::unique_ptr<SourceTransition> t);           // sound now, OpenGL on the render thread
     double m_fadeElapsed = 0; // seconds since the last recall
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};

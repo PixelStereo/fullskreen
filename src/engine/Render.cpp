@@ -112,6 +112,8 @@ void Engine::renderPass(const IsfRenderContext &rc)
             else l.finalTex = l.rawTex = l.preFxTex = 0;
         } else {
             renderLayer(l, rc);
+            auto t = m_transitions.find(l.id);
+            if (t != m_transitions.end()) renderTransition(l, *t->second, rc);
         }
         m_renderMark[i] = Done;
     };
@@ -156,6 +158,57 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
     }
     if (!tex) return;
     processLayer(l, tex, w, h, false, rc);
+}
+
+// The outgoing source's picture (its ROI, color and effects) and the incoming one, mixed by the transition into the
+// layer's picture; the layer's mapping, opacity and blend then apply to the mix.
+void Engine::renderTransition(Layer &l, SourceTransition &t, const IsfRenderContext &rc)
+{
+    renderLayer(*t.from, rc);
+    const GLuint a = t.from->finalTex, b = l.finalTex;
+    const int w = b ? l.finalW : t.from->finalW, h = b ? l.finalH : t.from->finalH;
+    if (w <= 0 || h <= 0) return;
+    if (!t.loaded) {
+        t.loaded = true;
+        if (!t.shaderPath.isEmpty()) {
+            auto s = std::make_unique<IsfInstance>();
+            if (s->load(t.shaderPath) && s->input(QStringLiteral("startImage")) && s->input(QStringLiteral("endImage"))) {
+                t.shader = std::move(s);
+            } else {
+                qWarning("Transition %s: %s", qPrintable(t.shaderPath), qPrintable(s->error()));
+                s->releaseGl();
+            }
+        }
+    }
+    const double p = std::clamp(t.elapsed / t.duration, 0.0, 1.0);
+    t.target.ensure(w, h);
+    if (t.shader) {
+        t.shader->setImageTexture(QStringLiteral("startImage"), a, t.from->finalW, t.from->finalH);
+        t.shader->setImageTexture(QStringLiteral("endImage"), b, l.finalW, l.finalH);
+        if (IsfInput *in = t.shader->input(QStringLiteral("progress"))) in->fValue = p * p * (3 - 2 * p);
+        t.shader->render(rc, 0, 0, 0, t.target, w, h);
+    } else {
+        // A crossfade: the outgoing picture, then the incoming one over it at the progress
+        auto f = gl();
+        t.target.clear(0, 0, 0, 0);
+        if (a) blit(a, t.target);
+        if (b) {
+            t.target.bind();
+            f->glEnable(GL_BLEND);
+            const float k = float(p * p * (3 - 2 * p));
+            f->glBlendColor(0, 0, 0, k);
+            f->glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA);
+            f->glUseProgram(m_blitProgram);
+            f->glActiveTexture(GL_TEXTURE0);
+            f->glBindTexture(GL_TEXTURE_2D, b);
+            f->glUniform1i(m_blitTexLoc, 0);
+            drawQuad();
+            f->glDisable(GL_BLEND);
+        }
+    }
+    l.finalTex = t.target.tex;
+    l.finalW = w;
+    l.finalH = h;
 }
 
 // Source picture -> roi and color (when needed) -> effect chain -> l.finalTex
@@ -399,7 +452,9 @@ void Engine::frame(double dt)
         }
     }
     stepFade(m_realDt);
+    stepTransitions(m_realDt);
     for (auto &l : m_layers) updateSource(*l, dt);
+    for (auto &[id, t] : m_transitions) updateSource(*t->from, dt); // the outgoing sources play on
     renderPass(rc);
     composite();
     readSourcePreview();

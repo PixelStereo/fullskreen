@@ -311,6 +311,22 @@ IsfInstance::Header IsfInstance::readHeader(const QString &path)
     return h;
 }
 
+IsfInput *IsfInstance::input(const QString &name)
+{
+    for (IsfInput &in : m_inputs)
+        if (in.name == name) return &in;
+    return nullptr;
+}
+
+void IsfInstance::setImageTexture(const QString &name, GLuint tex, int w, int h)
+{
+    if (IsfInput *in = input(name)) {
+        in->extTex = tex;
+        in->extW = w;
+        in->extH = h;
+    }
+}
+
 IsfInstance::~IsfInstance()
 {
     // The engine calls releaseGl() with its context current before destruction.
@@ -665,6 +681,7 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
         case IsfInput::Color: if (in.loc >= 0) f->glUniform4fv(in.loc, 1, in.cValue); break;
         case IsfInput::Image:
             if (in.isInputImage) bindSampler(in.loc, in.sizeLoc, in.rectLoc, inputTex, inW, inH);
+            else if (in.extTex) bindSampler(in.loc, in.sizeLoc, in.rectLoc, in.extTex, in.extW, in.extH);
             else bindSampler(in.loc, in.sizeLoc, in.rectLoc, in.imageTex.tex, in.imageTex.w, in.imageTex.h);
             break;
         case IsfInput::Audio:

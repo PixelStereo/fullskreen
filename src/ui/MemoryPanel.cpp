@@ -526,6 +526,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         return it;
     };
     auto expand = [&](QTreeWidgetItem *it) { it->setExpanded(m_expanded.contains(it->data(0, KeyRole).toString())); };
+    std::function<void(QTreeWidgetItem *, const QString &)> timeCell;
     auto num = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path, double lo, double hi, double scale,
                    int decimals, const QString &suffix, double step) {
         MemField f;
@@ -539,8 +540,12 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         f.suffix = suffix;
         f.step = step;
         QTreeWidgetItem *it = addField(p, label, f, jsonAt(o, path));
-        const QString key = Engine::timingKey(path); // a value that fades: its time can be chosen
+        timeCell(it, Engine::timingKey(path)); // a value that fades: its time can be chosen
+        return it;
+    };
+    auto timeCellImpl = [&](QTreeWidgetItem *it, const QString &key) {
         if (!key.isEmpty()) {
+            it->setFlags(it->flags() | Qt::ItemIsSelectable | Qt::ItemIsEditable);
             const QJsonValue t = o.value("timing").toObject().value(key);
             it->setData(ColTime, TimeKeyRole, key);
             if (t.isDouble()) it->setData(ColTime, TimeRole, t.toDouble());
@@ -552,8 +557,8 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
                                                  ? QStringLiteral(" — shared by every value of %1").arg(key)
                                                  : QString()));
         }
-        return it;
     };
+    timeCell = timeCellImpl;
     auto flag = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path) {
         MemField f;
         f.kind = MemField::Bool;
@@ -629,17 +634,25 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
 
     if (!group) {
         QTreeWidgetItem *sec = section(parent, QStringLiteral("Source"), QStringLiteral("source"));
+        QTreeWidgetItem *what = nullptr;
         if (type == "none") {
-            info(sec, QStringLiteral("Source"), QStringLiteral("—"));
+            what = info(sec, QStringLiteral("Source"), QStringLiteral("—"));
         } else if (type == "layer") {
             const Layer *from = m_engine->layer(m_engine->indexOfId(src.value("layer").toString().toULongLong()));
-            info(sec, QStringLiteral("Layer"), from ? from->name : QStringLiteral("(gone)"));
+            what = info(sec, QStringLiteral("Layer"), from ? from->name : QStringLiteral("(gone)"));
             choice(sec, QStringLiteral("Tap"), {"source", "tap"}, {"prefx", "postfx"},
                    {QStringLiteral("Pre-FX"), QStringLiteral("Post-FX")});
         } else {
-            info(sec, type == "isf" ? QStringLiteral("Shader") : QStringLiteral("File"),
-                 QFileInfo(src.value("path").toString()).fileName(), src.value("path").toString());
+            what = info(sec, type == "isf" ? QStringLiteral("Shader") : QStringLiteral("File"),
+                        QFileInfo(src.value("path").toString()).fileName(), src.value("path").toString());
         }
+        // Another source than the layer's at the recall: its transition, over this time
+        timeCell(what, QStringLiteral("source"));
+        what->setToolTip(ColTime, QStringLiteral("When this memory gives the layer another source: how long the "
+                                                 "transition takes (Transition: the memory's fade, 0: a cut)"));
+        const QString tr = src.value("transition").toString();
+        info(sec, QStringLiteral("Transition"),
+             tr.isEmpty() ? QStringLiteral("Default") : QFileInfo(tr).completeBaseName(), tr);
         if (hasSound) {
             choice(sec, QStringLiteral("Play mode"), {"source", "playMode"}, {"oneshot", "loop", "pingpong", "stop"},
                    {QStringLiteral("One-shot"), QStringLiteral("Loop"), QStringLiteral("Ping-pong"), QStringLiteral("Stop")});
