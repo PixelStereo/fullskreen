@@ -7,8 +7,10 @@
 
 #include <QImage>
 #include <QRectF>
+#include <QSize>
 #include <QString>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <memory>
 #include <vector>
@@ -92,10 +94,17 @@ struct ColorAdjust {
 
 struct Layer {
     // Identity and structure. A group is a layer without source whose picture is the composite of its members;
-    // members immediately follow their group in the layer list (one level: no group inside a group).
+    // members immediately follow their group in the layer list.
+    // A viewport is a group at the root of the list with a size in pixels and a window of its own: it is what
+    // a screen or a projector shows. Every layer and every group lives in a viewport; a viewport is never
+    // inside anything and is never removed while it is the only one.
     quint64 id = 0;     // unique in the composition, saved in the project
     quint64 parent = 0; // id of the group containing the layer (0: top level)
     bool isGroup = false;
+    bool isViewport = false; // a group at the root, with its own size and window (implies isGroup)
+    int vpWidth = 1920, vpHeight = 1080; // viewport: size of its picture, in pixels
+    QString vpScreen;      // viewport: name of the screen it is shown on (empty: the main one)
+    int vpMode = 0;        // viewport: 0 hidden, 1 windowed, 2 fullscreen
     bool collapsed = false; // group folded in the layer list
     int colorModels = 1;    // models shown by the Color tab for this layer (interface state, saved)
 
@@ -153,7 +162,12 @@ struct Layer {
     std::vector<std::unique_ptr<IsfInstance>> effects;
     RenderTarget fxTarget[2];
 
-    RenderTarget groupTarget; // group: composite of its members (composition size)
+    RenderTarget groupTarget; // group: composite of its members (composition size, or the viewport's size)
+    // Viewport: what its window shows — the picture with the master level and the blackout applied,
+    // double buffered so the interface and the publishers can read the last finished frame.
+    RenderTarget vpOut[2];
+    int vpBack = 1;
+    std::atomic<int> vpPublished{0};
     RenderTarget prepTarget;  // roi + color
     GLuint rawTex = 0;        // source picture before roi (roi preview)
     int rawW = 0, rawH = 0;
@@ -186,5 +200,6 @@ struct Layer {
     int sourceWidth() const { return type == SourceType::Isf ? genWidth : srcWidth; }
     int sourceHeight() const { return type == SourceType::Isf ? genHeight : srcHeight; }
     bool hasPicture() const { return isGroup || (type != SourceType::Audio && !(type == SourceType::None && missingType == SourceType::Audio)); }
+    QSize viewportSize() const { return QSize(std::max(1, vpWidth), std::max(1, vpHeight)); }
     static QRectF fullRoi() { return QRectF(0, 0, 1, 1); }
 };

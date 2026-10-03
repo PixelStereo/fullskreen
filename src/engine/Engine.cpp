@@ -175,11 +175,11 @@ bool Engine::initialize(QString *err)
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-    for (RenderTarget &o : m_output) o.ensure(m_compSize.width(), m_compSize.height());
     doneCurrent();
 
     m_library.scan();
     m_clock.start();
+    ensureViewport(); // a composition always has one viewport: what the screen shows
     m_lastNs = m_clock.nsecsElapsed();
     m_initialized = true;
     return true;
@@ -284,22 +284,30 @@ void Engine::renderLoop()
         pace.start();
         runPendingTasks();
 
-        QSurface *target = (m_outWindow && m_outExposed) ? static_cast<QSurface *>(m_outWindow) : m_surface;
-        if (target != m_currentSurface) {
-            if (!m_context->makeCurrent(target)) {
-                target = m_surface;
-                m_context->makeCurrent(m_surface);
-            }
-            m_currentSurface = target;
-        }
-
         frame(nextDt());
 
+        // One window per viewport: each is made current in turn and swapped (each swap waits for its vsync)
         bool presented = false;
-        if (target == m_outWindow && m_outWindow) {
-            present(m_outWindow, m_outPixels);
-            m_context->swapBuffers(m_outWindow); // blocks until vertical sync
+        std::vector<std::pair<Layer *, OutputSurface>> shown;
+        {
+            Lock lk(&m_mutex);
+            for (auto &l : m_layers) {
+                if (!l->isViewport) continue;
+                auto it = m_outWindows.find(l->id);
+                if (it != m_outWindows.end() && it->second.window && it->second.exposed)
+                    shown.push_back({l.get(), it->second});
+            }
+        }
+        for (const auto &[vp, out] : shown) {
+            if (!m_context->makeCurrent(out.window)) continue;
+            m_currentSurface = out.window;
+            present(*vp, out.pixels);
+            m_context->swapBuffers(out.window);
             presented = true;
+        }
+        if (m_currentSurface != m_surface) {
+            m_context->makeCurrent(m_surface);
+            m_currentSurface = m_surface;
         }
         if (!m_framePending.exchange(true)) emit frameRendered();
 
@@ -335,7 +343,6 @@ void Engine::releaseAll()
         m_layers.clear();
     }
     auto f = gl();
-    for (RenderTarget &o : m_output) o.destroy();
     m_readback.destroy();
     m_previewTarget.destroy();
     if (m_pbo[0]) f->glDeleteBuffers(2, m_pbo);
@@ -354,31 +361,39 @@ void Engine::releaseAll()
 // ---------------------------------------------------------------------------
 // Output window
 // ---------------------------------------------------------------------------
-void Engine::setOutputWindow(QWindow *w)
+void Engine::setViewportWindow(quint64 viewportId, QWindow *w)
 {
-    runGl([this, w] {
-        if (m_threaded && m_currentSurface == m_outWindow && m_outWindow && m_outWindow != w) {
+    runGl([this, viewportId, w] {
+        OutputSurface &o = m_outWindows[viewportId];
+        if (m_threaded && o.window && m_currentSurface == o.window && o.window != w) {
             m_context->makeCurrent(m_surface);
             m_currentSurface = m_surface;
         }
-        m_outWindow = w;
-        if (!w) m_outExposed = false;
+        o.window = w;
+        if (!w) {
+            m_outWindows.erase(viewportId);
+            return;
+        }
+        o.exposed = false;
     });
 }
 
-void Engine::setOutputExposed(bool exposed, QSize pixelSize)
+void Engine::setViewportExposed(quint64 viewportId, bool exposed, QSize pixelSize)
 {
-    runGl([this, exposed, pixelSize] {
-        if (!exposed && m_threaded && m_currentSurface == m_outWindow && m_outWindow) {
+    runGl([this, viewportId, exposed, pixelSize] {
+        auto it = m_outWindows.find(viewportId);
+        if (it == m_outWindows.end()) return;
+        if (!exposed && m_threaded && m_currentSurface == it->second.window && it->second.window) {
             m_context->makeCurrent(m_surface);
             m_currentSurface = m_surface;
         }
-        m_outExposed = exposed;
-        m_outPixels = pixelSize;
+        it->second.exposed = exposed;
+        it->second.pixels = pixelSize;
     });
 }
 
-void Engine::present(QWindow *, QSize px)
+// Draws a viewport's last finished picture into the window that is current
+void Engine::present(const Layer &viewport, QSize px)
 {
     auto f = gl();
     f->glBindFramebuffer(GL_FRAMEBUFFER, m_context->defaultFramebufferObject());
@@ -388,12 +403,29 @@ void Engine::present(QWindow *, QSize px)
     f->glClear(GL_COLOR_BUFFER_BIT);
     f->glUseProgram(m_presentProgram);
     f->glActiveTexture(GL_TEXTURE0);
-    f->glBindTexture(GL_TEXTURE_2D, m_output[m_published].tex);
+    f->glBindTexture(GL_TEXTURE_2D, viewport.vpOut[viewport.vpPublished.load()].tex);
     f->glUniform1i(m_presentTexLoc, 0);
     drawQuad();
 }
 
-GLuint Engine::outputTexture() const { return m_output[m_published.load()].tex; }
+quint64 Engine::mainViewportId() const
+{
+    Lock lk(&m_mutex);
+    for (const auto &l : m_layers)
+        if (l->isViewport) return l->id;
+    return 0;
+}
+
+GLuint Engine::viewportTexture(quint64 viewportId) const
+{
+    Lock lk(&m_mutex);
+    for (const auto &l : m_layers)
+        if (l->isViewport && (l->id == viewportId || !viewportId))
+            return l->vpOut[l->vpPublished.load()].tex;
+    return 0;
+}
+
+GLuint Engine::outputTexture() const { return viewportTexture(0); }
 
 // ---------------------------------------------------------------------------
 // Composition size, master and blackout, source preview

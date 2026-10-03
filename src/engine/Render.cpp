@@ -89,11 +89,13 @@ void Engine::renderPass(const IsfRenderContext &rc)
             if (si >= 0) render(size_t(si));
         }
         if (l.isGroup) {
+            // Children of a viewport or a group, in list order (the list is normalized, so that is draw order)
             std::vector<Layer *> members;
-            for (size_t k = i + 1; k < n && m_layers[k]->parent == l.id; ++k) {
-                render(k);
-                members.push_back(m_layers[k].get());
-            }
+            for (size_t k = 0; k < n; ++k)
+                if (m_layers[k]->parent == l.id) {
+                    render(k);
+                    members.push_back(m_layers[k].get());
+                }
             if (l.visible || l.referenced) renderGroup(l, members, rc);
             else l.finalTex = l.rawTex = l.preFxTex = 0;
         } else {
@@ -205,7 +207,8 @@ void Engine::renderGroup(Layer &g, const std::vector<Layer *> &members, const Is
 {
     g.finalTex = 0;
     g.rawTex = 0;
-    g.groupTarget.ensure(m_compSize.width(), m_compSize.height());
+    const QSize size = g.isViewport ? g.viewportSize() : m_compSize;
+    g.groupTarget.ensure(size.width(), size.height());
     g.groupTarget.clear(0, 0, 0, 0);
     compositeLayers(g.groupTarget, members);
     processLayer(g, g.groupTarget.tex, g.groupTarget.w, g.groupTarget.h, true, rc);
@@ -242,30 +245,39 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
     f->glBindVertexArray(0);
 }
 
+// Each viewport carries its picture to its own output: the master level and the blackout are applied
+// there, into a double buffer the interface and the publishers read from.
 void Engine::composite()
 {
     auto f = gl();
-    RenderTarget &out = m_output[m_back];
-    out.ensure(m_compSize.width(), m_compSize.height());
-    out.clear(0, 0, 0, 1);
-    std::vector<Layer *> top;
-    for (auto &l : m_layers)
-        if (!l->parent) top.push_back(l.get());
-    compositeLayers(out, top);
-
-    // Master and blackout: multiply the whole image by the level (constant blend color).
     const double master = m_masterLevel.load() * m_blackLevel.load();
-    if (master < 0.999) {
-        f->glEnable(GL_BLEND);
-        const float m = float(master);
-        f->glBlendColor(m, m, m, 1.0f);
-        f->glBlendFunc(GL_ZERO, GL_CONSTANT_COLOR);
-        f->glUseProgram(m_blitProgram);
-        f->glBindTexture(GL_TEXTURE_2D, m_blackTex);
-        f->glUniform1i(m_blitTexLoc, 0);
-        drawQuad();
+    for (auto &lp : m_layers) {
+        Layer &v = *lp;
+        if (!v.isViewport) continue;
+        const QSize size = v.viewportSize();
+        RenderTarget &out = v.vpOut[v.vpBack];
+        out.ensure(size.width(), size.height());
+        out.clear(0, 0, 0, 1);
+        if (v.visible && v.finalTex) {
+            out.bind();
+            f->glDisable(GL_BLEND);
+            blit(v.finalTex, out);
+        }
+        // Master and blackout: multiply the whole image by the level (constant blend color).
+        if (master < 0.999) {
+            out.bind();
+            f->glEnable(GL_BLEND);
+            const float m = float(master);
+            f->glBlendColor(m, m, m, 1.0f);
+            f->glBlendFunc(GL_ZERO, GL_CONSTANT_COLOR);
+            f->glUseProgram(m_blitProgram);
+            f->glActiveTexture(GL_TEXTURE0);
+            f->glBindTexture(GL_TEXTURE_2D, m_blackTex);
+            f->glUniform1i(m_blitTexLoc, 0);
+            drawQuad();
+        }
+        f->glDisable(GL_BLEND);
     }
-    f->glDisable(GL_BLEND);
     f->glBindVertexArray(0);
 }
 
@@ -337,14 +349,28 @@ void Engine::frame(double dt)
     m_mutex.unlock();
 
     if (publishChanged || !m_publishInit) applyPublishing();
-    publishFrame(m_output[m_back]);
+    {
+        // Publishing and the interface preview show the main viewport
+        Lock lk(&m_mutex);
+        for (auto &l : m_layers)
+            if (l->isViewport) {
+                publishFrame(l->vpOut[l->vpBack]);
+                break;
+            }
+    }
 
     auto f = gl();
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
     // The preview reads the image from another context: wait for rendering to finish before publishing it.
     f->glFinish();
-    m_published = m_back;
-    m_back = 1 - m_back;
+    {
+        Lock lk(&m_mutex);
+        for (auto &l : m_layers)
+            if (l->isViewport) {
+                l->vpPublished = l->vpBack;
+                l->vpBack = 1 - l->vpBack;
+            }
+    }
     ++m_frameCount;
 }
 
@@ -385,16 +411,29 @@ void Engine::readSourcePreview()
 void Engine::renderFrame()
 {
     if (!m_initialized || m_threaded) return;
-    QSurface *target = (m_outWindow && m_outExposed) ? static_cast<QSurface *>(m_outWindow) : m_surface;
-    if (!m_context->makeCurrent(target)) {
-        target = m_surface;
-        m_context->makeCurrent(m_surface);
-    }
-    m_currentSurface = target;
+    if (!m_context->makeCurrent(m_surface)) return;
+    m_currentSurface = m_surface;
     frame(nextDt());
-    if (target == m_outWindow && m_outWindow) {
-        present(m_outWindow, m_outPixels);
-        m_context->swapBuffers(m_outWindow);
+    // Manual mode: the viewports that have a window are presented in turn
+    std::vector<std::pair<Layer *, OutputSurface>> shown;
+    {
+        Lock lk(&m_mutex);
+        for (auto &l : m_layers) {
+            if (!l->isViewport) continue;
+            auto it = m_outWindows.find(l->id);
+            if (it != m_outWindows.end() && it->second.window && it->second.exposed)
+                shown.push_back({l.get(), it->second});
+        }
+    }
+    for (const auto &[vp, out] : shown) {
+        if (!m_context->makeCurrent(out.window)) continue;
+        m_currentSurface = out.window;
+        present(*vp, out.pixels);
+        m_context->swapBuffers(out.window);
+    }
+    if (m_currentSurface != m_surface) {
+        m_context->makeCurrent(m_surface);
+        m_currentSurface = m_surface;
     }
     if (!m_framePending.exchange(true)) emit frameRendered();
 }
@@ -403,8 +442,15 @@ QImage Engine::grabOutput()
 {
     QImage img;
     runGl([this, &img] {
-        const RenderTarget &o = m_output[m_published];
-        if (!o.fbo) return;
+        Lock lk(&m_mutex);
+        const RenderTarget *main = nullptr;
+        for (auto &l : m_layers)
+            if (l->isViewport) {
+                main = &l->vpOut[l->vpPublished.load()];
+                break;
+            }
+        if (!main || !main->fbo) return;
+        const RenderTarget &o = *main;
         img = QImage(o.w, o.h, QImage::Format_RGBA8888);
         auto f = gl();
         f->glBindFramebuffer(GL_FRAMEBUFFER, o.fbo);

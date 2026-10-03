@@ -109,15 +109,113 @@ int Engine::addLayer(const QString &name, int at)
         l->genWidth = m_compSize.width();
         l->genHeight = m_compSize.height();
         at = std::clamp(at, 0, int(m_layers.size()));
-        // Inserted inside a group's block: the new layer joins that group
-        if (at > 0 && at < int(m_layers.size())) {
-            const Layer &below = *m_layers[size_t(at)];
-            if (below.parent) l->parent = below.parent;
+        // Inserted inside a block: the new layer joins that group or that viewport
+        if (at > 0 && at <= int(m_layers.size())) {
+            const Layer &above = *m_layers[size_t(at - 1)];
+            l->parent = above.isGroup ? above.id : above.parent;
         }
+        if (!l->parent) // nothing above: the first viewport takes it
+            for (const auto &o : m_layers)
+                if (o->isViewport) {
+                    l->parent = o->id;
+                    break;
+                }
         m_layers.insert(m_layers.begin() + at, std::move(l));
     }
     emit layersChanged();
     return at;
+}
+
+// --- Viewports -------------------------------------------------------------
+
+// Index of a layer id, the lock already held
+int Engine::indexOfIdLocked(quint64 id) const
+{
+    for (size_t i = 0; i < m_layers.size(); ++i)
+        if (m_layers[i]->id == id) return int(i);
+    return -1;
+}
+
+int Engine::addViewport(const QString &name, QSize size)
+{
+    int at = 0;
+    {
+        Lock lk(&m_mutex);
+        int n = 0;
+        for (const auto &l : m_layers) n += l->isViewport;
+        auto l = std::make_unique<Layer>();
+        l->id = newIdLocked();
+        l->isGroup = true;
+        l->isViewport = true;
+        const QSize s = size.isValid() && !size.isEmpty() ? size : m_compSize;
+        l->vpWidth = s.width();
+        l->vpHeight = s.height();
+        l->name = name.isEmpty() ? QStringLiteral("Viewport %1").arg(n + 1) : name;
+        at = int(m_layers.size());
+        m_layers.push_back(std::move(l));
+        normalizeLocked();
+        at = indexOfIdLocked(m_layers.back()->id);
+    }
+    emit layersChanged();
+    return at;
+}
+
+bool Engine::isViewport(int i) const
+{
+    Lock lk(&m_mutex);
+    return i >= 0 && i < int(m_layers.size()) && m_layers[size_t(i)]->isViewport;
+}
+
+QList<int> Engine::viewports() const
+{
+    Lock lk(&m_mutex);
+    QList<int> out;
+    for (int i = 0; i < int(m_layers.size()); ++i)
+        if (m_layers[size_t(i)]->isViewport) out << i;
+    return out;
+}
+
+int Engine::viewportOf(int i) const
+{
+    Lock lk(&m_mutex);
+    if (i < 0 || i >= int(m_layers.size())) return -1;
+    const Layer *l = m_layers[size_t(i)].get();
+    if (l->isViewport) return i;
+    int p = indexOfIdLocked(l->parent);
+    if (p < 0) return -1;
+    if (m_layers[size_t(p)]->isViewport) return p;
+    return indexOfIdLocked(m_layers[size_t(p)]->parent);
+}
+
+void Engine::setViewportSize(int i, QSize size)
+{
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || !l->isViewport) return;
+        l->vpWidth = std::clamp(size.width(), 1, 16384);
+        l->vpHeight = std::clamp(size.height(), 1, 16384);
+    }
+    emit layersChanged();
+}
+
+void Engine::setViewportOutput(int i, const QString &screen, int mode)
+{
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || !l->isViewport) return;
+        l->vpScreen = screen;
+        l->vpMode = std::clamp(mode, 0, 2);
+    }
+    emit layersChanged();
+}
+
+QSize Engine::viewportSize(int i) const
+{
+    Lock lk(&m_mutex);
+    const Layer *l = i >= 0 && i < int(m_layers.size()) ? m_layers[size_t(i)].get() : nullptr;
+    return l && l->isViewport ? l->viewportSize() : QSize();
 }
 
 int Engine::addGroup(const QString &name, int at)
@@ -131,8 +229,27 @@ int Engine::addGroup(const QString &name, int at)
         l->isGroup = true;
         l->name = name.isEmpty() ? QStringLiteral("Group %1").arg(groups + 1) : name;
         at = std::clamp(at, 0, int(m_layers.size()));
-        // A group is never inside a group: placed before the block it would split
-        while (at > 0 && at < int(m_layers.size()) && m_layers[size_t(at)]->parent) --at;
+        // A group lives in a viewport, never in another group: it joins the one it is dropped in
+        while (at > 0 && at < int(m_layers.size()) && m_layers[size_t(at)]->parent &&
+               !m_layers[indexOfIdLocked(m_layers[size_t(at)]->parent)]->isViewport)
+            --at;
+        for (int k = at - 1; k >= 0; --k)
+            if (m_layers[size_t(k)]->isViewport) {
+                l->parent = m_layers[size_t(k)]->id;
+                break;
+            } else if (m_layers[size_t(k)]->parent) {
+                const int pi = indexOfIdLocked(m_layers[size_t(k)]->parent);
+                if (pi >= 0 && m_layers[size_t(pi)]->isViewport) {
+                    l->parent = m_layers[size_t(pi)]->id;
+                    break;
+                }
+            }
+        if (!l->parent)
+            for (const auto &o : m_layers)
+                if (o->isViewport) {
+                    l->parent = o->id;
+                    break;
+                }
         m_layers.insert(m_layers.begin() + at, std::move(l));
     }
     emit layersChanged();
@@ -160,19 +277,30 @@ int Engine::indexOfId(quint64 id) const
     return -1;
 }
 
+// Node of a layer in the structure: a viewport, a group, or a plain layer
+static TreeNode nodeOf(const Layer &l)
+{
+    TreeNode n;
+    n.id = l.id;
+    n.parent = l.parent;
+    n.kind = l.isViewport ? TreeNode::Viewport : l.isGroup ? TreeNode::Group : TreeNode::Item;
+    n.isGroup = l.isGroup;
+    return n;
+}
+
 LayerTree Engine::structure() const
 {
     Lock lk(&m_mutex);
     LayerTree t;
     t.reserve(m_layers.size());
-    for (const auto &l : m_layers) t.push_back({l->id, l->parent, l->isGroup});
+    for (const auto &l : m_layers) t.push_back(nodeOf(*l));
     return t;
 }
 
 void Engine::normalizeLocked()
 {
     LayerTree t;
-    for (const auto &l : m_layers) t.push_back({l->id, l->parent, l->isGroup});
+    for (const auto &l : m_layers) t.push_back(nodeOf(*l));
     const LayerTree n = tree::normalized(t);
     if (n == t) return;
     std::vector<std::unique_ptr<Layer>> out;
@@ -236,8 +364,9 @@ bool Engine::isLocked(int i) const
     if (i < 0 || i >= int(m_layers.size())) return false;
     const Layer &l = *m_layers[size_t(i)];
     if (l.locked) return true;
-    const int g = groupIndexOf(i);
-    return g >= 0 && m_layers[size_t(g)]->locked;
+    for (int g = groupIndexOf(i); g >= 0; g = groupIndexOf(g))
+        if (m_layers[size_t(g)]->locked) return true;
+    return false;
 }
 
 void Engine::releaseLayer(Layer &l)

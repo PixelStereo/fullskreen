@@ -4,14 +4,15 @@
 class Engine;
 class QScreen;
 
-// Output window for the projector. It draws nothing itself:
-// the engine's render thread presents the composition into it, locked to vsync,
+// Output window of one viewport — what a screen or a projector shows. It draws nothing itself:
+// the engine's render thread presents that viewport's picture into it, locked to vsync,
 // independently of the UI.
 class OutputWindow : public QWindow
 {
     Q_OBJECT
 public:
-    explicit OutputWindow(Engine *engine);
+    OutputWindow(Engine *engine, quint64 viewportId);
+    quint64 viewportId() const { return m_viewportId; }
     ~OutputWindow() override;
 
     // Fullscreen on a secondary screen, windowed if it is the UI screen.
@@ -31,6 +32,7 @@ protected:
 private:
     void sync();
     Engine *m_engine;
+    quint64 m_viewportId = 0;
     bool m_lastExposed = false;
     bool m_borderlessFullscreen = false; // macOS: fullscreen without a separate Space
     QSize m_lastSize;

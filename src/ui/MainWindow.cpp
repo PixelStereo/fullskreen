@@ -133,11 +133,8 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     statusBar()->addPermanentWidget(m_status);
 
     // --- Output: the render thread presents the frame there itself
-    m_output = new OutputWindow(m_engine);
-    connect(m_output, &OutputWindow::closeRequested, this, [this] { setOutputMode(OutputHidden); });
-    // When the output window has focus (click on the projector screen, or fullscreen on the main screen),
-    // show-control shortcuts remain active.
-    connect(m_output, &OutputWindow::keyPressed, this, [this](int key, Qt::KeyboardModifiers mods) { handleControlKey(key, mods); });
+    // One window per viewport, created and removed as the viewports are
+    syncOutputWindows();
 
     buildMenus();
     m_engine->setDefaultPlayMode(SettingsPanel::defaultPlayMode());
@@ -248,6 +245,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_inspector, &LayerInspector::mappingChanged, m_view, qOverload<>(&QWidget::update));
     connect(m_inspector, &LayerInspector::fileDropped, this, [this](const QString &p) { loadIntoLayer(m_inspector->layerIndex(), p); });
     connect(m_engine, &Engine::layersChanged, this, &MainWindow::refreshLayerList);
+    connect(m_engine, &Engine::layersChanged, this, &MainWindow::syncOutputWindows);
     connect(m_engine, &Engine::compositionSizeChanged, this, [this] { m_view->update(); });
     // The preview follows rendering (at most one update per rendered frame)
     connect(m_engine, &Engine::frameRendered, this, [this] {
@@ -311,7 +309,8 @@ MainWindow::~MainWindow()
     m_statusTimer.stop();
     m_renderTimer.stop();
     m_autosaveTimer.stop();
-    delete m_output;
+    qDeleteAll(m_outputs);
+    m_outputs.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -569,29 +568,97 @@ void MainWindow::toggleWindowed()
     setOutputMode(m_outputMode == OutputWindowed ? OutputHidden : OutputWindowed);
 }
 
+// A window per viewport: created when a viewport appears, removed with it.
+void MainWindow::syncOutputWindows()
+{
+    QList<quint64> alive;
+    for (int i : m_engine->viewports()) alive << m_engine->layerId(i);
+    for (quint64 id : alive) {
+        if (m_outputs.contains(id)) continue;
+        auto *w = new OutputWindow(m_engine, id);
+        connect(w, &OutputWindow::closeRequested, this, [this, id] {
+            const int i = m_engine->indexOfId(id);
+            if (i >= 0) m_engine->setViewportOutput(i, m_engine->layer(i)->vpScreen, 0);
+            syncOutputWindows();
+        });
+        // Show-control shortcuts stay active while an output window has the focus
+        connect(w, &OutputWindow::keyPressed, this,
+                [this](int key, Qt::KeyboardModifiers mods) { handleControlKey(key, mods); });
+        m_outputs.insert(id, w);
+    }
+    for (auto it = m_outputs.begin(); it != m_outputs.end();) {
+        if (alive.contains(it.key())) {
+            ++it;
+            continue;
+        }
+        it.value()->hideOutput();
+        it.value()->deleteLater();
+        it = m_outputs.erase(it);
+    }
+    for (int i : m_engine->viewports()) applyViewportOutput(i);
+}
+
+// Shows or hides a viewport's window, where its own settings say
+void MainWindow::applyViewportOutput(int viewport)
+{
+    const quint64 id = m_engine->layerId(viewport);
+    OutputWindow *w = m_outputs.value(id);
+    if (!w) return;
+    QString screenName;
+    int mode = 0;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Layer *l = m_engine->layer(viewport);
+        if (!l) return;
+        w->setTitle(QStringLiteral("Fulskrin — %1").arg(l->name));
+        screenName = l->vpScreen;
+        mode = l->vpMode;
+    }
+    if (mode == 0) {
+        w->hideOutput();
+        return;
+    }
+    QScreen *sc = nullptr;
+    for (QScreen *s : QGuiApplication::screens())
+        if (s->name() == screenName) sc = s;
+    if (!sc) sc = QGuiApplication::primaryScreen();
+    const bool sameAsUi = sc == screen();
+    w->showOn(sc, mode == 2);
+    if (mode == 2 && sameAsUi) {
+        w->raise();
+        w->requestActivate();
+    }
+}
+
+// The viewport the output commands act on: the one holding the selected layer, else the first
+int MainWindow::currentViewport() const
+{
+    const int v = m_engine->viewportOf(currentLayer());
+    if (v >= 0) return v;
+    const QList<int> all = m_engine->viewports();
+    return all.isEmpty() ? -1 : all.first();
+}
+
 void MainWindow::setOutputMode(OutputMode mode)
 {
+    const int v = currentViewport();
+    if (v < 0) return;
     m_outputMode = mode;
     m_fullscreenAction->setChecked(mode == OutputFullscreen);
     m_windowedAction->setChecked(mode == OutputWindowed);
     m_master->setOutputMode(int(mode));
     m_autosaveDone = false; // output state is part of the session to restore
+    QScreen *sc = selectedScreen();
+    m_engine->setViewportOutput(v, sc ? sc->name() : QString(), int(mode));
+    applyViewportOutput(v);
     if (mode == OutputHidden) {
-        m_output->hideOutput();
         activateWindow();
         return;
     }
-    QScreen *sc = selectedScreen();
-    const bool sameAsUi = sc == screen();
-    m_output->showOn(sc, mode == OutputFullscreen);
-    if (mode == OutputFullscreen && sameAsUi) {
-        // Fullscreen on the UI screen: the output comes to the front and keeps the keyboard (⌘F / Ctrl+F to exit)
-        m_output->raise();
-        m_output->requestActivate();
+    if (mode == OutputFullscreen && sc == screen())
         statusBar()->showMessage(QStringLiteral("Fullscreen on main screen: Ctrl+F (⌘F) to return."), 8000);
-    } else {
+    else
         activateWindow();
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1408,7 +1475,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
     s.setValue("ui/geometry", saveGeometry());
     if (auto *split = findChild<QSplitter *>("mainSplit2")) s.setValue("ui/mainSplit2", split->saveState());
     if (auto *top = findChild<QSplitter *>("topSplit2")) s.setValue("ui/topSplit2", top->saveState());
-    m_output->hideOutput();
+    for (OutputWindow *w : std::as_const(m_outputs)) w->hideOutput();
     // Normal exit: no recovery to offer on next launch.
     if (m_autosaveEnabled) QFile::remove(autosavePath());
     e->accept();

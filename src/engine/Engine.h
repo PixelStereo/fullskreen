@@ -31,6 +31,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <functional>
 #include <mutex>
 
@@ -221,13 +222,27 @@ public:
     void requestSourcePreview(quint64 layerId, int maxSide = 360); // 0: stop
     QImage sourcePreview(quint64 *layerId = nullptr) const;
 
-    // --- Output: window in which the render thread presents the composition
-    void setOutputWindow(QWindow *w);
-    void setOutputExposed(bool exposed, QSize pixelSize);
+    // --- Viewports: what a screen or a projector shows. Every layer is rendered inside one, and each
+    // viewport has its own size in pixels and its own output window.
+    int addViewport(const QString &name = {}, QSize size = {}); // at the end of the list
+    bool isViewport(int i) const;
+    quint64 mainViewportId() const;        // the first one: what the preview and the publishers show
+    QList<int> viewports() const;          // indices, in list order
+    int viewportOf(int i) const;           // index of the viewport an item is rendered in (-1: none)
+    void setViewportSize(int i, QSize size);
+    QSize viewportSize(int i) const;
+    // Where the viewport is shown: screen name (empty: the main screen) and 0 hidden / 1 windowed / 2 fullscreen
+    void setViewportOutput(int i, const QString &screen, int mode);
+    void ensureViewport(); // creates the default viewport and adopts the orphan layers (older projects)
+
+    // --- Output: window in which the render thread presents a viewport
+    void setViewportWindow(quint64 viewportId, QWindow *w);
+    void setViewportExposed(quint64 viewportId, bool exposed, QSize pixelSize);
 
     // --- Rendering
     void renderFrame();                  // manual mode only
-    GLuint outputTexture() const;        // last published frame (readable from a shared context)
+    GLuint outputTexture() const;        // last published frame of the main viewport (shared context)
+    GLuint viewportTexture(quint64 viewportId) const;
     double fps() const { return m_fps.load(); }
     QImage grabOutput();
     quint64 frameCount() const { return m_frameCount.load(); }
@@ -261,7 +276,7 @@ private:
     void renderLoop();
     void runPendingTasks();
     void frame(double dt);
-    void present(QWindow *w, QSize px);
+    void present(const Layer &viewport, QSize px);
     void releaseLayer(Layer &l);
     void releaseAll();
     std::shared_ptr<Garbage> detachSource(Layer &l);
@@ -279,6 +294,7 @@ private:
     Memory memoryFromJson(const QJsonObject &o, const QString &projectDir) const;
     void normalizeLocked(); // restores the structure invariants (lock held)
     quint64 newIdLocked();
+    int indexOfIdLocked(quint64 id) const;
     void drawQuad();
     void blit(GLuint tex, const RenderTarget &target);
     QString resolvePath(const QJsonObject &o, const QString &projectDir) const;
@@ -308,9 +324,12 @@ private:
     std::deque<std::shared_ptr<Task>> m_tasks;
 
     // Output window (read by the render thread)
-    QWindow *m_outWindow = nullptr;
-    bool m_outExposed = false;
-    QSize m_outPixels;
+    struct OutputSurface {
+        QWindow *window = nullptr;
+        bool exposed = false;
+        QSize pixels;
+    };
+    std::map<quint64, OutputSurface> m_outWindows; // by viewport id
 
     GLuint m_quadVao = 0, m_quadVbo = 0;
     GLuint m_meshVao = 0, m_meshVbo = 0, m_meshIbo = 0;
@@ -319,9 +338,6 @@ private:
     GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_presentTexLoc = -1;
     GLint m_prepTexLoc = -1, m_prepRoiLoc = -1, m_prepAddLoc = -1, m_prepRemoveLoc = -1, m_prepUnpremulLoc = -1, m_prepBalanceLoc = -1;
     GLuint m_blackTex = 0;
-    RenderTarget m_output[2];
-    std::atomic<int> m_published{0};
-    int m_back = 1;
 
     QSize m_compSize{1920, 1080};
     std::vector<std::unique_ptr<Layer>> m_layers;
