@@ -19,6 +19,8 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QGuiApplication>
+#include <QScreen>
+#include <QWindow>
 #include <QJsonDocument>
 #include <QLineF>
 #include <QSurfaceFormat>
@@ -725,6 +727,52 @@ int main(int argc, char **argv)
         CHECK(a.size() == QSize(32, 16) && b.size() == QSize(32, 16));
         CHECK(a.pixelColor(16, 8).red() > 250 && a.pixelColor(16, 8).blue() < 5); // each sees its part
         CHECK(b.pixelColor(16, 8).blue() > 250 && b.pixelColor(16, 8).red() < 5);
+        // Each viewport in a window of its own: both windows get their picture (each one has its own context)
+        {
+            QWindow w1, w2;
+            int x = 100;
+            for (QWindow *w : {&w1, &w2}) { // side by side: a window under another one would be grabbed as it
+                w->setSurfaceType(QSurface::OpenGLSurface);
+                w->setFormat(QSurfaceFormat::defaultFormat());
+                w->setGeometry(x, 100, 64, 32);
+                x += 200;
+                w->create();
+                w->show();
+            }
+            QElapsedTimer t;
+            t.start();
+            while ((!w1.isExposed() || !w2.isExposed()) && t.elapsed() < 3000) QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            e.setViewportWindow(vp1, &w1);
+            e.setViewportWindow(vp2, &w2);
+            e.setViewportExposed(vp1, true, w1.size() * w1.devicePixelRatio());
+            e.setViewportExposed(vp2, true, w2.size() * w2.devicePixelRatio());
+            for (int k = 0; k < 3; ++k) {
+                e.renderFrame();
+                QCoreApplication::processEvents();
+            }
+            const QImage g1 = w1.screen()->grabWindow(w1.winId()).toImage(), g2 = w2.screen()->grabWindow(w2.winId()).toImage();
+            CHECK(!g1.isNull() && !g2.isNull());
+            if (!g1.isNull() && !g2.isNull()) {
+                const QColor c1 = g1.pixelColor(g1.width() / 2, g1.height() / 2), c2 = g2.pixelColor(g2.width() / 2, g2.height() / 2);
+                CHECK(c1.red() > 200 && c1.blue() < 50);
+                CHECK(c2.blue() > 200 && c2.red() < 50);
+            }
+            e.setViewportWindow(vp1, nullptr);
+            e.setViewportWindow(vp2, nullptr);
+        }
+        // Publishing follows a viewport changed without going through setPublishSettings (undo, memories, load)
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(vp2))->vpPublish[PublishKind::Syphon].enabled = true;
+        }
+        e.renderFrame();
+        CHECK(e.publishState(vp2, PublishKind::Syphon).level != PublishState::Off);
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(vp2))->vpPublish[PublishKind::Syphon].enabled = false;
+        }
+        e.renderFrame();
+        CHECK(e.publishState(vp2, PublishKind::Syphon).level == PublishState::Off);
         // Left out of the second viewport: the first still shows it
         e.setShownIn(li, vp2, false);
         for (int k = 0; k < 2; ++k) e.renderFrame();

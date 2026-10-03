@@ -318,6 +318,8 @@ void Engine::renderLoop()
 
 void Engine::releaseAll()
 {
+    // Output windows: their contexts (the windows themselves belong to the interface)
+    for (auto &[id, o] : m_outWindows) releaseOutputSurface(o);
     // Publishers: GPU (current context required), then the send threads
     for (auto &[id, pub] : m_pubs) releasePublication(*pub);
     {
@@ -350,15 +352,11 @@ void Engine::setViewportWindow(quint64 viewport, QWindow *w)
 {
     runGl([this, viewport, w] {
         auto it = m_outWindows.find(viewport);
-        if (it != m_outWindows.end() && m_threaded && m_currentSurface == it->second.window && it->second.window != w) {
-            m_context->makeCurrent(m_surface);
-            m_currentSurface = m_surface;
+        if (it != m_outWindows.end() && it->second.window != w) {
+            releaseOutputSurface(it->second); // before the window goes
+            m_outWindows.erase(it);
         }
-        if (!w) {
-            if (it != m_outWindows.end()) m_outWindows.erase(it);
-            return;
-        }
-        m_outWindows[viewport] = OutputSurface{w, false, {}};
+        if (w && !m_outWindows.count(viewport)) m_outWindows[viewport] = OutputSurface{w, false, {}};
     });
 }
 
@@ -367,13 +365,23 @@ void Engine::setViewportExposed(quint64 viewport, bool exposed, QSize pixelSize)
     runGl([this, viewport, exposed, pixelSize] {
         auto it = m_outWindows.find(viewport);
         if (it == m_outWindows.end()) return;
-        if (!exposed && m_threaded && m_currentSurface == it->second.window) {
-            m_context->makeCurrent(m_surface);
-            m_currentSurface = m_surface;
-        }
         it->second.exposed = exposed;
         it->second.pixels = pixelSize;
     });
+}
+
+// The window's context goes; its vertex array goes with it
+void Engine::releaseOutputSurface(OutputSurface &o)
+{
+    if (o.context && o.vao && o.window && o.context->makeCurrent(o.window)) {
+        o.context->extraFunctions()->glDeleteVertexArrays(1, &o.vao);
+        o.context->doneCurrent();
+    }
+    delete o.context;
+    o.context = nullptr;
+    o.vao = 0;
+    m_context->makeCurrent(m_surface);
+    m_currentSurface = m_surface;
 }
 
 GLuint Engine::viewportTexture(quint64 viewport) const
@@ -384,12 +392,19 @@ GLuint Engine::viewportTexture(quint64 viewport) const
     return 0;
 }
 
-// Draws a viewport's last finished picture into the window that is current
-void Engine::present(const Layer &viewport, QSize px)
+// Draws a viewport's last finished picture into its window, with the window's context current
+void Engine::present(const Layer &viewport, OutputSurface &out)
 {
-    auto f = gl();
-    f->glBindFramebuffer(GL_FRAMEBUFFER, m_context->defaultFramebufferObject());
-    f->glViewport(0, 0, px.width(), px.height());
+    auto f = out.context->extraFunctions();
+    if (!out.vao) { // the shared quad, seen through this context
+        f->glGenVertexArrays(1, &out.vao);
+        f->glBindVertexArray(out.vao);
+        f->glBindBuffer(GL_ARRAY_BUFFER, m_quadVbo);
+        f->glEnableVertexAttribArray(0);
+        f->glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    }
+    f->glBindFramebuffer(GL_FRAMEBUFFER, out.context->defaultFramebufferObject());
+    f->glViewport(0, 0, out.pixels.width(), out.pixels.height());
     f->glDisable(GL_BLEND);
     f->glClearColor(0, 0, 0, 1);
     f->glClear(GL_COLOR_BUFFER_BIT);
@@ -397,7 +412,9 @@ void Engine::present(const Layer &viewport, QSize px)
     f->glActiveTexture(GL_TEXTURE0);
     f->glBindTexture(GL_TEXTURE_2D, viewport.vpOut[viewport.vpPublished.load()].tex);
     f->glUniform1i(m_presentTexLoc, 0);
-    drawQuad();
+    f->glBindVertexArray(out.vao);
+    f->glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    f->glBindVertexArray(0);
 }
 
 // Vertical sync of the swap to come. With several windows, only the last swap of the frame waits for the
@@ -420,31 +437,45 @@ static void setSwapInterval(QOpenGLContext *ctx, int n)
 #endif
 }
 
-// Each window on screen is made current in turn and swapped; the context goes back to the offscreen surface
+// Each window on screen is drawn with its own context and swapped; the engine's context then becomes current
+// again. The pictures were finished (glFinish) at the end of the frame, so the other contexts see them whole.
 bool Engine::presentViewports()
 {
-    std::vector<std::pair<const Layer *, OutputSurface>> shown;
+    std::vector<std::pair<const Layer *, OutputSurface *>> shown;
     {
         Lock lk(&m_mutex);
         for (const auto &l : m_layers) {
             if (!l->isViewport) continue;
             auto it = m_outWindows.find(l->id);
-            if (it != m_outWindows.end() && it->second.window && it->second.exposed) shown.push_back({l.get(), it->second});
+            if (it != m_outWindows.end() && it->second.window && it->second.exposed) shown.push_back({l.get(), &it->second});
         }
     }
+    bool any = false;
     for (size_t k = 0; k < shown.size(); ++k) {
-        const auto &[vp, out] = shown[k];
-        if (!m_context->makeCurrent(out.window)) continue;
-        m_currentSurface = out.window;
-        present(*vp, out.pixels);
-        setSwapInterval(m_context, k + 1 == shown.size() ? 1 : 0); // each time: on Windows and Linux, per window
-        m_context->swapBuffers(out.window); // the last one waits for its screen's vertical sync
+        const Layer *vp = shown[k].first;
+        OutputSurface &out = *shown[k].second;
+        if (!out.context) {
+            out.context = new QOpenGLContext;
+            out.context->setShareContext(m_context);
+            out.context->setFormat(m_context->format());
+            if (!out.context->create()) {
+                qWarning("Output window: unable to create its OpenGL context.");
+                delete out.context;
+                out.context = nullptr;
+                continue;
+            }
+        }
+        if (!out.context->makeCurrent(out.window)) continue;
+        present(*vp, out);
+        setSwapInterval(out.context, k + 1 == shown.size() ? 1 : 0); // only the last one waits for the screen
+        out.context->swapBuffers(out.window);
+        any = true;
     }
-    if (m_currentSurface != m_surface) {
+    if (!shown.empty()) {
         m_context->makeCurrent(m_surface);
         m_currentSurface = m_surface;
     }
-    return !shown.empty();
+    return any;
 }
 
 GLuint Engine::outputTexture() const { return m_output[m_published.load()].tex; }

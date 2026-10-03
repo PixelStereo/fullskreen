@@ -403,7 +403,18 @@ void Engine::frame(double dt)
     renderPass(rc);
     composite();
     readSourcePreview();
-    const bool publishChanged = m_publishDirty || m_tapDirty;
+    // Publishing follows the viewports, however they changed (added, removed, undone, loaded, edited)
+    bool publishChanged = m_publishDirty || m_tapDirty;
+    if (!publishChanged) {
+        size_t count = 0;
+        for (const auto &l : m_layers) {
+            if (!l->isViewport) continue;
+            ++count;
+            const auto it = m_pubs.find(l->id);
+            if (it == m_pubs.end() || !(it->second->applied == l->vpPublish)) publishChanged = true;
+        }
+        publishChanged = publishChanged || count != m_pubs.size();
+    }
     m_mutex.unlock();
 
     if (publishChanged) applyPublishing();

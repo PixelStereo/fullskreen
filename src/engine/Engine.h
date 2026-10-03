@@ -277,7 +277,6 @@ private:
     void renderLoop();
     void runPendingTasks();
     void frame(double dt);
-    void present(const Layer &viewport, QSize px);
     bool presentViewports(); // every viewport whose window is on screen (false: none)
     void releaseLayer(Layer &l);
     void releaseAll();
@@ -333,11 +332,17 @@ private:
     std::deque<std::shared_ptr<Task>> m_tasks;
 
     // Output window (read by the render thread)
+    // Each output window has a context of its own, sharing textures and programs with the engine's: its
+    // drawable never changes (on macOS, moving one context from window to window every frame left them black).
     struct OutputSurface {
         QWindow *window = nullptr;
         bool exposed = false;
         QSize pixels;
+        QOpenGLContext *context = nullptr; // created on first presentation (render thread)
+        GLuint vao = 0;                    // vertex arrays are not shared between contexts
     };
+    void releaseOutputSurface(OutputSurface &o);
+    void present(const Layer &viewport, OutputSurface &out);
     std::map<quint64, OutputSurface> m_outWindows; // by viewport id (render thread)
 
     GLuint m_quadVao = 0, m_quadVbo = 0;
