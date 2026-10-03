@@ -8,6 +8,7 @@
 #include <QRectF>
 #include <QWidget>
 #include <functional>
+#include <vector>
 
 class QDoubleSpinBox;
 class QSlider;
@@ -29,39 +30,92 @@ private:
     std::function<void()> m_reset;
 };
 
-// Playback bar of a video or a sound: the whole media, the in / out range highlighted with its two markers,
-// and the playhead. Click or drag: seek. Drag a marker: move the in or out point.
-class SeekBar : public QWidget
+// One number, one control: a bar that is dragged, graduated with tick marks, and the value shown and typed
+// at its right end. Replaces the slider + spin box + separate value label of the earlier panels.
+// A click on the bar jumps to that value, a drag follows the cursor, the wheel steps, and the field at the
+// right takes a typed value (with its unit). Fine adjustment with Shift.
+class SliderField : public QWidget
 {
     Q_OBJECT
 public:
-    explicit SeekBar(QWidget *parent = nullptr);
-    void setDuration(double d);
-    void setPosition(double t);
-    void setInOut(double in, double out); // out < 0: end of the media
-    bool isDragging() const { return m_drag != None; }
-    void setMarkersEditable(bool on) { m_markersEditable = on; } // locked layer: seek only
-    QSize sizeHint() const override { return QSize(200, 30); }
-    QSize minimumSizeHint() const override { return QSize(60, 30); }
+    explicit SliderField(QWidget *parent = nullptr);
+    void setRange(double min, double max);
+    // Widens what the field accepts beyond the bar: the bar covers the useful range, extreme values are typed
+    void setTypedRange(double min, double max);
+    void setDecimals(int d);
+    void setSuffix(const QString &s);  // " %", " s", " ×"
+    void setSingleStep(double s);
+    void setTicks(int n);              // tick marks drawn on the bar (0: none)
+    void setSnaps(const std::vector<double> &v); // values the cursor catches while dragging (0, 100 %…)
+    void setOrigin(double v);          // where the fill starts (0 by default; 0 in the middle for a ± range)
+    void setValue(double v);           // no signal
+    double value() const { return m_value; }
+    bool isDragging() const { return m_drag; }
+    QSize sizeHint() const override { return QSize(220, 24); }
 
 signals:
-    void seekRequested(double t);
-    void inOutEdited(bool in, double t); // continuous while dragging a marker
+    void valueEdited(double v);   // continuous while dragging, and on a typed value
+    void editingFinished(double v);
 
 protected:
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *e) override;
     void mouseMoveEvent(QMouseEvent *e) override;
     void mouseReleaseEvent(QMouseEvent *e) override;
+    void wheelEvent(QWheelEvent *e) override;
+    void resizeEvent(QResizeEvent *e) override;
 
 private:
-    QRectF track() const;
-    double xOf(double t) const;
-    double tOf(double x) const;
-    enum Drag { None, Head, In, Out } m_drag = None;
-    double m_duration = 0, m_pos = 0, m_in = 0, m_out = -1;
-    bool m_markersEditable = true;
+    QRectF bar() const;
+    double valueAt(double x) const;
+    void apply(double v, bool finished);
+    class QDoubleSpinBox *m_spin;
+    double m_value = 0, m_min = 0, m_max = 1, m_origin = 0;
+    int m_ticks = 0;
+    bool m_drag = false;
+    std::vector<double> m_snaps;
 };
+
+// Two numbers on one bar: the chosen range is highlighted between two handles, with its bounds typed at
+// either end. Used for the in / out points of a video or a sound.
+class RangeField : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit RangeField(QWidget *parent = nullptr);
+    void setRange(double min, double max); // the bounds of the bar
+    void setDecimals(int d);
+    void setSuffix(const QString &s);
+    void setValues(double lo, double hi); // no signal
+    double low() const { return m_lo; }
+    double high() const { return m_hi; }
+    bool isDragging() const { return m_drag != 0; }
+    QSize sizeHint() const override { return QSize(260, 24); }
+
+signals:
+    void edited(bool low, double v); // continuous while dragging
+    void editingFinished();
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+    void mousePressEvent(QMouseEvent *e) override;
+    void mouseMoveEvent(QMouseEvent *e) override;
+    void mouseReleaseEvent(QMouseEvent *e) override;
+    void resizeEvent(QResizeEvent *e) override;
+
+private:
+    QRectF bar() const;
+    double valueAt(double x) const;
+    double xOf(double v) const;
+    class QDoubleSpinBox *m_loSpin, *m_hiSpin;
+    double m_lo = 0, m_hi = 1, m_min = 0, m_max = 1;
+    int m_drag = 0; // 0 none, 1 low, 2 high
+};
+
+// Transport and play-mode icons, drawn (no symbol font needed), as the padlock is.
+enum class TransportIcon { PlayBack, Pause, PlayForward, ToStart, StepBack, StepForward, MarkIn, MarkOut };
+QIcon transportIcon(TransportIcon kind);
+QIcon playModeIcon(int mode); // PlayMode: OneShot, Loop, PingPong, Stop
 
 // Part of the source picture used by a layer: preview of the whole picture with a rectangle whose sides are dragged
 // (they stay straight); dragging inside moves the rectangle. Numeric fields in % below.

@@ -20,8 +20,12 @@ chain) or **post-FX** (after it). The same picture is then mapped, colored and t
 else on the stage. A layer used this way is rendered even when it is hidden — including a group, which makes a
 hidden group a reusable "source" — and anything that would make a picture feed back on itself is refused.
 
-**Transport.** Play / pause (Space), position, speed — including **negative speed** to play backwards — and four
-play modes: One-shot (freezes on the last frame), Loop, Ping-pong (decoded backwards in short windows, so any
+**Transport.** The Source tab shows what the media is (name, resolution, duration, rate, codec, sound), then a
+row of transport buttons — play backwards, pause, play, back to the in point, one frame back, one frame on —
+a row of play modes with the in / out buttons, and three bars: **Position**, **Speed** and **Loop** (the played
+range, two handles). Each bar is one control: drag it, type the value at its right end, or use the wheel; Shift
+makes the drag ten times finer and the notable values catch the cursor. Play / pause is also Space.
+The play modes: One-shot (freezes on the last frame), Loop, Ping-pong (decoded backwards in short windows, so any
 codec works), Stop (black and silent at the end). **In / out points** per layer bound playback in both
 directions, draggable on the playback bar. The default mode for newly loaded media is a setting.
 
@@ -197,7 +201,8 @@ src/ui/       Qt Widgets interface
   MainWindow, LayerInspector, ParamPanel, MappingView, OutputWindow
   Commands      undo commands (QUndoStack)
   MediaBin, LayerTable, MasterPanel, SettingsPanel, MemoryPanel
-  Widgets       click-to-reset labels, playback bar with in / out, ROI editor, color editor
+  Widgets       click-to-reset labels, bars that are dragged and typed in one widget (SliderField,
+                RangeField), transport and play-mode icons drawn by hand, ROI editor, color editor
 isf/          bundled shaders
 test/         automated tests
 ```

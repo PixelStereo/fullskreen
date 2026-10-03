@@ -13,6 +13,8 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPixmap>
+#include <QWheelEvent>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QCoreApplication>
@@ -56,137 +58,6 @@ void ResetLabel::leaveEvent(QEvent *e)
 {
     setStyleSheet(QString());
     QLabel::leaveEvent(e);
-}
-
-// ---------------------------------------------------------------------------
-// SeekBar
-// ---------------------------------------------------------------------------
-
-SeekBar::SeekBar(QWidget *parent) : QWidget(parent)
-{
-    setMouseTracking(true);
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    setToolTip(QStringLiteral("Click or drag to seek · drag the [ ] markers to move the in / out points"));
-}
-
-void SeekBar::setDuration(double d)
-{
-    if (d == m_duration) return;
-    m_duration = d;
-    update();
-}
-
-void SeekBar::setPosition(double t)
-{
-    if (m_drag == Head || std::abs(t - m_pos) < 1e-6) return;
-    m_pos = t;
-    update();
-}
-
-void SeekBar::setInOut(double in, double out)
-{
-    if (m_drag == In || m_drag == Out) return;
-    if (in == m_in && out == m_out) return;
-    m_in = in;
-    m_out = out;
-    update();
-}
-
-QRectF SeekBar::track() const { return QRectF(7, 11, width() - 14, 8); }
-
-double SeekBar::xOf(double t) const
-{
-    const QRectF r = track();
-    return m_duration > 0 ? r.left() + std::clamp(t / m_duration, 0.0, 1.0) * r.width() : r.left();
-}
-
-double SeekBar::tOf(double x) const
-{
-    const QRectF r = track();
-    return m_duration > 0 ? std::clamp((x - r.left()) / r.width(), 0.0, 1.0) * m_duration : 0.0;
-}
-
-void SeekBar::paintEvent(QPaintEvent *)
-{
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
-    const QRectF r = track();
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(28, 28, 31));
-    p.drawRoundedRect(r, 3, 3);
-    const double out = m_out < 0 ? m_duration : m_out;
-    const double xi = xOf(m_in), xo = xOf(out);
-    // Played range
-    p.setBrush(QColor(255, 160, 40, isEnabled() ? 110 : 50));
-    p.drawRect(QRectF(QPointF(xi, r.top()), QPointF(xo, r.bottom())));
-    // Progress inside the range
-    p.setBrush(QColor(255, 160, 40, isEnabled() ? 220 : 90));
-    p.drawRect(QRectF(QPointF(xi, r.top()), QPointF(std::clamp(xOf(m_pos), xi, xo), r.bottom())));
-    // In / out markers: brackets above and below the track
-    const QColor marker(255, 200, 120);
-    p.setPen(QPen(marker, 2));
-    p.setBrush(Qt::NoBrush);
-    auto bracket = [&](double x, int dir) {
-        QPainterPath path;
-        path.moveTo(x + 5 * dir, r.top() - 6);
-        path.lineTo(x, r.top() - 6);
-        path.lineTo(x, r.bottom() + 6);
-        path.lineTo(x + 5 * dir, r.bottom() + 6);
-        p.drawPath(path);
-    };
-    bracket(xi, 1);
-    bracket(xo, -1);
-    // Playhead
-    const double xp = xOf(m_pos);
-    p.setPen(QPen(Qt::white, 2));
-    p.drawLine(QPointF(xp, r.top() - 4), QPointF(xp, r.bottom() + 4));
-}
-
-void SeekBar::mousePressEvent(QMouseEvent *e)
-{
-    if (e->button() != Qt::LeftButton || m_duration <= 0) return;
-    const double x = e->position().x();
-    const double out = m_out < 0 ? m_duration : m_out;
-    const double di = std::abs(x - xOf(m_in)), dout = std::abs(x - xOf(out));
-    const bool nearMarkerZone = e->position().y() < track().top() || e->position().y() > track().bottom();
-    // A marker is grabbed above / below the track, or right on it when the playhead is not closer
-    if (m_markersEditable && std::min(di, dout) < 6 && (nearMarkerZone || std::abs(x - xOf(m_pos)) > 4)) {
-        m_drag = di <= dout ? In : Out;
-    } else {
-        m_drag = Head;
-        m_pos = tOf(x);
-        emit seekRequested(m_pos);
-    }
-    update();
-}
-
-void SeekBar::mouseMoveEvent(QMouseEvent *e)
-{
-    const double x = e->position().x();
-    if (m_drag == None) {
-        const double out = m_out < 0 ? m_duration : m_out;
-        const bool marker = m_markersEditable && std::min(std::abs(x - xOf(m_in)), std::abs(x - xOf(out))) < 6;
-        setCursor(marker ? Qt::SizeHorCursor : Qt::ArrowCursor);
-        return;
-    }
-    const double t = tOf(x);
-    if (m_drag == Head) {
-        m_pos = t;
-        emit seekRequested(t);
-    } else if (m_drag == In) {
-        m_in = std::min(t, (m_out < 0 ? m_duration : m_out) - 0.01);
-        emit inOutEdited(true, std::max(0.0, m_in));
-    } else {
-        m_out = std::max(t, m_in + 0.01);
-        emit inOutEdited(false, m_out >= m_duration - 1e-6 ? -1.0 : m_out);
-    }
-    update();
-}
-
-void SeekBar::mouseReleaseEvent(QMouseEvent *)
-{
-    m_drag = None;
-    update();
 }
 
 // ---------------------------------------------------------------------------
@@ -710,4 +581,425 @@ bool SearchPicker::eventFilter(QObject *o, QEvent *e)
         }
     }
     return QWidget::eventFilter(o, e);
+}
+
+// ---------------------------------------------------------------------------
+// SliderField, RangeField
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr int kFieldHeight = 24;
+const QColor kTrack(28, 28, 31), kFill(255, 160, 40, 210), kFillOff(255, 160, 40, 80);
+const QColor kTick(255, 255, 255, 38), kBorder(0, 0, 0, 90);
+
+// Flat field at the end of a bar: the value, typed, with its unit and no spin buttons.
+QDoubleSpinBox *valueField(QWidget *parent, Qt::Alignment align = Qt::AlignRight)
+{
+    auto *s = new QDoubleSpinBox(parent);
+    s->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    s->setAlignment(align | Qt::AlignVCenter);
+    s->setKeyboardTracking(false);
+    s->setFrame(false);
+    s->setStyleSheet("QDoubleSpinBox { background: #232326; border: none; padding: 0 5px; }");
+    s->setFixedHeight(kFieldHeight - 2);
+    return s;
+}
+
+int fieldWidth(const QDoubleSpinBox *s)
+{
+    const QString longest = QStringLiteral("-%1%2").arg(std::max(std::abs(s->minimum()), std::abs(s->maximum())),
+                                                        0, 'f', s->decimals())
+                            + s->suffix();
+    return s->fontMetrics().horizontalAdvance(longest) + 16;
+}
+} // namespace
+
+SliderField::SliderField(QWidget *parent) : QWidget(parent)
+{
+    setFixedHeight(kFieldHeight);
+    setFocusPolicy(Qt::StrongFocus);
+    setCursor(Qt::SizeHorCursor);
+    m_spin = valueField(this);
+    m_spin->setRange(0, 1);
+    connect(m_spin, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        if (std::abs(v - m_value) < 1e-12) return;
+        m_value = v;
+        update();
+        emit valueEdited(v);
+        emit editingFinished(v);
+    });
+}
+
+void SliderField::setRange(double min, double max)
+{
+    m_min = min;
+    m_max = std::max(max, min + 1e-9);
+    m_spin->setRange(min, max);
+    m_origin = std::clamp(m_origin, m_min, m_max);
+    resizeEvent(nullptr);
+    update();
+}
+void SliderField::setTypedRange(double min, double max)
+{
+    m_spin->setRange(min, max);
+    resizeEvent(nullptr);
+}
+void SliderField::setDecimals(int d) { m_spin->setDecimals(d); resizeEvent(nullptr); }
+void SliderField::setSuffix(const QString &s) { m_spin->setSuffix(s); resizeEvent(nullptr); }
+void SliderField::setSingleStep(double s) { m_spin->setSingleStep(s); }
+void SliderField::setTicks(int n) { m_ticks = n; update(); }
+void SliderField::setSnaps(const std::vector<double> &v) { m_snaps = v; }
+void SliderField::setOrigin(double v) { m_origin = std::clamp(v, m_min, m_max); update(); }
+
+void SliderField::setValue(double v)
+{
+    v = std::clamp(v, m_spin->minimum(), m_spin->maximum());
+    if (std::abs(v - m_value) < 1e-12) return;
+    m_value = v;
+    QSignalBlocker b(m_spin);
+    m_spin->setValue(v);
+    update();
+}
+
+void SliderField::resizeEvent(QResizeEvent *)
+{
+    const int w = fieldWidth(m_spin);
+    m_spin->setGeometry(width() - w, 1, w, kFieldHeight - 2);
+    update();
+}
+
+QRectF SliderField::bar() const { return QRectF(0, 1, width() - m_spin->width() - 4, kFieldHeight - 2); }
+double SliderField::valueAt(double x) const
+{
+    const QRectF r = bar();
+    return m_min + std::clamp((x - r.left()) / std::max(1.0, r.width()), 0.0, 1.0) * (m_max - m_min);
+}
+
+void SliderField::apply(double v, bool finished)
+{
+    v = std::clamp(v, m_spin->minimum(), m_spin->maximum());
+    const double q = std::pow(10, m_spin->decimals());
+    v = std::round(v * q) / q;
+    if (std::abs(v - m_value) > 1e-12) {
+        m_value = v;
+        QSignalBlocker b(m_spin);
+        m_spin->setValue(v);
+        update();
+        emit valueEdited(v);
+    }
+    if (finished) emit editingFinished(m_value);
+}
+
+void SliderField::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QRectF r = bar();
+    p.setPen(Qt::NoPen);
+    p.setBrush(kTrack);
+    p.drawRoundedRect(r, 3, 3);
+    auto xOf = [&](double v) {
+        return r.left() + (std::clamp(v, m_min, m_max) - m_min) / (m_max - m_min) * r.width();
+    };
+    const double x0 = xOf(m_origin), xv = xOf(m_value);
+    p.setBrush(isEnabled() ? kFill : kFillOff);
+    p.drawRoundedRect(QRectF(QPointF(std::min(x0, xv), r.top()), QPointF(std::max(x0, xv), r.bottom())), 3, 3);
+    if (m_ticks > 1) {
+        p.setPen(QPen(kTick, 1));
+        for (int i = 1; i < m_ticks; ++i) {
+            const double x = r.left() + r.width() * i / m_ticks;
+            p.drawLine(QPointF(x, r.top() + 3), QPointF(x, r.bottom() - 3));
+        }
+    }
+    p.setPen(QPen(kBorder, 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
+    if (hasFocus()) {
+        p.setPen(QPen(QColor(255, 160, 40, 140), 1));
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
+    }
+}
+
+void SliderField::mousePressEvent(QMouseEvent *e)
+{
+    if (e->button() != Qt::LeftButton || !isEnabled() || e->position().x() > bar().right()) return;
+    m_drag = true;
+    setFocus(Qt::MouseFocusReason);
+    apply(valueAt(e->position().x()), false);
+}
+void SliderField::mouseMoveEvent(QMouseEvent *e)
+{
+    if (!m_drag) return;
+    const double v = valueAt(e->position().x());
+    // Shift: ten times finer, from where the value is
+    if (e->modifiers() & Qt::ShiftModifier) return apply(m_value + (v - m_value) * 0.1, false);
+    // Otherwise the notable values catch the cursor, so they can be hit on a wide range
+    const double tol = (m_max - m_min) * 0.012;
+    double best = v;
+    for (double snap : m_snaps)
+        if (snap >= m_min && snap <= m_max && std::abs(v - snap) < tol) best = snap;
+    apply(best, false);
+}
+void SliderField::mouseReleaseEvent(QMouseEvent *e)
+{
+    if (!m_drag || e->button() != Qt::LeftButton) return;
+    m_drag = false;
+    emit editingFinished(m_value);
+}
+void SliderField::wheelEvent(QWheelEvent *e)
+{
+    if (!isEnabled()) return;
+    const double step = m_spin->singleStep() * (e->modifiers() & Qt::ShiftModifier ? 0.1 : 1.0);
+    apply(m_value + (e->angleDelta().y() > 0 ? step : -step), true);
+    e->accept();
+}
+
+// --- RangeField
+
+RangeField::RangeField(QWidget *parent) : QWidget(parent)
+{
+    setFixedHeight(kFieldHeight);
+    setCursor(Qt::SizeHorCursor);
+    m_loSpin = valueField(this, Qt::AlignLeft);
+    m_hiSpin = valueField(this);
+    connect(m_loSpin, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        if (std::abs(v - m_lo) < 1e-12) return;
+        m_lo = std::min(v, m_hi);
+        update();
+        emit edited(true, m_lo);
+        emit editingFinished();
+    });
+    connect(m_hiSpin, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        if (std::abs(v - m_hi) < 1e-12) return;
+        m_hi = std::max(v, m_lo);
+        update();
+        emit edited(false, m_hi);
+        emit editingFinished();
+    });
+}
+
+void RangeField::setRange(double min, double max)
+{
+    m_min = min;
+    m_max = std::max(max, min + 1e-9);
+    for (auto *s : {m_loSpin, m_hiSpin}) s->setRange(min, m_max);
+    resizeEvent(nullptr);
+    update();
+}
+void RangeField::setDecimals(int d) { for (auto *s : {m_loSpin, m_hiSpin}) s->setDecimals(d); resizeEvent(nullptr); }
+void RangeField::setSuffix(const QString &s) { for (auto *b : {m_loSpin, m_hiSpin}) b->setSuffix(s); resizeEvent(nullptr); }
+
+void RangeField::setValues(double lo, double hi)
+{
+    m_lo = std::clamp(lo, m_min, m_max);
+    m_hi = std::clamp(std::max(hi, m_lo), m_min, m_max);
+    QSignalBlocker a(m_loSpin), b(m_hiSpin);
+    m_loSpin->setValue(m_lo);
+    m_hiSpin->setValue(m_hi);
+    update();
+}
+
+void RangeField::resizeEvent(QResizeEvent *)
+{
+    const int wl = fieldWidth(m_loSpin), wh = fieldWidth(m_hiSpin);
+    m_loSpin->setGeometry(0, 1, wl, kFieldHeight - 2);
+    m_hiSpin->setGeometry(width() - wh, 1, wh, kFieldHeight - 2);
+    update();
+}
+
+QRectF RangeField::bar() const
+{
+    return QRectF(QPointF(m_loSpin->width() + 4, 1), QPointF(width() - m_hiSpin->width() - 4, kFieldHeight - 1));
+}
+double RangeField::xOf(double v) const
+{
+    const QRectF r = bar();
+    return r.left() + (v - m_min) / (m_max - m_min) * r.width();
+}
+double RangeField::valueAt(double x) const
+{
+    const QRectF r = bar();
+    return m_min + std::clamp((x - r.left()) / std::max(1.0, r.width()), 0.0, 1.0) * (m_max - m_min);
+}
+
+void RangeField::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QRectF r = bar();
+    p.setPen(Qt::NoPen);
+    p.setBrush(kTrack);
+    p.drawRoundedRect(r, 3, 3);
+    p.setBrush(isEnabled() ? QColor(255, 160, 40, 110) : QColor(255, 160, 40, 45));
+    p.drawRect(QRectF(QPointF(xOf(m_lo), r.top()), QPointF(xOf(m_hi), r.bottom())));
+    p.setPen(QPen(kBorder, 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
+    // Handles: a triangle pointing into the range
+    p.setPen(Qt::NoPen);
+    p.setBrush(isEnabled() ? QColor(255, 200, 120) : QColor(150, 140, 130));
+    for (int k = 0; k < 2; ++k) {
+        const double x = k ? xOf(m_hi) : xOf(m_lo);
+        const double d = k ? -5 : 5;
+        QPainterPath path;
+        path.moveTo(x, r.top());
+        path.lineTo(x + d, r.top());
+        path.lineTo(x, r.top() + 6);
+        path.closeSubpath();
+        p.drawPath(path);
+        QPainterPath low;
+        low.moveTo(x, r.bottom());
+        low.lineTo(x + d, r.bottom());
+        low.lineTo(x, r.bottom() - 6);
+        low.closeSubpath();
+        p.drawPath(low);
+        p.fillRect(QRectF(x - 0.5, r.top(), 1, r.height()), p.brush());
+    }
+}
+
+void RangeField::mousePressEvent(QMouseEvent *e)
+{
+    if (e->button() != Qt::LeftButton || !isEnabled()) return;
+    const double x = e->position().x();
+    if (x < bar().left() || x > bar().right()) return;
+    m_drag = std::abs(x - xOf(m_lo)) <= std::abs(x - xOf(m_hi)) ? 1 : 2;
+    mouseMoveEvent(e);
+}
+void RangeField::mouseMoveEvent(QMouseEvent *e)
+{
+    if (!m_drag) return;
+    const double v = valueAt(e->position().x());
+    if (m_drag == 1) {
+        m_lo = std::min(v, m_hi);
+        QSignalBlocker b(m_loSpin);
+        m_loSpin->setValue(m_lo);
+        emit edited(true, m_lo);
+    } else {
+        m_hi = std::max(v, m_lo);
+        QSignalBlocker b(m_hiSpin);
+        m_hiSpin->setValue(m_hi);
+        emit edited(false, m_hi);
+    }
+    update();
+}
+void RangeField::mouseReleaseEvent(QMouseEvent *e)
+{
+    if (!m_drag || e->button() != Qt::LeftButton) return;
+    m_drag = 0;
+    emit editingFinished();
+}
+
+// ---------------------------------------------------------------------------
+// Transport and play-mode icons
+// ---------------------------------------------------------------------------
+
+namespace {
+// 20x20 logical glyph, drawn so no symbol font is needed (as the padlock is).
+// Light on the dark panel, dark once the button is checked (the checked background is the orange accent).
+QIcon drawnIcon(const std::function<void(QPainter &, const QColor &)> &draw)
+{
+    QIcon icon;
+    for (int px : {20, 40}) {
+        for (QIcon::State st : {QIcon::Off, QIcon::On}) {
+            QImage img(px, px, QImage::Format_ARGB32_Premultiplied);
+            img.fill(Qt::transparent);
+            QPainter p(&img);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.scale(px / 20.0, px / 20.0);
+            draw(p, st == QIcon::On ? QColor(30, 26, 20) : QColor(225, 225, 228));
+            p.end();
+            icon.addPixmap(QPixmap::fromImage(img), QIcon::Normal, st);
+        }
+    }
+    return icon;
+}
+
+QPainterPath triangle(double x, double y, double w, double h, int dir) // dir +1 right, -1 left
+{
+    QPainterPath t;
+    t.moveTo(x + (dir > 0 ? 0 : w), y);
+    t.lineTo(x + (dir > 0 ? 0 : w), y + h);
+    t.lineTo(x + (dir > 0 ? w : 0), y + h / 2);
+    t.closeSubpath();
+    return t;
+}
+} // namespace
+
+QIcon transportIcon(TransportIcon kind)
+{
+    return drawnIcon([kind](QPainter &p, const QColor &c) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(c);
+        switch (kind) {
+        case TransportIcon::PlayForward: p.drawPath(triangle(6, 4, 9, 12, +1)); break;
+        case TransportIcon::PlayBack: p.drawPath(triangle(5, 4, 9, 12, -1)); break;
+        case TransportIcon::Pause:
+            p.drawRect(QRectF(6, 4, 3, 12));
+            p.drawRect(QRectF(11.5, 4, 3, 12));
+            break;
+        case TransportIcon::ToStart:
+            p.drawRect(QRectF(5, 4, 2, 12));
+            p.drawPath(triangle(8, 4, 7, 12, -1));
+            break;
+        case TransportIcon::StepBack:
+            p.drawRect(QRectF(5, 4, 2, 12));
+            p.drawPath(triangle(8, 6, 6, 8, -1));
+            break;
+        case TransportIcon::StepForward:
+            p.drawPath(triangle(6, 6, 6, 8, +1));
+            p.drawRect(QRectF(13, 4, 2, 12));
+            break;
+        case TransportIcon::MarkIn:  // [
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(c, 2));
+            p.drawPolyline(QPolygonF({QPointF(12, 4), QPointF(7, 4), QPointF(7, 16), QPointF(12, 16)}));
+            break;
+        case TransportIcon::MarkOut: // ]
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(c, 2));
+            p.drawPolyline(QPolygonF({QPointF(8, 4), QPointF(13, 4), QPointF(13, 16), QPointF(8, 16)}));
+            break;
+        }
+    });
+}
+
+// PlayMode: 0 one-shot (plays once, freezes), 1 loop, 2 ping-pong, 3 stop (black at the end)
+QIcon playModeIcon(int mode)
+{
+    return drawnIcon([mode](QPainter &p, const QColor &c) {
+        p.setPen(QPen(c, 1.6, Qt::SolidLine, Qt::FlatCap));
+        p.setBrush(Qt::NoBrush);
+        auto arrowHead = [&](double x, double y, int dir) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(c);
+            p.drawPath(triangle(dir > 0 ? x - 4 : x, y - 3, 4, 6, dir));
+            p.setPen(QPen(c, 1.6));
+            p.setBrush(Qt::NoBrush);
+        };
+        switch (mode) {
+        case 1: // loop: a circle closed by an arrow
+            p.drawArc(QRectF(4, 4, 12, 12), 40 * 16, 290 * 16);
+            arrowHead(15.5, 7.5, +1);
+            break;
+        case 2: // ping-pong: forwards above, backwards below
+            p.drawLine(QPointF(4, 7), QPointF(14, 7));
+            arrowHead(16, 7, +1);
+            p.drawLine(QPointF(16, 13), QPointF(6, 13));
+            arrowHead(4, 13, -1);
+            break;
+        case 3: // stop: the arrow runs into a black screen
+            p.drawLine(QPointF(2, 10), QPointF(9, 10));
+            arrowHead(11, 10, +1);
+            p.setPen(QPen(c, 1.4));
+            p.setBrush(QColor(20, 20, 22));
+            p.drawRoundedRect(QRectF(12.5, 5, 6, 10), 1.5, 1.5);
+            break;
+        default: // one-shot: the arrow stops and stays there
+            p.drawLine(QPointF(3, 10), QPointF(12, 10));
+            arrowHead(14, 10, +1);
+            p.setPen(QPen(c, 1.6, Qt::DotLine));
+            p.drawLine(QPointF(16, 6), QPointF(16, 14));
+            break;
+        }
+    });
 }
