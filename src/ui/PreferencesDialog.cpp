@@ -1,6 +1,8 @@
 #include "PreferencesDialog.h"
 
+#include <QCheckBox>
 #include <QComboBox>
+#include <QSpinBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -16,6 +18,12 @@ PlayMode PreferencesDialog::defaultPlayMode()
 }
 
 void PreferencesDialog::setDefaultPlayMode(PlayMode m) { QSettings().setValue(kPlayModeKey, playModeKey(m)); }
+
+static QString s_oscStatus;
+bool PreferencesDialog::oscEnabled() { return QSettings().value("osc/enabled", true).toBool(); }
+int PreferencesDialog::oscPort() { return QSettings().value("osc/port", 9000).toInt(); }
+int PreferencesDialog::oscQueryPort() { return QSettings().value("osc/queryPort", 9001).toInt(); }
+void PreferencesDialog::setOscStatus(const QString &s) { s_oscStatus = s; }
 
 PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent)
 {
@@ -36,11 +44,36 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent)
     form->addRow(note);
     v->addWidget(playback);
 
+    auto *osc = new QGroupBox(QStringLiteral("OSC"));
+    auto *of = new QFormLayout(osc);
+    m_osc = new QCheckBox(QStringLiteral("Control by OSC and publish the namespace (OSCQuery)"));
+    m_osc->setChecked(oscEnabled());
+    m_oscPort = new QSpinBox;
+    m_queryPort = new QSpinBox;
+    for (QSpinBox *sb : {m_oscPort, m_queryPort}) sb->setRange(1024, 65535);
+    m_oscPort->setValue(oscPort());
+    m_queryPort->setValue(oscQueryPort());
+    of->addRow(m_osc);
+    of->addRow(QStringLiteral("OSC port (UDP)"), m_oscPort);
+    of->addRow(QStringLiteral("OSCQuery port (HTTP, WebSocket)"), m_queryPort);
+    auto *oscNote = new QLabel(s_oscStatus + QStringLiteral(
+        "<br>Addresses: /master/…, /composition/…, /layers/&lt;name&gt;/… (groups: /layers/&lt;group&gt;/layers/&lt;name&gt;/…). "
+        "Open http://&lt;this machine&gt;:&lt;OSCQuery port&gt;/ for the whole tree."));
+    oscNote->setWordWrap(true);
+    oscNote->setTextFormat(Qt::RichText);
+    oscNote->setStyleSheet("color:#888; font-size:11px;");
+    of->addRow(oscNote);
+    v->addWidget(osc);
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     v->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, this, [this] {
         setDefaultPlayMode(PlayMode(m_playMode->currentData().toInt()));
+        QSettings st;
+        st.setValue("osc/enabled", m_osc->isChecked());
+        st.setValue("osc/port", m_oscPort->value());
+        st.setValue("osc/queryPort", m_queryPort->value());
         accept();
     });
     setMinimumWidth(420);

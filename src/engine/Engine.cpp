@@ -280,6 +280,23 @@ bool Engine::initialize(QString *err)
                                    "void main(){ o = vec4(texture(u_tex, v_uv).rgb, 1.0); }\n",
                                    &log);
     m_flipTexLoc = f->glGetUniformLocation(m_flipProgram, "u_tex");
+    // Layer preparation: crop (part of the source used), color (added / removed), unpremultiplied alpha (groups)
+    m_prepProgram = compileProgram(quadVs,
+                                   "#version 330 core\nuniform sampler2D u_tex; uniform vec4 u_crop; uniform vec3 u_add;\n"
+                                   "uniform vec3 u_remove; uniform int u_unpremul; in vec2 v_uv; out vec4 o;\n"
+                                   "void main(){ vec4 c = texture(u_tex, mix(u_crop.xy, u_crop.zw, v_uv));\n"
+                                   "  if (u_unpremul != 0 && c.a > 0.0) c.rgb /= c.a;\n"
+                                   "  o = vec4(clamp(c.rgb * (1.0 - u_remove) + u_add, 0.0, 1.0), c.a); }\n",
+                                   &log);
+    if (!m_prepProgram) {
+        if (err) *err = QStringLiteral("Internal shaders: ") + log;
+        return false;
+    }
+    m_prepTexLoc = f->glGetUniformLocation(m_prepProgram, "u_tex");
+    m_prepCropLoc = f->glGetUniformLocation(m_prepProgram, "u_crop");
+    m_prepAddLoc = f->glGetUniformLocation(m_prepProgram, "u_add");
+    m_prepRemoveLoc = f->glGetUniformLocation(m_prepProgram, "u_remove");
+    m_prepUnpremulLoc = f->glGetUniformLocation(m_prepProgram, "u_unpremul");
     m_compTexLoc = f->glGetUniformLocation(m_compProgram, "u_tex");
     m_compOpacityLoc = f->glGetUniformLocation(m_compProgram, "u_opacity");
 
@@ -453,9 +470,10 @@ void Engine::releaseAll()
     auto f = gl();
     for (RenderTarget &o : m_output) o.destroy();
     m_readback.destroy();
+    m_previewTarget.destroy();
     if (m_pbo[0]) f->glDeleteBuffers(2, m_pbo);
     m_pbo[0] = m_pbo[1] = 0;
-    for (GLuint p : {m_blitProgram, m_compProgram, m_presentProgram, m_flipProgram})
+    for (GLuint p : {m_blitProgram, m_compProgram, m_presentProgram, m_flipProgram, m_prepProgram})
         if (p) f->glDeleteProgram(p);
     GLuint bufs[] = {m_quadVbo, m_meshVbo, m_meshIbo};
     f->glDeleteBuffers(3, bufs);
@@ -463,7 +481,7 @@ void Engine::releaseAll()
     f->glDeleteVertexArrays(2, vaos);
     f->glDeleteTextures(1, &m_blackTex);
     m_quadVao = m_meshVao = 0;
-    m_blitProgram = m_compProgram = m_presentProgram = m_flipProgram = 0;
+    m_blitProgram = m_compProgram = m_presentProgram = m_flipProgram = m_prepProgram = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -569,14 +587,140 @@ int Engine::addLayer(const QString &name, int at)
     {
         Lock lk(&m_mutex);
         auto l = std::make_unique<Layer>();
+        l->id = newIdLocked();
         l->name = name.isEmpty() ? QStringLiteral("Layer %1").arg(m_layers.size() + 1) : name;
         l->genWidth = m_compSize.width();
         l->genHeight = m_compSize.height();
         at = std::clamp(at, 0, int(m_layers.size()));
+        // Inserted inside a group's block: the new layer joins that group
+        if (at > 0 && at < int(m_layers.size())) {
+            const Layer &below = *m_layers[size_t(at)];
+            if (below.parent) l->parent = below.parent;
+        }
         m_layers.insert(m_layers.begin() + at, std::move(l));
     }
     emit layersChanged();
     return at;
+}
+
+int Engine::addGroup(const QString &name, int at)
+{
+    {
+        Lock lk(&m_mutex);
+        int groups = 0;
+        for (const auto &l : m_layers) groups += l->isGroup;
+        auto l = std::make_unique<Layer>();
+        l->id = newIdLocked();
+        l->isGroup = true;
+        l->name = name.isEmpty() ? QStringLiteral("Group %1").arg(groups + 1) : name;
+        at = std::clamp(at, 0, int(m_layers.size()));
+        // A group is never inside a group: placed before the block it would split
+        while (at > 0 && at < int(m_layers.size()) && m_layers[size_t(at)]->parent) --at;
+        m_layers.insert(m_layers.begin() + at, std::move(l));
+    }
+    emit layersChanged();
+    return at;
+}
+
+quint64 Engine::newIdLocked()
+{
+    for (const auto &l : m_layers) m_nextId = std::max(m_nextId, l->id + 1);
+    return m_nextId++;
+}
+
+quint64 Engine::layerId(int i) const
+{
+    Lock lk(&m_mutex);
+    return (i >= 0 && i < int(m_layers.size())) ? m_layers[size_t(i)]->id : 0;
+}
+
+int Engine::indexOfId(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    if (!id) return -1;
+    for (size_t i = 0; i < m_layers.size(); ++i)
+        if (m_layers[i]->id == id) return int(i);
+    return -1;
+}
+
+LayerTree Engine::structure() const
+{
+    Lock lk(&m_mutex);
+    LayerTree t;
+    t.reserve(m_layers.size());
+    for (const auto &l : m_layers) t.push_back({l->id, l->parent, l->isGroup});
+    return t;
+}
+
+void Engine::normalizeLocked()
+{
+    LayerTree t;
+    for (const auto &l : m_layers) t.push_back({l->id, l->parent, l->isGroup});
+    const LayerTree n = tree::normalized(t);
+    if (n == t) return;
+    std::vector<std::unique_ptr<Layer>> out;
+    out.reserve(m_layers.size());
+    for (const TreeNode &node : n) {
+        for (auto &l : m_layers) {
+            if (l && l->id == node.id) {
+                l->parent = node.parent;
+                out.push_back(std::move(l));
+                break;
+            }
+        }
+    }
+    m_layers.swap(out);
+}
+
+void Engine::setStructure(const LayerTree &t)
+{
+    {
+        Lock lk(&m_mutex);
+        std::vector<std::unique_ptr<Layer>> out;
+        out.reserve(m_layers.size());
+        for (const TreeNode &node : t) {
+            for (auto &l : m_layers) {
+                if (l && l->id == node.id) {
+                    l->parent = node.parent;
+                    out.push_back(std::move(l));
+                    break;
+                }
+            }
+        }
+        for (auto &l : m_layers) // layers missing from the structure keep their place at the end
+            if (l) out.push_back(std::move(l));
+        m_layers.swap(out);
+        normalizeLocked();
+    }
+    emit layersChanged();
+}
+
+int Engine::groupIndexOf(int i) const
+{
+    Lock lk(&m_mutex);
+    if (i < 0 || i >= int(m_layers.size()) || !m_layers[size_t(i)]->parent) return -1;
+    return indexOfId(m_layers[size_t(i)]->parent);
+}
+
+QList<int> Engine::groupMembers(int g) const
+{
+    Lock lk(&m_mutex);
+    QList<int> out;
+    if (g < 0 || g >= int(m_layers.size()) || !m_layers[size_t(g)]->isGroup) return out;
+    const quint64 id = m_layers[size_t(g)]->id;
+    for (int i = 0; i < int(m_layers.size()); ++i)
+        if (m_layers[size_t(i)]->parent == id) out << i;
+    return out;
+}
+
+bool Engine::isLocked(int i) const
+{
+    Lock lk(&m_mutex);
+    if (i < 0 || i >= int(m_layers.size())) return false;
+    const Layer &l = *m_layers[size_t(i)];
+    if (l.locked) return true;
+    const int g = groupIndexOf(i);
+    return g >= 0 && m_layers[size_t(g)]->locked;
 }
 
 void Engine::releaseLayer(Layer &l)
@@ -592,7 +736,9 @@ void Engine::releaseLayer(Layer &l)
     l.effects.clear();
     l.fxTarget[0].destroy();
     l.fxTarget[1].destroy();
-    l.finalTex = 0;
+    l.groupTarget.destroy();
+    l.prepTarget.destroy();
+    l.finalTex = l.rawTex = 0;
 }
 
 void Engine::removeLayer(int i)
@@ -603,6 +749,10 @@ void Engine::removeLayer(int i)
         if (i < 0 || i >= int(m_layers.size())) return;
         g->layer = std::move(m_layers[size_t(i)]);
         m_layers.erase(m_layers.begin() + i);
+        if (g->layer->isGroup) // its members go back to the top level, where they are
+            for (auto &l : m_layers)
+                if (l->parent == g->layer->id) l->parent = 0;
+        normalizeLocked();
     }
     if (g->layer->video) g->layer->video->close(); // stop the decode thread outside the render thread
     releaseAudio(*m_audio, g->layer->audio);
@@ -621,6 +771,7 @@ void Engine::moveLayer(int from, int to)
         auto l = std::move(m_layers[size_t(from)]);
         m_layers.erase(m_layers.begin() + from);
         m_layers.insert(m_layers.begin() + to, std::move(l));
+        normalizeLocked();
     }
     emit layersChanged();
 }
@@ -636,23 +787,53 @@ int Engine::insertLayerJson(int at, const QJsonObject &o)
 {
     const int idx = addLayer(QString(), at);
     layerFromJson(idx, o, QString(), nullptr);
+    quint64 id;
+    {
+        Lock lk(&m_mutex);
+        id = m_layers[size_t(idx)]->id;
+        normalizeLocked();
+    }
     emit layersChanged();
-    return idx;
+    return indexOfId(id);
 }
 
 void Engine::replaceLayerJson(int i, const QJsonObject &o)
 {
     if (i < 0 || i >= layerCount()) return;
+    const QList<int> members = groupMembers(i);
+    std::vector<quint64> memberIds;
+    for (int m : members) memberIds.push_back(layerId(m));
     removeLayer(i);
-    insertLayerJson(i, o);
+    const int ni = insertLayerJson(i, o);
+    if (memberIds.empty()) return;
+    {
+        Lock lk(&m_mutex);
+        const quint64 gid = layerId(ni);
+        for (auto &l : m_layers)
+            if (std::find(memberIds.begin(), memberIds.end(), l->id) != memberIds.end()) l->parent = gid;
+        normalizeLocked();
+    }
+    emit layersChanged();
 }
 
 int Engine::duplicateLayer(int i)
 {
     QJsonObject o = layerJson(i);
     if (o.isEmpty()) return -1;
+    const QList<int> members = groupMembers(i);
+    QList<QJsonObject> mem;
+    for (int m : members) mem << layerJson(m);
     o["name"] = o.value("name").toString() + QStringLiteral(" copy");
-    return insertLayerJson(i, o);
+    o.remove("id"); // the copy gets its own id
+    const int gi = insertLayerJson(i, o);
+    const quint64 gid = layerId(gi);
+    for (int k = 0; k < mem.size(); ++k) {
+        QJsonObject m = mem[k];
+        m.remove("id");
+        m["parent"] = QString::number(gid);
+        insertLayerJson(gi + 1 + k, m);
+    }
+    return gi;
 }
 
 QJsonArray Engine::effectsJson(int i) const
@@ -1051,6 +1232,49 @@ void Engine::fadeMaster(double target, double seconds)
     m_masterSpeed = seconds > 0.0 ? 1.0 / seconds : 0.0;
 }
 
+void Engine::setBlackout(bool on, double seconds)
+{
+    {
+        Lock lk(&m_mutex);
+        m_blackTarget = on ? 0.0 : 1.0;
+        m_blackSpeed = seconds > 0.0 ? 1.0 / seconds : 0.0;
+        if (m_blackSpeed <= 0.0) m_blackLevel = m_blackTarget;
+    }
+    m_audio->fadeTo(on ? 0.0f : 1.0f, seconds);
+}
+
+bool Engine::blackout() const
+{
+    Lock lk(&m_mutex);
+    return m_blackTarget < 0.5;
+}
+
+void Engine::setBlackoutFade(double seconds)
+{
+    Lock lk(&m_mutex);
+    m_blackFade = std::clamp(seconds, 0.0, 60.0);
+}
+
+double Engine::blackoutFade() const
+{
+    Lock lk(&m_mutex);
+    return m_blackFade;
+}
+
+void Engine::requestSourcePreview(quint64 layerId, int maxSide)
+{
+    Lock lk(&m_mutex);
+    m_previewId = layerId;
+    m_previewSide = std::clamp(maxSide, 16, 2048);
+}
+
+QImage Engine::sourcePreview(quint64 *layerId) const
+{
+    std::lock_guard<std::mutex> lk(m_previewMutex);
+    if (layerId) *layerId = m_previewImageId;
+    return m_previewImage;
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -1102,6 +1326,8 @@ void Engine::updateSource(Layer &l, double dt)
 void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
 {
     l.finalTex = 0;
+    l.rawTex = 0;
+    if (l.isGroup) return;  // rendered from its members (renderGroup)
     if (l.ended) return; // Stop mode, after the end: nothing
     GLuint tex = 0;
     int w = 0, h = 0;
@@ -1123,26 +1349,72 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
     default: break;
     }
     if (!tex) return;
+    processLayer(l, tex, w, h, false, rc);
+}
 
-    int ping = 0;
-    for (auto &fx : l.effects) {
-        if (!fx->enabled) continue;
-        RenderTarget &dst = l.fxTarget[ping];
-        fx->render(rc, tex, w, h, dst, w, h);
-        tex = dst.tex;
-        ping = 1 - ping;
+// Source picture -> crop and color (when needed) -> effect chain -> l.finalTex
+void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied, const IsfRenderContext &rc)
+{
+    l.rawTex = tex;
+    l.rawW = w;
+    l.rawH = h;
+    QRectF c = l.crop.normalized() & Layer::fullCrop();
+    if (c.width() < 1e-4 || c.height() < 1e-4) c = Layer::fullCrop();
+    const bool cropped = c != Layer::fullCrop();
+    if (cropped || !l.color.isIdentity() || premultiplied) {
+        auto f = gl();
+        const int cw = std::max(1, int(std::lround(w * c.width()))), ch = std::max(1, int(std::lround(h * c.height())));
+        l.prepTarget.ensure(cw, ch);
+        l.prepTarget.bind();
+        f->glDisable(GL_BLEND);
+        f->glUseProgram(m_prepProgram);
+        f->glActiveTexture(GL_TEXTURE0);
+        f->glBindTexture(GL_TEXTURE_2D, tex);
+        f->glUniform1i(m_prepTexLoc, 0);
+        // Crop: top-left origin in the UI, textures in OpenGL convention (origin bottom left)
+        f->glUniform4f(m_prepCropLoc, float(c.left()), float(1.0 - c.bottom()), float(c.right()), float(1.0 - c.top()));
+        f->glUniform3f(m_prepAddLoc, l.color.add[0], l.color.add[1], l.color.add[2]);
+        f->glUniform3f(m_prepRemoveLoc, l.color.remove[0], l.color.remove[1], l.color.remove[2]);
+        f->glUniform1i(m_prepUnpremulLoc, premultiplied ? 1 : 0);
+        drawQuad();
+        tex = l.prepTarget.tex;
+        w = cw;
+        h = ch;
+    } else if (l.prepTarget.fbo) {
+        l.prepTarget.destroy();
+    }
+
+    if (l.effectsEnabled) {
+        int ping = 0;
+        for (auto &fx : l.effects) {
+            if (!fx->enabled) continue;
+            RenderTarget &dst = l.fxTarget[ping];
+            fx->render(rc, tex, w, h, dst, w, h);
+            tex = dst.tex;
+            ping = 1 - ping;
+        }
     }
     l.finalTex = tex;
     l.finalW = w;
     l.finalH = h;
 }
 
-void Engine::composite()
+// A group's picture: its members composited on a transparent canvas the size of the composition
+// (premultiplied), then cropped, colored and processed by its effects like any layer.
+void Engine::renderGroup(Layer &g, const std::vector<Layer *> &members, const IsfRenderContext &rc)
+{
+    g.finalTex = 0;
+    g.rawTex = 0;
+    g.groupTarget.ensure(m_compSize.width(), m_compSize.height());
+    g.groupTarget.clear(0, 0, 0, 0);
+    compositeLayers(g.groupTarget, members);
+    processLayer(g, g.groupTarget.tex, g.groupTarget.w, g.groupTarget.h, true, rc);
+}
+
+void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer *> &layers)
 {
     auto f = gl();
-    RenderTarget &out = m_output[m_back];
-    out.ensure(m_compSize.width(), m_compSize.height());
-    out.clear(0, 0, 0, 1);
+    target.bind();
     f->glEnable(GL_BLEND);
     f->glUseProgram(m_compProgram);
     f->glUniform1i(m_compTexLoc, 0);
@@ -1150,9 +1422,9 @@ void Engine::composite()
     f->glBindVertexArray(m_meshVao);
     f->glBindBuffer(GL_ARRAY_BUFFER, m_meshVbo);
 
-    // Layer index 0 is on top: draw from last to first.
-    for (int i = int(m_layers.size()) - 1; i >= 0; --i) {
-        Layer &l = *m_layers[size_t(i)];
+    // The first layer is on top: draw from last to first.
+    for (int i = int(layers.size()) - 1; i >= 0; --i) {
+        Layer &l = *layers[size_t(i)];
         if (!l.visible || !l.finalTex || l.opacity <= 0.0f) continue;
         switch (l.blend) {
         case BlendMode::Add: f->glBlendFunc(GL_ONE, GL_ONE); break;
@@ -1166,10 +1438,25 @@ void Engine::composite()
         f->glBindTexture(GL_TEXTURE_2D, l.finalTex);
         f->glDrawElements(GL_TRIANGLES, m_meshIndexCount, GL_UNSIGNED_INT, nullptr);
     }
+    f->glDisable(GL_BLEND);
+    f->glBindVertexArray(0);
+}
 
-    // Master: multiplies the whole image by the level (constant blend color).
-    const double master = m_masterLevel.load();
+void Engine::composite()
+{
+    auto f = gl();
+    RenderTarget &out = m_output[m_back];
+    out.ensure(m_compSize.width(), m_compSize.height());
+    out.clear(0, 0, 0, 1);
+    std::vector<Layer *> top;
+    for (auto &l : m_layers)
+        if (!l->parent) top.push_back(l.get());
+    compositeLayers(out, top);
+
+    // Master and blackout: multiply the whole image by the level (constant blend color).
+    const double master = m_masterLevel.load() * m_blackLevel.load();
     if (master < 0.999) {
+        f->glEnable(GL_BLEND);
         const float m = float(master);
         f->glBlendColor(m, m, m, 1.0f);
         f->glBlendFunc(GL_ZERO, GL_CONSTANT_COLOR);
@@ -1218,6 +1505,14 @@ void Engine::frame(double dt)
         lvl = lvl < m_masterTarget ? std::min(m_masterTarget, lvl + step) : std::max(m_masterTarget, lvl - step);
     }
     m_masterLevel = lvl;
+    double black = m_blackLevel.load();
+    if (m_blackSpeed <= 0.0) {
+        black = m_blackTarget;
+    } else {
+        const double step = dt * m_blackSpeed;
+        black = black < m_blackTarget ? std::min(m_blackTarget, black + step) : std::max(m_blackTarget, black - step);
+    }
+    m_blackLevel = black;
 
     IsfRenderContext rc;
     rc.dt = dt;
@@ -1225,9 +1520,26 @@ void Engine::frame(double dt)
     rc.drawQuad = [this] { drawQuad(); };
     rc.blit = [this](GLuint t, const RenderTarget &rt) { blit(t, rt); };
 
+    // Members of a hidden group are hidden (and silent) too
+    {
+        const Layer *group = nullptr;
+        for (auto &l : m_layers) {
+            if (l->isGroup) group = l.get();
+            l->parentVisible = !(l->parent && group && group->id == l->parent && !group->visible);
+        }
+    }
     for (auto &l : m_layers) updateSource(*l, dt);
     for (auto &l : m_layers) renderLayer(*l, rc);
+    for (size_t i = 0; i < m_layers.size(); ++i) {
+        Layer &g = *m_layers[i];
+        if (!g.isGroup) continue;
+        std::vector<Layer *> members;
+        for (size_t k = i + 1; k < m_layers.size() && m_layers[k]->parent == g.id; ++k) members.push_back(m_layers[k].get());
+        if (g.visible) renderGroup(g, members, rc);
+        else g.finalTex = g.rawTex = 0;
+    }
     composite();
+    readSourcePreview();
     const bool publishChanged = m_publishDirty || m_tapDirty;
     m_mutex.unlock();
 
@@ -1241,6 +1553,39 @@ void Engine::frame(double dt)
     m_published = m_back;
     m_back = 1 - m_back;
     ++m_frameCount;
+}
+
+void Engine::readSourcePreview()
+{
+    if (!m_previewId || (m_previewTick++ % 4) != 0) return; // a few times per second is enough
+    const Layer *l = nullptr;
+    for (auto &x : m_layers)
+        if (x->id == m_previewId) l = x.get();
+    QImage img;
+    if (l && l->rawTex && l->rawW > 0 && l->rawH > 0) {
+        const double k = std::min(1.0, double(m_previewSide) / std::max(l->rawW, l->rawH));
+        const int w = std::max(1, int(std::lround(l->rawW * k))), h = std::max(1, int(std::lround(l->rawH * k)));
+        m_previewTarget.ensure(w, h);
+        auto f = gl();
+        m_previewTarget.bind();
+        f->glDisable(GL_BLEND);
+        f->glUseProgram(m_prepProgram); // unpremultiplied (groups), no crop, no color
+        f->glActiveTexture(GL_TEXTURE0);
+        f->glBindTexture(GL_TEXTURE_2D, l->rawTex);
+        f->glUniform1i(m_prepTexLoc, 0);
+        f->glUniform4f(m_prepCropLoc, 0, 0, 1, 1);
+        f->glUniform3f(m_prepAddLoc, 0, 0, 0);
+        f->glUniform3f(m_prepRemoveLoc, 0, 0, 0);
+        f->glUniform1i(m_prepUnpremulLoc, l->isGroup ? 1 : 0);
+        drawQuad();
+        img = QImage(w, h, QImage::Format_RGBA8888);
+        f->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        f->glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, img.bits());
+        img = img.mirrored(false, true);
+    }
+    std::lock_guard<std::mutex> lk(m_previewMutex);
+    m_previewImage = img;
+    m_previewImageId = m_previewId;
 }
 
 void Engine::renderFrame()
@@ -1327,8 +1672,16 @@ QString Engine::resolvePath(const QJsonObject &o, const QString &projectDir) con
 QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
 {
     QJsonObject o;
+    // Ids are strings: JSON numbers are doubles
+    o["id"] = QString::number(l.id);
+    if (l.parent) o["parent"] = QString::number(l.parent);
+    if (l.isGroup) {
+        o["group"] = true;
+        o["collapsed"] = l.collapsed;
+    }
     o["name"] = l.name;
     o["visible"] = l.visible;
+    o["locked"] = l.locked;
     o["opacity"] = l.opacity;
     o["blend"] = blendModeKey(l.blend);
     o["volume"] = l.volume;
@@ -1365,8 +1718,6 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
             src["playMode"] = playModeKey(l.mode);
             src["in"] = l.inPoint;
             src["out"] = l.outPoint;
-        src["in"] = l.inPoint;
-        src["out"] = l.outPoint;
             src["speed"] = l.speed;
             src["playing"] = l.playing;
         } else if (l.missingType == SourceType::Image) {
@@ -1380,10 +1731,15 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         src["path"] = l.sourcePath;
         if (!projectDir.isEmpty()) src["relativePath"] = QDir(projectDir).relativeFilePath(l.sourcePath);
     }
+    const QRectF c = l.crop;
+    src["crop"] = QJsonArray{c.left(), c.top(), c.right(), c.bottom()};
     o["source"] = src;
+    auto rgb = [](const float v[3]) { return QJsonArray{v[0], v[1], v[2]}; };
+    o["color"] = QJsonObject{{"add", rgb(l.color.add)}, {"remove", rgb(l.color.remove)}};
     QJsonArray fx;
     for (const auto &e : l.effects) fx.append(e->save(projectDir));
     o["effects"] = fx;
+    o["effectsEnabled"] = l.effectsEnabled;
     o["mapping"] = l.mapping.toJson();
     return o;
 }
@@ -1401,6 +1757,29 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         l->blend = blendModeFromKey(o.value("blend").toString());
         l->volume = float(std::clamp(o.value("volume").toDouble(1.0), 0.0, 2.0));
         l->muted = o.value("muted").toBool(false);
+        l->locked = o.value("locked").toBool(false);
+        l->isGroup = o.value("group").toBool(false);
+        l->collapsed = o.value("collapsed").toBool(false);
+        l->effectsEnabled = o.value("effectsEnabled").toBool(true);
+        // Saved id kept unless another layer already has it
+        const quint64 id = o.value("id").toString().toULongLong();
+        bool taken = false;
+        for (const auto &other : m_layers) taken |= other.get() != l && other->id == id;
+        if (id && !taken) {
+            l->id = id;
+            m_nextId = std::max(m_nextId, id + 1);
+        }
+        l->parent = o.value("parent").toString().toULongLong();
+        const QJsonArray crop = o.value("source").toObject().value("crop").toArray();
+        l->crop = crop.size() == 4 ? QRectF(QPointF(crop[0].toDouble(), crop[1].toDouble()),
+                                            QPointF(crop[2].toDouble(), crop[3].toDouble())).normalized() & Layer::fullCrop()
+                                   : Layer::fullCrop();
+        if (l->crop.isEmpty()) l->crop = Layer::fullCrop();
+        const QJsonObject color = o.value("color").toObject();
+        for (int c = 0; c < 3; ++c) {
+            l->color.add[c] = float(std::clamp(color.value("add").toArray().at(c).toDouble(0), 0.0, 1.0));
+            l->color.remove[c] = float(std::clamp(color.value("remove").toArray().at(c).toDouble(0), 0.0, 1.0));
+        }
         name = l->name;
     }
 
@@ -1526,6 +1905,10 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     for (int i = 0; i < layers.size(); ++i) {
         int idx = addLayer(QString(), layerCount());
         layerFromJson(idx, layers[i].toObject(), dir, &warnings);
+    }
+    {
+        Lock lk(&m_mutex);
+        normalizeLocked();
     }
     QStringList bin;
     for (const QJsonValue &v : root.value("bin").toArray()) bin << resolvePath(v.toObject(), dir);

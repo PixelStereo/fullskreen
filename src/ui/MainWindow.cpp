@@ -7,6 +7,7 @@
 #include "MasterPanel.h"
 #include "MediaBin.h"
 #include "OutputWindow.h"
+#include "Osc.h"
 #include "PreferencesDialog.h"
 
 #include <QAction>
@@ -39,6 +40,7 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QThread>
 #include <QUndoStack>
 #include <QUrl>
 #include <cmath>
@@ -127,12 +129,45 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         if (row == m_inspector->layerIndex()) m_inspectorTimer.start();
     });
     connect(m_layerTable, &LayerTable::opacityEdited, this, [this](int row, double v) {
+        if (refuseLocked(row)) return refreshLayerList();
         const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Opacity);
         if (before.isValid() && std::abs(before.toDouble() - v) > 1e-6)
             m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Opacity, before, v));
         if (row == m_inspector->layerIndex()) m_inspectorTimer.start(); // inspector resynced after the gesture
     });
     connect(m_layerTable, &LayerTable::removeClicked, this, &MainWindow::removeCurrentLayer);
+    connect(m_layerTable, &LayerTable::groupClicked, this, &MainWindow::createGroup);
+    connect(m_layerTable, &LayerTable::lockToggled, this, [this](int row) {
+        if (m_engine->groupIndexOf(row) >= 0 && m_engine->isLocked(m_engine->groupIndexOf(row))) {
+            statusBar()->showMessage(QStringLiteral("Locked by its group: unlock the group first."), 4000);
+            return;
+        }
+        const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Locked);
+        if (!before.isValid()) return;
+        m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Locked, before, !before.toBool()));
+        m_inspector->rebuild();
+    });
+    connect(m_layerTable, &LayerTable::collapseToggled, this, [this](int row) {
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(row);
+            if (!l || !l->isGroup) return;
+            l->collapsed = !l->collapsed;
+        }
+        markDirty(); // saved in the project, not an undoable edit
+        // The selection does not stay on a hidden row
+        if (m_engine->groupIndexOf(currentLayer()) == row) selectLayer(row);
+        else refreshLayerList();
+    });
+    connect(m_layerTable, &LayerTable::renamed, this, [this](int row, const QString &name) {
+        if (refuseLocked(row)) return;
+        const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Name);
+        if (before.isValid() && before.toString() != name)
+            m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Name, before, name));
+        refreshLayerList();
+        if (row == m_inspector->layerIndex()) m_inspector->rebuild();
+    });
+    connect(m_layerTable, &LayerTable::moveRequested, this, &MainWindow::moveRows);
     connect(m_layerTable, &LayerTable::duplicateClicked, this, &MainWindow::duplicateCurrentLayer);
     connect(m_layerTable, &LayerTable::moveClicked, this, &MainWindow::moveCurrentLayer);
     auto *del = new QShortcut(QKeySequence::Delete, m_layerTable->table(), nullptr, nullptr, Qt::WidgetShortcut);
@@ -230,6 +265,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 
     refreshLayerList();
     updateTitle();
+    startOsc();
     restoreGeometry(s.value("ui/geometry").toByteArray());
     split->restoreState(s.value("ui/mainSplit").toByteArray());
     top->restoreState(s.value("ui/topSplit").toByteArray());
@@ -237,6 +273,11 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 
 MainWindow::~MainWindow()
 {
+    if (m_oscThread) {
+        QMetaObject::invokeMethod(m_osc, [this] { m_osc->stop(); }, Qt::BlockingQueuedConnection);
+        m_oscThread->quit();
+        m_oscThread->wait();
+    }
     m_statusTimer.stop();
     m_renderTimer.stop();
     m_autosaveTimer.stop();
@@ -325,7 +366,10 @@ void MainWindow::buildMenus()
     // On macOS, Qt moves it to the application menu (Fulskrin ▸ Settings…, ⌘,)
     QAction *prefs = edit->addAction(QStringLiteral("Preferences…"), QKeySequence::Preferences, this, [this] {
         PreferencesDialog d(this);
-        if (d.exec() == QDialog::Accepted) m_engine->setDefaultPlayMode(PreferencesDialog::defaultPlayMode());
+        if (d.exec() == QDialog::Accepted) {
+            m_engine->setDefaultPlayMode(PreferencesDialog::defaultPlayMode());
+            startOsc(); // ports or switch may have changed
+        }
     });
     prefs->setMenuRole(QAction::PreferencesRole);
     if (prefs->shortcut().isEmpty()) prefs->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma)); // Linux / Windows
@@ -337,6 +381,15 @@ void MainWindow::buildMenus()
     QAction *dup = layer->addAction(QStringLiteral("Duplicate"), this, &MainWindow::duplicateCurrentLayer);
     dup->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
     layer->addAction(QStringLiteral("Delete (Del in list)"), this, &MainWindow::removeCurrentLayer);
+    layer->addSeparator();
+    layer->addAction(QStringLiteral("New Group (selected layers go into it)"), QKeySequence(Qt::CTRL | Qt::Key_G), this,
+                     &MainWindow::createGroup);
+    layer->addAction(QStringLiteral("Ungroup"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G), this,
+                     &MainWindow::ungroupCurrent);
+    layer->addAction(QStringLiteral("Lock / Unlock"), QKeySequence(Qt::CTRL | Qt::Key_L), this, &MainWindow::toggleLockCurrent);
+    layer->addAction(QStringLiteral("Rename (F2 in list, or double-click)"), this,
+                     [this] { m_layerTable->startRename(currentLayer()); });
+    layer->addSeparator();
     layer->addAction(QStringLiteral("Move Up"), QKeySequence(Qt::CTRL | Qt::Key_BracketRight), this,
                      [this] { moveCurrentLayer(-1); });
     layer->addAction(QStringLiteral("Move Down"), QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), this,
@@ -518,16 +571,30 @@ void MainWindow::refreshLayerList()
             Layer *l = m_engine->layer(i);
             LayerTable::Row r;
             r.name = l->name;
-            r.tag = layerTag(l->type != SourceType::None ? l->type : l->missingType);
+            r.tag = l->isGroup ? QStringLiteral("▤") : layerTag(l->type != SourceType::None ? l->type : l->missingType);
+            r.group = l->isGroup;
+            r.member = l->parent != 0;
+            r.locked = l->locked;
+            r.lockedByGroup = !l->locked && m_engine->isLocked(i);
+            r.effectsOn = l->effectsEnabled;
+            if (l->isGroup) {
+                r.collapsed = l->collapsed;
+            } else if (l->parent) {
+                const Layer *g = m_engine->layer(m_engine->indexOfId(l->parent));
+                r.collapsed = g && g->collapsed;
+            }
             r.visible = l->visible;
             r.opacity = l->opacity;
             r.blend = blendModeName(l->blend);
             r.error = !l->error.isEmpty();
             r.noPicture = l->type == SourceType::Audio || (l->type == SourceType::None && l->missingType == SourceType::Audio);
-            switch (l->type) {
+            switch (l->isGroup ? SourceType::Image : l->type) {
             case SourceType::Video:
             case SourceType::Audio:
-            case SourceType::Image: r.source = QFileInfo(l->sourcePath).fileName(); break;
+            case SourceType::Image:
+                r.source = l->isGroup ? QStringLiteral("group of %1 layer(s)").arg(m_engine->groupMembers(i).size())
+                                      : QFileInfo(l->sourcePath).fileName();
+                break;
             case SourceType::Isf: r.source = QStringLiteral("generator ") + QFileInfo(l->sourcePath).completeBaseName(); break;
             default: r.source = l->missingType != SourceType::None ? QFileInfo(l->sourcePath).fileName() + QStringLiteral(" — missing")
                                                                     : QStringLiteral("(empty)");
@@ -593,6 +660,7 @@ bool MainWindow::loadIntoLayer(int i, const QString &path)
         statusBar()->showMessage(QStringLiteral("Create a layer with + first, then drop the media onto it."), 6000);
         return false;
     }
+    if (refuseLocked(i)) return false;
     const QFileInfo fi(path);
     const QString ext = fi.suffix().toLower();
     auto fail = [&](const QString &err) {
@@ -604,13 +672,21 @@ bool MainWindow::loadIntoLayer(int i, const QString &path)
     if (kIsfExt.contains(ext)) {
         const IsfInstance::Header h = IsfInstance::readHeader(path);
         if (!h.ok) return fail(QStringLiteral("not a valid ISF shader."));
-        if (h.isFilter) { // an ISF effect joins the layer's effect chain
+        if (h.isFilter) { // an ISF effect joins the layer's (or the group's) effect chain
             const QJsonArray before = m_engine->effectsJson(i);
             m_engine->addEffect(i, path);
             m_undo->push(new cmd::SetEffects(m_engine, i, before, QStringLiteral("Add Effect %1").arg(fi.completeBaseName())));
             selectLayer(i);
             refreshAll();
             return true;
+        }
+    }
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        if (m_engine->layer(i)->isGroup) {
+            lk.unlock();
+            statusBar()->showMessage(QStringLiteral("A group has no source: drop the media onto one of its layers."), 6000);
+            return false;
         }
     }
     const QJsonObject before = m_engine->layerJson(i);
@@ -676,43 +752,230 @@ void MainWindow::relinkMedia(const QString &from, const QString &to)
     else statusBar()->showMessage(QStringLiteral("\"%1\" relinked in %2 layer(s)").arg(QFileInfo(from).fileName()).arg(layers.size()), 5000);
 }
 
+bool MainWindow::refuseLocked(int layer)
+{
+    if (!m_engine->isLocked(layer)) return false;
+    statusBar()->showMessage(QStringLiteral("This layer is locked: unlock it (padlock) to edit it."), 4000);
+    return true;
+}
+
 void MainWindow::addEmptyLayer()
 {
-    int i = m_engine->addLayer();
+    // Above the selected layer; inside its group if it is a member (or an open group's first layer)
+    int at = 0;
+    const int cur = currentLayer();
+    if (cur >= 0 && m_engine->groupIndexOf(cur) >= 0) at = cur;
+    if (cur >= 0 && m_engine->groupIndexOf(cur) >= 0 && m_engine->isLocked(m_engine->groupIndexOf(cur))) at = 0;
+    int i = m_engine->addLayer(QString(), at);
     m_undo->push(new cmd::AddLayer(m_engine, i, QStringLiteral("Add Layer")));
     selectLayer(i);
 }
 
 void MainWindow::removeCurrentLayer()
 {
-    const int i = currentLayer();
-    if (i < 0) return;
-    m_undo->push(new cmd::RemoveLayer(m_engine, i));
-    selectLayer(qMin(i, m_engine->layerCount() - 1));
+    QList<int> rows = m_layerTable->selectedRows();
+    if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
+    if (rows.isEmpty()) return;
+    // A group goes with its layers; locked layers stay
+    QSet<int> victims;
+    int skipped = 0;
+    for (int r : rows) {
+        if (m_engine->isLocked(r)) {
+            ++skipped;
+            continue;
+        }
+        const QList<int> members = m_engine->groupMembers(r);
+        bool lockedMember = false;
+        for (int m : members) lockedMember |= m_engine->isLocked(m);
+        if (lockedMember) {
+            ++skipped;
+            continue;
+        }
+        victims.insert(r);
+        for (int m : members) victims.insert(m);
+    }
+    if (skipped) statusBar()->showMessage(QStringLiteral("%1 locked layer(s) not deleted.").arg(skipped), 4000);
+    if (victims.isEmpty()) return;
+    QList<int> order = victims.values();
+    std::sort(order.begin(), order.end(), std::greater<int>()); // members (below their group) first
+    const int first = order.last();
+    m_undo->beginMacro(order.size() > 1 ? QStringLiteral("Delete %1 Layers").arg(order.size()) : QStringLiteral("Delete Layer"));
+    for (int r : order) m_undo->push(new cmd::RemoveLayer(m_engine, r));
+    m_undo->endMacro();
+    selectLayer(qMin(first, m_engine->layerCount() - 1));
 }
 
 void MainWindow::duplicateCurrentLayer()
 {
     const int i = currentLayer();
     if (i < 0) return;
+    const int members = m_engine->groupMembers(i).size();
     const int ni = m_engine->duplicateLayer(i);
     if (ni < 0) return;
-    m_undo->push(new cmd::AddLayer(m_engine, ni, QStringLiteral("Duplicate Layer")));
+    m_undo->beginMacro(members ? QStringLiteral("Duplicate Group") : QStringLiteral("Duplicate Layer"));
+    for (int k = 0; k <= members; ++k) m_undo->push(new cmd::AddLayer(m_engine, ni + k, QStringLiteral("Duplicate Layer")));
+    m_undo->endMacro();
     selectLayer(ni);
 }
 
+// Up / down among the layers of the same level (a group moves with its layers)
 void MainWindow::moveCurrentLayer(int delta)
 {
     const int i = currentLayer();
-    const int to = i + delta;
-    if (i < 0 || to < 0 || to >= m_engine->layerCount()) return;
-    m_undo->push(new cmd::MoveLayer(m_engine, i, to));
-    selectLayer(to);
+    if (i < 0 || refuseLocked(i)) return;
+    const LayerTree t = m_engine->structure();
+    const TreeNode cur = t[size_t(i)];
+    std::vector<quint64> siblings;
+    for (const TreeNode &n : t)
+        if (n.parent == cur.parent) siblings.push_back(n.id);
+    const int k = int(std::find(siblings.begin(), siblings.end(), cur.id) - siblings.begin());
+    quint64 before = 0;
+    if (delta < 0) {
+        if (k == 0) return;
+        before = siblings[size_t(k - 1)];
+    } else {
+        if (k + 1 >= int(siblings.size())) return;
+        if (k + 2 < int(siblings.size())) {
+            before = siblings[size_t(k + 2)];
+        } else if (cur.parent) { // last layer of its group: before what follows the group
+            const int g = tree::indexOf(t, cur.parent);
+            for (size_t x = size_t(g) + 1; x < t.size(); ++x)
+                if (t[x].parent != cur.parent) {
+                    before = t[x].id;
+                    break;
+                }
+        }
+    }
+    const LayerTree after = tree::moved(t, {cur.id}, before, cur.parent);
+    if (after == t) return;
+    m_undo->push(new cmd::SetStructure(m_engine, t, after, QStringLiteral("Reorder Layers")));
+    selectLayer(m_engine->indexOfId(cur.id));
+}
+
+void MainWindow::moveRows(const QList<int> &rows, int beforeRow, int parentRow)
+{
+    const LayerTree t = m_engine->structure();
+    std::vector<quint64> ids;
+    int skipped = 0;
+    for (int r : rows) {
+        if (r < 0 || r >= int(t.size())) continue;
+        if (m_engine->isLocked(r)) {
+            ++skipped;
+            continue;
+        }
+        ids.push_back(t[size_t(r)].id);
+    }
+    if (skipped) statusBar()->showMessage(QStringLiteral("Locked layers stay where they are."), 4000);
+    if (ids.empty()) return;
+    if (parentRow >= 0 && m_engine->isLocked(parentRow)) {
+        statusBar()->showMessage(QStringLiteral("This group is locked."), 4000);
+        return;
+    }
+    const quint64 before = beforeRow >= 0 && beforeRow < int(t.size()) ? t[size_t(beforeRow)].id : 0;
+    const quint64 parent = parentRow >= 0 && parentRow < int(t.size()) ? t[size_t(parentRow)].id : 0;
+    const LayerTree after = tree::moved(t, ids, before, parent);
+    if (after == t) return;
+    const bool into = parent && std::any_of(ids.begin(), ids.end(), [&](quint64 id) { return t[size_t(tree::indexOf(t, id))].parent != parent; });
+    m_undo->push(new cmd::SetStructure(m_engine, t, after, into ? QStringLiteral("Move into Group") : QStringLiteral("Move Layers")));
+    selectLayer(m_engine->indexOfId(ids.front()));
+}
+
+void MainWindow::createGroup()
+{
+    // Selected layers (not groups, not locked) go into the new group, placed where the first of them was
+    const LayerTree t = m_engine->structure();
+    std::vector<quint64> ids;
+    int at = -1;
+    for (int r : m_layerTable->selectedRows()) {
+        if (r < 0 || r >= int(t.size()) || t[size_t(r)].isGroup || m_engine->isLocked(r)) continue;
+        ids.push_back(t[size_t(r)].id);
+        const int g = m_engine->groupIndexOf(r);
+        const int pos = g >= 0 ? g : r;
+        if (at < 0 || pos < at) at = pos;
+    }
+    if (at < 0) at = 0;
+    m_undo->beginMacro(QStringLiteral("New Group"));
+    const int gi = m_engine->addGroup(QString(), at);
+    m_undo->push(new cmd::AddLayer(m_engine, gi, QStringLiteral("New Group")));
+    if (!ids.empty()) {
+        const LayerTree before = m_engine->structure();
+        const LayerTree after = tree::intoGroup(before, ids, m_engine->layerId(gi));
+        m_undo->push(new cmd::SetStructure(m_engine, before, after, QStringLiteral("Move into Group")));
+    }
+    m_undo->endMacro();
+    selectLayer(m_engine->indexOfId(m_engine->layerId(gi)));
+    statusBar()->showMessage(ids.empty() ? QStringLiteral("Empty group created: drag layers onto it.")
+                                         : QStringLiteral("Group created with %1 layer(s).").arg(ids.size()),
+                             4000);
+}
+
+void MainWindow::ungroupCurrent()
+{
+    int g = currentLayer();
+    if (g < 0) return;
+    if (m_engine->groupIndexOf(g) >= 0) g = m_engine->groupIndexOf(g);
+    const LayerTree t = m_engine->structure();
+    if (!t[size_t(g)].isGroup || refuseLocked(g)) return;
+    const quint64 gid = t[size_t(g)].id;
+    m_undo->beginMacro(QStringLiteral("Ungroup"));
+    m_undo->push(new cmd::SetStructure(m_engine, t, tree::ungrouped(t, gid), QStringLiteral("Ungroup")));
+    m_undo->push(new cmd::RemoveLayer(m_engine, m_engine->indexOfId(gid)));
+    m_undo->endMacro();
+    selectLayer(qMin(g, m_engine->layerCount() - 1));
+}
+
+void MainWindow::toggleLockCurrent()
+{
+    QList<int> rows = m_layerTable->selectedRows();
+    if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
+    if (rows.isEmpty()) return;
+    const bool lock = !cmd::SetLayerProp::read(m_engine, rows.first(), cmd::SetLayerProp::Locked).toBool();
+    m_undo->beginMacro(lock ? QStringLiteral("Lock") : QStringLiteral("Unlock"));
+    for (int r : rows) {
+        const QVariant before = cmd::SetLayerProp::read(m_engine, r, cmd::SetLayerProp::Locked);
+        if (before.isValid() && before.toBool() != lock)
+            m_undo->push(new cmd::SetLayerProp(m_engine, r, cmd::SetLayerProp::Locked, before, lock));
+    }
+    m_undo->endMacro();
+    m_inspector->rebuild();
+}
+
+void MainWindow::startOsc()
+{
+    // Runs in its own thread: OSC keeps answering while the interface is busy
+    if (!m_oscThread) {
+        m_oscThread = new QThread(this);
+        m_oscThread->setObjectName("OSC");
+        m_osc = new OscServer(m_engine);
+        m_osc->moveToThread(m_oscThread);
+        connect(m_oscThread, &QThread::finished, m_osc, &QObject::deleteLater);
+        connect(m_osc, &OscServer::edited, this, [this] {
+            markDirty();
+            refreshLayerList();
+            m_master->syncFromEngine();
+            m_inspectorTimer.start(); // the inspector follows (not during a gesture: it is rebuilt a bit later)
+        });
+        m_oscThread->start();
+    }
+    const bool on = PreferencesDialog::oscEnabled();
+    const int udp = PreferencesDialog::oscPort(), http = PreferencesDialog::oscQueryPort();
+    QString status;
+    QMetaObject::invokeMethod(
+        m_osc,
+        [this, on, udp, http, &status] {
+            if (on) m_osc->start(quint16(udp), quint16(http));
+            else m_osc->stop();
+            status = m_osc->status();
+        },
+        Qt::BlockingQueuedConnection);
+    PreferencesDialog::setOscStatus(status);
+    if (on) statusBar()->showMessage(status, 6000);
 }
 
 void MainWindow::setInOutAtPosition(bool in)
 {
     const int i = currentLayer();
+    if (i >= 0 && refuseLocked(i)) return;
     double pos;
     QVariant before;
     {
@@ -752,7 +1015,7 @@ void MainWindow::statusTick()
     m_inspector->refreshDynamic();
     m_master->refreshStatus();
     refreshLayerList(); // playback positions (in-place update)
-    const int pct = int(std::lround(m_engine->masterLevel() * 100));
+    const int pct = int(std::lround(m_engine->outputLevel() * 100));
     const QSize c = m_engine->compositionSize();
     QStringList pubs;
     for (int k = 0; k < kPublishKindCount; ++k)
@@ -765,7 +1028,8 @@ void MainWindow::statusTick()
                           .arg(c.height())
                           .arg(m_engine->fps(), 0, 'f', 1)
                           .arg(pct)
-                          .arg(mode, pubs.isEmpty() ? QString() : QStringLiteral("   ·   published: ") + pubs.join(", ")));
+                          .arg(mode, pubs.isEmpty() ? QString() : QStringLiteral("   ·   published: ") + pubs.join(", "))
+                      + (m_engine->blackout() ? QStringLiteral("   ·   BLACKOUT") : QString()));
 }
 
 // ---------------------------------------------------------------------------
@@ -977,7 +1241,7 @@ void MainWindow::offerRecovery()
     if (mode.isEmpty() && ui.value("outputVisible").toBool()) mode = "fullscreen"; // older sessions
     if (mode == "fullscreen" || mode == "window") {
         // Output comes back, but blacked out: the operator decides when to bring it back up.
-        m_engine->fadeMaster(0.0, 0.0);
+        m_engine->setBlackout(true, 0.0);
         setBlackout(true);
         setOutputMode(mode == "fullscreen" ? OutputFullscreen : OutputWindowed);
         statusBar()->showMessage(QStringLiteral("Session restored — output blacked out: Ctrl+B (⌘B) to bring it back"), 15000);

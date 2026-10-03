@@ -6,6 +6,17 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
 ## What V1 does
 
 - **Stacked layers** (the top layer is drawn on top), opacity, blend modes Normal / Add / Screen / Multiply.
+- **Groups of layers**: the ⊞ button (Ctrl+G / ⌘G) creates a group; the selected layers go straight into it.
+  Layers are then dragged onto a group (or between its layers) to go into it, and out of it the same way.
+  A group folds and unfolds in the layer list (arrow). A group has the properties of a layer without a source:
+  crop, color, spatial (mapping), effects and compositing apply to the composite of its layers.
+  Ungroup: Ctrl+Shift+G. Deleting a group deletes its layers; duplicating it duplicates them.
+- **Lock**: the padlock between the visibility box and the name (or Ctrl+L) forbids any edit of the layer
+  (properties, mapping, source, effects, name, deletion, moves); the visibility and the transport stay available.
+  A locked group locks its layers.
+- **Rename** a layer or a group by double-clicking its name in the list (or F2), or in the inspector.
+- **Click on a parameter's name** (opacity, speed, volume, position, scale, ISF parameters, color channels, crop…)
+  to put it back to its default value.
 - **One source per layer**:
   - video (H.264, HEVC, ProRes, HAP, DNxHD… anything FFmpeg reads), play / pause / speed / position,
     **with its sound** when the file has an audio track;
@@ -20,13 +31,21 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   **Preferences** (Loop by default).
 - **In / out points** per video or sound layer: playback, loops and ping-pong stay within them, in both
   directions; One-shot / Stop end at the out point (the in point backwards). Saved in the project.
+  They are shown on the playback bar of the Source tab (highlighted range between [ ] markers), and the markers
+  can be dragged there.
+- **Crop**: in the Source tab of a layer or a group, a preview of the source picture with a rectangle whose sides are
+  dragged (they stay straight) chooses the part of the picture used — the whole picture by default.
+- **Color tab**: a color added to the picture (light) and a color removed from it (filter):
+  out = in × (1 − removed) + added. Each color is edited in RGB, HSL, additive (R G B light), subtractive
+  (C M Y filters) or all of them together, linked.
 - **Negative speed** plays videos and sounds backwards, in every play mode (Loop goes on backwards from the end,
   One-shot stops on the first frame…); changing direction keeps the current position.
 - **Spatial tab**: position (center, composition pixels) and scale (% of the composition, X and Y linked by
   default) of the whole mapped layer — corners and mesh are transformed together and follow handle edits.
 - **Preview zoom**: mouse wheel / pinch around the cursor, − / + / Fit buttons; the higher the zoom, the finer
   the moves of the layer and its points.
-- **ISF effect chain per layer**: any number of effects, reorderable, each one can be enabled or disabled.
+- **ISF effect chain per layer**: any number of effects, reorderable, each one can be enabled or disabled,
+  and a general switch at the top of the Effects tab turns the whole chain on or off.
   Parameters are generated automatically from each shader's JSON header.
 - **ISF v2 support**: multiple passes, computed pass sizes (`"$WIDTH/2"`), persistent and float buffers,
   imported images, secondary image inputs, `.vs` vertex shaders, events, `IMG_PIXEL` / `IMG_NORM_PIXEL` /
@@ -45,9 +64,9 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   play, pause, seek, loop and speed (tape-style: the pitch follows the speed). Synchronization with the picture
   is kept within a few milliseconds, small drifts are corrected inaudibly, and after an audio dropout or a seek
   the sound realigns with a short fade. All layers are mixed to one stereo output (48 kHz).
-  Blackout does not affect the sound.
+  The blackout (Ctrl+B) fades the sound out with the picture; the master fader only acts on the picture.
 - **Master tab** (next to the Layer tab): master level fader and **Blackout** button with fade
-  (adjustable duration, Ctrl+B / ⌘B, works from the output window too), output screen and mode,
+  (adjustable duration, Ctrl+B / ⌘B, works from the output window too; it fades the sound out too), output screen and mode,
   **audio output** (sound card, master volume, mute, stereo meters), composition size, output publishing.
 - **Output publishing** to other software or machines:
   - **NDI** (network): requires NDI Tools or the NDI Runtime (ndi.video) installed on the machine;
@@ -68,10 +87,13 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   a sound or an ISF generator, from the Media Bin or the Finder / Explorer — onto the layer's row in the list,
   or onto the drop zone of its Source tab. An ISF effect dropped onto a layer joins its effect chain.
   The **×** next to the drop zone ejects the media.
-- **Layer list at the bottom**, full width: visibility, name, source, effects, opacity adjustable
-  directly in the row, blend mode, playback position.
-- **Layer tab** with sub-tabs: **Source** (drop zone, transport, sound, generator parameters),
-  **Spatial** (mapping), **Effects** (ISF chain), **Compositing** (opacity, blend).
+- **Layer list at the bottom**, full width: visibility, lock, name, source, effects, opacity adjustable
+  directly in the row, blend mode, playback position. Several layers can be selected (Ctrl/⌘ or Shift + click).
+- **Layer tab** with sub-tabs: **Source** (drop zone, transport, sound, generator parameters, crop),
+  **Color**, **Spatial** (mapping), **Effects** (ISF chain), **Compositing** (opacity, blend).
+- **OSC control and OSCQuery**: the whole namespace (master, composition, every layer and group: source,
+  transport, ISF parameters, crop, color, spatial, effects, compositing) is published with OSCQuery and can be
+  set by OSC. See [OSC](#osc).
 - **Undo / redo** (Ctrl+Z / Ctrl+Shift+Z, ⌘ on Mac): mapping (handles, arrow keys, buttons), ISF parameters,
   opacity, blend, visibility, name, adding / deleting / reordering layers, effects, source changes.
 - **Autosave and recovery**: the session is saved every 10 s when it changes.
@@ -146,6 +168,16 @@ cmake -S . -B build && cmake --build build -j
 | Windowed output | Ctrl+Shift+F (⌘⇧F on Mac) |
 | Fade to blackout / back | Ctrl+B (⌘B), or the Blackout button in the Master tab |
 | Undo / redo | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y (⌘Z / ⌘⇧Z) |
+| Group layers | select them, then ⊞ or Ctrl+G (⌘G); empty group: click the empty area of the list first |
+| Move layers into / out of a group | drag them onto the group's row, or between rows (below a group's last layer, at the left: out of it) |
+| Fold / unfold a group | arrow before its name |
+| Ungroup | Layer ▸ Ungroup (Ctrl+Shift+G) |
+| Rename a layer | double-click its name in the list, or F2 |
+| Lock / unlock a layer | padlock in the list, in the inspector, or Ctrl+L (⌘L) |
+| Reset a parameter | click its name |
+| Part of the source picture used | Source tab ▸ Crop: drag the sides of the rectangle |
+| Add / remove color | Color tab (RGB, HSL, additive, subtractive or all) |
+| All effects on / off | Effects tab ▸ Effects enabled |
 | Close the output from the output | Shift+Esc (Esc alone does nothing, for safety) |
 | Match the composition to the projector | Master tab ▸ Composition ▸ "= output screen" |
 | Publish via NDI, OMT, Syphon, Spout | Master tab ▸ Output Publishing |
@@ -153,7 +185,7 @@ cmake -S . -B build && cmake --build build -j
 | Play mode of a video or a sound | Source tab ▸ One-shot / Loop / Ping-pong / Stop |
 | Default play mode for newly loaded media | Preferences (⌘, on Mac, Ctrl+, elsewhere) |
 | Play backwards | negative speed (Source tab), e.g. −1 × |
-| In / out points of a video or a sound | I / O keys at the current position, or Source tab ▸ In / Out (↺: whole media) |
+| In / out points of a video or a sound | I / O keys at the current position, Source tab ▸ In / Out (↺: whole media), or drag the [ ] markers of the playback bar |
 | Zoom the preview (finer moves) | mouse wheel or pinch, or the − / + / Fit buttons at the top right of the preview |
 | Pan the zoomed preview | middle button or Alt/⌥ + drag, two fingers on a trackpad |
 | Position and scale of the whole layer | Layer tab ▸ Spatial ▸ Position X / Y (px), Scale X / Y (%, linked by default) |
@@ -179,6 +211,37 @@ Compatibility tested against the official Vidvox collection (GitHub repository "
 Tiny Date Time Overlay, Line Group) rely on implicit int/uint conversions that standard GLSL rejects.
 The 68 ISF transitions are skipped: V1 has no notion of transitions between media.
 
+## OSC
+
+Enabled by default in **Preferences ▸ OSC**: OSC messages on **UDP 9000**, OSCQuery on **TCP 9001**
+(HTTP and WebSocket on the same port). Writes made by OSC are not undoable (show control); the interface follows them.
+
+- `GET http://<machine>:9001/` returns the whole tree (OSCQuery JSON: `FULL_PATH`, `CONTENTS`, `TYPE`, `VALUE`,
+  `RANGE`, `ACCESS`, `DESCRIPTION`, `CLIPMODE`); `GET /path?VALUE` one attribute; `GET /?HOST_INFO` the server.
+- WebSocket: `{"COMMAND":"LISTEN","DATA":"/path"}` / `IGNORE`; value changes are sent as binary OSC messages,
+  and OSC messages can be sent as binary frames.
+- OSC address patterns are supported (`/layers/*/opacity 0.5`), as well as bundles.
+
+Main addresses (layer and effect names are made OSC-safe: spaces become `_`; a duplicate name gets `_2`):
+
+| Address | Type | |
+|---|---|---|
+| `/master/level` · `/master/blackout` · `/master/fade` | f · T · f | picture fader; blackout (picture and sound); fade time |
+| `/master/volume` · `/master/mute` · `/master/fps` | f · T · f | sound output; render rate (read only) |
+| `/composition/width` · `/composition/height` | i | |
+| `/layers/<name>/name` · `visible` · `locked` · `opacity` · `blend` · `type` | s · T · T · f · s · s | |
+| `/layers/<name>/source/file` · `play` · `restart` · `position` · `speed` · `mode` · `in` · `out` · `duration` | | media and transport |
+| `/layers/<name>/source/volume` · `mute` | f · T | sound of the layer |
+| `/layers/<name>/source/crop/left` · `top` · `right` · `bottom` | f 0..1 | part of the source used |
+| `/layers/<name>/source/params/<input>` | per ISF type | ISF generator parameters |
+| `/layers/<name>/color/add` · `color/remove` | fff | |
+| `/layers/<name>/spatial/position` · `scale` · `corners/tl` `tr` `br` `bl` | ff | px · % · normalized |
+| `/layers/<name>/effects/enabled` · `effects/<effect>/enabled` · `effects/<effect>/<input>` | | effect chain |
+| `/layers/<group>/layers/<name>/…` | | layers of a group |
+
+A locked layer refuses every write except `visible`, `locked` and the transport (`play`, `restart`, `position`).
+Zeroconf (`_oscjson._tcp`) is not announced yet: enter the machine's address and port in the client.
+
 ## Architecture
 
 ```
@@ -190,10 +253,13 @@ src/engine/   engine, with no widget dependency (QtCore/QtGui/OpenGL + FFmpeg)
   AudioStream   FFmpeg audio decoding + resampling on a thread, synchronized to the layer playhead
   AudioOutput   sound card (miniaudio), mix of all layers, master volume, meters
   Mapping       4-corner homography + Catmull-Rom mesh
+  LayerTree     order and grouping of the layers (ids), normalization, moves
+  Osc           OSC (UDP) and OSCQuery (HTTP, WebSocket) server, namespace built from the engine
 src/ui/       Qt Widgets interface
   MainWindow, LayerInspector, ParamPanel, MappingView (editing), OutputWindow (projector)
   Commands      undo commands (QUndoStack)
   MediaBin, LayerTable, MasterPanel   Media Bin, layer list, Master tab
+  Widgets       click-to-reset labels, playback bar with in / out, crop editor, color editor
 isf/          bundled shaders
 test/         automated tests
 ```
@@ -226,7 +292,8 @@ generates one project per shader and per codec, plus the demo used by the UI tes
 - **Sound**: one stereo output; no multichannel routing, per-layer output assignment, fades or audio effects yet.
 - **Single output**: no multiple outputs, per-projector slicing or automatic edge blending yet
   (the SoftEdges effect helps with manual blending).
-- **No timeline, cues, or OSC / MIDI / DMX control.**
+- **No timeline, cues, MIDI or DMX control.** OSC has no zeroconf announcement yet.
+- Groups have one level (no group inside a group).
 - **No Syphon / Spout / NDI / OMT inputs, and no camera input** (the output can be published, though).
 - NDI and OMT send the image at composition size, read back from the GPU (one frame of latency);
   for a 4K composition expect a noticeable CPU load, especially with OMT, which encodes the image.

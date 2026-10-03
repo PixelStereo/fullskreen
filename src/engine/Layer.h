@@ -6,6 +6,7 @@
 #include "VideoDecoder.h"
 
 #include <QImage>
+#include <QRectF>
 #include <QString>
 #include <algorithm>
 #include <cmath>
@@ -26,11 +27,44 @@ QString blendModeName(BlendMode m);
 QString blendModeKey(BlendMode m);
 BlendMode blendModeFromKey(const QString &k);
 
+// Color tab: color added to the picture (light) and color removed from it (filter), RGB 0..1.
+// out = in * (1 - remove) + add
+struct ColorAdjust {
+    float add[3] = {0, 0, 0};
+    float remove[3] = {0, 0, 0};
+    bool isIdentity() const
+    {
+        for (int c = 0; c < 3; ++c)
+            if (add[c] != 0.0f || remove[c] != 0.0f) return false;
+        return true;
+    }
+    bool operator==(const ColorAdjust &o) const
+    {
+        for (int c = 0; c < 3; ++c)
+            if (add[c] != o.add[c] || remove[c] != o.remove[c]) return false;
+        return true;
+    }
+    bool operator!=(const ColorAdjust &o) const { return !(*this == o); }
+};
+
 struct Layer {
+    // Identity and structure. A group is a layer without source whose picture is the composite of its members;
+    // members immediately follow their group in the layer list (one level: no group inside a group).
+    quint64 id = 0;     // unique in the composition, saved in the project
+    quint64 parent = 0; // id of the group containing the layer (0: top level)
+    bool isGroup = false;
+    bool collapsed = false; // group folded in the layer list
+
     QString name;
     bool visible = true;
+    bool locked = false;          // no edit allowed (the visibility and the transport stay available)
+    bool parentVisible = true;    // the group containing the layer is visible (updated every frame)
     float opacity = 1.0f;
     BlendMode blend = BlendMode::Normal;
+
+    QRectF crop{0, 0, 1, 1};      // part of the source picture used (normalized, origin top left)
+    ColorAdjust color;
+    bool effectsEnabled = true;   // general switch of the effect chain
 
     SourceType type = SourceType::None;
     QString sourcePath;
@@ -71,6 +105,11 @@ struct Layer {
     std::vector<std::unique_ptr<IsfInstance>> effects;
     RenderTarget fxTarget[2];
 
+    RenderTarget groupTarget; // group: composite of its members (composition size)
+    RenderTarget prepTarget;  // crop + color
+    GLuint rawTex = 0;        // source picture before crop (crop preview)
+    int rawW = 0, rawH = 0;
+
     Mapping mapping;
 
     // Frame render result
@@ -79,7 +118,7 @@ struct Layer {
 
     bool hasTransport() const { return video || audio; }
     double duration() const { return video ? video->duration() : audio ? audio->duration() : 0.0; }
-    float audioGain() const { return visible && !muted && !ended ? volume : 0.0f; }
+    float audioGain() const { return visible && parentVisible && !muted && !ended ? volume : 0.0f; }
     bool repeats() const { return mode == PlayMode::Loop || mode == PlayMode::PingPong; }
     Timeline timeline() const
     {
@@ -96,4 +135,6 @@ struct Layer {
     bool atEnd() const { return timeline().ended(clock); } // One-shot / Stop: played to the end
     int sourceWidth() const { return type == SourceType::Isf ? genWidth : srcWidth; }
     int sourceHeight() const { return type == SourceType::Isf ? genHeight : srcHeight; }
+    bool hasPicture() const { return isGroup || (type != SourceType::Audio && !(type == SourceType::None && missingType == SourceType::Audio)); }
+    static QRectF fullCrop() { return QRectF(0, 0, 1, 1); }
 };

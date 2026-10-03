@@ -1,5 +1,6 @@
 #include "Commands.h"
 
+#include <QColor>
 #include <QDateTime>
 #include <algorithm>
 
@@ -61,6 +62,11 @@ static QString propText(SetLayerProp::Prop p)
     case SetLayerProp::Muted: return QStringLiteral("Toggle Mute");
     case SetLayerProp::InPoint: return QStringLiteral("Set In Point");
     case SetLayerProp::OutPoint: return QStringLiteral("Set Out Point");
+    case SetLayerProp::Locked: return QStringLiteral("Lock / Unlock Layer");
+    case SetLayerProp::EffectsEnabled: return QStringLiteral("Enable / Disable Effects");
+    case SetLayerProp::ColorAdd: return QStringLiteral("Change Added Color");
+    case SetLayerProp::ColorRemove: return QStringLiteral("Change Removed Color");
+    case SetLayerProp::Crop: return QStringLiteral("Change Crop");
     }
     return {};
 }
@@ -87,6 +93,11 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
     case Muted: return l->muted;
     case InPoint: return l->inPoint;
     case OutPoint: return l->outPoint;
+    case Locked: return l->locked;
+    case EffectsEnabled: return l->effectsEnabled;
+    case ColorAdd: return QColor::fromRgbF(l->color.add[0], l->color.add[1], l->color.add[2]);
+    case ColorRemove: return QColor::fromRgbF(l->color.remove[0], l->color.remove[1], l->color.remove[2]);
+    case Crop: return l->crop;
     }
     return {};
 }
@@ -125,6 +136,22 @@ void SetLayerProp::apply(const QVariant &v)
     case Speed: l->speed = v.toDouble(); break;
     case Volume: l->volume = float(std::clamp(v.toDouble(), 0.0, 2.0)); break;
     case Muted: l->muted = v.toBool(); break;
+    case Locked: l->locked = v.toBool(); break;
+    case EffectsEnabled: l->effectsEnabled = v.toBool(); break;
+    case ColorAdd:
+    case ColorRemove: {
+        const QColor c = v.value<QColor>();
+        float *dst = m_prop == ColorAdd ? l->color.add : l->color.remove;
+        dst[0] = float(c.redF());
+        dst[1] = float(c.greenF());
+        dst[2] = float(c.blueF());
+        break;
+    }
+    case Crop: {
+        const QRectF r = v.toRectF().normalized() & Layer::fullCrop();
+        l->crop = r.isEmpty() ? Layer::fullCrop() : r;
+        break;
+    }
     default: break;
     }
 }
@@ -134,7 +161,7 @@ bool SetLayerProp::mergeWith(const QUndoCommand *other)
     auto *o = static_cast<const SetLayerProp *>(other);
     if (o->m_layer != m_layer || o->m_prop != m_prop) return false;
     if (m_prop != Name && m_prop != Opacity && m_prop != Speed && m_prop != Volume && m_prop != InPoint &&
-        m_prop != OutPoint)
+        m_prop != OutPoint && m_prop != ColorAdd && m_prop != ColorRemove && m_prop != Crop)
         return false;
     if (o->m_time - m_time > kMergeWindowMs) return false;
     m_after = o->m_after;
@@ -224,6 +251,12 @@ void ReplaceLayer::redo()
         return;
     }
     m_e->replaceLayerJson(m_index, m_after);
+}
+
+SetStructure::SetStructure(Engine *e, const LayerTree &before, const LayerTree &after, const QString &text)
+    : m_e(e), m_before(before), m_after(after)
+{
+    setText(text);
 }
 
 SetEffects::SetEffects(Engine *e, int index, const QJsonArray &before, const QString &text)

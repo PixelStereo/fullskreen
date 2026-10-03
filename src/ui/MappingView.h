@@ -53,6 +53,10 @@ private:
     };
 
     Mapping *mapping() const;
+    // Members of a group are mapped inside the group's canvas, itself mapped by the group (lock held)
+    const Mapping *groupMapping(int layer) const;
+    QPointF outOf(int layer, QPointF canvas) const;
+    QPointF canvasOf(int layer, QPointF out) const;
     QRectF fitRect() const;  // composition fitted in the widget (zoom 1)
     QRectF viewRect() const; // with zoom and pan
     void zoomAt(QPointF widgetPos, double factor);

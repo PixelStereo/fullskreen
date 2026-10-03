@@ -133,6 +133,14 @@ void AudioOutput::setTap(std::function<void(const float *, int)> fn)
     m_tap = std::move(fn);
 }
 
+void AudioOutput::fadeTo(float target, double seconds)
+{
+    target = std::clamp(target, 0.0f, 1.0f);
+    m_fadeStep = seconds > 0.0 ? float(1.0 / (seconds * kSampleRate)) : 1.0f;
+    m_fadeTarget = target;
+    if (!isRunning()) m_fadeLevel = target; // no callback to ramp it
+}
+
 void AudioOutput::render(float *out, int frames)
 {
     std::memset(out, 0, size_t(frames) * 2 * sizeof(float));
@@ -142,15 +150,20 @@ void AudioOutput::render(float *out, int frames)
 
     const float goal = m_muted ? 0.0f : std::max(0.0f, m_masterVolume.load());
     const float ramp = 1.0f / (0.01f * kSampleRate);
+    const float fadeGoal = m_fadeTarget.load(), fadeStep = m_fadeStep.load();
+    float fade = m_fadeLevel.load();
     float pk[2] = {0, 0};
     for (int i = 0; i < frames; ++i) {
         m_gain = m_gain < goal ? std::min(goal, m_gain + ramp) : std::max(goal, m_gain - ramp);
+        fade = fade < fadeGoal ? std::min(fadeGoal, fade + fadeStep) : std::max(fadeGoal, fade - fadeStep);
+        const float g = m_gain * fade * fade; // squared: a fade that sounds even
         for (int c = 0; c < 2; ++c) {
             float &v = out[i * 2 + c];
-            v = std::clamp(v * m_gain, -1.0f, 1.0f);
+            v = std::clamp(v * g, -1.0f, 1.0f);
             pk[c] = std::max(pk[c], std::abs(v));
         }
     }
+    m_fadeLevel = fade;
     for (int c = 0; c < 2; ++c) m_peak[c] = std::max(pk[c], m_peak[c].load() * 0.9f);
     if (m_tap) m_tap(out, frames);
 }
