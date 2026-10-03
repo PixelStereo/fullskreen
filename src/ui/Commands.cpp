@@ -74,6 +74,7 @@ static QString propText(SetLayerProp::Prop p)
     case SetLayerProp::RemoveOn: return QStringLiteral("Switch Removed Color");
     case SetLayerProp::Temp: return QStringLiteral("Change Temperature");
     case SetLayerProp::Tint: return QStringLiteral("Change Tint");
+    case SetLayerProp::Transition: return QStringLiteral("Change Transition");
     }
     return {};
 }
@@ -112,6 +113,7 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
     case RemoveOn: return l->color.removeOn;
     case Temp: return double(l->color.temp);
     case Tint: return double(l->color.tint);
+    case Transition: return l->transition;
     }
     return {};
 }
@@ -168,6 +170,7 @@ void SetLayerProp::apply(const QVariant &v)
     case RemoveOn: l->color.removeOn = v.toBool(); break;
     case Temp: l->color.temp = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTempRange), double(ColorAdjust::kTempRange))); break;
     case Tint: l->color.tint = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTintRange), double(ColorAdjust::kTintRange))); break;
+    case Transition: l->transition = v.toString(); break;
     case Roi: {
         const QRectF r = v.toRectF().normalized() & Layer::fullRoi();
         l->roi = r.isEmpty() ? Layer::fullRoi() : r;

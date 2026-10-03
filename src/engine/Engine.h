@@ -145,6 +145,11 @@ public:
     void setDefaultColorModels(int m) { m_defaultColorModels = m; }
     // Mode given to a video or a sound when it is loaded into a layer (preference)
     void setDefaultPlayMode(PlayMode m) { m_defaultPlayMode = m; }
+    // Transition used when a memory gives a layer another source, for the layers that do not choose one
+    // (ISF transition; empty: a crossfade)
+    void setDefaultTransition(const QString &path);
+    QString defaultTransition() const;
+    bool isTransitioning(quint64 layer) const; // a source transition is running on it
     PlayMode defaultPlayMode() const { return m_defaultPlayMode; }
     void seekLayer(int i, double t);
     void setLayerVolume(int i, float volume);
@@ -170,11 +175,15 @@ public:
     void removeMemory(int i);
     QJsonArray captureLayers() const; // state of every layer, all included
     // Applies layer states (those not excluded): opacity, volume, roi, color, mapping and ISF numbers fade in
-    // `fade` seconds; sources and effect chains change at once; a layer that became visible fades in from 0,
+    // `fade` seconds, or in the time a state gives them ("timing": key → seconds, 0 a cut); sources and effect chains change at once; a layer that became visible fades in from 0,
     // one that becomes hidden fades out; layers removed since are recreated. Other layers are left alone.
     void applyLayers(const QJsonArray &layers, double fade);
     void recallMemory(int i); // with its fade
     bool isFading() const;
+    void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
+    // Key under which a memory stores the time of a stored value (its path in the layer state), empty for a value
+    // that does not fade: "opacity", "roi", "color/temp", "mapping", "effects/0/params/radius"…
+    static QString timingKey(const QStringList &path);
 
     // --- External media (media bin)
     struct MediaRef {
@@ -386,7 +395,23 @@ private:
     std::vector<Memory> m_memories;
     struct FadeJob;
     std::vector<std::shared_ptr<FadeJob>> m_fades;
-    double m_fadeT = 1, m_fadeDuration = 0;
+    // A memory gives a layer another source: the outgoing one keeps playing, invisible, and the two pictures
+    // are mixed by an ISF transition into the layer's picture (before its mapping) until it is over
+    struct SourceTransition {
+        std::unique_ptr<Layer> from; // the outgoing source, with its own ROI, color and effects
+        QString shaderPath;
+        std::unique_ptr<IsfInstance> shader; // loaded by the render thread (none: a crossfade)
+        bool loaded = false;
+        RenderTarget target;
+        double elapsed = 0, duration = 1;
+    };
+    std::map<quint64, std::unique_ptr<SourceTransition>> m_transitions; // by layer id
+    QString m_defaultTransition;
+    void startSourceTransition(int index, const QJsonObject &state, double duration);
+    void stepTransitions(double dt);                                      // render thread, lock held
+    void renderTransition(Layer &l, SourceTransition &t, const IsfRenderContext &rc);
+    void retireTransition(std::unique_ptr<SourceTransition> t);           // sound now, OpenGL on the render thread
+    double m_fadeElapsed = 0; // seconds since the last recall
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
     std::atomic<quint64> m_frameCount{0};

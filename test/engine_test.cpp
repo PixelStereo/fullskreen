@@ -644,6 +644,101 @@ int main(int argc, char **argv)
             undo.undo();
             CHECK(std::abs(e.layer(V + 0)->opacity - 0.33f) < 1e-6);
         }
+        // Each value on its own time: opacity cut, temperature 2 s, the others on the memory's fade (1 s)
+        {
+            const int ti = e.addLayer("Timed", e.layerCount());
+            const quint64 tid = e.layerId(ti);
+            auto L = [&] { return e.layer(e.indexOfId(tid)); };
+            L()->opacity = 1.0f;
+            L()->color.temp = 1000;
+            L()->roi = QRectF(0, 0, 0.5, 1);
+            QJsonObject state = e.layerJson(e.indexOfId(tid));
+            state["timing"] = QJsonObject{{"opacity", 0}, {"color/temp", 2.0}};
+            L()->opacity = 0.0f;
+            L()->color.temp = 0;
+            L()->roi = QRectF(0, 0, 1, 1);
+            e.applyLayers(QJsonArray{state}, 1.0);
+            CHECK(L()->opacity == 1.0f && L()->color.temp < 1 && std::abs(L()->roi.width() - 1.0) < 1e-9); // the cut, at once
+            e.advanceFades(0.5);
+            CHECK(L()->roi.width() < 0.99 && L()->roi.width() > 0.51 && L()->color.temp > 1 && L()->color.temp < 400);
+            e.advanceFades(0.6); // 1.1 s: the fade is over, the temperature is not
+            CHECK(std::abs(L()->roi.width() - 0.5) < 1e-9 && L()->color.temp > 400 && L()->color.temp < 999 && e.isFading());
+            e.advanceFades(1.0);
+            CHECK(std::abs(L()->color.temp - 1000) < 1e-3 && !e.isFading());
+            // Hidden by a cut while the rest fades: at once
+            state["visible"] = false;
+            e.applyLayers(QJsonArray{state}, 1.0);
+            CHECK(!L()->visible && L()->opacity == 1.0f);
+            // A time of its own with no memory fade at all
+            L()->visible = true;
+            L()->color.temp = 0;
+            e.applyLayers(QJsonArray{state.value("visible").toBool() ? state : [&] { QJsonObject x = state; x["visible"] = true; return x; }()}, 0.0);
+            CHECK(L()->color.temp < 1 && e.isFading());
+            e.advanceFades(2.0);
+            CHECK(std::abs(L()->color.temp - 1000) < 1e-3 && !e.isFading());
+            CHECK(Engine::timingKey({"source", "roi", "2"}) == "roi" && Engine::timingKey({"color", "add", "1"}) == "color/add" &&
+                  Engine::timingKey({"effects", "0", "params", "radius"}) == "effects/0/params/radius" &&
+                  Engine::timingKey({"source", "speed"}).isEmpty());
+            e.removeLayer(e.indexOfId(tid));
+        }
+        // Another source by a memory: the outgoing one stays, invisible, and a transition mixes the two
+        {
+            for (const auto &[name, rgb] : {std::pair<QString, QRgb>{"red", qRgb(255, 0, 0)}, {"blue", qRgb(0, 0, 255)}}) {
+                QImage im(32, 16, QImage::Format_RGB32);
+                im.fill(rgb);
+                im.save(tmp + "/" + name + ".png");
+            }
+            const int ti = e.addLayer("Trans", V);
+            const quint64 tid = e.layerId(ti);
+            CHECK(e.setLayerImage(ti, tmp + "/red.png", &err));
+            e.layer(ti)->mapping.resetCorners();
+            QJsonObject red = e.layerJson(ti);
+            red["included"] = true;
+            CHECK(e.setLayerImage(ti, tmp + "/blue.png", &err));
+            const quint64 vp = e.mainViewportId();
+            auto center = [&] {
+                e.renderFrame();
+                const QImage g = e.grabViewport(vp);
+                return g.pixelColor(g.width() / 2, g.height() / 2);
+            };
+            CHECK(center().blue() > 250);
+            e.applyLayers(QJsonArray{red}, 1.0);
+            CHECK(e.isTransitioning(tid) && e.layerJson(e.indexOfId(tid)).value("source").toObject().value("path").toString().endsWith("red.png"));
+            e.advanceFades(0.5);
+            CHECK(std::abs(e.layer(e.indexOfId(tid))->transitionGain - 0.5f) < 0.01f); // the sound crosses too
+            QColor c = center();
+            CHECK(c.red() > 90 && c.red() < 170 && c.blue() > 90 && c.blue() < 170); // halfway: both
+            e.advanceFades(0.6);
+            c = center();
+            CHECK(!e.isTransitioning(tid) && c.red() > 250 && c.blue() < 5 && e.layer(e.indexOfId(tid))->transitionGain == 1.0f);
+            // An ISF transition chosen for the layer: fade out, fade in — halfway, only what is beneath shows
+            e.layer(e.indexOfId(tid))->visible = false;
+            const QColor under = center();
+            e.layer(e.indexOfId(tid))->visible = true;
+            QJsonObject blue = e.layerJson(e.indexOfId(tid));
+            blue["source"] = [&] {
+                QJsonObject src = blue.value("source").toObject();
+                src["path"] = tmp + "/blue.png";
+                src["transition"] = root + "/../isf/transitions/FadeOutIn.fs";
+                return src;
+            }();
+            e.applyLayers(QJsonArray{blue}, 1.0);
+            e.advanceFades(0.5);
+            c = center();
+            CHECK(e.isTransitioning(tid) && std::abs(c.red() - under.red()) < 30 && std::abs(c.blue() - under.blue()) < 30);
+            e.advanceFades(0.6);
+            CHECK(center().blue() > 250);
+            // The source's own time: a cut, no transition
+            red["timing"] = QJsonObject{{"source", 0}};
+            e.applyLayers(QJsonArray{red}, 1.0);
+            CHECK(!e.isTransitioning(tid) && center().red() > 250);
+            // A transition running when the layer goes: it goes with it
+            blue["timing"] = QJsonObject{{"source", 2.0}};
+            e.applyLayers(QJsonArray{blue}, 0.0); // its own time even with no memory fade
+            CHECK(e.isTransitioning(tid));
+            e.removeLayer(e.indexOfId(tid));
+            CHECK(!e.isTransitioning(tid));
+        }
         // Saved with the project
         CHECK(e.saveProject(tmp + "/memories.fulskrin", {}, &err));
         CHECK(e.loadProject(tmp + "/memories.fulskrin", nullptr, &err));
@@ -891,7 +986,7 @@ int main(int argc, char **argv)
         QThread::msleep(500);
         std::printf("       %llu frames during 500 ms of main-thread blocking\n",
                     static_cast<unsigned long long>(e.frameCount() - before));
-        CHECK(e.frameCount() - before >= 15);
+        CHECK(e.frameCount() - before >= 5); // still rendering (the rate itself depends on the machine: 2 CPUs give ~12)
     }
     // The image changes over time (animated generator) in threaded mode
     {

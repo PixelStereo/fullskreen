@@ -182,6 +182,11 @@ struct Layer {
 
     Mapping mapping;
 
+    // Transition used when a memory gives this layer another source (ISF with startImage, endImage, progress;
+    // empty: the default one, chosen in the settings)
+    QString transition;
+    float transitionGain = 1.0f; // sound during such a transition: the incoming source rises, the outgoing one falls
+
     // Frame render result
     GLuint finalTex = 0;
     int finalW = 0, finalH = 0;
@@ -190,7 +195,7 @@ struct Layer {
 
     bool hasTransport() const { return video || audio; }
     double duration() const { return video ? video->duration() : audio ? audio->duration() : 0.0; }
-    float audioGain() const { return visible && parentVisible && !muted && !ended ? volume : 0.0f; }
+    float audioGain() const { return visible && parentVisible && !muted && !ended ? volume * transitionGain : 0.0f; }
     bool repeats() const { return mode == PlayMode::Loop || mode == PlayMode::PingPong; }
     Timeline timeline() const
     {

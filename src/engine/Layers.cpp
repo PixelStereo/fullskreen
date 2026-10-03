@@ -396,6 +396,11 @@ void Engine::removeLayer(int i)
         if (m_layers[size_t(i)]->isViewport && viewportCountLocked() <= 1) return; // there is always one
         g->layer = std::move(m_layers[size_t(i)]);
         m_layers.erase(m_layers.begin() + i);
+        // A source transition running on it ends with it (the id may come back, undo: not the transition)
+        if (auto t = m_transitions.find(g->layer->id); t != m_transitions.end()) {
+            retireTransition(std::move(t->second));
+            m_transitions.erase(t);
+        }
         if (g->layer->isGroup) // its contents go up one level, where they are
             for (auto &l : m_layers)
                 if (l->parent == g->layer->id) l->parent = g->layer->parent;

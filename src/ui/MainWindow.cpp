@@ -92,6 +92,10 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
             [this] { m_engine->setDefaultColorModels(SettingsPanel::colorModels()); });
     m_engine->setDefaultColorModels(SettingsPanel::colorModels());
     connect(m_settings, &SettingsPanel::oscChanged, this, &MainWindow::startOsc);
+    // Default transition of the sources changed by a memory
+    m_engine->setDefaultTransition(SettingsPanel::defaultTransition(m_engine->library()));
+    m_settings->setTransitions(m_engine->library().transitions(), m_engine->defaultTransition());
+    connect(m_settings, &SettingsPanel::transitionChanged, this, [this](const QString &p) { m_engine->setDefaultTransition(p); });
     m_tabs->setMinimumWidth(390);
 
     // Left: Media Bin and Layers, two tabs (Shift+1 / Shift+2). Dragging a media over the Layers tab opens it.
@@ -1253,6 +1257,7 @@ void MainWindow::addIsfFolder()
 void MainWindow::rescanLibrary()
 {
     m_engine->library().scan();
+    m_settings->setTransitions(m_engine->library().transitions(), m_engine->defaultTransition());
     m_bin->refresh();
     m_inspector->rebuild();
     statusBar()->showMessage(QStringLiteral("ISF Library: %1 generators, %2 effects")

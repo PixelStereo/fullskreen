@@ -42,7 +42,16 @@ static QIcon plusIcon()
 }
 
 // Roles of the inspector tree
-enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, ValueRole = Qt::UserRole + 2, KeyRole = Qt::UserRole + 3 };
+enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, ValueRole = Qt::UserRole + 2, KeyRole = Qt::UserRole + 3,
+       TimeKeyRole = Qt::UserRole + 4, TimeRole = Qt::UserRole + 5 };
+enum Column { ColLayer, ColShown, ColValue, ColTime, ColSource };
+
+// Time of a stored value: the memory's fade (none stored), a cut (0) or its own time
+static QString timeText(const QJsonValue &v)
+{
+    if (!v.isDouble()) return QStringLiteral("Transition");
+    return v.toDouble() <= 0 ? QStringLiteral("Cut") : QStringLiteral("%1 s").arg(v.toDouble(), 0, 'g', 4);
+}
 
 // Value at `path` inside a JSON tree; a numeric component addresses an array.
 static QJsonValue jsonAt(const QJsonValue &root, const QStringList &path, int from = 0)
@@ -113,9 +122,22 @@ class FieldDelegate : public QStyledItemDelegate
 public:
     std::function<const MemField *(const QModelIndex &)> field;
     std::function<void(const MemField &, const QJsonValue &)> commit;
+    std::function<void(const QModelIndex &, double)> commitTime; // < 0: back to the memory's fade
 
     QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &, const QModelIndex &index) const override
     {
+        if (index.column() == ColTime) {
+            if (!index.data(TimeKeyRole).isValid()) return nullptr;
+            auto *b = new QDoubleSpinBox(parent);
+            b->setRange(-0.1, 600);
+            b->setDecimals(1);
+            b->setSingleStep(0.5);
+            b->setSuffix(QStringLiteral(" s"));
+            b->setSpecialValueText(QStringLiteral("Transition")); // the lowest value: the memory's fade
+            b->setKeyboardTracking(false);
+            b->setToolTip(QStringLiteral("Transition: the memory's fade · 0: a cut · or a time of its own"));
+            return b;
+        }
         const MemField *f = field(index);
         if (!f) return nullptr;
         if (f->kind == MemField::Number) {
@@ -136,6 +158,13 @@ public:
     }
     void setEditorData(QWidget *editor, const QModelIndex &index) const override
     {
+        if (index.column() == ColTime) {
+            if (auto *b = qobject_cast<QDoubleSpinBox *>(editor)) {
+                const QVariant t = index.data(TimeRole);
+                b->setValue(t.isValid() ? t.toDouble() : b->minimum());
+            }
+            return;
+        }
         const MemField *f = field(index);
         if (!f) return;
         if (auto *b = qobject_cast<QDoubleSpinBox *>(editor)) b->setValue(index.data(ValueRole).toDouble() * f->scale);
@@ -144,6 +173,11 @@ public:
     }
     void setModelData(QWidget *editor, QAbstractItemModel *, const QModelIndex &index) const override
     {
+        if (index.column() == ColTime) {
+            if (auto *b = qobject_cast<QDoubleSpinBox *>(editor))
+                commitTime(index, b->value() <= b->minimum() ? -1.0 : b->value());
+            return;
+        }
         const MemField *f = field(index);
         if (!f) return;
         if (auto *b = qobject_cast<QDoubleSpinBox *>(editor))
@@ -196,7 +230,7 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
 
     // Inspector of the selected memory
     m_inspector = new QWidget;
-    m_inspector->setFixedWidth(470);
+    m_inspector->setFixedWidth(540);
     auto *iv = new QVBoxLayout(m_inspector);
     iv->setContentsMargins(6, 0, 0, 0);
     auto *head = new QHBoxLayout;
@@ -214,7 +248,8 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_fade->setSuffix(QStringLiteral(" s"));
     m_fade->setKeyboardTracking(false);
     m_fade->setToolTip(QStringLiteral("Fade: opacity, volume, ROI, color, mapping and ISF numbers move to the memory's "
-                                      "values in this time; sources and effect chains change at once"));
+                                      "values in this time (unless the Time column gives one of them its own); "
+                                      "sources and effect chains change at once"));
     auto *fadeRow = new QHBoxLayout;
     fadeRow->addWidget(new ResetLabel(QStringLiteral("Fade"), [this] { m_fade->setValue(1.0); }));
     fadeRow->addWidget(m_fade, 1);
@@ -225,7 +260,11 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     head->addLayout(fields, 1);
     iv->addLayout(head);
     m_layers = new QTreeWidget;
-    m_layers->setHeaderLabels({QStringLiteral("Layer"), QStringLiteral("Shown"), QStringLiteral("Value"), QStringLiteral("Source")});
+    m_layers->setHeaderLabels({QStringLiteral("Layer"), QStringLiteral("Shown"), QStringLiteral("Value"), QStringLiteral("Time"),
+                               QStringLiteral("Source")});
+    m_layers->headerItem()->setToolTip(ColTime, QStringLiteral("How long each value takes when the memory is recalled:\n"
+                                                               "Transition (the memory's fade), Cut, or a time of its own.\n"
+                                                               "Double-click to change it."));
     m_layers->setRootIsDecorated(true);
     m_layers->setIndentation(12);
     m_layers->setUniformRowHeights(true);
@@ -233,8 +272,9 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_layers->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_layers->header()->setStretchLastSection(false);
     m_layers->setColumnWidth(1, 46);
-    m_layers->setColumnWidth(2, 92);
-    m_layers->setColumnWidth(3, 110);
+    m_layers->setColumnWidth(ColValue, 92);
+    m_layers->setColumnWidth(ColTime, 76);
+    m_layers->setColumnWidth(ColSource, 100);
     m_layers->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked |
                               QAbstractItemView::EditKeyPressed);
     m_layers->setToolTip(QStringLiteral("Unchecked layers are left alone when the memory is recalled.\n"
@@ -249,6 +289,11 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
         return k >= 0 && k < int(m_fields.size()) ? &m_fields[size_t(k)] : nullptr;
     };
     delegate->commit = [this](const MemField &f, const QJsonValue &v) { applyField(f, v); };
+    delegate->commitTime = [this](const QModelIndex &i, double seconds) {
+        const QVariant fi = i.siblingAtColumn(ColValue).data(FieldRole);
+        if (!fi.isValid()) return;
+        applyTime(m_fields[size_t(fi.toInt())].row, i.data(TimeKeyRole).toString(), seconds);
+    };
     delegate->setParent(m_layers);
     m_layers->setItemDelegate(delegate);
     iv->addWidget(m_layers, 1);
@@ -412,12 +457,12 @@ void MemoryPanel::showInspector(int i)
         auto *it = new QTreeWidgetItem(m_layers, {(o.contains("parent") ? QStringLiteral("    ") : QString()) + o.value("name").toString(),
                                                   o.value("visible").toBool(true) ? QStringLiteral("✓") : QStringLiteral("—"),
                                                   QStringLiteral("%1%").arg(std::lround(o.value("opacity").toDouble(1) * 100)),
-                                                  source});
+                                                  QString(), source});
         it->setData(0, IdRole, o.value("id").toString().toULongLong());
         it->setData(0, KeyRole, QStringLiteral("L") + o.value("id").toString());
         it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
         it->setCheckState(0, o.value("included").toBool(true) ? Qt::Checked : Qt::Unchecked);
-        it->setToolTip(3, src.value("path").toString());
+        it->setToolTip(ColSource, src.value("path").toString());
         if (m_engine->indexOfId(it->data(0, IdRole).toULongLong()) < 0) {
             it->setForeground(0, QColor(255, 180, 90));
             it->setToolTip(0, QStringLiteral("Not in the composition any more: recreated by the recall"));
@@ -481,6 +526,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         return it;
     };
     auto expand = [&](QTreeWidgetItem *it) { it->setExpanded(m_expanded.contains(it->data(0, KeyRole).toString())); };
+    std::function<void(QTreeWidgetItem *, const QString &)> timeCell;
     auto num = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path, double lo, double hi, double scale,
                    int decimals, const QString &suffix, double step) {
         MemField f;
@@ -493,8 +539,26 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         f.decimals = decimals;
         f.suffix = suffix;
         f.step = step;
-        return addField(p, label, f, jsonAt(o, path));
+        QTreeWidgetItem *it = addField(p, label, f, jsonAt(o, path));
+        timeCell(it, Engine::timingKey(path)); // a value that fades: its time can be chosen
+        return it;
     };
+    auto timeCellImpl = [&](QTreeWidgetItem *it, const QString &key) {
+        if (!key.isEmpty()) {
+            it->setFlags(it->flags() | Qt::ItemIsSelectable | Qt::ItemIsEditable);
+            const QJsonValue t = o.value("timing").toObject().value(key);
+            it->setData(ColTime, TimeKeyRole, key);
+            if (t.isDouble()) it->setData(ColTime, TimeRole, t.toDouble());
+            it->setText(ColTime, timeText(t));
+            it->setForeground(ColTime, t.isDouble() ? QColor(230, 230, 233) : QColor(130, 130, 136));
+            it->setToolTip(ColTime, QStringLiteral("Double-click: Transition (the memory's fade), 0 for a cut, or a time "
+                                                   "of its own%1")
+                                        .arg(key.contains('/') || key == "roi" || key == "mapping"
+                                                 ? QStringLiteral(" — shared by every value of %1").arg(key)
+                                                 : QString()));
+        }
+    };
+    timeCell = timeCellImpl;
     auto flag = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path) {
         MemField f;
         f.kind = MemField::Bool;
@@ -570,17 +634,25 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
 
     if (!group) {
         QTreeWidgetItem *sec = section(parent, QStringLiteral("Source"), QStringLiteral("source"));
+        QTreeWidgetItem *what = nullptr;
         if (type == "none") {
-            info(sec, QStringLiteral("Source"), QStringLiteral("—"));
+            what = info(sec, QStringLiteral("Source"), QStringLiteral("—"));
         } else if (type == "layer") {
             const Layer *from = m_engine->layer(m_engine->indexOfId(src.value("layer").toString().toULongLong()));
-            info(sec, QStringLiteral("Layer"), from ? from->name : QStringLiteral("(gone)"));
+            what = info(sec, QStringLiteral("Layer"), from ? from->name : QStringLiteral("(gone)"));
             choice(sec, QStringLiteral("Tap"), {"source", "tap"}, {"prefx", "postfx"},
                    {QStringLiteral("Pre-FX"), QStringLiteral("Post-FX")});
         } else {
-            info(sec, type == "isf" ? QStringLiteral("Shader") : QStringLiteral("File"),
-                 QFileInfo(src.value("path").toString()).fileName(), src.value("path").toString());
+            what = info(sec, type == "isf" ? QStringLiteral("Shader") : QStringLiteral("File"),
+                        QFileInfo(src.value("path").toString()).fileName(), src.value("path").toString());
         }
+        // Another source than the layer's at the recall: its transition, over this time
+        timeCell(what, QStringLiteral("source"));
+        what->setToolTip(ColTime, QStringLiteral("When this memory gives the layer another source: how long the "
+                                                 "transition takes (Transition: the memory's fade, 0: a cut)"));
+        const QString tr = src.value("transition").toString();
+        info(sec, QStringLiteral("Transition"),
+             tr.isEmpty() ? QStringLiteral("Default") : QFileInfo(tr).completeBaseName(), tr);
         if (hasSound) {
             choice(sec, QStringLiteral("Play mode"), {"source", "playMode"}, {"oneshot", "loop", "pingpong", "stop"},
                    {QStringLiteral("One-shot"), QStringLiteral("Loop"), QStringLiteral("Ping-pong"), QStringLiteral("Stop")});
@@ -685,6 +757,27 @@ void MemoryPanel::applyField(const MemField &f, const QJsonValue &value)
     QMetaObject::invokeMethod(this, [this] { showInspector(selected()); }, Qt::QueuedConnection);
 }
 
+// The time of a stored value, in the selected memory (< 0: back to the memory's fade)
+void MemoryPanel::applyTime(int row, const QString &key, double seconds)
+{
+    const int i = selected();
+    if (i < 0 || key.isEmpty()) return;
+    Engine::Memory m = m_engine->memory(i);
+    if (row < 0 || row >= m.layers.size()) return;
+    QJsonObject o = m.layers[row].toObject();
+    QJsonObject timing = o.value("timing").toObject();
+    if (seconds < 0) timing.remove(key);
+    else timing[key] = seconds;
+    if (timing.isEmpty()) o.remove("timing");
+    else o["timing"] = timing;
+    m.layers[row] = o;
+    m_applying = true;
+    m_engine->setMemory(i, m);
+    m_applying = false;
+    emit edited();
+    QMetaObject::invokeMethod(this, [this] { showInspector(selected()); }, Qt::QueuedConnection);
+}
+
 void MemoryPanel::store()
 {
     Engine::Memory m;
@@ -707,16 +800,22 @@ void MemoryPanel::updateMemory(int i)
 {
     if (i < 0 || i >= m_engine->memoryCount()) return;
     Engine::Memory m = m_engine->memory(i);
+    // Layers left out stay out; the times given to values are kept
     QSet<quint64> excluded;
-    for (const QJsonValue &v : m.layers)
-        if (!v.toObject().value("included").toBool(true)) excluded.insert(v.toObject().value("id").toString().toULongLong());
+    QHash<quint64, QJsonValue> timing;
+    for (const QJsonValue &v : m.layers) {
+        const QJsonObject o = v.toObject();
+        const quint64 id = o.value("id").toString().toULongLong();
+        if (!o.value("included").toBool(true)) excluded.insert(id);
+        if (o.contains("timing")) timing.insert(id, o.value("timing"));
+    }
     QJsonArray layers = m_engine->captureLayers();
     for (int k = 0; k < layers.size(); ++k) {
         QJsonObject o = layers[k].toObject();
-        if (excluded.contains(o.value("id").toString().toULongLong())) {
-            o["included"] = false;
-            layers[k] = o;
-        }
+        const quint64 id = o.value("id").toString().toULongLong();
+        if (excluded.contains(id)) o["included"] = false;
+        if (timing.contains(id)) o["timing"] = timing.value(id);
+        layers[k] = o;
     }
     m.layers = layers;
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);

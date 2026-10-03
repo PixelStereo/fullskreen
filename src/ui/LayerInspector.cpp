@@ -76,6 +76,7 @@ struct LayerSnapshot {
     // Another layer as the source, and the layers that could be chosen (id, name; cycles left out)
     quint64 sourceLayer = 0;
     LayerTap sourceTap = LayerTap::PostFx;
+    QString transition; // when a memory changes the source (empty: the default)
     std::vector<std::pair<quint64, QString>> candidates;
     struct Fx {
         QString name, error;
@@ -139,6 +140,7 @@ struct LayerSnapshot {
         s.genH = l->genHeight;
         s.sourceLayer = l->sourceLayer;
         s.sourceTap = l->sourceTap;
+        s.transition = l->transition;
         if (!l->isGroup && !l->isViewport)
             for (int k = 0; k < e->layerCount(); ++k) {
                 const Layer *o = e->layer(k);
@@ -527,6 +529,38 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             pick->setEnabled(false);
             pick->setToolTip(QStringLiteral("No other layer can be used here without the picture feeding back on itself"));
         }
+    }
+
+    // Transition when a memory gives this layer another source
+    {
+        auto *row = new QHBoxLayout;
+        auto *label = new ResetLabel(QStringLiteral("Transition"), [this] {
+            setProp(cmd::SetLayerProp::Transition, QString());
+            rebuild();
+        });
+        auto *pick = new QComboBox;
+        const QString def = m_engine->defaultTransition();
+        pick->addItem(QStringLiteral("Default (%1)").arg(def.isEmpty() ? QStringLiteral("Crossfade")
+                                                                      : QFileInfo(def).completeBaseName()),
+                      QString());
+        for (const IsfEntry &t : m_engine->library().transitions()) {
+            pick->addItem(t.name, t.path);
+            pick->setItemData(pick->count() - 1, t.description, Qt::ToolTipRole);
+        }
+        int k = pick->findData(s.transition);
+        if (k < 0 && !s.transition.isEmpty()) { // not in the library (any more): kept, shown by its name
+            pick->addItem(QFileInfo(s.transition).completeBaseName(), s.transition);
+            k = pick->count() - 1;
+        }
+        pick->setCurrentIndex(std::max(0, k));
+        pick->setToolTip(QStringLiteral("When a memory gives this layer another source, the outgoing one keeps playing and "
+                                        "this ISF transition takes it to the new one, over the memory's fade "
+                                        "(or the time the memory gives the source)"));
+        row->addWidget(label);
+        row->addWidget(pick, 1);
+        v->addLayout(row);
+        connect(pick, &QComboBox::activated, this,
+                [this, pick](int i) { setProp(cmd::SetLayerProp::Transition, pick->itemData(i).toString()); });
     }
 
     if (!s.error.isEmpty()) v->addWidget(errorLabel(s.error));
