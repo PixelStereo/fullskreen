@@ -320,6 +320,9 @@ void Engine::releaseAll()
 {
     // Output windows: their contexts (the windows themselves belong to the interface)
     for (auto &[id, o] : m_outWindows) releaseOutputSurface(o);
+    // Source transitions in progress (render thread: released here at once)
+    for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
+    m_transitions.clear();
     // Publishers: GPU (current context required), then the send threads
     for (auto &[id, pub] : m_pubs) releasePublication(*pub);
     {

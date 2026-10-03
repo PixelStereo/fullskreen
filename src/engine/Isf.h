@@ -46,6 +46,9 @@ struct IsfInput {
 
     QString imagePath; // image chosen by the user for a secondary image input
     Texture2D imageTex;
+    // A picture of the engine for this input instead (transitions: startImage, endImage); 0: none
+    GLuint extTex = 0;
+    int extW = 0, extH = 0;
 
     GLint loc = -1, sizeLoc = -1, rectLoc = -1;
     static QString typeName(Type t);
@@ -113,6 +116,9 @@ public:
     void render(const IsfRenderContext &rc, GLuint inputTex, int inW, int inH, RenderTarget &out, int outW, int outH);
 
     bool setImageInput(int index, const QString &path, QString *err); // GL context current
+    // Texture of the engine bound to the image input `name` at the next renders (0: back to its own image)
+    void setImageTexture(const QString &name, GLuint tex, int w, int h);
+    IsfInput *input(const QString &name);
 
     QJsonObject save(const QString &projectDir) const;
     void restoreParams(const QJsonObject &params, const QString &projectDir);

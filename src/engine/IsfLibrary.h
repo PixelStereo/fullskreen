@@ -22,6 +22,7 @@ public:
     void scan();
     const QVector<IsfEntry> &generators() const { return m_generators; }
     const QVector<IsfEntry> &filters() const { return m_filters; }
+    const QVector<IsfEntry> &transitions() const { return m_transitions; } // startImage, endImage, progress
 
     // Finds a shader by file name (project moved from one machine to another).
     QString findByFileName(const QString &fileName) const;
@@ -31,5 +32,5 @@ public:
 
 private:
     QStringList m_userFolders;
-    QVector<IsfEntry> m_generators, m_filters;
+    QVector<IsfEntry> m_generators, m_filters, m_transitions;
 };

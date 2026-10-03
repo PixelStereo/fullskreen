@@ -52,6 +52,8 @@ void Engine::clearProject()
         m_binItems.clear();
         m_memories.clear();
         m_fades.clear();
+        for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
+        m_transitions.clear();
         m_audio->setMasterVolume(1.0f);
         m_audio->setMuted(false);
         m_publishDirty = true; // the publishers of the viewports that went are stopped
@@ -168,6 +170,7 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     }
     const QRectF c = l.roi;
     src["roi"] = QJsonArray{c.left(), c.top(), c.right(), c.bottom()};
+    if (!l.transition.isEmpty()) src["transition"] = l.transition;
     o["source"] = src;
     auto rgb = [](const float v[3]) { return QJsonArray{v[0], v[1], v[2]}; };
     o["color"] = QJsonObject{{"temp", l.color.temp},        {"tint", l.color.tint},
@@ -211,6 +214,10 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         l->hiddenIn.clear();
         for (const QJsonValue &v : o.value("hiddenIn").toArray()) l->hiddenIn.push_back(v.toString().toULongLong());
         l->effectsEnabled = o.value("effectsEnabled").toBool(true);
+        {
+            const QString t = o.value("source").toObject().value("transition").toString();
+            l->transition = t.isEmpty() ? QString() : resolvePath(QJsonObject{{"path", t}}, projectDir);
+        }
         l->colorModels = o.value("colorModels").toInt(l->colorModels);
         // Saved id kept unless another layer already has it
         const quint64 id = o.value("id").toString().toULongLong();

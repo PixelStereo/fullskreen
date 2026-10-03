@@ -8,7 +8,9 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QPushButton>
+#include <QFileInfo>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
@@ -17,6 +19,7 @@ static const char *kColorKey = "ui/colorModel";
 static const char *kOscKey = "osc/enabled";
 static const char *kOscPortKey = "osc/udpPort";        // (osc/port, osc/queryPort: earlier defaults, ignored)
 static const char *kQueryPortKey = "osc/oscQueryPort";
+static const char *kTransitionKey = "memories/transition";
 static constexpr int kDefaultOscPort = 1234, kDefaultQueryPort = 5678;
 
 PlayMode SettingsPanel::defaultPlayMode()
@@ -27,6 +30,25 @@ int SettingsPanel::colorModels() { return QSettings().value(kColorKey, int(Color
 bool SettingsPanel::oscEnabled() { return QSettings().value(kOscKey, true).toBool(); }
 int SettingsPanel::oscPort() { return QSettings().value(kOscPortKey, kDefaultOscPort).toInt(); }
 int SettingsPanel::oscQueryPort() { return QSettings().value(kQueryPortKey, kDefaultQueryPort).toInt(); }
+
+QString SettingsPanel::defaultTransition(const IsfLibrary &library)
+{
+    const QString saved = QSettings().value(kTransitionKey, QStringLiteral("Crossfade.fs")).toString();
+    if (QFileInfo::exists(saved)) return saved;
+    return library.findByFileName(QFileInfo(saved).fileName()); // empty: a built-in crossfade
+}
+
+void SettingsPanel::setTransitions(const QVector<IsfEntry> &transitions, const QString &current)
+{
+    QSignalBlocker b(m_transition);
+    m_transition->clear();
+    for (const IsfEntry &t : transitions) {
+        m_transition->addItem(t.name, t.path);
+        m_transition->setItemData(m_transition->count() - 1, t.description, Qt::ToolTipRole);
+    }
+    if (m_transition->findData(current) < 0) m_transition->addItem(QStringLiteral("Crossfade (built in)"), QString());
+    m_transition->setCurrentIndex(std::max(0, m_transition->findData(current)));
+}
 
 static QLabel *note(const QString &t)
 {
@@ -52,6 +74,21 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
     form->addRow(new ResetLabel(QStringLiteral("Default play mode"), [this] { m_playMode->setCurrentIndex(1); }), m_playMode);
     form->addRow(note(QStringLiteral("Given to a video or a sound when it is loaded into a layer. "
                                      "Layers already loaded keep their own mode.")));
+    m_transition = new QComboBox;
+    form->addRow(new ResetLabel(QStringLiteral("Memory transition"),
+                                [this] {
+                                    const int k = m_transition->findText(QStringLiteral("Crossfade"));
+                                    m_transition->setCurrentIndex(std::max(0, k));
+                                }),
+                 m_transition);
+    form->addRow(note(QStringLiteral("When a memory gives a layer another source: the outgoing one keeps playing and "
+                                     "this ISF transition takes it to the new one, over the memory's fade. "
+                                     "A layer can choose its own (Source tab).")));
+    connect(m_transition, qOverload<int>(&QComboBox::activated), this, [this] {
+        const QString path = m_transition->currentData().toString();
+        QSettings().setValue(kTransitionKey, path);
+        emit transitionChanged(path);
+    });
     v->addWidget(playback);
     connect(m_playMode, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
         QSettings().setValue(kPlayModeKey, playModeKey(PlayMode(m_playMode->currentData().toInt())));

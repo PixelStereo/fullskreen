@@ -1,5 +1,5 @@
-// Memories (cues): snapshots of the layers, recalled with a fade.
-#include "Engine.h"
+// Memories (cues): snapshots of the layers, recalled with a fade; another source comes in with a transition.
+#include "EngineInternal.h"
 
 #include <QBuffer>
 #include <QDir>
@@ -290,7 +290,12 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
         if (!group && (curSrc.value("type") != src.value("type") || curSrc.value("layer") != src.value("layer") ||
                        curSrc.value("tap") != src.value("tap") ||
                        QDir::cleanPath(curSrc.value("path").toString()) != QDir::cleanPath(src.value("path").toString()))) {
-            replaceLayerJson(idx, o); // another media: loaded at once, no fade
+            // Another media: it comes in with the layer's transition over the source's time (the memory's
+            // fade unless it has its own), or at once for a cut
+            const QJsonValue own = o.value("timing").toObject().value("source");
+            const double t = own.isDouble() ? std::clamp(own.toDouble(), 0.0, 600.0) : std::max(0.0, fade);
+            if (t > 0) startSourceTransition(idx, o, t);
+            else replaceLayerJson(idx, o);
             continue;
         }
         if (effectPaths(cur.value("effects").toArray()) != effectPaths(o.value("effects").toArray()))
@@ -401,6 +406,107 @@ void Engine::advanceFades(double dt)
 {
     Lock lk(&m_mutex);
     stepFade(dt);
+    stepTransitions(dt);
+}
+
+// ---------------------------------------------------------------------------
+// Source transitions
+
+void Engine::setDefaultTransition(const QString &path)
+{
+    Lock lk(&m_mutex);
+    m_defaultTransition = path;
+}
+
+QString Engine::defaultTransition() const
+{
+    Lock lk(&m_mutex);
+    return m_defaultTransition;
+}
+
+bool Engine::isTransitioning(quint64 layer) const
+{
+    Lock lk(&m_mutex);
+    return m_transitions.count(layer) > 0;
+}
+
+// The layer keeps its place and its id; the object that held the outgoing source becomes the transition's
+// `from` and goes on playing (picture and sound) until the transition is over.
+void Engine::startSourceTransition(int index, const QJsonObject &state, double duration)
+{
+    std::unique_ptr<Layer> old;
+    {
+        Lock lk(&m_mutex);
+        if (index < 0 || index >= int(m_layers.size()) || m_layers[size_t(index)]->isGroup) return;
+        const quint64 id = m_layers[size_t(index)]->id;
+        // A transition already running there: its outgoing source goes, what is shown now becomes the outgoing one
+        auto it = m_transitions.find(id);
+        if (it != m_transitions.end()) {
+            retireTransition(std::move(it->second));
+            m_transitions.erase(it);
+        }
+        old = std::move(m_layers[size_t(index)]);
+        m_layers.erase(m_layers.begin() + index);
+    }
+    const quint64 id = old->id;
+    insertLayerJson(index, state); // same id: free again
+    Lock lk(&m_mutex);
+    Layer *now = layer(indexOfId(id));
+    if (!now || now->id != id) { // could not take its place: no transition
+        auto t = std::make_unique<SourceTransition>();
+        t->from = std::move(old);
+        retireTransition(std::move(t));
+        return;
+    }
+    auto t = std::make_unique<SourceTransition>();
+    t->shaderPath = now->transition.isEmpty() ? m_defaultTransition : now->transition;
+    t->duration = std::max(1e-3, duration);
+    old->transitionGain = 1.0f;
+    now->transitionGain = 0.0f;
+    t->from = std::move(old);
+    m_transitions[id] = std::move(t);
+}
+
+// The outgoing sources go on (clock, sound); a transition whose layer is gone, or that is over, ends
+void Engine::stepTransitions(double dt)
+{
+    for (auto it = m_transitions.begin(); it != m_transitions.end();) {
+        SourceTransition &t = *it->second;
+        Layer *l = nullptr;
+        for (auto &x : m_layers)
+            if (x->id == it->first) l = x.get();
+        t.elapsed += std::max(0.0, dt);
+        if (!l || t.elapsed >= t.duration) {
+            if (l) l->transitionGain = 1.0f;
+            retireTransition(std::move(it->second));
+            it = m_transitions.erase(it);
+            continue;
+        }
+        const float p = float(progress(t.elapsed, t.duration));
+        l->transitionGain = p;
+        t.from->transitionGain = 1.0f - p;
+        t.from->visible = l->visible; // heard as the layer is
+        t.from->parentVisible = l->parentVisible;
+        ++it;
+    }
+}
+
+void Engine::retireTransition(std::unique_ptr<SourceTransition> t)
+{
+    if (!t) return;
+    if (t->from) {
+        if (t->from->video) t->from->video->close();
+        releaseAudio(*m_audio, t->from->audio);
+    }
+    auto holder = std::make_shared<std::unique_ptr<SourceTransition>>(std::move(t));
+    runGl(
+        [this, holder] {
+            SourceTransition &x = **holder;
+            if (x.from) releaseLayer(*x.from);
+            if (x.shader) x.shader->releaseGl();
+            x.target.destroy();
+        },
+        false);
 }
 
 // ---------------------------------------------------------------------------
