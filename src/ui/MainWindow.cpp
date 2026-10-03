@@ -1143,8 +1143,13 @@ QJsonObject MainWindow::uiState() const
 bool MainWindow::maybeSave()
 {
     if (!isDirty()) return true;
-    auto r = QMessageBox::question(this, QStringLiteral("Fulskrin"), QStringLiteral("Save changes to the project?"),
-                                   QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    QMessageBox box(QMessageBox::Question, QStringLiteral("Fulskrin"), QStringLiteral("Save changes to the project?"),
+                    QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+    // ⌘D / Ctrl+D discards, as everywhere else on macOS
+    if (auto *discard = qobject_cast<QPushButton *>(box.button(QMessageBox::Discard)))
+        discard->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    box.setDefaultButton(QMessageBox::Save);
+    const int r = box.exec();
     if (r == QMessageBox::Cancel) return false;
     if (r == QMessageBox::Save) return save();
     return true;
