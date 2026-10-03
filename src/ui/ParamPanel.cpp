@@ -62,7 +62,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-    if (!description.isEmpty()) {
+    if (!description.isEmpty() && slot >= 0) { // an effect's description (a source's is not shown)
         auto *d = new QLabel(description);
         d->setWordWrap(true);
         d->setStyleSheet("color:#999; font-size:11px;");

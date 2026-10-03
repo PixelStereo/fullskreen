@@ -266,7 +266,7 @@ private:
     GLsizei m_meshIndexCount = 0;
     GLuint m_blitProgram = 0, m_compProgram = 0, m_presentProgram = 0, m_prepProgram = 0;
     GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_presentTexLoc = -1;
-    GLint m_prepTexLoc = -1, m_prepCropLoc = -1, m_prepAddLoc = -1, m_prepRemoveLoc = -1, m_prepUnpremulLoc = -1;
+    GLint m_prepTexLoc = -1, m_prepCropLoc = -1, m_prepAddLoc = -1, m_prepRemoveLoc = -1, m_prepUnpremulLoc = -1, m_prepBalanceLoc = -1;
     GLuint m_blackTex = 0;
     RenderTarget m_output[2];
     std::atomic<int> m_published{0};

@@ -283,10 +283,10 @@ bool Engine::initialize(QString *err)
     // Layer preparation: crop (part of the source used), color (added / removed), unpremultiplied alpha (groups)
     m_prepProgram = compileProgram(quadVs,
                                    "#version 330 core\nuniform sampler2D u_tex; uniform vec4 u_crop; uniform vec3 u_add;\n"
-                                   "uniform vec3 u_remove; uniform int u_unpremul; in vec2 v_uv; out vec4 o;\n"
+                                   "uniform vec3 u_remove; uniform vec3 u_balance; uniform int u_unpremul; in vec2 v_uv; out vec4 o;\n"
                                    "void main(){ vec4 c = texture(u_tex, mix(u_crop.xy, u_crop.zw, v_uv));\n"
                                    "  if (u_unpremul != 0 && c.a > 0.0) c.rgb /= c.a;\n"
-                                   "  o = vec4(clamp(c.rgb * (1.0 - u_remove) + u_add, 0.0, 1.0), c.a); }\n",
+                                   "  o = vec4(clamp(c.rgb * u_balance * (1.0 - u_remove) + u_add, 0.0, 1.0), c.a); }\n",
                                    &log);
     if (!m_prepProgram) {
         if (err) *err = QStringLiteral("Internal shaders: ") + log;
@@ -297,6 +297,7 @@ bool Engine::initialize(QString *err)
     m_prepAddLoc = f->glGetUniformLocation(m_prepProgram, "u_add");
     m_prepRemoveLoc = f->glGetUniformLocation(m_prepProgram, "u_remove");
     m_prepUnpremulLoc = f->glGetUniformLocation(m_prepProgram, "u_unpremul");
+    m_prepBalanceLoc = f->glGetUniformLocation(m_prepProgram, "u_balance");
     m_compTexLoc = f->glGetUniformLocation(m_compProgram, "u_tex");
     m_compOpacityLoc = f->glGetUniformLocation(m_compProgram, "u_opacity");
 
@@ -1375,6 +1376,9 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
         f->glUniform4f(m_prepCropLoc, float(c.left()), float(1.0 - c.bottom()), float(c.right()), float(1.0 - c.top()));
         f->glUniform3f(m_prepAddLoc, l.color.add[0], l.color.add[1], l.color.add[2]);
         f->glUniform3f(m_prepRemoveLoc, l.color.remove[0], l.color.remove[1], l.color.remove[2]);
+        float gains[3];
+        l.color.balanceGains(gains);
+        f->glUniform3f(m_prepBalanceLoc, gains[0], gains[1], gains[2]);
         f->glUniform1i(m_prepUnpremulLoc, premultiplied ? 1 : 0);
         drawQuad();
         tex = l.prepTarget.tex;
@@ -1576,6 +1580,7 @@ void Engine::readSourcePreview()
         f->glUniform4f(m_prepCropLoc, 0, 0, 1, 1);
         f->glUniform3f(m_prepAddLoc, 0, 0, 0);
         f->glUniform3f(m_prepRemoveLoc, 0, 0, 0);
+        f->glUniform3f(m_prepBalanceLoc, 1, 1, 1);
         f->glUniform1i(m_prepUnpremulLoc, l->isGroup ? 1 : 0);
         drawQuad();
         img = QImage(w, h, QImage::Format_RGBA8888);
@@ -1735,7 +1740,7 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     src["crop"] = QJsonArray{c.left(), c.top(), c.right(), c.bottom()};
     o["source"] = src;
     auto rgb = [](const float v[3]) { return QJsonArray{v[0], v[1], v[2]}; };
-    o["color"] = QJsonObject{{"add", rgb(l.color.add)}, {"remove", rgb(l.color.remove)}};
+    o["color"] = QJsonObject{{"temp", l.color.temp}, {"tint", l.color.tint}, {"add", rgb(l.color.add)}, {"remove", rgb(l.color.remove)}};
     QJsonArray fx;
     for (const auto &e : l.effects) fx.append(e->save(projectDir));
     o["effects"] = fx;
@@ -1776,6 +1781,8 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
                                    : Layer::fullCrop();
         if (l->crop.isEmpty()) l->crop = Layer::fullCrop();
         const QJsonObject color = o.value("color").toObject();
+        l->color.temp = float(std::clamp(color.value("temp").toDouble(0), -double(ColorAdjust::kTempRange), double(ColorAdjust::kTempRange)));
+        l->color.tint = float(std::clamp(color.value("tint").toDouble(0), -double(ColorAdjust::kTintRange), double(ColorAdjust::kTintRange)));
         for (int c = 0; c < 3; ++c) {
             l->color.add[c] = float(std::clamp(color.value("add").toArray().at(c).toDouble(0), 0.0, 1.0));
             l->color.remove[c] = float(std::clamp(color.value("remove").toArray().at(c).toDouble(0), 0.0, 1.0));

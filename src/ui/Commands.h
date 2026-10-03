@@ -40,7 +40,7 @@ class SetLayerProp : public QUndoCommand
 {
 public:
     enum Prop { Name, Visible, Opacity, Blend, Speed, Mode, Volume, Muted, InPoint, OutPoint, Locked, EffectsEnabled,
-                ColorAdd, ColorRemove, Crop };
+                ColorAdd, ColorRemove, Crop, Temp, Tint };
     SetLayerProp(Engine *e, int layer, Prop prop, const QVariant &before, const QVariant &after);
     void undo() override { apply(m_before); }
     void redo() override { apply(m_after); }

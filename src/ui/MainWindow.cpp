@@ -8,7 +8,7 @@
 #include "MediaBin.h"
 #include "OutputWindow.h"
 #include "Osc.h"
-#include "PreferencesDialog.h"
+#include "SettingsPanel.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -79,6 +79,12 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_tabs = new QTabWidget;
     m_tabs->addTab(scrolled(m_inspector), QStringLiteral("Layer"));
     m_tabs->addTab(scrolled(m_master), QStringLiteral("Master"));
+    m_settings = new SettingsPanel;
+    m_tabs->addTab(scrolled(m_settings), QStringLiteral("Settings"));
+    connect(m_settings, &SettingsPanel::playModeChanged, this,
+            [this] { m_engine->setDefaultPlayMode(SettingsPanel::defaultPlayMode()); });
+    connect(m_settings, &SettingsPanel::colorModelsChanged, this, [this] { m_inspector->rebuild(); });
+    connect(m_settings, &SettingsPanel::oscChanged, this, &MainWindow::startOsc);
     m_tabs->setMinimumWidth(390);
 
     auto *top = new QSplitter(Qt::Horizontal);
@@ -113,7 +119,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_output, &OutputWindow::keyPressed, this, [this](int key, Qt::KeyboardModifiers mods) { handleControlKey(key, mods); });
 
     buildMenus();
-    m_engine->setDefaultPlayMode(PreferencesDialog::defaultPlayMode());
+    m_engine->setDefaultPlayMode(SettingsPanel::defaultPlayMode());
 
     // --- Layers
     connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
@@ -364,13 +370,8 @@ void MainWindow::buildMenus()
     });
     edit->addSeparator();
     // On macOS, Qt moves it to the application menu (Fulskrin ▸ Settings…, ⌘,)
-    QAction *prefs = edit->addAction(QStringLiteral("Preferences…"), QKeySequence::Preferences, this, [this] {
-        PreferencesDialog d(this);
-        if (d.exec() == QDialog::Accepted) {
-            m_engine->setDefaultPlayMode(PreferencesDialog::defaultPlayMode());
-            startOsc(); // ports or switch may have changed
-        }
-    });
+    QAction *prefs = edit->addAction(QStringLiteral("Preferences…"), QKeySequence::Preferences, this,
+                                     [this] { m_tabs->setCurrentWidget(m_tabs->widget(2)); }); // the Settings tab
     prefs->setMenuRole(QAction::PreferencesRole);
     if (prefs->shortcut().isEmpty()) prefs->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma)); // Linux / Windows
 
@@ -398,7 +399,7 @@ void MainWindow::buildMenus()
     layer->addAction(QStringLiteral("Play / Pause (Space)"), this, &MainWindow::togglePlayCurrent);
 
     QMenu *comp = menuBar()->addMenu(QStringLiteral("C&omposition"));
-    comp->addAction(QStringLiteral("Settings (Master tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
+    comp->addAction(QStringLiteral("Composition (Master tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
     QAction *outlines = comp->addAction(QStringLiteral("Show Outlines of Other Layers"));
     outlines->setCheckable(true);
     outlines->setChecked(true);
@@ -448,6 +449,13 @@ void MainWindow::buildMenus()
             a->setProperty("folderInfo", true);
         }
     });
+
+    // macOS: Qt gives application-menu roles from the action texts (an action starting with "Settings" became the
+    // preferences item). Only the actions meant for that menu keep a role.
+    for (QAction *menuAction : menuBar()->actions())
+        if (QMenu *m = menuAction->menu())
+            for (QAction *a : m->actions())
+                if (a->menuRole() == QAction::TextHeuristicRole) a->setMenuRole(QAction::NoRole);
 }
 
 // ---------------------------------------------------------------------------
@@ -957,8 +965,8 @@ void MainWindow::startOsc()
         });
         m_oscThread->start();
     }
-    const bool on = PreferencesDialog::oscEnabled();
-    const int udp = PreferencesDialog::oscPort(), http = PreferencesDialog::oscQueryPort();
+    const bool on = SettingsPanel::oscEnabled();
+    const int udp = SettingsPanel::oscPort(), http = SettingsPanel::oscQueryPort();
     QString status;
     QMetaObject::invokeMethod(
         m_osc,
@@ -968,7 +976,7 @@ void MainWindow::startOsc()
             status = m_osc->status();
         },
         Qt::BlockingQueuedConnection);
-    PreferencesDialog::setOscStatus(status);
+    m_settings->setOscStatus(on ? status : QStringLiteral("OSC off"));
     if (on) statusBar()->showMessage(status, 6000);
 }
 

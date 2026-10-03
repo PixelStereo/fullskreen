@@ -3,6 +3,7 @@
 #include "Engine.h"
 #include "LayerTree.h"
 #include "Osc.h"
+#include "Zeroconf.h"
 #include <QJsonArray>
 #include <QTcpSocket>
 #include <QUdpSocket>
@@ -26,6 +27,7 @@
 #include <atomic>
 #include <functional>
 #include <cstdio>
+#include <cstring>
 
 static int failures = 0;
 #define CHECK(cond)                                                                 \
@@ -262,6 +264,22 @@ int main(int argc, char **argv)
         img = render();
         CHECK(px(img, 8, 16).red() < 5 && std::abs(px(img, 8, 16).green() - 128) < 4);
         e.layer(l)->color = ColorAdjust();
+        // Balance: warmer = more red, less blue; magenta tint = less green; luminance kept
+        {
+            QImage gray(64, 32, QImage::Format_RGB32);
+            gray.fill(qRgb(128, 128, 128));
+            gray.save(tmp + "/gray.png");
+            const int gl = e.addLayer("gray", 0);
+            e.setLayerImage(gl, tmp + "/gray.png", &err);
+            e.layer(gl)->color.temp = 4000;
+            QColor c = px(render(), 32, 16);
+            CHECK(c.red() > 140 && c.blue() < 110 && std::abs(qGray(c.rgb()) - 128) < 12);
+            e.layer(gl)->color.temp = 0;
+            e.layer(gl)->color.tint = 100;
+            c = px(render(), 32, 16);
+            CHECK(c.green() < 120 && c.red() > 135 && c.blue() > 135);
+            e.removeLayer(gl);
+        }
         // Effects switch: FlipCrop flips the picture, the general switch bypasses the chain
         const int fx = e.addEffect(l, isf + "/effects/FlipCrop.fs", &err);
         CHECK(fx == 0);
@@ -395,12 +413,14 @@ int main(int argc, char **argv)
         const int gi = e.addGroup("G", 0);
         e.setStructure(tree::intoGroup(e.structure(), {e.layerId(1)}, e.layerId(gi)));
         OscServer server(&e);
-        CHECK(server.start(0, 0, "test"));
+        CHECK(server.start(0, 0, "test", false));
         CHECK(server.oscPort() > 0 && server.queryPort() > 0);
         const QString L = "/layers/G/layers/My_layer";
         CHECK(server.handleMessage({L + "/opacity", "f", {0.25}}) && std::abs(e.layer(1)->opacity - 0.25f) < 1e-6);
         CHECK(server.handleMessage({"/layers/G/layers/*/opacity", "f", {0.5}}) && std::abs(e.layer(1)->opacity - 0.5f) < 1e-6);
         CHECK(server.handleMessage({L + "/color/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(1)->color.add[2] - 0.3f) < 1e-6);
+        CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(1)->color.temp == -2000.0f);
+        CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(1)->color.tint == 100.0f); // clipped
         CHECK(server.handleMessage({L + "/source/crop/left", "f", {0.25}}) && std::abs(e.layer(1)->crop.left() - 0.25) < 1e-9);
         CHECK(server.handleMessage({L + "/effects/FlipCrop/flipH", "T", {true}}));
         CHECK(e.layer(1)->effects[0]->inputs()[1].bValue || e.layer(1)->effects[0]->inputs()[2].bValue);
@@ -494,9 +514,46 @@ int main(int argc, char **argv)
             return got.args.value(0).toDouble() == 0.125;
         }));
         CHECK(got.address == F + "/opacity" && got.types == "f");
+        // A new layer: the clients are told to fetch the tree again
+        e.addLayer("Late");
+        bool changed = false;
+        CHECK(pump([&] {
+            wsIn += ws.readAll();
+            changed |= wsIn.contains("PATH_CHANGED");
+            return changed;
+        }));
+        {
+            int st = 0;
+            const QJsonObject layers = QJsonDocument::fromJson(server.httpGet("/layers", &st)).object();
+            CHECK(layers["CONTENTS"].toObject().contains("Late") && layers["CONTENTS"].toObject()["Late"].toObject()["DESCRIPTION"].toString() == "Late");
+        }
         ws.close();
         http.close();
         server.stop();
+
+        // Zeroconf responder: answers to a PTR question for _oscjson._tcp.local (without the network)
+        {
+            Zeroconf z;
+            z.start("Fulskrin (test)", {{"_oscjson._tcp", 5678, {{"txtvers", "1"}}}, {"_osc._udp", 1234, {}}});
+            QByteArray q;
+            const char head[12] = {0x12, 0x34, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0};
+            q.append(head, 12);
+            for (const char *label : {"_oscjson", "_tcp", "local"}) {
+                q.append(char(std::strlen(label)));
+                q.append(label);
+            }
+            q.append('\0');
+            q.append("\x00\x0c\x00\x01", 4); // PTR, IN
+            bool uni = false;
+            const QByteArray a = z.answerQuery(q, &uni);
+            CHECK(a.size() > 12 && quint8(a[0]) == 0x12 && quint8(a[2]) == 0x84 && a.contains("Fulskrin (test)"));
+            CHECK(a.contains(QByteArray("\x16\x2e", 2))); // SRV port 5678 in the additional records
+            CHECK(a.contains(z.hostName().toUtf8()) && a.contains("txtvers=1"));
+            q[q.size() - 3] = 0x10; // TXT of another name: no answer
+            CHECK(z.answerQuery(QByteArray("\x00\x00\x84\x00", 4) + q.mid(4)).isEmpty()); // a response is ignored
+            CHECK(z.announcement(true).contains("_osc"));
+            z.stop();
+        }
         e.newProject();
     }
 

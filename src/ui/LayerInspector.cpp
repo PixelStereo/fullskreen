@@ -2,6 +2,7 @@
 #include "Commands.h"
 #include "Engine.h"
 #include "ParamPanel.h"
+#include "SettingsPanel.h"
 #include "Widgets.h"
 
 #include <QButtonGroup>
@@ -361,12 +362,6 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     v->setContentsMargins(0, 0, 0, 0);
 
     if (s.isGroup) {
-        auto *info = new QLabel(QStringLiteral("<b>Group</b> of %1 layer(s)<br><span style='font-size:11px; color:#999'>"
-                                               "Its picture is the composite of its layers. Drag layers onto it in the "
-                                               "layer list to add them.</span>")
-                                    .arg(s.members));
-        info->setWordWrap(true);
-        v->addWidget(info);
         v->addWidget(buildCrop(s));
         return g;
     }
@@ -421,9 +416,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         } else {
             text = audioText(s.audio) + QStringLiteral(" · ") + fmtTime(s.duration);
         }
-        auto *info = new QLabel(text);
-        info->setStyleSheet("color:#999; font-size:11px;");
-        v->addWidget(info);
+        zone->setToolTip(s.sourcePath + QStringLiteral("\n") + text); // details on hover only
 
         auto *transport = new QHBoxLayout;
         m_play = new QPushButton(s.playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
@@ -704,25 +697,59 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
     auto *g = new QWidget;
     auto *v = new QVBoxLayout(g);
     v->setContentsMargins(0, 0, 0, 0);
-    // Color model of the editors, kept for the next layers
-    auto *models = new QComboBox;
-    models->addItem(QStringLiteral("RGB"), int(ColorEditor::Rgb));
-    models->addItem(QStringLiteral("HSL"), int(ColorEditor::Hsl));
-    models->addItem(QStringLiteral("Additive (R G B light)"), int(ColorEditor::Additive));
-    models->addItem(QStringLiteral("Subtractive (C M Y filters)"), int(ColorEditor::Subtractive));
-    models->addItem(QStringLiteral("All together"), int(ColorEditor::All));
-    models->setProperty("allowLocked", true); // a display choice, not an edit
-    const int model = QSettings().value("ui/colorModel", int(ColorEditor::Rgb)).toInt();
-    models->setCurrentIndex(std::max(0, models->findData(model)));
-    auto *row = new QHBoxLayout;
-    row->addWidget(new QLabel(QStringLiteral("Edit in")));
-    row->addWidget(models, 1);
-    v->addLayout(row);
-    auto *note = new QLabel(QStringLiteral("The picture is multiplied by the inverse of the removed color, "
-                                           "then the added color is added: out = in × (1 − removed) + added."));
-    note->setWordWrap(true);
-    note->setStyleSheet("color:#888; font-size:11px;");
-    v->addWidget(note);
+    // Balance first, as in DaVinci Resolve: temperature (blue / yellow) and tint (green / magenta)
+    {
+        auto *box = new QGroupBox;
+        auto *grid = new QGridLayout(box);
+        grid->addWidget(new QLabel(QStringLiteral("<b>Balance</b>")), 0, 0, 1, 3);
+        struct Def {
+            const char *name;
+            double range, value;
+            const char *gradient;
+            int prop;
+            QPointer<QDoubleSpinBox> *field;
+        } defs[] = {{"Temp", ColorAdjust::kTempRange, s.color.temp, "stop:0 #3a7bff, stop:0.5 #888, stop:1 #ffd23a",
+                     cmd::SetLayerProp::Temp, &m_temp},
+                    {"Tint", ColorAdjust::kTintRange, s.color.tint, "stop:0 #2fd04a, stop:0.5 #888, stop:1 #e03ce0",
+                     cmd::SetLayerProp::Tint, &m_tint}};
+        int row = 1;
+        for (const Def &d : defs) {
+            auto *slider = new QSlider(Qt::Horizontal);
+            slider->setRange(-1000, 1000);
+            slider->setStyleSheet(QStringLiteral("QSlider::groove:horizontal { height:6px; border-radius:3px;"
+                                                 " background:qlineargradient(x1:0,y1:0,x2:1,y2:0,%1); }"
+                                                 "QSlider::handle:horizontal { background:#eee; width:10px; margin:-5px 0;"
+                                                 " border-radius:5px; }")
+                                      .arg(QString::fromUtf8(d.gradient)));
+            auto *spin = new QDoubleSpinBox;
+            spin->setRange(-d.range, d.range);
+            spin->setDecimals(d.range >= 1000 ? 0 : 1);
+            spin->setSingleStep(d.range / 100);
+            spin->setKeyboardTracking(false);
+            spin->setFixedWidth(76);
+            spin->setValue(d.value);
+            slider->setValue(int(std::lround(d.value / d.range * 1000)));
+            *d.field = spin;
+            const double range = d.range;
+            const int prop = d.prop;
+            grid->addWidget(new ResetLabel(QString::fromUtf8(d.name), [spin] { spin->setValue(0); }), row, 0);
+            grid->addWidget(slider, row, 1);
+            grid->addWidget(spin, row, 2);
+            connect(slider, &QSlider::valueChanged, this, [this, spin, range, prop](int x) {
+                QSignalBlocker b(spin);
+                spin->setValue(x / 1000.0 * range);
+                setProp(prop, spin->value());
+            });
+            connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, slider, range, prop](double x) {
+                QSignalBlocker b(slider);
+                slider->setValue(int(std::lround(x / range * 1000)));
+                setProp(prop, x);
+            });
+            ++row;
+        }
+        grid->setColumnStretch(1, 1);
+        v->addWidget(box);
+    }
 
     auto toColor = [](const float c[3]) { return QColor::fromRgbF(c[0], c[1], c[2]); };
     m_colorAdd = new ColorEditor(QStringLiteral("Add"), Qt::black);
@@ -736,14 +763,8 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
         auto *fv = new QVBoxLayout(frame);
         fv->addWidget(ed);
         v->addWidget(frame);
-        ed->setModels(models->currentData().toInt());
+        ed->setModels(SettingsPanel::colorModels()); // chosen in the Settings tab
     }
-    connect(models, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, models](int) {
-        const int m = models->currentData().toInt();
-        QSettings().setValue("ui/colorModel", m);
-        if (m_colorAdd) m_colorAdd->setModels(m);
-        if (m_colorRemove) m_colorRemove->setModels(m);
-    });
     connect(m_colorAdd, &ColorEditor::colorEdited, this, [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorAdd, c); });
     connect(m_colorRemove, &ColorEditor::colorEdited, this,
             [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorRemove, c); });
@@ -1138,6 +1159,7 @@ void LayerInspector::refreshDynamic()
     {
         QRectF crop;
         QColor add, remove;
+        double temp = 0, tint = 0;
         {
             Engine::Lock lk(&m_engine->mutex());
             Layer *l = m_engine->layer(m_layer);
@@ -1145,7 +1167,11 @@ void LayerInspector::refreshDynamic()
             crop = l->crop;
             add = QColor::fromRgbF(l->color.add[0], l->color.add[1], l->color.add[2]);
             remove = QColor::fromRgbF(l->color.remove[0], l->color.remove[1], l->color.remove[2]);
+            temp = l->color.temp;
+            tint = l->color.tint;
         }
+        for (auto [field, value] : {std::pair{m_temp.data(), temp}, std::pair{m_tint.data(), tint}})
+            if (field && !field->hasFocus() && std::abs(field->value() - value) > 1e-3) field->setValue(value); // its slider follows
         if (m_crop) m_crop->setCrop(crop);
         if (m_colorAdd) m_colorAdd->setColor(add);
         if (m_colorRemove) m_colorRemove->setColor(remove);

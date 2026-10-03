@@ -49,6 +49,7 @@ add_library(fulskrin_engine STATIC
   src/engine/AudioOutput.cpp
   src/engine/MiniaudioImpl.cpp
   src/engine/Osc.cpp
+  src/engine/Zeroconf.cpp
 )
 target_include_directories(fulskrin_engine PUBLIC src/engine)
 target_link_libraries(fulskrin_engine PUBLIC Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::Network ffmpeg)
@@ -153,7 +154,7 @@ set(APP_SOURCES
   src/ui/LayerTable.cpp
   src/ui/MediaBin.cpp
   src/ui/MasterPanel.cpp
-  src/ui/PreferencesDialog.cpp
+  src/ui/SettingsPanel.cpp
   src/ui/Widgets.cpp
 )
 

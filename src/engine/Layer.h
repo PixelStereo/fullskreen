@@ -27,19 +27,34 @@ QString blendModeName(BlendMode m);
 QString blendModeKey(BlendMode m);
 BlendMode blendModeFromKey(const QString &k);
 
-// Color tab: color added to the picture (light) and color removed from it (filter), RGB 0..1.
-// out = in * (1 - remove) + add
+// Color tab. First the balance, as in DaVinci Resolve: temperature (blue -4000 .. yellow +4000) and
+// tint (green -100 .. magenta +100), luminance kept; then a color removed (filter) and a color added (light), RGB 0..1:
+// out = balance(in) * (1 - remove) + add
 struct ColorAdjust {
+    float temp = 0, tint = 0;
     float add[3] = {0, 0, 0};
     float remove[3] = {0, 0, 0};
+    static constexpr float kTempRange = 4000, kTintRange = 100;
+    // Gains of the balance (1, 1, 1 when neutral)
+    void balanceGains(float g[3]) const
+    {
+        const float t = temp / kTempRange, m = tint / kTintRange;
+        g[0] = (1 + 0.4f * t) * (1 + 0.25f * m);
+        g[1] = 1 - 0.3f * m;
+        g[2] = (1 - 0.4f * t) * (1 + 0.25f * m);
+        const float luma = 0.2126f * g[0] + 0.7152f * g[1] + 0.0722f * g[2];
+        for (int c = 0; c < 3; ++c) g[c] = luma > 1e-6f ? g[c] / luma : 1.0f;
+    }
     bool isIdentity() const
     {
+        if (temp != 0.0f || tint != 0.0f) return false;
         for (int c = 0; c < 3; ++c)
             if (add[c] != 0.0f || remove[c] != 0.0f) return false;
         return true;
     }
     bool operator==(const ColorAdjust &o) const
     {
+        if (temp != o.temp || tint != o.tint) return false;
         for (int c = 0; c < 3; ++c)
             if (add[c] != o.add[c] || remove[c] != o.remove[c]) return false;
         return true;

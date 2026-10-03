@@ -67,6 +67,8 @@ static QString propText(SetLayerProp::Prop p)
     case SetLayerProp::ColorAdd: return QStringLiteral("Change Added Color");
     case SetLayerProp::ColorRemove: return QStringLiteral("Change Removed Color");
     case SetLayerProp::Crop: return QStringLiteral("Change Crop");
+    case SetLayerProp::Temp: return QStringLiteral("Change Temperature");
+    case SetLayerProp::Tint: return QStringLiteral("Change Tint");
     }
     return {};
 }
@@ -98,6 +100,8 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
     case ColorAdd: return QColor::fromRgbF(l->color.add[0], l->color.add[1], l->color.add[2]);
     case ColorRemove: return QColor::fromRgbF(l->color.remove[0], l->color.remove[1], l->color.remove[2]);
     case Crop: return l->crop;
+    case Temp: return double(l->color.temp);
+    case Tint: return double(l->color.tint);
     }
     return {};
 }
@@ -147,6 +151,8 @@ void SetLayerProp::apply(const QVariant &v)
         dst[2] = float(c.blueF());
         break;
     }
+    case Temp: l->color.temp = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTempRange), double(ColorAdjust::kTempRange))); break;
+    case Tint: l->color.tint = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTintRange), double(ColorAdjust::kTintRange))); break;
     case Crop: {
         const QRectF r = v.toRectF().normalized() & Layer::fullCrop();
         l->crop = r.isEmpty() ? Layer::fullCrop() : r;
@@ -161,7 +167,8 @@ bool SetLayerProp::mergeWith(const QUndoCommand *other)
     auto *o = static_cast<const SetLayerProp *>(other);
     if (o->m_layer != m_layer || o->m_prop != m_prop) return false;
     if (m_prop != Name && m_prop != Opacity && m_prop != Speed && m_prop != Volume && m_prop != InPoint &&
-        m_prop != OutPoint && m_prop != ColorAdd && m_prop != ColorRemove && m_prop != Crop)
+        m_prop != OutPoint && m_prop != ColorAdd && m_prop != ColorRemove && m_prop != Crop &&
+        m_prop != Temp && m_prop != Tint)
         return false;
     if (o->m_time - m_time > kMergeWindowMs) return false;
     m_after = o->m_after;
