@@ -319,6 +319,7 @@ QString OscNamespace::signature() const
         for (const auto &fx : l->effects) isf(fx.get());
         s += '\n';
     }
+    for (int i = 0; i < m_e->memoryCount(); ++i) s += QStringLiteral("memory:") + m_e->memory(i).name + '\n';
     return s;
 }
 
@@ -446,6 +447,33 @@ void OscNamespace::build()
             e->setCompositionSize(s);
             return true;
         };
+    }
+
+    // --- Memories: recalled by number (1 = first) or from their own node
+    {
+        OscNode &n = add("/memories/recall", "i", 2, "Recall");
+        n.range = {minMax(1, std::max(1, e->memoryCount()))};
+        n.set = [e](const QVariantList &a) {
+            const int i = int(std::lround(num(a.value(0)))) - 1;
+            if (i < 0 || i >= e->memoryCount()) return false;
+            e->recallMemory(i);
+            return true;
+        };
+        OscNode &c = add("/memories/count", "i", 1, "Count");
+        c.get = [e] { return QVariantList{e->memoryCount()}; };
+        m_nodes["/memories"].description = "Memories";
+        for (int i = 0; i < e->memoryCount(); ++i) {
+            const QString base = QStringLiteral("/memories/%1").arg(i + 1);
+            OscNode &r = add(base + "/recall", "N", 2, "Recall");
+            r.set = [e, i](const QVariantList &) {
+                if (i >= e->memoryCount()) return false;
+                e->recallMemory(i);
+                return true;
+            };
+            OscNode &nm = add(base + "/name", "s", 1, "Name");
+            nm.get = [e, i] { return QVariantList{e->memory(i).name}; };
+            m_nodes[base].description = e->memory(i).name.isEmpty() ? QString::number(i + 1) : e->memory(i).name;
+        }
     }
 
     // --- Layers (top level, then the members of each group)

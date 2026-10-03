@@ -557,6 +557,80 @@ int main(int argc, char **argv)
         e.newProject();
     }
 
+    // 4e. Memories: capture, recall (instant and with a fade), recreation, lock, save / load
+    {
+        e.newProject();
+        e.setCompositionSize(QSize(64, 32));
+        const int a = e.addLayer("A");
+        e.setLayerImage(a, tmp + "/redblue.png", &err);
+        const int b = e.addLayer("B", 1);
+        e.setLayerIsf(b, isf + "/generators/SolidColor.fs", &err);
+        e.layer(0)->opacity = 0.8f;
+        e.layer(1)->visible = false;
+        Engine::Memory m;
+        m.name = "Look 1";
+        m.fade = 0;
+        m.layers = e.captureLayers();
+        m.thumbnail = QImage(16, 9, QImage::Format_RGB32);
+        m.thumbnail.fill(Qt::red);
+        CHECK(e.addMemory(m) == 0 && e.memoryCount() == 1);
+        // Change things, then recall
+        e.layer(0)->opacity = 0.2f;
+        e.layer(0)->color.temp = 1000;
+        e.layer(0)->mapping.setCorner(0, QPointF(0.3, 0.3));
+        e.layer(1)->visible = true;
+        e.addEffect(0, isf + "/effects/FlipCrop.fs", &err);
+        e.recallMemory(0);
+        CHECK(std::abs(e.layer(0)->opacity - 0.8f) < 1e-6 && e.layer(0)->color.temp == 0.0f);
+        CHECK(e.layer(0)->mapping.corners[0] == QPointF(0, 0) || e.layer(0)->mapping.corners[0].y() > 0.0);
+        CHECK(e.layer(0)->effects.empty() && !e.layer(1)->visible);
+        // With a fade: halfway between, then the target; a layer becoming visible fades in from 0
+        Engine::Memory m2 = m;
+        m2.name = "Look 2";
+        m2.fade = 0.4;
+        e.layer(0)->opacity = 0.0f;
+        e.layer(1)->visible = true;
+        m2.layers = e.captureLayers();
+        e.addMemory(m2);
+        e.recallMemory(0); // back to look 1, at once
+        e.recallMemory(1);
+        CHECK(e.isFading() && e.layer(1)->visible && e.layer(1)->opacity < 0.05f);
+        QElapsedTimer ft;
+        ft.start();
+        bool sawMiddle = false;
+        while (e.isFading() && ft.elapsed() < 3000) {
+            e.renderFrame();
+            sawMiddle |= e.layer(0)->opacity > 0.1f && e.layer(0)->opacity < 0.7f;
+            QThread::msleep(10);
+        }
+        CHECK(!e.isFading() && sawMiddle && e.layer(0)->opacity == 0.0f && std::abs(e.layer(1)->opacity - 1.0f) < 1e-6);
+        // A layer removed since is recreated; a locked layer is left alone
+        e.removeLayer(1);
+        e.layer(0)->locked = true;
+        e.layer(0)->opacity = 0.5f;
+        e.recallMemory(0);
+        CHECK(e.layerCount() == 2 && e.layer(1)->name == "B" && std::abs(e.layer(0)->opacity - 0.5f) < 1e-6);
+        e.layer(0)->locked = false;
+        // Undo of a recall
+        {
+            QUndoStack undo;
+            e.layer(0)->opacity = 0.33f;
+            undo.push(new cmd::RecallMemory(&e, 0));
+            CHECK(std::abs(e.layer(0)->opacity - 0.8f) < 1e-6);
+            undo.undo();
+            CHECK(std::abs(e.layer(0)->opacity - 0.33f) < 1e-6);
+        }
+        // Saved with the project
+        CHECK(e.saveProject(tmp + "/memories.fulskrin", {}, &err));
+        CHECK(e.loadProject(tmp + "/memories.fulskrin", nullptr, &err));
+        CHECK(e.memoryCount() == 2 && e.memory(1).name == "Look 2" && std::abs(e.memory(1).fade - 0.4) < 1e-9);
+        CHECK(e.memory(0).thumbnail.width() == 16 && e.memory(0).layers.size() == 2);
+        e.recallMemory(0);
+        CHECK(std::abs(e.layer(0)->opacity - 0.8f) < 1e-6);
+        e.newProject();
+        CHECK(e.memoryCount() == 0);
+    }
+
     // 5. Render thread
     auto waitFrames = [&](quint64 n) {
         const quint64 target = e.frameCount() + n;

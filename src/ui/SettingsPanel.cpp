@@ -67,7 +67,8 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
     m_colorModels->addItem(QStringLiteral("All together"), int(ColorEditor::All));
     m_colorModels->setCurrentIndex(std::max(0, m_colorModels->findData(colorModels())));
     cf->addRow(new ResetLabel(QStringLiteral("Color widgets"), [this] { m_colorModels->setCurrentIndex(0); }), m_colorModels);
-    cf->addRow(note(QStringLiteral("How the added and removed colors of the layers' Color tab are edited.")));
+    cf->addRow(note(QStringLiteral("How the colors of a new layer's Color tab are edited. "
+                                   "Each layer keeps its own choice (Color tab ▸ Edit in).")));
     v->addWidget(color);
     connect(m_colorModels, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
         QSettings().setValue(kColorKey, m_colorModels->currentData().toInt());

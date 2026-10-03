@@ -2,7 +2,6 @@
 #include "Commands.h"
 #include "Engine.h"
 #include "ParamPanel.h"
-#include "SettingsPanel.h"
 #include "Widgets.h"
 
 #include <QButtonGroup>
@@ -45,6 +44,7 @@ struct LayerSnapshot {
     QRectF crop{0, 0, 1, 1};
     ColorAdjust color;
     bool effectsEnabled = true;
+    int colorModels = 1;
     double aspect = 16.0 / 9.0; // source picture (before crop)
     QString name, sourcePath, error;
     bool visible = true;
@@ -85,6 +85,7 @@ struct LayerSnapshot {
         s.crop = l->crop;
         s.color = l->color;
         s.effectsEnabled = l->effectsEnabled;
+        s.colorModels = l->colorModels;
         const QSize comp = e->compositionSize();
         const int sw = l->isGroup ? comp.width() : l->sourceWidth(), sh = l->isGroup ? comp.height() : l->sourceHeight();
         if (sw > 0 && sh > 0) s.aspect = double(sw) / sh;
@@ -759,6 +760,30 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
         v->addWidget(box);
     }
 
+    // How this layer's colors are edited: kept by the layer (new layers take the choice of the Settings tab)
+    auto *models = new QComboBox;
+    models->addItem(QStringLiteral("RGB"), 1);
+    models->addItem(QStringLiteral("HSL"), 2);
+    models->addItem(QStringLiteral("Additive (R G B light)"), 4);
+    models->addItem(QStringLiteral("Subtractive (C M Y filters)"), 8);
+    models->addItem(QStringLiteral("All together"), 15);
+    models->setCurrentIndex(std::max(0, models->findData(s.colorModels)));
+    models->setProperty("allowLocked", true); // a way of showing, not an edit
+    auto *modelRow = new QHBoxLayout;
+    modelRow->addWidget(new QLabel(QStringLiteral("Edit in")));
+    modelRow->addWidget(models, 1);
+    v->addLayout(modelRow);
+    connect(models, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, models] {
+        const int m = models->currentData().toInt();
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            if (Layer *l = m_engine->layer(m_layer)) l->colorModels = m;
+        }
+        if (m_colorAdd) m_colorAdd->setModels(m);
+        if (m_colorRemove) m_colorRemove->setModels(m);
+        emit projectEdited();
+    });
+
     auto toColor = [](const float c[3]) { return QColor::fromRgbF(c[0], c[1], c[2]); };
     m_colorAdd = new ColorEditor(QStringLiteral("Add"), Qt::black);
     m_colorAdd->setColor(toColor(s.color.add));
@@ -771,7 +796,7 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
         auto *fv = new QVBoxLayout(frame);
         fv->addWidget(ed);
         v->addWidget(frame);
-        ed->setModels(SettingsPanel::colorModels()); // chosen in the Settings tab
+        ed->setModels(s.colorModels);
     }
     connect(m_colorAdd, &ColorEditor::colorEdited, this, [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorAdd, c); });
     connect(m_colorRemove, &ColorEditor::colorEdited, this,
@@ -1012,31 +1037,21 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     });
 
     auto *bar = new QHBoxLayout;
-    auto *add = new QPushButton(QStringLiteral("Add Effect"));
-    auto *menu = new QMenu(add);
-    add->setMenu(menu);
-    connect(menu, &QMenu::aboutToShow, this, [this, menu] {
-        menu->clear();
-        // Group by ISF category
-        QMap<QString, QMenu *> sub;
-        for (const IsfEntry &e : m_engine->library().filters()) {
-            const QString cat = e.categories.value(0);
-            QMenu *target = menu;
-            if (!cat.isEmpty()) {
-                if (!sub.contains(cat)) sub[cat] = menu->addMenu(cat);
-                target = sub[cat];
-            }
-            QAction *a = target->addAction(e.name);
-            a->setToolTip(e.description);
-            connect(a, &QAction::triggered, this, [this, p = e.path, n = e.name] {
-                editEffects(QStringLiteral("Add Effect %1").arg(n), [this, p] {
-                    QString err;
-                    m_selectedEffect = m_engine->addEffect(m_layer, p, &err);
-                });
-                rebuild();
+    auto *add = new QPushButton(QStringLiteral("Add Effect…"));
+    add->setToolTip(QStringLiteral("Search the ISF library and add an effect to the chain"));
+    connect(add, &QPushButton::clicked, this, [this, add] {
+        QList<SearchPicker::Item> items;
+        for (const IsfEntry &e : m_engine->library().filters())
+            items.append({e.name, e.categories.value(0), e.description, e.path});
+        auto *picker = new SearchPicker(items, this);
+        connect(picker, &SearchPicker::picked, this, [this](const QString &p) {
+            editEffects(QStringLiteral("Add Effect %1").arg(QFileInfo(p).completeBaseName()), [this, p] {
+                QString err;
+                m_selectedEffect = m_engine->addEffect(m_layer, p, &err);
             });
-        }
-        if (menu->isEmpty()) menu->addAction(QStringLiteral("(no filters in the library)"))->setEnabled(false);
+            QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+        });
+        picker->popup(add->mapToGlobal(QPoint(0, add->height())));
     });
     auto *remove = toolButton(QStringLiteral("−"), QStringLiteral("Remove Effect"));
     auto *up = toolButton(QStringLiteral("▲"), QStringLiteral("Move Up (applied earlier)"));

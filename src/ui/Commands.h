@@ -146,6 +146,21 @@ private:
     LayerTree m_before, m_after;
 };
 
+// Memory recalled: the layers' states before, then the memory's (with its fade the first time)
+class RecallMemory : public QUndoCommand
+{
+public:
+    RecallMemory(Engine *e, int memory);
+    void undo() override { m_e->applyLayers(m_before, 0); }
+    void redo() override;
+
+private:
+    Engine *m_e;
+    int m_memory;
+    QJsonArray m_before;
+    bool m_first = true;
+};
+
 // Effect chain before / after (add, remove, reorder, enable); already done at push time
 class SetEffects : public QUndoCommand
 {

@@ -38,14 +38,14 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
 - **Color tab**: first the **balance**, as in DaVinci Resolve: **Temp** (blue −4000 … yellow +4000) and
   **Tint** (green −100 … magenta +100), luminance kept; then a color removed from the picture (filter) and a color
   added to it (light): out = balance(in) × (1 − removed) + added. The colors are edited in RGB, HSL, additive
-  (R G B light), subtractive (C M Y filters) or all of them together (linked), as chosen in the Settings tab.
+  (R G B light), subtractive (C M Y filters) or all of them together (linked), chosen per layer (Edit in).
 - **Negative speed** plays videos and sounds backwards, in every play mode (Loop goes on backwards from the end,
   One-shot stops on the first frame…); changing direction keeps the current position.
 - **Spatial tab**: position (center, composition pixels) and scale (% of the composition, X and Y linked by
   default) of the whole mapped layer — corners and mesh are transformed together and follow handle edits.
 - **Preview zoom**: mouse wheel / pinch around the cursor, − / + / Fit buttons; the higher the zoom, the finer
   the moves of the layer and its points.
-- **ISF effect chain per layer**: any number of effects, reorderable, each one can be enabled or disabled,
+- **ISF effect chain per layer**: added from a searchable list (Add Effect…: type, then Enter), any number of effects, reorderable, each one can be enabled or disabled,
   and a general switch at the top of the Effects tab turns the whole chain on or off.
   Parameters are generated automatically from each shader's JSON header.
 - **ISF v2 support**: multiple passes, computed pass sizes (`"$WIDTH/2"`), persistent and float buffers,
@@ -78,7 +78,7 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
     built into Fulskrin (nothing to install).
   NDI and OMT are loaded when enabled: Fulskrin runs without them. The Master tab shows the state of each one
   (active, number of receivers, or what is missing). Settings are saved in the project.
-- **Media Bin** (left): every video, image and audio file used by the project, grouped by type, with resolution,
+- **Media Bin** (left, with a search field): every video, image and audio file used by the project, grouped by type, with resolution,
   duration, sound format and the number of layers using them (sources and shader images). **Missing** files are shown in red;
   **Replace…** relinks them (a single replacement fixes every layer, and can be undone).
   An **ISF › Generators** category lists the generators of the ISF library (and those used by layers),
@@ -88,10 +88,19 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   a sound or an ISF generator, from the Media Bin or the Finder / Explorer — onto the layer's row in the list,
   or onto the drop zone of its Source tab. An ISF effect dropped onto a layer joins its effect chain.
   The **×** next to the drop zone ejects the media.
-- **Layer list at the bottom**, full width: visibility, lock, name, source, effects, opacity adjustable
+- **Left panel, two tabs**: **Media Bin** and **Layers** (Shift+1 / Shift+2; dragging a media over the Layers tab
+  opens it). The layer list shows visibility, lock, name, number of effects (their names on hover), opacity adjustable
   directly in the row, blend mode, playback position. Several layers can be selected (Ctrl/⌘ or Shift + click).
+- **Memories** at the bottom of the window, as the scenes / cues of MadMapper: a grid of thumbnails ending with **+**,
+  which stores the current state of the layers. A click selects a memory and shows its content in the inspector
+  next to the grid (name, fade time, layers with their visibility, opacity and source); double-click, Enter or GO
+  recalls it (undoable). Opacity, volume, crop, color, mapping and ISF numbers fade to the memory's values in its fade
+  time; sources and effect chains change at once; a layer shown by the memory fades in, a hidden one fades out;
+  a layer deleted since is recreated. Unchecked layers, and locked ones, are left alone. Update stores the current
+  state into a memory. Memories are saved in the project and recalled by OSC.
 - **Settings tab** (next to Layer and Master; also Preferences…, ⌘, / Ctrl+,): default play mode, color widgets of
-  the Color tab, OSC on / off and ports. Applied immediately.
+  the Color tab for new layers (each layer then keeps its own choice, Color tab ▸ Edit in), OSC on / off and ports.
+  Applied immediately.
 - **Layer tab** with sub-tabs: **Source** (drop zone, transport, sound, generator parameters, crop),
   **Color**, **Spatial** (mapping), **Effects** (ISF chain), **Compositing** (opacity, blend).
 - **OSC control and OSCQuery**: the whole namespace (master, composition, every layer and group: source,
@@ -171,6 +180,9 @@ cmake -S . -B build && cmake --build build -j
 | Windowed output | Ctrl+Shift+F (⌘⇧F on Mac) |
 | Fade to blackout / back | Ctrl+B (⌘B), or the Blackout button in the Master tab |
 | Undo / redo | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y (⌘Z / ⌘⇧Z) |
+| Media Bin / Layers tab | Shift+1 / Shift+2 |
+| Store / recall a memory | + in the Memories grid / double-click, Enter or GO |
+| Next / previous field of an effect, handle of the mapping | Tab / Shift+Tab |
 | Group layers | select them, then ⊞ or Ctrl+G (⌘G); empty group: click the empty area of the list first |
 | Move layers into / out of a group | drag them onto the group's row, or between rows (below a group's last layer, at the left: out of it) |
 | Fold / unfold a group | arrow before its name |
@@ -197,7 +209,7 @@ cmake -S . -B build && cmake --build build -j
 | Move the selected points together | drag one of them, or arrow keys |
 | Move the whole layer | drag inside the layer |
 | Nudge by one pixel | arrow keys (Shift: 10 px) |
-| Next handle / deselect | Tab / Esc |
+| Next / previous handle / deselect | Tab / Shift+Tab / Esc |
 | Corners ↔ mesh mode | Layer tab ▸ Spatial |
 | Reload a shader edited in an external editor | ⟳ button in the inspector |
 
@@ -245,6 +257,7 @@ Main addresses (layer and effect names are made OSC-safe: spaces become `_`; a d
 | `/layers/<name>/spatial/position` · `scale` · `corners/tl` `tr` `br` `bl` | ff | px · % · normalized |
 | `/layers/<name>/effects/enabled` · `effects/<effect>/enabled` · `effects/<effect>/<input>` | | effect chain |
 | `/layers/<group>/layers/<name>/…` | | layers of a group |
+| `/memories/recall` · `/memories/<n>/recall` · `/memories/count` | i · N · i | recall memory n (1 = first) |
 
 A locked layer refuses every write except `visible`, `locked` and the transport (`play`, `restart`, `position`).
 
@@ -252,6 +265,7 @@ A locked layer refuses every write except `visible`, `locked` and the transport 
 
 ```
 src/engine/   engine, with no widget dependency (QtCore/QtGui/OpenGL + FFmpeg)
+  Memories      memories (snapshots of the layers) and their fades
   Engine        composition, render thread, output presentation, JSON project, Media Bin media
   Publish       publishing: NDI / OMT (loaded at runtime), Syphon (.mm), Spout; asynchronous GPU readback
   Isf           ISF parser and renderer (GLSL 330 core translation, passes, buffers)
@@ -267,6 +281,7 @@ src/ui/       Qt Widgets interface
   Commands      undo commands (QUndoStack)
   MediaBin, LayerTable, MasterPanel   Media Bin, layer list, Master tab
   SettingsPanel Settings tab (preferences of this machine)
+  MemoryPanel   memories grid and inspector
   Widgets       click-to-reset labels, playback bar with in / out, crop editor, color editor
 isf/          bundled shaders
 test/         automated tests

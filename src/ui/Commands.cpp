@@ -266,6 +266,22 @@ SetStructure::SetStructure(Engine *e, const LayerTree &before, const LayerTree &
     setText(text);
 }
 
+RecallMemory::RecallMemory(Engine *e, int memory) : m_e(e), m_memory(memory)
+{
+    m_before = e->captureLayers();
+    setText(QStringLiteral("Recall \"%1\"").arg(e->memory(memory).name));
+}
+
+void RecallMemory::redo()
+{
+    if (m_first) {
+        m_first = false;
+        m_e->recallMemory(m_memory);
+    } else {
+        m_e->applyLayers(m_e->memory(m_memory).layers, 0);
+    }
+}
+
 SetEffects::SetEffects(Engine *e, int index, const QJsonArray &before, const QString &text)
     : m_e(e), m_index(index), m_before(before)
 {

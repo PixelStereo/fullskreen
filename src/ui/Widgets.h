@@ -141,5 +141,29 @@ private:
 // open and faint otherwise.
 QIcon padlockIcon(bool locked, bool inherited = false);
 
+// Popup list with a search field (Add Effect…): items filed by group, filtered while typing,
+// Enter or a click picks one.
+class SearchPicker : public QWidget
+{
+    Q_OBJECT
+public:
+    struct Item {
+        QString text, group, tip, data;
+    };
+    SearchPicker(const QList<Item> &items, QWidget *parent = nullptr);
+    void popup(const QPoint &globalPos);
+
+signals:
+    void picked(const QString &data);
+
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override;
+
+private:
+    void filter(const QString &text);
+    class QLineEdit *m_search;
+    class QTreeWidget *m_tree;
+};
+
 // Disables every input widget below `root` (locked layer), except those with the "allowLocked" property.
 void lockInputs(QWidget *root, bool locked);

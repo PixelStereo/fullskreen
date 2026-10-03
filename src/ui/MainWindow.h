@@ -10,6 +10,7 @@ class LayerTable;
 class MediaBin;
 class MasterPanel;
 class SettingsPanel;
+class MemoryPanel;
 class OutputWindow;
 class QLabel;
 class QMenu;
@@ -40,6 +41,7 @@ protected:
     void closeEvent(QCloseEvent *e) override;
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dropEvent(QDropEvent *e) override;
+    bool eventFilter(QObject *o, QEvent *e) override;
 
 private:
     void buildMenus();
@@ -99,6 +101,8 @@ private:
     MediaBin *m_bin = nullptr;
     MasterPanel *m_master = nullptr;
     SettingsPanel *m_settings = nullptr;
+    MemoryPanel *m_memories = nullptr;
+    QTabWidget *m_leftTabs = nullptr;
     QTabWidget *m_tabs = nullptr;
     OutputWindow *m_output = nullptr;
     QLabel *m_status = nullptr;

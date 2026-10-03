@@ -25,7 +25,7 @@
 #include <cmath>
 #include <functional>
 
-enum Col { ColVisible, ColLock, ColName, ColSource, ColEffects, ColOpacity, ColBlend, ColPlayback, ColCount };
+enum Col { ColVisible, ColLock, ColName, ColEffects, ColOpacity, ColBlend, ColPlayback, ColCount };
 
 static const char *kRowsMime = "application/x-fulskrin-layer-rows";
 static constexpr int kArrowZone = 22;  // px at the left of a group's name: fold / unfold
@@ -324,14 +324,10 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     auto *dup = barButton(QStringLiteral("⧉"), QStringLiteral("Duplicate Layer (Ctrl+D)"));
     auto *up = barButton(QStringLiteral("▲"), QStringLiteral("Move Up (Ctrl+])"));
     auto *down = barButton(QStringLiteral("▼"), QStringLiteral("Move Down (Ctrl+[)"));
-    bar->addWidget(title);
-    bar->addSpacing(12);
+    (void)title;
+    bar->setSpacing(2);
     for (auto *b : {add, group, remove, dup, up, down}) bar->addWidget(b);
     bar->addStretch();
-    auto *hint = new QLabel(QStringLiteral("Top layer is drawn on top · drop a media onto a layer to load it · "
-                                           "drag layers onto a group · double-click a name to rename"));
-    hint->setStyleSheet("color:#888; font-size:11px;");
-    bar->addWidget(hint);
     v->addLayout(bar);
 
     auto *grid = new LayerGrid(0, ColCount);
@@ -347,9 +343,10 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     grid->onCollapse = [this](int row) { emit collapseToggled(row); };
     grid->onRename = [this](int row) { startRename(row); };
     m_table = grid;
-    m_table->setHorizontalHeaderLabels({QString(), QString(), QStringLiteral("Layer"), QStringLiteral("Source"),
-                                        QStringLiteral("Effects"), QStringLiteral("Opacity"), QStringLiteral("Blend"),
-                                        QStringLiteral("Playback")});
+    m_table->setHorizontalHeaderLabels({QString(), QString(), QStringLiteral("Layer"), QStringLiteral("Fx"),
+                                        QStringLiteral("Opacity"), QStringLiteral("Blend"), QStringLiteral("Playback")});
+    m_table->setToolTip(QStringLiteral("Top layer is drawn on top · drop a media onto a layer to load it · "
+                                       "drag layers onto a group · double-click a name to rename"));
     m_table->horizontalHeaderItem(ColVisible)->setToolTip(QStringLiteral("Visible"));
     m_table->horizontalHeaderItem(ColLock)->setToolTip(QStringLiteral("Locked: no edit allowed"));
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -368,16 +365,17 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     h->setSectionResizeMode(ColLock, QHeaderView::Fixed);
     m_table->setColumnWidth(ColLock, 28);
     h->setSectionResizeMode(ColName, QHeaderView::Interactive);
-    m_table->setColumnWidth(ColName, 230);
-    h->setSectionResizeMode(ColSource, QHeaderView::Stretch);
-    h->setSectionResizeMode(ColEffects, QHeaderView::Interactive);
-    m_table->setColumnWidth(ColEffects, 220);
+    h->setSectionResizeMode(ColName, QHeaderView::Interactive);
+    m_table->setColumnWidth(ColName, 170);
+    h->setSectionResizeMode(ColEffects, QHeaderView::Fixed);
+    m_table->setColumnWidth(ColEffects, 34);
     h->setSectionResizeMode(ColOpacity, QHeaderView::Fixed);
-    m_table->setColumnWidth(ColOpacity, 170);
+    m_table->setColumnWidth(ColOpacity, 104);
     h->setSectionResizeMode(ColBlend, QHeaderView::Fixed);
-    m_table->setColumnWidth(ColBlend, 90);
-    h->setSectionResizeMode(ColPlayback, QHeaderView::Fixed);
-    m_table->setColumnWidth(ColPlayback, 200);
+    m_table->setColumnWidth(ColBlend, 66);
+    h->setSectionResizeMode(ColPlayback, QHeaderView::Interactive);
+    m_table->setColumnWidth(ColPlayback, 150);
+    h->setStretchLastSection(true);
     v->addWidget(m_table, 1);
 
     connect(m_table, &QTableWidget::currentCellChanged, this, [this](int row, int, int prev, int) {
@@ -488,15 +486,19 @@ void LayerTable::updateRow(int r, const Row &row)
     const QString prefix = row.group ? (row.collapsed ? QStringLiteral("▸  ") : QStringLiteral("▾  "))
                            : row.member ? QStringLiteral("        ")
                                         : QString();
-    QTableWidgetItem *name = text(ColName, prefix + row.tag + QStringLiteral("  ") + row.name, row.name);
+    QTableWidgetItem *name = text(ColName, prefix + row.tag + QStringLiteral("  ") + row.name,
+                                  row.name + (row.source.isEmpty() ? QString() : QStringLiteral("\n") + row.source));
     QFont f = name->font();
     f.setBold(true);
     name->setFont(f);
-    QTableWidgetItem *src = text(ColSource, row.source);
-    src->setForeground(row.error ? QColor(255, 110, 95) : QColor(170, 170, 175));
     name->setForeground(row.error ? QColor(255, 110, 95) : row.group ? QColor(255, 200, 140) : QColor(230, 230, 233));
-    text(ColEffects, row.effectsOn ? row.effects : (row.effects.isEmpty() ? QStringLiteral("off") : QStringLiteral("off: ") + row.effects))
-        ->setForeground(row.effectsOn ? QColor(170, 170, 175) : QColor(110, 110, 115));
+    // Effects: their number, the names on hover
+    QTableWidgetItem *fx = text(ColEffects, row.effectCount ? QString::number(row.effectCount) : QStringLiteral("—"),
+                                row.effectCount ? (row.effectsOn ? QString() : QStringLiteral("Effects off\n")) +
+                                                      row.effects.split(QStringLiteral(" › ")).join('\n')
+                                                : QStringLiteral("No effects"));
+    fx->setTextAlignment(Qt::AlignCenter);
+    fx->setForeground(row.effectsOn ? QColor(255, 200, 140) : QColor(110, 110, 115));
     text(ColBlend, row.noPicture ? QStringLiteral("—") : row.blend);
     text(ColPlayback, row.playback)->setFont(QFont(QStringLiteral("monospace")));
     const QBrush bg = row.group ? QBrush(QColor(50, 50, 58)) : QBrush();

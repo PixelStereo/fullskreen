@@ -548,15 +548,18 @@ void MappingView::keyPressEvent(QKeyEvent *e)
     case Qt::Key_Right: d = {1, 0}; break;
     case Qt::Key_Up: d = {0, -1}; break;
     case Qt::Key_Down: d = {0, 1}; break;
-    case Qt::Key_Tab: {
-        // Go to the next handle
+    case Qt::Key_Tab:
+    case Qt::Key_Backtab: {
+        // Next handle (Shift+Tab: previous)
         if (!m) break;
+        const int step = e->key() == Qt::Key_Backtab ? -1 : 1;
         if (m->meshMode) {
-            int k = m_primary.kind == 1 ? m_primary.j * m->cols + m_primary.i + 1 : 0;
-            k %= m->cols * m->rows;
+            const int n = m->cols * m->rows;
+            int k = m_primary.kind == 1 ? m_primary.j * m->cols + m_primary.i + step : (step > 0 ? 0 : n - 1);
+            k = ((k % n) + n) % n;
             m_primary = Handle{1, k % m->cols, k / m->cols};
         } else {
-            m_primary = Handle{0, m_primary.kind == 0 ? (m_primary.i + 1) % 4 : 0, 0};
+            m_primary = Handle{0, m_primary.kind == 0 ? (m_primary.i + step + 4) % 4 : (step > 0 ? 0 : 3), 0};
         }
         m_selection = {m_primary};
         update();

@@ -13,6 +13,11 @@
 #include <QPainterPath>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QCoreApplication>
+#include <QHeaderView>
+#include <QKeyEvent>
+#include <QMap>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
@@ -585,4 +590,109 @@ void lockInputs(QWidget *root, bool locked)
             qobject_cast<ResetLabel *>(w) || w->property("lockable").toBool())
             w->setEnabled(false);
     }
+}
+
+// ---------------------------------------------------------------------------
+// SearchPicker
+// ---------------------------------------------------------------------------
+
+SearchPicker::SearchPicker(const QList<Item> &items, QWidget *parent) : QWidget(parent, Qt::Popup)
+{
+    setAttribute(Qt::WA_DeleteOnClose);
+    auto *v = new QVBoxLayout(this);
+    v->setContentsMargins(6, 6, 6, 6);
+    m_search = new QLineEdit;
+    m_search->setPlaceholderText(QStringLiteral("Search…"));
+    m_search->setClearButtonEnabled(true);
+    m_tree = new QTreeWidget;
+    m_tree->setHeaderHidden(true);
+    m_tree->setRootIsDecorated(true);
+    m_tree->setIndentation(12);
+    v->addWidget(m_search);
+    v->addWidget(m_tree, 1);
+    QMap<QString, QTreeWidgetItem *> groups;
+    for (const Item &it : items) {
+        QTreeWidgetItem *parentItem = nullptr;
+        if (!it.group.isEmpty()) {
+            parentItem = groups.value(it.group);
+            if (!parentItem) {
+                parentItem = new QTreeWidgetItem(m_tree, {it.group});
+                parentItem->setFlags(Qt::ItemIsEnabled);
+                QFont f = parentItem->font(0);
+                f.setItalic(true);
+                parentItem->setFont(0, f);
+                groups.insert(it.group, parentItem);
+            }
+        }
+        auto *leaf = parentItem ? new QTreeWidgetItem(parentItem, {it.text}) : new QTreeWidgetItem(m_tree, {it.text});
+        leaf->setData(0, Qt::UserRole, it.data);
+        leaf->setToolTip(0, it.tip);
+    }
+    m_tree->sortItems(0, Qt::AscendingOrder);
+    if (items.isEmpty()) new QTreeWidgetItem(m_tree, {QStringLiteral("(nothing in the library)")});
+    connect(m_search, &QLineEdit::textChanged, this, &SearchPicker::filter);
+    connect(m_tree, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem *it) {
+        const QString d = it->data(0, Qt::UserRole).toString();
+        if (d.isEmpty()) return;
+        emit picked(d);
+        close();
+    });
+    connect(m_tree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *it) {
+        if (it->childCount()) it->setExpanded(!it->isExpanded());
+        else emit m_tree->itemActivated(it, 0);
+    });
+    m_search->installEventFilter(this);
+    resize(300, 380);
+}
+
+void SearchPicker::popup(const QPoint &globalPos)
+{
+    move(globalPos);
+    show();
+    m_search->setFocus();
+}
+
+void SearchPicker::filter(const QString &text)
+{
+    const QString f = text.trimmed();
+    QTreeWidgetItem *first = nullptr;
+    for (int g = 0; g < m_tree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *top = m_tree->topLevelItem(g);
+        auto match = [&](QTreeWidgetItem *it) {
+            return f.isEmpty() || it->text(0).contains(f, Qt::CaseInsensitive) || it->toolTip(0).contains(f, Qt::CaseInsensitive);
+        };
+        if (top->childCount() == 0) {
+            top->setHidden(!match(top));
+            if (!top->isHidden() && !first) first = top;
+            continue;
+        }
+        bool any = false;
+        for (int c = 0; c < top->childCount(); ++c) {
+            QTreeWidgetItem *it = top->child(c);
+            const bool m = match(it) || (!f.isEmpty() && top->text(0).contains(f, Qt::CaseInsensitive));
+            it->setHidden(!m);
+            any |= m;
+            if (m && !first) first = it;
+        }
+        top->setHidden(!any);
+        top->setExpanded(!f.isEmpty() && any);
+    }
+    if (first && !f.isEmpty()) m_tree->setCurrentItem(first);
+}
+
+bool SearchPicker::eventFilter(QObject *o, QEvent *e)
+{
+    if (o == m_search && e->type() == QEvent::KeyPress) {
+        auto *k = static_cast<QKeyEvent *>(e);
+        if (k->key() == Qt::Key_Down || k->key() == Qt::Key_Up) { // the list, while typing
+            QCoreApplication::sendEvent(m_tree, e);
+            return true;
+        }
+        if (k->key() == Qt::Key_Return || k->key() == Qt::Key_Enter) {
+            if (QTreeWidgetItem *it = m_tree->currentItem())
+                if (!it->isHidden() && it->childCount() == 0) emit m_tree->itemActivated(it, 0);
+            return true;
+        }
+    }
+    return QWidget::eventFilter(o, e);
 }
