@@ -52,7 +52,9 @@ The sound follows the layer's playhead (play, pause, seek, loop, speed — tape-
 milliseconds of the picture, and realigns with a short fade after a dropout or a seek. Everything is mixed to one
 stereo output (48 kHz).
 
-**Output.** Fullscreen on the chosen screen, synced to vertical refresh (⌘F), or windowed (⌘⇧F). Rendering runs
+**Output.** Fullscreen on the chosen screen, synced to vertical refresh (⌘F), or windowed (⌘⇧F).
+On macOS the output takes a Space of its own, like any other application, and the Space is closed when it
+leaves fullscreen — the window is hidden only once macOS has finished the exit, never during it. Rendering runs
 on a dedicated thread, so a slow or blocked interface never interrupts the projected image. The **Master** tab
 holds the level fader, Blackout with fade (⌘B, fades the sound too), screen and mode, audio output, composition
 size, and **publishing** to **NDI**, **OMT**, **Syphon** (macOS) and **Spout** (Windows). Syphon and Spout are
