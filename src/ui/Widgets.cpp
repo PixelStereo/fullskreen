@@ -13,8 +13,13 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QRegularExpression>
 #include <QPixmap>
 #include <QWheelEvent>
+#include <QApplication>
+#include <QPalette>
+#include <QSettings>
+#include <QStyleFactory>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QCoreApplication>
@@ -25,6 +30,89 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+
+// ---------------------------------------------------------------------------
+// Accent color
+// ---------------------------------------------------------------------------
+
+namespace theme {
+namespace {
+QColor g_accent;
+bool g_loaded = false;
+} // namespace
+
+QColor defaultAccent() { return QColor(214, 214, 219); }
+
+QColor accent()
+{
+    if (!g_loaded) {
+        const QString v = QSettings().value(QStringLiteral("ui/accent")).toString();
+        const QColor c(v);
+        g_accent = c.isValid() ? c : defaultAccent();
+        g_loaded = true;
+    }
+    return g_accent;
+}
+
+void setAccent(const QColor &c)
+{
+    g_accent = c.isValid() ? c : defaultAccent();
+    g_loaded = true;
+    QSettings().setValue(QStringLiteral("ui/accent"), g_accent.name());
+    emit notifier()->changed();
+}
+
+// Black or white, whichever stands out on the accent (sRGB luminance)
+QColor onAccent()
+{
+    const QColor a = accent();
+    const double l = 0.2126 * a.redF() + 0.7152 * a.greenF() + 0.0722 * a.blueF();
+    return l > 0.55 ? QColor(26, 26, 29) : QColor(240, 240, 243);
+}
+
+QString css(int alpha)
+{
+    const QColor a = accent();
+    if (alpha >= 255) return a.name();
+    return QStringLiteral("rgba(%1, %2, %3, %4)").arg(a.red()).arg(a.green()).arg(a.blue()).arg(alpha);
+}
+
+Notifier *notifier()
+{
+    static Notifier n;
+    return &n;
+}
+
+// Dark interface, with the accent wherever a selection or an active control is shown
+void applyToApplication(QApplication &app)
+{
+    app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+    QPalette p;
+    const QColor base(30, 30, 33), window(40, 40, 44), text(225, 225, 228), a = accent();
+    p.setColor(QPalette::Window, window);
+    p.setColor(QPalette::WindowText, text);
+    p.setColor(QPalette::Base, base);
+    p.setColor(QPalette::AlternateBase, window);
+    p.setColor(QPalette::ToolTipBase, base);
+    p.setColor(QPalette::ToolTipText, text);
+    p.setColor(QPalette::Text, text);
+    p.setColor(QPalette::Button, QColor(52, 52, 57));
+    p.setColor(QPalette::ButtonText, text);
+    p.setColor(QPalette::Highlight, a);
+    p.setColor(QPalette::HighlightedText, onAccent());
+    p.setColor(QPalette::Link, a);
+    p.setColor(QPalette::PlaceholderText, QColor(130, 130, 135));
+    p.setColor(QPalette::Disabled, QPalette::Text, QColor(120, 120, 125));
+    p.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(120, 120, 125));
+    p.setColor(QPalette::Disabled, QPalette::WindowText, QColor(120, 120, 125));
+    app.setPalette(p);
+    app.setStyleSheet(QStringLiteral("QGroupBox { font-weight: bold; border: 1px solid #4a4a50; border-radius: 4px; "
+                                     "margin-top: 10px; padding-top: 8px; } "
+                                     "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; "
+                                     "color: %1; }")
+                          .arg(css()));
+}
+} // namespace theme
 
 // ---------------------------------------------------------------------------
 // ResetLabel
@@ -50,7 +138,7 @@ void ResetLabel::mousePressEvent(QMouseEvent *e)
 
 void ResetLabel::enterEvent(QEnterEvent *e)
 {
-    if (isEnabled()) setStyleSheet("color:#ffa028; text-decoration:underline;");
+    if (isEnabled()) setStyleSheet(QStringLiteral("color:%1; text-decoration:underline;").arg(theme::css()));
     QLabel::enterEvent(e);
 }
 
@@ -131,12 +219,12 @@ void RoiEditor::paintEvent(QPaintEvent *)
     outside.addRect(c);
     outside.setFillRule(Qt::OddEvenFill);
     p.fillPath(outside, QColor(0, 0, 0, 150));
-    p.setPen(QPen(QColor(255, 160, 40), isEnabled() ? 2 : 1));
+    p.setPen(QPen(theme::accent(), isEnabled() ? 2 : 1));
     p.setBrush(Qt::NoBrush);
     p.drawRect(c);
     if (!isEnabled()) return;
     // Side handles
-    p.setBrush(QColor(255, 160, 40));
+    p.setBrush(theme::accent());
     p.setPen(Qt::NoPen);
     const QPointF mids[4] = {{c.left(), c.center().y()}, {c.center().x(), c.top()}, {c.right(), c.center().y()},
                              {c.center().x(), c.bottom()}};
@@ -290,6 +378,17 @@ void ColorEditor::build(const QString &title)
 
 static int groupIndex(int model) { return model == ColorEditor::Rgb ? 0 : model == ColorEditor::Hsl ? 1 : model == ColorEditor::Additive ? 2 : 3; }
 
+// "stop:0 #3a7bff, stop:0.5 #888, stop:1 #ffd23a" — the gradients were written in stylesheet form
+static QGradientStops parseStops(const QString &text)
+{
+    QGradientStops out;
+    for (const QString &part : text.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        const QStringList f = part.trimmed().split(QRegularExpression(QStringLiteral("[: ]")), Qt::SkipEmptyParts);
+        if (f.size() >= 3) out.append({f[1].toDouble(), QColor(f[2])});
+    }
+    return out;
+}
+
 void ColorEditor::addChannel(int model, int index, const QString &name, double max, const QString &suffix,
                              const QString &gradient)
 {
@@ -314,31 +413,18 @@ void ColorEditor::addChannel(int model, int index, const QString &name, double m
         setChannel(model, index, def);
     });
     label->setMinimumWidth(64);
-    ch.slider = new QSlider(Qt::Horizontal);
-    ch.slider->setRange(0, 1000);
-    ch.slider->setStyleSheet(QStringLiteral("QSlider::groove:horizontal { height:6px; border-radius:3px;"
-                                            " background:qlineargradient(x1:0,y1:0,x2:1,y2:0,%1); }"
-                                            "QSlider::handle:horizontal { background:#eee; width:10px; margin:-5px 0;"
-                                            " border-radius:5px; }")
-                                 .arg(gradient));
-    ch.spin = new QDoubleSpinBox;
-    ch.spin->setRange(0, max);
-    ch.spin->setDecimals(max >= 255 ? 0 : 1);
-    ch.spin->setSuffix(suffix);
-    ch.spin->setKeyboardTracking(false);
-    ch.spin->setFixedWidth(76);
+    ch.bar = new SliderField;
+    ch.bar->setRange(0, max);
+    ch.bar->setDecimals(max >= 255 ? 0 : 1);
+    ch.bar->setSuffix(suffix);
+    ch.bar->setSingleStep(max / 100);
+    ch.bar->setGradient(parseStops(gradient));
     grid->addWidget(label, row, 0);
-    grid->addWidget(ch.slider, row, 1);
-    grid->addWidget(ch.spin, row, 2);
+    grid->addWidget(ch.bar, row, 1);
     grid->setColumnStretch(1, 1);
     m_channels.push_back(ch);
     const size_t k = m_channels.size() - 1;
-    connect(ch.slider, &QSlider::valueChanged, this, [this, k](int v) {
-        if (m_syncing) return;
-        const Channel &c = m_channels[k];
-        setChannel(c.model, c.index, v / 1000.0 * c.max);
-    });
-    connect(ch.spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, k](double v) {
+    connect(ch.bar, &SliderField::valueEdited, this, [this, k](double v) {
         if (m_syncing) return;
         const Channel &c = m_channels[k];
         setChannel(c.model, c.index, v);
@@ -401,7 +487,7 @@ void ColorEditor::setColor(const QColor &c)
 {
     if (c.rgba64() == m_color.rgba64()) return;
     for (const Channel &ch : m_channels)
-        if (ch.slider->isSliderDown() || ch.spin->hasFocus()) return; // being edited
+        if (ch.bar->isDragging()) return; // being edited
     apply(c, false);
 }
 
@@ -410,8 +496,7 @@ void ColorEditor::sync(const Channel *)
     m_syncing = true;
     for (Channel &ch : m_channels) {
         const double v = channelValue(ch.model, ch.index);
-        if (!ch.slider->isSliderDown()) ch.slider->setValue(int(std::lround(v / ch.max * 1000)));
-        if (!ch.spin->hasFocus()) ch.spin->setValue(v);
+        if (!ch.bar->isDragging()) ch.bar->setValue(v);
     }
     m_swatch->setStyleSheet(QStringLiteral("background:%1; border:1px solid #555; border-radius:3px;").arg(m_color.name()));
     if (!m_hex->hasFocus()) m_hex->setText(m_color.name().toUpper());
@@ -441,7 +526,7 @@ QIcon padlockIcon(bool locked, bool inherited)
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
     const QColor c = locked ? QColor(235, 70, 60) : inherited ? QColor(170, 90, 80) : QColor(110, 110, 116);
-    // Dark outline: readable on the orange selection too
+    // Dark outline: readable on the selection too
     for (int pass = 0; pass < 2; ++pass) {
         const QColor col = pass == 0 ? QColor(20, 20, 22, locked || inherited ? 200 : 0) : c;
         const double grow = pass == 0 ? 1.6 : 0.0;
@@ -589,7 +674,8 @@ bool SearchPicker::eventFilter(QObject *o, QEvent *e)
 
 namespace {
 constexpr int kFieldHeight = 24;
-const QColor kTrack(28, 28, 31), kFill(255, 160, 40, 210), kFillOff(255, 160, 40, 80);
+const QColor kTrack(28, 28, 31);
+QColor fillColor(bool on) { QColor c = theme::accent(); c.setAlpha(on ? 210 : 80); return c; }
 const QColor kTick(255, 255, 255, 38), kBorder(0, 0, 0, 90);
 
 // Flat field at the end of a bar: the value, typed, with its unit and no spin buttons.
@@ -649,6 +735,7 @@ void SliderField::setSuffix(const QString &s) { m_spin->setSuffix(s); resizeEven
 void SliderField::setSingleStep(double s) { m_spin->setSingleStep(s); }
 void SliderField::setTicks(int n) { m_ticks = n; update(); }
 void SliderField::setSnaps(const std::vector<double> &v) { m_snaps = v; }
+void SliderField::setGradient(const QGradientStops &stops) { m_gradient = stops; update(); }
 void SliderField::setOrigin(double v) { m_origin = std::clamp(v, m_min, m_max); update(); }
 
 void SliderField::setValue(double v)
@@ -702,8 +789,18 @@ void SliderField::paintEvent(QPaintEvent *)
         return r.left() + (std::clamp(v, m_min, m_max) - m_min) / (m_max - m_min) * r.width();
     };
     const double x0 = xOf(m_origin), xv = xOf(m_value);
-    p.setBrush(isEnabled() ? kFill : kFillOff);
-    p.drawRoundedRect(QRectF(QPointF(std::min(x0, xv), r.top()), QPointF(std::max(x0, xv), r.bottom())), 3, 3);
+    if (!m_gradient.isEmpty()) {
+        // Color bar: the whole track shows the scale, and the value is a marker on it
+        QLinearGradient grad(r.topLeft(), r.topRight());
+        grad.setStops(m_gradient);
+        p.setBrush(grad);
+        p.setOpacity(isEnabled() ? 1.0 : 0.4);
+        p.drawRoundedRect(r, 3, 3);
+        p.setOpacity(1.0);
+    } else {
+        p.setBrush(fillColor(isEnabled()));
+        p.drawRoundedRect(QRectF(QPointF(std::min(x0, xv), r.top()), QPointF(std::max(x0, xv), r.bottom())), 3, 3);
+    }
     if (m_ticks > 1) {
         p.setPen(QPen(kTick, 1));
         for (int i = 1; i < m_ticks; ++i) {
@@ -711,11 +808,17 @@ void SliderField::paintEvent(QPaintEvent *)
             p.drawLine(QPointF(x, r.top() + 3), QPointF(x, r.bottom() - 3));
         }
     }
+    if (!m_gradient.isEmpty()) {
+        p.setPen(QPen(QColor(20, 20, 22), 3));
+        p.drawLine(QPointF(xv, r.top() + 1), QPointF(xv, r.bottom() - 1));
+        p.setPen(QPen(Qt::white, 1.4));
+        p.drawLine(QPointF(xv, r.top() + 1), QPointF(xv, r.bottom() - 1));
+    }
     p.setPen(QPen(kBorder, 1));
     p.setBrush(Qt::NoBrush);
     p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
     if (hasFocus()) {
-        p.setPen(QPen(QColor(255, 160, 40, 140), 1));
+        p.setPen(QPen(theme::css(140).isEmpty() ? QColor() : [] { QColor c = theme::accent(); c.setAlpha(140); return c; }(), 1));
         p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
     }
 }
@@ -830,14 +933,14 @@ void RangeField::paintEvent(QPaintEvent *)
     p.setPen(Qt::NoPen);
     p.setBrush(kTrack);
     p.drawRoundedRect(r, 3, 3);
-    p.setBrush(isEnabled() ? QColor(255, 160, 40, 110) : QColor(255, 160, 40, 45));
+    { QColor c = theme::accent(); c.setAlpha(isEnabled() ? 110 : 45); p.setBrush(c); }
     p.drawRect(QRectF(QPointF(xOf(m_lo), r.top()), QPointF(xOf(m_hi), r.bottom())));
     p.setPen(QPen(kBorder, 1));
     p.setBrush(Qt::NoBrush);
     p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
     // Handles: a triangle pointing into the range
     p.setPen(Qt::NoPen);
-    p.setBrush(isEnabled() ? QColor(255, 200, 120) : QColor(150, 140, 130));
+    p.setBrush(isEnabled() ? theme::accent().lighter(115) : QColor(150, 150, 155));
     for (int k = 0; k < 2; ++k) {
         const double x = k ? xOf(m_hi) : xOf(m_lo);
         const double d = k ? -5 : 5;
@@ -895,7 +998,7 @@ void RangeField::mouseReleaseEvent(QMouseEvent *e)
 
 namespace {
 // 20x20 logical glyph, drawn so no symbol font is needed (as the padlock is).
-// Light on the dark panel, dark once the button is checked (the checked background is the orange accent).
+// Light on the dark panel, and in the color that reads on the accent once the button is checked.
 QIcon drawnIcon(const std::function<void(QPainter &, const QColor &)> &draw)
 {
     QIcon icon;
@@ -906,7 +1009,7 @@ QIcon drawnIcon(const std::function<void(QPainter &, const QColor &)> &draw)
             QPainter p(&img);
             p.setRenderHint(QPainter::Antialiasing);
             p.scale(px / 20.0, px / 20.0);
-            draw(p, st == QIcon::On ? QColor(30, 26, 20) : QColor(225, 225, 228));
+            draw(p, st == QIcon::On ? theme::onAccent() : QColor(225, 225, 228));
             p.end();
             icon.addPixmap(QPixmap::fromImage(img), QIcon::Normal, st);
         }
@@ -1003,3 +1106,4 @@ QIcon playModeIcon(int mode)
         }
     });
 }
+

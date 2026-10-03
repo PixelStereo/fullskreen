@@ -10,6 +10,7 @@
 #include "OutputWindow.h"
 #include "Osc.h"
 #include "SettingsPanel.h"
+#include "Widgets.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -247,6 +248,12 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_inspector, &LayerInspector::projectEdited, this, &MainWindow::markDirty);
     connect(m_inspector, &LayerInspector::mappingChanged, m_view, qOverload<>(&QWidget::update));
     connect(m_inspector, &LayerInspector::fileDropped, this, [this](const QString &p) { loadIntoLayer(m_inspector->layerIndex(), p); });
+    // The accent color is a machine preference: applied at once, everywhere
+    connect(theme::notifier(), &theme::Notifier::changed, this, [this] {
+        if (auto *app = qobject_cast<QApplication *>(QCoreApplication::instance())) theme::applyToApplication(*app);
+        refreshAll();
+        update();
+    });
     connect(m_engine, &Engine::layersChanged, this, &MainWindow::refreshLayerList);
     connect(m_engine, &Engine::compositionSizeChanged, this, [this] { m_view->update(); });
     // The preview follows rendering (at most one update per rendered frame)

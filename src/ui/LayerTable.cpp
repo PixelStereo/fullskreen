@@ -269,11 +269,11 @@ protected:
     {
         QTableWidget::paintEvent(e);
         QPainter p(viewport());
-        const QColor accent(255, 160, 40);
+        const QColor accent = theme::accent();
         if (m_internal) {
             if (m_target.into >= 0) {
                 p.setPen(QPen(accent, 2));
-                p.setBrush(QColor(255, 160, 40, 40));
+                { QColor a = theme::accent(); a.setAlpha(40); p.setBrush(a); }
                 const int y = rowViewportPosition(m_target.into);
                 p.drawRect(QRect(1, y + 1, viewport()->width() - 3, rowHeight(m_target.into) - 3));
             } else if (m_target.lineY >= 0) {
@@ -287,7 +287,7 @@ protected:
         }
         if (m_dropRow < 0) return;
         p.setPen(QPen(accent, 2));
-        p.setBrush(QColor(255, 160, 40, 40));
+        { QColor a = theme::accent(); a.setAlpha(40); p.setBrush(a); }
         const int y = rowViewportPosition(m_dropRow);
         p.drawRect(QRect(1, y + 1, viewport()->width() - 3, rowHeight(m_dropRow) - 3));
     }

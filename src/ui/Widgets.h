@@ -1,7 +1,9 @@
 #pragma once
 // Small interface building blocks shared by the inspector and the parameter panels.
 
+#include <QBrush>
 #include <QColor>
+#include <QObject>
 #include <QIcon>
 #include <QImage>
 #include <QLabel>
@@ -13,6 +15,25 @@
 class QDoubleSpinBox;
 class QSlider;
 class QLineEdit;
+
+// Accent color of the interface: the selection, the bars, the buttons that are on, the links.
+// A very light grey by default, changed in the Settings tab and kept for this machine.
+namespace theme {
+class Notifier : public QObject
+{
+    Q_OBJECT
+public:
+signals:
+    void changed(); // the accent changed: restyle and rebuild the panels
+};
+Notifier *notifier();
+void applyToApplication(class QApplication &app); // palette and global stylesheet (called again on a change)
+QColor accent();
+QColor defaultAccent();
+void setAccent(const QColor &c); // saved, then everything using it is restyled
+QColor onAccent();               // text and icons drawn on the accent: dark or light, whichever reads
+QString css(int alpha = 255);    // "#rrggbb", or "rgba(r, g, b, a)" when alpha < 255
+} // namespace theme
 
 // Parameter name: a click puts the parameter back to its default value.
 class ResetLabel : public QLabel
@@ -47,6 +68,8 @@ public:
     void setSingleStep(double s);
     void setTicks(int n);              // tick marks drawn on the bar (0: none)
     void setSnaps(const std::vector<double> &v); // values the cursor catches while dragging (0, 100 %…)
+    // Paints the bar with this gradient instead of a fill: the value is then shown as a marker on it
+    void setGradient(const QGradientStops &stops);
     void setOrigin(double v);          // where the fill starts (0 by default; 0 in the middle for a ± range)
     void setValue(double v);           // no signal
     double value() const { return m_value; }
@@ -74,6 +97,7 @@ private:
     int m_ticks = 0;
     bool m_drag = false;
     std::vector<double> m_snaps;
+    QGradientStops m_gradient;
 };
 
 // Two numbers on one bar: the chosen range is highlighted between two handles, with its bounds typed at
@@ -173,8 +197,7 @@ private:
     struct Channel {
         int model;
         int index;
-        QSlider *slider = nullptr;
-        QDoubleSpinBox *spin = nullptr;
+        SliderField *bar = nullptr;
         double max = 1;
         QWidget *row = nullptr;
     };

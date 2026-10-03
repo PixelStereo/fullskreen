@@ -2,6 +2,7 @@
 #include "Widgets.h"
 
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -56,6 +57,30 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
         QSettings().setValue(kPlayModeKey, playModeKey(PlayMode(m_playMode->currentData().toInt())));
         emit playModeChanged();
     });
+
+    // Accent color of the interface
+    auto *look = new QGroupBox(QStringLiteral("Interface"));
+    auto *lookForm = new QFormLayout(look);
+    auto *swatch = new QPushButton;
+    swatch->setFixedSize(60, 22);
+    swatch->setToolTip(QStringLiteral("Color of the selection, the bars and the controls that are on"));
+    auto paintSwatch = [swatch] {
+        swatch->setStyleSheet(QStringLiteral("background:%1; border:1px solid #55555c; border-radius:3px;")
+                                  .arg(theme::css()));
+    };
+    paintSwatch();
+    lookForm->addRow(new ResetLabel(QStringLiteral("Accent color"),
+                                    [paintSwatch] { theme::setAccent(theme::defaultAccent()); paintSwatch(); }),
+                     swatch);
+    lookForm->addRow(note(QStringLiteral("Used for the selected layer, the bars, the buttons that are on and the "
+                                         "links. A click on the name puts it back to the default light grey.")));
+    connect(swatch, &QPushButton::clicked, this, [this, paintSwatch] {
+        const QColor c = QColorDialog::getColor(theme::accent(), this, QStringLiteral("Accent color"));
+        if (!c.isValid()) return;
+        theme::setAccent(c);
+        paintSwatch();
+    });
+    v->addWidget(look);
 
     auto *color = new QGroupBox(QStringLiteral("Color"));
     auto *cf = new QFormLayout(color);
