@@ -109,14 +109,14 @@ int Engine::addLayer(const QString &name, int at)
         l->genWidth = m_compSize.width();
         l->genHeight = m_compSize.height();
         at = std::clamp(at, 0, int(m_layers.size()));
-        // Inserted inside a block: the new layer joins that group or that viewport
+        // Inserted inside a block: the new layer joins that group or that composition
         if (at > 0 && at <= int(m_layers.size())) {
             const Layer &above = *m_layers[size_t(at - 1)];
             l->parent = above.isGroup ? above.id : above.parent;
         }
-        if (!l->parent) // nothing above: the first viewport takes it
+        if (!l->parent) // nothing above: the first composition takes it
             for (const auto &o : m_layers)
-                if (o->isViewport) {
+                if (o->isComposition) {
                     l->parent = o->id;
                     break;
                 }
@@ -126,7 +126,7 @@ int Engine::addLayer(const QString &name, int at)
     return at;
 }
 
-// --- Viewports -------------------------------------------------------------
+// --- Compositions -------------------------------------------------------------
 
 // Index of a layer id, the lock already held
 int Engine::indexOfIdLocked(quint64 id) const
@@ -136,21 +136,21 @@ int Engine::indexOfIdLocked(quint64 id) const
     return -1;
 }
 
-int Engine::addViewport(const QString &name, QSize size)
+int Engine::addComposition(const QString &name, QSize size)
 {
     int at = 0;
     {
         Lock lk(&m_mutex);
         int n = 0;
-        for (const auto &l : m_layers) n += l->isViewport;
+        for (const auto &l : m_layers) n += l->isComposition;
         auto l = std::make_unique<Layer>();
         l->id = newIdLocked();
         l->isGroup = true;
-        l->isViewport = true;
+        l->isComposition = true;
         const QSize s = size.isValid() && !size.isEmpty() ? size : m_compSize;
-        l->vpWidth = s.width();
-        l->vpHeight = s.height();
-        l->name = name.isEmpty() ? QStringLiteral("Viewport %1").arg(n + 1) : name;
+        l->compWidth = s.width();
+        l->compHeight = s.height();
+        l->name = name.isEmpty() ? QStringLiteral("Composition %1").arg(n + 1) : name;
         at = int(m_layers.size());
         m_layers.push_back(std::move(l));
         normalizeLocked();
@@ -160,62 +160,62 @@ int Engine::addViewport(const QString &name, QSize size)
     return at;
 }
 
-bool Engine::isViewport(int i) const
+bool Engine::isComposition(int i) const
 {
     Lock lk(&m_mutex);
-    return i >= 0 && i < int(m_layers.size()) && m_layers[size_t(i)]->isViewport;
+    return i >= 0 && i < int(m_layers.size()) && m_layers[size_t(i)]->isComposition;
 }
 
-QList<int> Engine::viewports() const
+QList<int> Engine::compositions() const
 {
     Lock lk(&m_mutex);
     QList<int> out;
     for (int i = 0; i < int(m_layers.size()); ++i)
-        if (m_layers[size_t(i)]->isViewport) out << i;
+        if (m_layers[size_t(i)]->isComposition) out << i;
     return out;
 }
 
-int Engine::viewportOf(int i) const
+int Engine::compositionOf(int i) const
 {
     Lock lk(&m_mutex);
     if (i < 0 || i >= int(m_layers.size())) return -1;
     const Layer *l = m_layers[size_t(i)].get();
-    if (l->isViewport) return i;
+    if (l->isComposition) return i;
     int p = indexOfIdLocked(l->parent);
     if (p < 0) return -1;
-    if (m_layers[size_t(p)]->isViewport) return p;
+    if (m_layers[size_t(p)]->isComposition) return p;
     return indexOfIdLocked(m_layers[size_t(p)]->parent);
 }
 
-void Engine::setViewportSize(int i, QSize size)
+void Engine::setCompSize(int i, QSize size)
 {
     {
         Lock lk(&m_mutex);
         Layer *l = layer(i);
-        if (!l || !l->isViewport) return;
-        l->vpWidth = std::clamp(size.width(), 1, 16384);
-        l->vpHeight = std::clamp(size.height(), 1, 16384);
+        if (!l || !l->isComposition) return;
+        l->compWidth = std::clamp(size.width(), 1, 16384);
+        l->compHeight = std::clamp(size.height(), 1, 16384);
     }
     emit layersChanged();
 }
 
-void Engine::setViewportOutput(int i, const QString &screen, int mode)
+void Engine::setCompositionOutput(int i, const QString &screen, int mode)
 {
     {
         Lock lk(&m_mutex);
         Layer *l = layer(i);
-        if (!l || !l->isViewport) return;
-        l->vpScreen = screen;
-        l->vpMode = std::clamp(mode, 0, 2);
+        if (!l || !l->isComposition) return;
+        l->compScreen = screen;
+        l->compMode = std::clamp(mode, 0, 2);
     }
     emit layersChanged();
 }
 
-QSize Engine::viewportSize(int i) const
+QSize Engine::compSize(int i) const
 {
     Lock lk(&m_mutex);
     const Layer *l = i >= 0 && i < int(m_layers.size()) ? m_layers[size_t(i)].get() : nullptr;
-    return l && l->isViewport ? l->viewportSize() : QSize();
+    return l && l->isComposition ? l->compSize() : QSize();
 }
 
 int Engine::addGroup(const QString &name, int at)
@@ -229,24 +229,24 @@ int Engine::addGroup(const QString &name, int at)
         l->isGroup = true;
         l->name = name.isEmpty() ? QStringLiteral("Group %1").arg(groups + 1) : name;
         at = std::clamp(at, 0, int(m_layers.size()));
-        // A group lives in a viewport, never in another group: it joins the one it is dropped in
+        // A group lives in a composition, never in another group: it joins the one it is dropped in
         while (at > 0 && at < int(m_layers.size()) && m_layers[size_t(at)]->parent &&
-               !m_layers[indexOfIdLocked(m_layers[size_t(at)]->parent)]->isViewport)
+               !m_layers[indexOfIdLocked(m_layers[size_t(at)]->parent)]->isComposition)
             --at;
         for (int k = at - 1; k >= 0; --k)
-            if (m_layers[size_t(k)]->isViewport) {
+            if (m_layers[size_t(k)]->isComposition) {
                 l->parent = m_layers[size_t(k)]->id;
                 break;
             } else if (m_layers[size_t(k)]->parent) {
                 const int pi = indexOfIdLocked(m_layers[size_t(k)]->parent);
-                if (pi >= 0 && m_layers[size_t(pi)]->isViewport) {
+                if (pi >= 0 && m_layers[size_t(pi)]->isComposition) {
                     l->parent = m_layers[size_t(pi)]->id;
                     break;
                 }
             }
         if (!l->parent)
             for (const auto &o : m_layers)
-                if (o->isViewport) {
+                if (o->isComposition) {
                     l->parent = o->id;
                     break;
                 }
@@ -277,13 +277,13 @@ int Engine::indexOfId(quint64 id) const
     return -1;
 }
 
-// Node of a layer in the structure: a viewport, a group, or a plain layer
+// Node of a layer in the structure: a composition, a group, or a plain layer
 static TreeNode nodeOf(const Layer &l)
 {
     TreeNode n;
     n.id = l.id;
     n.parent = l.parent;
-    n.kind = l.isViewport ? TreeNode::Viewport : l.isGroup ? TreeNode::Group : TreeNode::Item;
+    n.kind = l.isComposition ? TreeNode::Composition : l.isGroup ? TreeNode::Group : TreeNode::Item;
     n.isGroup = l.isGroup;
     return n;
 }

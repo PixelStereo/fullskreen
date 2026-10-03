@@ -222,27 +222,27 @@ public:
     void requestSourcePreview(quint64 layerId, int maxSide = 360); // 0: stop
     QImage sourcePreview(quint64 *layerId = nullptr) const;
 
-    // --- Viewports: what a screen or a projector shows. Every layer is rendered inside one, and each
-    // viewport has its own size in pixels and its own output window.
-    int addViewport(const QString &name = {}, QSize size = {}); // at the end of the list
-    bool isViewport(int i) const;
-    quint64 mainViewportId() const;        // the first one: what the preview and the publishers show
-    QList<int> viewports() const;          // indices, in list order
-    int viewportOf(int i) const;           // index of the viewport an item is rendered in (-1: none)
-    void setViewportSize(int i, QSize size);
-    QSize viewportSize(int i) const;
-    // Where the viewport is shown: screen name (empty: the main screen) and 0 hidden / 1 windowed / 2 fullscreen
-    void setViewportOutput(int i, const QString &screen, int mode);
-    void ensureViewport(); // creates the default viewport and adopts the orphan layers (older projects)
+    // --- Compositions: what a screen or a projector shows. Every layer is rendered inside one, and each
+    // composition has its own size in pixels and its own output window.
+    int addComposition(const QString &name = {}, QSize size = {}); // at the end of the list
+    bool isComposition(int i) const;
+    quint64 mainCompositionId() const;        // the first one: what the preview and the publishers show
+    QList<int> compositions() const;          // indices, in list order
+    int compositionOf(int i) const;           // index of the composition an item is rendered in (-1: none)
+    void setCompSize(int i, QSize size);
+    QSize compSize(int i) const;
+    // Where the composition is shown: screen name (empty: the main screen) and 0 hidden / 1 windowed / 2 fullscreen
+    void setCompositionOutput(int i, const QString &screen, int mode);
+    void ensureComposition(); // creates the default composition and adopts the orphan layers (older projects)
 
-    // --- Output: window in which the render thread presents a viewport
-    void setViewportWindow(quint64 viewportId, QWindow *w);
-    void setViewportExposed(quint64 viewportId, bool exposed, QSize pixelSize);
+    // --- Output: window in which the render thread presents a composition
+    void setCompositionWindow(quint64 compositionId, QWindow *w);
+    void setCompositionExposed(quint64 compositionId, bool exposed, QSize pixelSize);
 
     // --- Rendering
     void renderFrame();                  // manual mode only
-    GLuint outputTexture() const;        // last published frame of the main viewport (shared context)
-    GLuint viewportTexture(quint64 viewportId) const;
+    GLuint outputTexture() const;        // last published frame of the main composition (shared context)
+    GLuint compositionTexture(quint64 compositionId) const;
     double fps() const { return m_fps.load(); }
     QImage grabOutput();
     quint64 frameCount() const { return m_frameCount.load(); }
@@ -276,7 +276,7 @@ private:
     void renderLoop();
     void runPendingTasks();
     void frame(double dt);
-    void present(const Layer &viewport, QSize px);
+    void present(const Layer &composition, QSize px);
     void releaseLayer(Layer &l);
     void releaseAll();
     std::shared_ptr<Garbage> detachSource(Layer &l);
@@ -329,7 +329,7 @@ private:
         bool exposed = false;
         QSize pixels;
     };
-    std::map<quint64, OutputSurface> m_outWindows; // by viewport id
+    std::map<quint64, OutputSurface> m_outWindows; // by composition id
 
     GLuint m_quadVao = 0, m_quadVbo = 0;
     GLuint m_meshVao = 0, m_meshVbo = 0, m_meshIbo = 0;

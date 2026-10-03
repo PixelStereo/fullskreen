@@ -133,7 +133,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     statusBar()->addPermanentWidget(m_status);
 
     // --- Output: the render thread presents the frame there itself
-    // One window per viewport, created and removed as the viewports are
+    // One window per composition, created and removed as the compositions are
     syncOutputWindows();
 
     buildMenus();
@@ -568,17 +568,17 @@ void MainWindow::toggleWindowed()
     setOutputMode(m_outputMode == OutputWindowed ? OutputHidden : OutputWindowed);
 }
 
-// A window per viewport: created when a viewport appears, removed with it.
+// A window per composition: created when a composition appears, removed with it.
 void MainWindow::syncOutputWindows()
 {
     QList<quint64> alive;
-    for (int i : m_engine->viewports()) alive << m_engine->layerId(i);
+    for (int i : m_engine->compositions()) alive << m_engine->layerId(i);
     for (quint64 id : alive) {
         if (m_outputs.contains(id)) continue;
         auto *w = new OutputWindow(m_engine, id);
         connect(w, &OutputWindow::closeRequested, this, [this, id] {
             const int i = m_engine->indexOfId(id);
-            if (i >= 0) m_engine->setViewportOutput(i, m_engine->layer(i)->vpScreen, 0);
+            if (i >= 0) m_engine->setCompositionOutput(i, m_engine->layer(i)->compScreen, 0);
             syncOutputWindows();
         });
         // Show-control shortcuts stay active while an output window has the focus
@@ -595,24 +595,24 @@ void MainWindow::syncOutputWindows()
         it.value()->deleteLater();
         it = m_outputs.erase(it);
     }
-    for (int i : m_engine->viewports()) applyViewportOutput(i);
+    for (int i : m_engine->compositions()) applyCompositionOutput(i);
 }
 
-// Shows or hides a viewport's window, where its own settings say
-void MainWindow::applyViewportOutput(int viewport)
+// Shows or hides a composition's window, where its own settings say
+void MainWindow::applyCompositionOutput(int composition)
 {
-    const quint64 id = m_engine->layerId(viewport);
+    const quint64 id = m_engine->layerId(composition);
     OutputWindow *w = m_outputs.value(id);
     if (!w) return;
     QString screenName;
     int mode = 0;
     {
         Engine::Lock lk(&m_engine->mutex());
-        Layer *l = m_engine->layer(viewport);
+        Layer *l = m_engine->layer(composition);
         if (!l) return;
         w->setTitle(QStringLiteral("Fulskrin — %1").arg(l->name));
-        screenName = l->vpScreen;
-        mode = l->vpMode;
+        screenName = l->compScreen;
+        mode = l->compMode;
     }
     if (mode == 0) {
         w->hideOutput();
@@ -630,18 +630,18 @@ void MainWindow::applyViewportOutput(int viewport)
     }
 }
 
-// The viewport the output commands act on: the one holding the selected layer, else the first
-int MainWindow::currentViewport() const
+// The composition the output commands act on: the one holding the selected layer, else the first
+int MainWindow::currentComposition() const
 {
-    const int v = m_engine->viewportOf(currentLayer());
+    const int v = m_engine->compositionOf(currentLayer());
     if (v >= 0) return v;
-    const QList<int> all = m_engine->viewports();
+    const QList<int> all = m_engine->compositions();
     return all.isEmpty() ? -1 : all.first();
 }
 
 void MainWindow::setOutputMode(OutputMode mode)
 {
-    const int v = currentViewport();
+    const int v = currentComposition();
     if (v < 0) return;
     m_outputMode = mode;
     m_fullscreenAction->setChecked(mode == OutputFullscreen);
@@ -649,8 +649,8 @@ void MainWindow::setOutputMode(OutputMode mode)
     m_master->setOutputMode(int(mode));
     m_autosaveDone = false; // output state is part of the session to restore
     QScreen *sc = selectedScreen();
-    m_engine->setViewportOutput(v, sc ? sc->name() : QString(), int(mode));
-    applyViewportOutput(v);
+    m_engine->setCompositionOutput(v, sc ? sc->name() : QString(), int(mode));
+    applyCompositionOutput(v);
     if (mode == OutputHidden) {
         activateWindow();
         return;

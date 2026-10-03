@@ -33,21 +33,21 @@ static void markMissing(Layer &l, SourceType type, const QString &path, const QS
     l.error = missingMessage(path, err);
 }
 
-// A project always has a viewport. One written before they existed has none: a default viewport is created
+// A project always has a composition. One written before they existed has none: a default composition is created
 // and everything that was at the root moves into it, which is exactly what used to be rendered.
-void Engine::ensureViewport()
+void Engine::ensureComposition()
 {
     bool has = false;
     {
         Lock lk(&m_mutex);
-        for (const auto &l : m_layers) has |= l->isViewport;
+        for (const auto &l : m_layers) has |= l->isComposition;
     }
     if (has) {
         Lock lk(&m_mutex);
         normalizeLocked();
         return;
     }
-    const int at = addViewport(QStringLiteral("Viewport 1"), m_compSize);
+    const int at = addComposition(QStringLiteral("Composition 1"), m_compSize);
     Lock lk(&m_mutex);
     const quint64 id = m_layers[size_t(at)]->id;
     for (auto &l : m_layers)
@@ -80,7 +80,7 @@ void Engine::newProject()
         runGl([this, g] { releaseLayer(*g->layer); }, false);
     }
     setCompositionSize(QSize(1920, 1080));
-    addViewport(); // every project has at least one: what the screen shows
+    addComposition(); // every project has at least one: what the screen shows
     emit layersChanged();
     emit memoriesChanged();
 }
@@ -113,12 +113,12 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         o["group"] = true;
         o["collapsed"] = l.collapsed;
     }
-    if (l.isViewport) {
-        o["viewport"] = true;
-        o["width"] = l.vpWidth;
-        o["height"] = l.vpHeight;
-        o["screen"] = l.vpScreen;
-        o["outputMode"] = l.vpMode;
+    if (l.isComposition) {
+        o["composition"] = true;
+        o["width"] = l.compWidth;
+        o["height"] = l.compHeight;
+        o["screen"] = l.compScreen;
+        o["outputMode"] = l.compMode;
     }
     o["name"] = l.name;
     o["visible"] = l.visible;
@@ -210,13 +210,13 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         l->muted = o.value("muted").toBool(false);
         l->locked = o.value("locked").toBool(false);
         l->isGroup = o.value("group").toBool(false);
-        l->isViewport = o.value("viewport").toBool(false);
-        if (l->isViewport) {
+        l->isComposition = o.value("composition").toBool(false);
+        if (l->isComposition) {
             l->isGroup = true;
-            l->vpWidth = std::clamp(o.value("width").toInt(m_compSize.width()), 1, 16384);
-            l->vpHeight = std::clamp(o.value("height").toInt(m_compSize.height()), 1, 16384);
-            l->vpScreen = o.value("screen").toString();
-            l->vpMode = std::clamp(o.value("outputMode").toInt(0), 0, 2);
+            l->compWidth = std::clamp(o.value("width").toInt(m_compSize.width()), 1, 16384);
+            l->compHeight = std::clamp(o.value("height").toInt(m_compSize.height()), 1, 16384);
+            l->compScreen = o.value("screen").toString();
+            l->compMode = std::clamp(o.value("outputMode").toInt(0), 0, 2);
         }
         l->collapsed = o.value("collapsed").toBool(false);
         l->effectsEnabled = o.value("effectsEnabled").toBool(true);
@@ -373,7 +373,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         Lock lk(&m_mutex);
         normalizeLocked();
     }
-    ensureViewport(); // a project written before viewports existed: everything goes into a default one
+    ensureComposition(); // a project written before compositions existed: everything goes into a default one
     fixLayerReferences(&warnings);
     QStringList bin;
     for (const QJsonValue &v : root.value("bin").toArray()) bin << resolvePath(v.toObject(), dir);

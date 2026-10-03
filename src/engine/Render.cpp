@@ -89,7 +89,7 @@ void Engine::renderPass(const IsfRenderContext &rc)
             if (si >= 0) render(size_t(si));
         }
         if (l.isGroup) {
-            // Children of a viewport or a group, in list order (the list is normalized, so that is draw order)
+            // Children of a composition or a group, in list order (the list is normalized, so that is draw order)
             std::vector<Layer *> members;
             for (size_t k = 0; k < n; ++k)
                 if (m_layers[k]->parent == l.id) {
@@ -207,7 +207,7 @@ void Engine::renderGroup(Layer &g, const std::vector<Layer *> &members, const Is
 {
     g.finalTex = 0;
     g.rawTex = 0;
-    const QSize size = g.isViewport ? g.viewportSize() : m_compSize;
+    const QSize size = g.isComposition ? g.compSize() : m_compSize;
     g.groupTarget.ensure(size.width(), size.height());
     g.groupTarget.clear(0, 0, 0, 0);
     compositeLayers(g.groupTarget, members);
@@ -245,7 +245,7 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
     f->glBindVertexArray(0);
 }
 
-// Each viewport carries its picture to its own output: the master level and the blackout are applied
+// Each composition carries its picture to its own output: the master level and the blackout are applied
 // there, into a double buffer the interface and the publishers read from.
 void Engine::composite()
 {
@@ -253,9 +253,9 @@ void Engine::composite()
     const double master = m_masterLevel.load() * m_blackLevel.load();
     for (auto &lp : m_layers) {
         Layer &v = *lp;
-        if (!v.isViewport) continue;
-        const QSize size = v.viewportSize();
-        RenderTarget &out = v.vpOut[v.vpBack];
+        if (!v.isComposition) continue;
+        const QSize size = v.compSize();
+        RenderTarget &out = v.compOut[v.compBack];
         out.ensure(size.width(), size.height());
         out.clear(0, 0, 0, 1);
         if (v.visible && v.finalTex) {
@@ -350,11 +350,11 @@ void Engine::frame(double dt)
 
     if (publishChanged || !m_publishInit) applyPublishing();
     {
-        // Publishing and the interface preview show the main viewport
+        // Publishing and the interface preview show the main composition
         Lock lk(&m_mutex);
         for (auto &l : m_layers)
-            if (l->isViewport) {
-                publishFrame(l->vpOut[l->vpBack]);
+            if (l->isComposition) {
+                publishFrame(l->compOut[l->compBack]);
                 break;
             }
     }
@@ -366,9 +366,9 @@ void Engine::frame(double dt)
     {
         Lock lk(&m_mutex);
         for (auto &l : m_layers)
-            if (l->isViewport) {
-                l->vpPublished = l->vpBack;
-                l->vpBack = 1 - l->vpBack;
+            if (l->isComposition) {
+                l->compPublished = l->compBack;
+                l->compBack = 1 - l->compBack;
             }
     }
     ++m_frameCount;
@@ -414,12 +414,12 @@ void Engine::renderFrame()
     if (!m_context->makeCurrent(m_surface)) return;
     m_currentSurface = m_surface;
     frame(nextDt());
-    // Manual mode: the viewports that have a window are presented in turn
+    // Manual mode: the compositions that have a window are presented in turn
     std::vector<std::pair<Layer *, OutputSurface>> shown;
     {
         Lock lk(&m_mutex);
         for (auto &l : m_layers) {
-            if (!l->isViewport) continue;
+            if (!l->isComposition) continue;
             auto it = m_outWindows.find(l->id);
             if (it != m_outWindows.end() && it->second.window && it->second.exposed)
                 shown.push_back({l.get(), it->second});
@@ -445,8 +445,8 @@ QImage Engine::grabOutput()
         Lock lk(&m_mutex);
         const RenderTarget *main = nullptr;
         for (auto &l : m_layers)
-            if (l->isViewport) {
-                main = &l->vpOut[l->vpPublished.load()];
+            if (l->isComposition) {
+                main = &l->compOut[l->compPublished.load()];
                 break;
             }
         if (!main || !main->fbo) return;

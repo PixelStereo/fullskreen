@@ -10,18 +10,18 @@
 #include "MacPresentation.h"
 #endif
 
-OutputWindow::OutputWindow(Engine *engine, quint64 viewportId) : m_engine(engine), m_viewportId(viewportId)
+OutputWindow::OutputWindow(Engine *engine, quint64 compositionId) : m_engine(engine), m_compositionId(compositionId)
 {
     setSurfaceType(QSurface::OpenGLSurface);
     setFormat(QSurfaceFormat::defaultFormat());
     setTitle(QStringLiteral("Fulskrin — Output"));
     create();
-    m_engine->setViewportWindow(m_viewportId, this);
+    m_engine->setCompositionWindow(m_compositionId, this);
 }
 
 OutputWindow::~OutputWindow()
 {
-    m_engine->setViewportWindow(m_viewportId, nullptr);
+    m_engine->setCompositionWindow(m_compositionId, nullptr);
 }
 
 void OutputWindow::sync()
@@ -31,7 +31,7 @@ void OutputWindow::sync()
     if (exposed == m_lastExposed && px == m_lastSize) return;
     m_lastExposed = exposed;
     m_lastSize = px;
-    m_engine->setViewportExposed(m_viewportId, exposed, px);
+    m_engine->setCompositionExposed(m_compositionId, exposed, px);
 }
 
 void OutputWindow::showOn(QScreen *screen, bool fullscreen)
@@ -73,7 +73,7 @@ void OutputWindow::hideOutput()
     // The render thread stops using the window before it is hidden.
     if (m_lastExposed) {
         m_lastExposed = false;
-        m_engine->setViewportExposed(m_viewportId, false, m_lastSize);
+        m_engine->setCompositionExposed(m_compositionId, false, m_lastSize);
     }
     hide();
 #ifdef Q_OS_MACOS

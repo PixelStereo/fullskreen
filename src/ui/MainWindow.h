@@ -86,10 +86,10 @@ private:
     void setInOutAtPosition(bool in);
     void relinkMedia(const QString &from, const QString &to);
 
-    void setOutputMode(OutputMode mode); // on the viewport of the selected layer
-    int currentViewport() const;         // index of that viewport (the main one by default)
-    void syncOutputWindows();            // a window per viewport, shown as each viewport asks
-    void applyViewportOutput(int viewport);
+    void setOutputMode(OutputMode mode); // on the composition of the selected layer
+    int currentComposition() const;         // index of that composition (the main one by default)
+    void syncOutputWindows();            // a window per composition, shown as each composition asks
+    void applyCompositionOutput(int composition);
     void toggleFullscreen();
     void toggleWindowed();
     QScreen *selectedScreen() const;
@@ -111,7 +111,7 @@ private:
     MemoryPanel *m_memories = nullptr;
     QTabWidget *m_leftTabs = nullptr;
     QTabWidget *m_tabs = nullptr;
-    QHash<quint64, OutputWindow *> m_outputs; // one window per viewport
+    QHash<quint64, OutputWindow *> m_outputs; // one window per composition
     QLabel *m_status = nullptr;
     OscServer *m_osc = nullptr;
     QThread *m_oscThread = nullptr;

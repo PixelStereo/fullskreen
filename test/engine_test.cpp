@@ -218,32 +218,32 @@ int main(int argc, char **argv)
         CHECK(e.layerCount() == 0);
     }
 
-    // 4b. Structure helpers (viewports, groups, layers)
+    // 4b. Structure helpers (compositions, groups, layers)
     {
         auto item = [](quint64 id, quint64 parent) { return TreeNode{id, parent, TreeNode::Item, false}; };
         auto group = [](quint64 id, quint64 parent) { return TreeNode{id, parent, TreeNode::Group, true}; };
-        auto viewport = [](quint64 id) { return TreeNode{id, 0, TreeNode::Viewport, true}; };
-        // Viewport 9 holds layer 1, group 2 (with 3 and 5) and layer 4
-        LayerTree t = {viewport(9), item(1, 9), group(2, 9), item(3, 2), item(4, 9), item(5, 2)};
+        auto composition = [](quint64 id) { return TreeNode{id, 0, TreeNode::Composition, true}; };
+        // Composition 9 holds layer 1, group 2 (with 3 and 5) and layer 4
+        LayerTree t = {composition(9), item(1, 9), group(2, 9), item(3, 2), item(4, 9), item(5, 2)};
         LayerTree n = tree::normalized(t);
         CHECK(n.size() == 6 && n[0].id == 9 && n[1].id == 1 && n[2].id == 2 && n[3].id == 3 && n[4].id == 5 &&
               n[5].id == 4); // the contents of a group follow it
         LayerTree in = tree::intoGroup(n, {1, 4}, 2);
         CHECK(in[0].id == 9 && in.back().id == 4 && in.back().parent == 2 && in[3].id == 1 && in[3].parent == 2);
-        LayerTree out = tree::moved(in, {3}, 0, 9); // to the end of the viewport
+        LayerTree out = tree::moved(in, {3}, 0, 9); // to the end of the composition
         CHECK(out.back().id == 3 && out.back().parent == 9);
         LayerTree un = tree::ungrouped(in, 2);
-        CHECK(un.back().id == 2 && un[1].id == 3 && un[1].parent == 9); // the layers go back into the viewport
+        CHECK(un.back().id == 2 && un[1].id == 3 && un[1].parent == 9); // the layers go back into the composition
         LayerTree g = tree::moved(n, {2}, 1, 9); // a group moves with its layers
         CHECK(g[0].id == 9 && g[1].id == 2 && g[2].id == 3 && g[3].id == 5 && g[4].id == 1);
-        // A group never goes inside a group, a viewport never goes inside anything
-        LayerTree bad = {viewport(9), group(2, 9), group(6, 2), viewport(7)};
+        // A group never goes inside a group, a composition never goes inside anything
+        LayerTree bad = {composition(9), group(2, 9), group(6, 2), composition(7)};
         bad[3].parent = 9;
         const LayerTree fixed = tree::normalized(bad);
         CHECK(tree::indexOf(fixed, 6) >= 0 && fixed[size_t(tree::indexOf(fixed, 6))].parent == 9);
         CHECK(fixed[size_t(tree::indexOf(fixed, 7))].parent == 0);
-        // Everything knows which viewport renders it
-        CHECK(tree::viewportOf(n, 3) == 9 && tree::viewportOf(n, 9) == 9);
+        // Everything knows which composition renders it
+        CHECK(tree::compositionOf(n, 3) == 9 && tree::compositionOf(n, 9) == 9);
     }
 
     // 4c. Groups, roi, color, effects switch, lock, blackout (manual rendering)

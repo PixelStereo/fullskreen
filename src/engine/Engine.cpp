@@ -179,7 +179,7 @@ bool Engine::initialize(QString *err)
 
     m_library.scan();
     m_clock.start();
-    ensureViewport(); // a composition always has one viewport: what the screen shows
+    ensureComposition(); // a composition always has one composition: what the screen shows
     m_lastNs = m_clock.nsecsElapsed();
     m_initialized = true;
     return true;
@@ -286,13 +286,13 @@ void Engine::renderLoop()
 
         frame(nextDt());
 
-        // One window per viewport: each is made current in turn and swapped (each swap waits for its vsync)
+        // One window per composition: each is made current in turn and swapped (each swap waits for its vsync)
         bool presented = false;
         std::vector<std::pair<Layer *, OutputSurface>> shown;
         {
             Lock lk(&m_mutex);
             for (auto &l : m_layers) {
-                if (!l->isViewport) continue;
+                if (!l->isComposition) continue;
                 auto it = m_outWindows.find(l->id);
                 if (it != m_outWindows.end() && it->second.window && it->second.exposed)
                     shown.push_back({l.get(), it->second});
@@ -361,27 +361,27 @@ void Engine::releaseAll()
 // ---------------------------------------------------------------------------
 // Output window
 // ---------------------------------------------------------------------------
-void Engine::setViewportWindow(quint64 viewportId, QWindow *w)
+void Engine::setCompositionWindow(quint64 compositionId, QWindow *w)
 {
-    runGl([this, viewportId, w] {
-        OutputSurface &o = m_outWindows[viewportId];
+    runGl([this, compositionId, w] {
+        OutputSurface &o = m_outWindows[compositionId];
         if (m_threaded && o.window && m_currentSurface == o.window && o.window != w) {
             m_context->makeCurrent(m_surface);
             m_currentSurface = m_surface;
         }
         o.window = w;
         if (!w) {
-            m_outWindows.erase(viewportId);
+            m_outWindows.erase(compositionId);
             return;
         }
         o.exposed = false;
     });
 }
 
-void Engine::setViewportExposed(quint64 viewportId, bool exposed, QSize pixelSize)
+void Engine::setCompositionExposed(quint64 compositionId, bool exposed, QSize pixelSize)
 {
-    runGl([this, viewportId, exposed, pixelSize] {
-        auto it = m_outWindows.find(viewportId);
+    runGl([this, compositionId, exposed, pixelSize] {
+        auto it = m_outWindows.find(compositionId);
         if (it == m_outWindows.end()) return;
         if (!exposed && m_threaded && m_currentSurface == it->second.window && it->second.window) {
             m_context->makeCurrent(m_surface);
@@ -392,8 +392,8 @@ void Engine::setViewportExposed(quint64 viewportId, bool exposed, QSize pixelSiz
     });
 }
 
-// Draws a viewport's last finished picture into the window that is current
-void Engine::present(const Layer &viewport, QSize px)
+// Draws a composition's last finished picture into the window that is current
+void Engine::present(const Layer &composition, QSize px)
 {
     auto f = gl();
     f->glBindFramebuffer(GL_FRAMEBUFFER, m_context->defaultFramebufferObject());
@@ -403,29 +403,29 @@ void Engine::present(const Layer &viewport, QSize px)
     f->glClear(GL_COLOR_BUFFER_BIT);
     f->glUseProgram(m_presentProgram);
     f->glActiveTexture(GL_TEXTURE0);
-    f->glBindTexture(GL_TEXTURE_2D, viewport.vpOut[viewport.vpPublished.load()].tex);
+    f->glBindTexture(GL_TEXTURE_2D, composition.compOut[composition.compPublished.load()].tex);
     f->glUniform1i(m_presentTexLoc, 0);
     drawQuad();
 }
 
-quint64 Engine::mainViewportId() const
+quint64 Engine::mainCompositionId() const
 {
     Lock lk(&m_mutex);
     for (const auto &l : m_layers)
-        if (l->isViewport) return l->id;
+        if (l->isComposition) return l->id;
     return 0;
 }
 
-GLuint Engine::viewportTexture(quint64 viewportId) const
+GLuint Engine::compositionTexture(quint64 compositionId) const
 {
     Lock lk(&m_mutex);
     for (const auto &l : m_layers)
-        if (l->isViewport && (l->id == viewportId || !viewportId))
-            return l->vpOut[l->vpPublished.load()].tex;
+        if (l->isComposition && (l->id == compositionId || !compositionId))
+            return l->compOut[l->compPublished.load()].tex;
     return 0;
 }
 
-GLuint Engine::outputTexture() const { return viewportTexture(0); }
+GLuint Engine::outputTexture() const { return compositionTexture(0); }
 
 // ---------------------------------------------------------------------------
 // Composition size, master and blackout, source preview
