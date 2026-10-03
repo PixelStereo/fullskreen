@@ -791,6 +791,30 @@ int main(int argc, char **argv)
         }
         CHECK(e.saveProject(tmp + "/viewports2.fulskrin", {}, &err));
         CHECK(saved.value("layers") == readJson(tmp + "/viewports2.fulskrin").value("layers"));
+        // A hidden outer group silences what is inside its inner groups too
+        {
+            const quint64 in2 = e.layerId(e.addGroup("Inner 2", e.layerCount()));
+            e.setStructure(tree::intoGroup(e.structure(), {in2}, outer));
+            e.setStructure(tree::intoGroup(e.structure(), {lid}, in2));
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(outer))->visible = false;
+        }
+        e.renderFrame();
+        CHECK(!e.layer(e.indexOfId(lid))->parentVisible);
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(outer))->visible = true;
+        }
+        e.renderFrame();
+        CHECK(e.layer(e.indexOfId(lid))->parentVisible);
+        // Undoing the deletion of the first viewport puts it back first
+        {
+            const QJsonObject first = e.layerJson(0);
+            e.removeLayer(0);
+            CHECK(e.layerId(0) == vp2);
+            e.insertLayerJson(0, first);
+            CHECK(e.layerId(0) == vp1 && e.layerId(1) == vp2);
+        }
         // A viewport can go as long as another one stays
         e.removeLayer(e.indexOfId(vp2));
         CHECK(e.viewports().size() == 1);

@@ -177,4 +177,19 @@ private:
     bool m_first = true;
 };
 
+// An item at the top of the list shown in a viewport or not (by ids: the list may change in between)
+class SetShownIn : public QUndoCommand
+{
+public:
+    SetShownIn(Engine *e, quint64 layer, quint64 viewport, bool shown, const QString &text);
+    void undo() override { apply(!m_shown); }
+    void redo() override { apply(m_shown); }
+
+private:
+    void apply(bool shown);
+    Engine *m_e;
+    quint64 m_layer, m_viewport;
+    bool m_shown;
+};
+
 } // namespace cmd

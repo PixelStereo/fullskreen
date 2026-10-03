@@ -21,9 +21,11 @@ class QButtonGroup;
 class RoiEditor;
 class ColorEditor;
 class QComboBox;
+class ViewportOutputPanel;
 
-// Inspector for the selected layer or group, in sub-tabs: Source (drop zone, transport, sound, generator parameters,
-// roi), Color (added / removed), Spatial (mapping), Effects (ISF chain), Compositing (opacity, blend).
+// Inspector for the selected layer, group or viewport, in sub-tabs: Source (drop zone, transport, sound, generator
+// parameters, roi), Color (added / removed), Spatial (mapping), Effects (ISF chain), Compositing (opacity, blend,
+// the viewports it appears in), and for a viewport, Output (size, screen, publishing).
 // All edits go through the undo stack. A locked layer shows its settings without allowing edits
 // (the transport stays available). A click on a parameter's name resets it.
 class LayerInspector : public QWidget
@@ -43,6 +45,7 @@ signals:
     void fileDropped(const QString &path); // media or ISF dropped on the Source tab: load it into the layer
     void setInOutRequested(bool in);       // in / out point at the current position
     void projectEdited();                  // saved interface state of the layer changed (not undoable)
+    void kindChanged(const QString &kind); // "Layer", "Group" or "Viewport": the title of the tab
 
 private:
     QWidget *buildSource(const LayerSnapshot &s);
@@ -77,6 +80,7 @@ private:
     QPointer<SliderField> m_temp, m_tint;
     bool m_previewing = false;
     QPointer<QProgressBar> m_meter;
+    QPointer<ViewportOutputPanel> m_output;
     QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY;
     bool m_scaleLinked = true;
 };

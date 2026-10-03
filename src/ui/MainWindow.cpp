@@ -72,7 +72,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     QSettings s;
     m_engine->library().setUserFolders(s.value("isf/folders").toStringList());
     m_engine->library().scan();
-    m_screenName = s.value("output/screen").toString();
 
     // --- Top: media bin | preview and mapping | Layer / Master tabs
     m_bin = new MediaBin(m_engine);
@@ -133,13 +132,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_status = new QLabel;
     statusBar()->addPermanentWidget(m_status);
 
-    // --- Output: the render thread presents the frame there itself
-    m_output = new OutputWindow(m_engine);
-    connect(m_output, &OutputWindow::closeRequested, this, [this] { setOutputMode(OutputHidden); });
-    // When the output window has focus (click on the projector screen, or fullscreen on the main screen),
-    // show-control shortcuts remain active.
-    connect(m_output, &OutputWindow::keyPressed, this, [this](int key, Qt::KeyboardModifiers mods) { handleControlKey(key, mods); });
-
     buildMenus();
     m_engine->setDefaultPlayMode(SettingsPanel::defaultPlayMode());
 
@@ -165,8 +157,9 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     });
     connect(m_layerTable, &LayerTable::removeClicked, this, &MainWindow::removeCurrentLayer);
     connect(m_layerTable, &LayerTable::groupClicked, this, &MainWindow::createGroup);
+    connect(m_layerTable, &LayerTable::viewportClicked, this, &MainWindow::addViewport);
     connect(m_layerTable, &LayerTable::lockToggled, this, [this](int row) {
-        if (m_engine->groupIndexOf(row) >= 0 && m_engine->isLocked(m_engine->groupIndexOf(row))) {
+        if (m_engine->groupIndexOf(row) >= 0 && m_engine->isLocked(m_engine->groupIndexOf(row))) { // any group above
             statusBar()->showMessage(QStringLiteral("Locked by its group: unlock the group first."), 4000);
             return;
         }
@@ -184,7 +177,9 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         }
         markDirty(); // saved in the project, not an undoable edit
         // The selection does not stay on a hidden row
-        if (m_engine->groupIndexOf(currentLayer()) == row) selectLayer(row);
+        bool inside = false;
+        for (int g = m_engine->groupIndexOf(currentLayer()); g >= 0 && !inside; g = m_engine->groupIndexOf(g)) inside = g == row;
+        if (inside) selectLayer(row);
         else refreshLayerList();
     });
     connect(m_layerTable, &LayerTable::renamed, this, [this](int row, const QString &name) {
@@ -225,27 +220,14 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         QSignalBlocker b(m_blackoutAction);
         m_blackoutAction->setChecked(on);
     });
-    connect(m_master, &MasterPanel::screenChosen, this, &MainWindow::chooseScreen);
-    connect(m_master, &MasterPanel::fullscreenRequested, this, [this] { setOutputMode(OutputFullscreen); });
-    connect(m_master, &MasterPanel::windowedRequested, this, [this] { setOutputMode(OutputWindowed); });
-    connect(m_master, &MasterPanel::hideRequested, this, [this] { setOutputMode(OutputHidden); });
     connect(m_master, &MasterPanel::compositionEdited, this, &MainWindow::markDirty);
-    connect(m_master, &MasterPanel::publishEdited, this, &MainWindow::markDirty);
     connect(m_master, &MasterPanel::audioEdited, this, &MainWindow::markDirty);
-    connect(m_master, &MasterPanel::fitCompositionToScreenRequested, this, [this] {
-        if (QScreen *sc = selectedScreen()) {
-            const QSize px = sc->geometry().size() * sc->devicePixelRatio();
-            if (px == m_engine->compositionSize()) return;
-            m_engine->setCompositionSize(px);
-            markDirty();
-            statusBar()->showMessage(QStringLiteral("Composition: %1 × %2").arg(px.width()).arg(px.height()), 4000);
-        }
-    });
 
     // --- General sync
     connect(m_view, &MappingView::layerPicked, this, &MainWindow::selectLayer);
     connect(m_inspector, &LayerInspector::layerChanged, this, &MainWindow::refreshLayerList);
     connect(m_inspector, &LayerInspector::projectEdited, this, &MainWindow::markDirty);
+    connect(m_inspector, &LayerInspector::kindChanged, this, [this](const QString &k) { m_tabs->setTabText(0, k); });
     connect(m_inspector, &LayerInspector::mappingChanged, m_view, qOverload<>(&QWidget::update));
     connect(m_inspector, &LayerInspector::fileDropped, this, [this](const QString &p) { loadIntoLayer(m_inspector->layerIndex(), p); });
     // The accent color is a machine preference: applied at once, everywhere
@@ -255,6 +237,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         update();
     });
     connect(m_engine, &Engine::layersChanged, this, &MainWindow::refreshLayerList);
+    connect(m_engine, &Engine::layersChanged, this, &MainWindow::syncOutputs); // windows follow the viewports
     connect(m_engine, &Engine::compositionSizeChanged, this, [this] { m_view->update(); });
     // The preview follows rendering (at most one update per rendered frame)
     connect(m_engine, &Engine::frameRendered, this, [this] {
@@ -278,10 +261,15 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     auto *space = new QShortcut(QKeySequence(Qt::Key_Space), this);
     connect(space, &QShortcut::activated, this, &MainWindow::togglePlayCurrent);
 
-    connect(qApp, &QGuiApplication::screenAdded, this, &MainWindow::buildOutputScreensMenu);
-    connect(qApp, &QGuiApplication::screenRemoved, this, [this] {
-        buildOutputScreensMenu();
-        if (m_outputMode != OutputHidden) setOutputMode(m_outputMode); // reposition
+    // A screen plugged in or out: the outputs go back to their screens (or to another one meanwhile),
+    // and the Output tab lists the screens again
+    auto screensChanged = [this] {
+        syncOutputs();
+        m_inspectorTimer.start();
+    };
+    connect(qApp, &QGuiApplication::screenAdded, this, screensChanged);
+    connect(qApp, &QGuiApplication::screenRemoved, this, [this, screensChanged] {
+        QTimer::singleShot(0, this, screensChanged); // once the screen is gone from the list
     });
 
     // UI: status and transport. Rendering itself does not depend on the UI.
@@ -301,6 +289,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_autosaveTimer.start();
 
     refreshLayerList();
+    syncOutputs();
     updateTitle();
     startOsc();
     restoreGeometry(s.value("ui/geometry").toByteArray());
@@ -318,7 +307,7 @@ MainWindow::~MainWindow()
     m_statusTimer.stop();
     m_renderTimer.stop();
     m_autosaveTimer.stop();
-    delete m_output;
+    for (auto &[id, o] : m_outputs) delete o.window;
 }
 
 // ---------------------------------------------------------------------------
@@ -352,8 +341,8 @@ bool MainWindow::handleControlKey(int key, Qt::KeyboardModifiers mods)
     const bool ctrl = mods & Qt::ControlModifier;
     const bool shift = mods & Qt::ShiftModifier;
     if (ctrl && key == Qt::Key_B) setBlackout(!m_master->isBlackout());
-    else if (ctrl && shift && key == Qt::Key_F) toggleWindowed();
-    else if (ctrl && key == Qt::Key_F) toggleFullscreen();
+    else if (ctrl && shift && key == Qt::Key_F) toggleAllOutputs(1);
+    else if (ctrl && key == Qt::Key_F) toggleAllOutputs(2);
     else if (!ctrl && key == Qt::Key_Space) togglePlayCurrent();
     else return false;
     return true;
@@ -452,33 +441,36 @@ void MainWindow::buildMenus()
     layer->addAction(QStringLiteral("Play / Pause (Space)"), this, &MainWindow::togglePlayCurrent);
 
     QMenu *comp = menuBar()->addMenu(QStringLiteral("C&omposition"));
-    comp->addAction(QStringLiteral("Composition (Master tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
+    comp->addAction(QStringLiteral("Composition Size (Master tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
+    comp->addAction(QStringLiteral("New Viewport"), this, &MainWindow::addViewport);
+    comp->addSeparator();
     QAction *outlines = comp->addAction(QStringLiteral("Show Outlines of Other Layers"));
     outlines->setCheckable(true);
     outlines->setChecked(true);
     connect(outlines, &QAction::toggled, m_view, &MappingView::setShowAllOutlines);
 
     QMenu *out = menuBar()->addMenu(QStringLiteral("&Output"));
-    m_fullscreenAction = out->addAction(QStringLiteral("Fullscreen"));
+    // Every viewport at once; each one also has its own buttons, in its Output tab
+    m_fullscreenAction = out->addAction(QStringLiteral("All Viewports Fullscreen"));
     m_fullscreenAction->setCheckable(true);
     m_fullscreenAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F));
     m_fullscreenAction->setShortcutContext(Qt::ApplicationShortcut);
-    connect(m_fullscreenAction, &QAction::triggered, this, [this] { toggleFullscreen(); });
-    m_windowedAction = out->addAction(QStringLiteral("Windowed Output"));
+    connect(m_fullscreenAction, &QAction::triggered, this, [this] { toggleAllOutputs(2); });
+    m_windowedAction = out->addAction(QStringLiteral("All Viewports in Windows"));
     m_windowedAction->setCheckable(true);
     m_windowedAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
     m_windowedAction->setShortcutContext(Qt::ApplicationShortcut);
-    connect(m_windowedAction, &QAction::triggered, this, [this] { toggleWindowed(); });
-    out->addAction(QStringLiteral("Hide Output"), this, [this] { setOutputMode(OutputHidden); });
+    connect(m_windowedAction, &QAction::triggered, this, [this] { toggleAllOutputs(1); });
+    out->addAction(QStringLiteral("Hide All Viewports"), this, [this] {
+        m_modesBefore.clear();
+        setAllOutputs({}, 0);
+    });
     out->addSeparator();
     m_blackoutAction = out->addAction(QStringLiteral("Blackout (Fade)"));
     m_blackoutAction->setCheckable(true);
     m_blackoutAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_B));
     m_blackoutAction->setShortcutContext(Qt::ApplicationShortcut);
     connect(m_blackoutAction, &QAction::toggled, this, &MainWindow::setBlackout);
-    out->addSeparator();
-    m_screensMenu = out->addMenu(QStringLiteral("Output Screen"));
-    buildOutputScreensMenu();
 
     QMenu *lib = menuBar()->addMenu(QStringLiteral("ISF &Library"));
     lib->addAction(QStringLiteral("Add ISF Folder…"), this, &MainWindow::addIsfFolder);
@@ -515,90 +507,124 @@ void MainWindow::buildMenus()
 // Output
 // ---------------------------------------------------------------------------
 
-void MainWindow::buildOutputScreensMenu()
+void MainWindow::syncOutputs()
 {
-    m_screensMenu->clear();
-    delete m_screenGroup;
-    m_screenGroup = new QActionGroup(this);
-    const auto screens = QGuiApplication::screens();
-    bool found = false;
-    for (QScreen *sc : screens) found |= sc->name() == m_screenName;
-    if (!found) {
-        // Default: the first screen that is not the main screen (projector), otherwise the main screen
-        QScreen *primary = QGuiApplication::primaryScreen();
-        m_screenName = primary ? primary->name() : QString();
-        for (QScreen *sc : screens)
-            if (sc != primary) {
-                m_screenName = sc->name();
-                break;
-            }
+    struct Want {
+        quint64 id;
+        QString name, screen;
+        int mode;
+    };
+    std::vector<Want> want;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        for (int i : m_engine->viewports())
+            if (const Layer *l = m_engine->layer(i)) want.push_back({l->id, l->name, l->vpScreen, l->vpMode});
     }
-    QList<QPair<QString, QString>> list;
-    for (QScreen *sc : screens) {
-        const QSize px = sc->geometry().size() * sc->devicePixelRatio();
-        const QString label = QStringLiteral("%1  (%2 × %3)%4")
-                                  .arg(sc->name())
-                                  .arg(px.width())
-                                  .arg(px.height())
-                                  .arg(sc == QGuiApplication::primaryScreen() ? QStringLiteral(" — main") : QString());
-        list << qMakePair(label, sc->name());
-        QAction *a = m_screensMenu->addAction(label);
-        a->setCheckable(true);
-        a->setChecked(sc->name() == m_screenName);
-        m_screenGroup->addAction(a);
-        connect(a, &QAction::triggered, this, [this, name = sc->name()] { chooseScreen(name); });
+    // Viewports gone: their window goes (once off screen)
+    for (auto it = m_outputs.begin(); it != m_outputs.end();) {
+        const quint64 id = it->first;
+        if (std::none_of(want.begin(), want.end(), [id](const Want &w) { return w.id == id; })) {
+            it->second.window->dispose();
+            it = m_outputs.erase(it);
+        } else {
+            ++it;
+        }
     }
-    m_master->setScreens(list, m_screenName);
+    bool changed = false, front = false;
+    for (const Want &w : want) {
+        Output &o = m_outputs[w.id];
+        if (!o.window) {
+            o.window = new OutputWindow(m_engine, w.id);
+            const quint64 id = w.id;
+            connect(o.window, &OutputWindow::closeRequested, this, [this, id] {
+                const int i = m_engine->indexOfId(id);
+                Engine::Lock lk(&m_engine->mutex());
+                if (const Layer *l = m_engine->layer(i)) m_engine->setViewportOutput(i, l->vpScreen, 0);
+            });
+            // With the output window in front (a click on the projector, or fullscreen on the main screen),
+            // the show-control shortcuts still work
+            connect(o.window, &OutputWindow::keyPressed, this,
+                    [this](int key, Qt::KeyboardModifiers mods) { handleControlKey(key, mods); });
+        }
+        const QString title = QStringLiteral("Fulskrin — %1").arg(w.name);
+        if (o.title != title) o.window->setTitle(o.title = title);
+        QScreen *sc = OutputWindow::screenNamed(w.screen);
+        const QString scName = sc ? sc->name() : QString();
+        if (o.mode == w.mode && (w.mode == 0 || o.screen == scName)) continue;
+        o.mode = w.mode;
+        o.screen = scName;
+        changed = true;
+        m_autosaveDone = false; // part of the session to restore
+        if (w.mode == 0) {
+            o.window->hideOutput();
+            continue;
+        }
+        o.window->showOn(sc, w.mode == 2);
+        if (w.mode == 2 && sc == screen()) {
+            // Fullscreen on the screen of the interface: the output comes to the front and keeps the keyboard
+            o.window->raise();
+            o.window->requestActivate();
+            front = true;
+        }
+    }
+    const auto all = [&](int mode) {
+        return !want.empty() && std::all_of(want.begin(), want.end(), [mode](const Want &w) { return w.mode == mode; });
+    };
+    m_fullscreenAction->setChecked(all(2));
+    m_windowedAction->setChecked(all(1));
+    if (front) statusBar()->showMessage(QStringLiteral("Fullscreen on the main screen: ⌘F / Ctrl+F to return."), 8000);
+    else if (changed) activateWindow();
 }
 
-void MainWindow::chooseScreen(const QString &name)
+void MainWindow::setAllOutputs(const std::map<quint64, int> &modes, int otherwise)
 {
-    m_screenName = name;
-    QSettings().setValue("output/screen", name);
-    buildOutputScreensMenu();
-    if (m_outputMode != OutputHidden) setOutputMode(m_outputMode);
+    for (int i : m_engine->viewports()) {
+        QString screen;
+        quint64 id = 0;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            const Layer *l = m_engine->layer(i);
+            if (!l) continue;
+            screen = l->vpScreen;
+            id = l->id;
+        }
+        const auto it = modes.find(id);
+        m_engine->setViewportOutput(i, screen, it != modes.end() ? it->second : otherwise);
+    }
+    m_inspector->refreshDynamic(); // the Output tab of the selected viewport
 }
 
-QScreen *MainWindow::selectedScreen() const
+// First time: every viewport goes to `mode`, each on its own screen. Second time: back to how each one was
+// (hidden if they already all were in that mode).
+void MainWindow::toggleAllOutputs(int mode)
 {
-    for (QScreen *sc : QGuiApplication::screens())
-        if (sc->name() == m_screenName) return sc;
-    return QGuiApplication::primaryScreen();
-}
-
-void MainWindow::toggleFullscreen()
-{
-    setOutputMode(m_outputMode == OutputFullscreen ? OutputHidden : OutputFullscreen);
-}
-
-void MainWindow::toggleWindowed()
-{
-    setOutputMode(m_outputMode == OutputWindowed ? OutputHidden : OutputWindowed);
-}
-
-void MainWindow::setOutputMode(OutputMode mode)
-{
-    m_outputMode = mode;
-    m_fullscreenAction->setChecked(mode == OutputFullscreen);
-    m_windowedAction->setChecked(mode == OutputWindowed);
-    m_master->setOutputMode(int(mode));
-    m_autosaveDone = false; // output state is part of the session to restore
-    if (mode == OutputHidden) {
-        m_output->hideOutput();
-        activateWindow();
+    std::map<quint64, int> now;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        for (int i : m_engine->viewports())
+            if (const Layer *l = m_engine->layer(i)) now[l->id] = l->vpMode;
+    }
+    const bool allThere = !now.empty() && std::all_of(now.begin(), now.end(), [mode](const auto &p) { return p.second == mode; });
+    if (!allThere) {
+        m_modesBefore = now;
+        setAllOutputs({}, mode);
         return;
     }
-    QScreen *sc = selectedScreen();
-    const bool sameAsUi = sc == screen();
-    m_output->showOn(sc, mode == OutputFullscreen);
-    if (mode == OutputFullscreen && sameAsUi) {
-        // Fullscreen on the UI screen: the output comes to the front and keeps the keyboard (⌘F / Ctrl+F to exit)
-        m_output->raise();
-        m_output->requestActivate();
-        statusBar()->showMessage(QStringLiteral("Fullscreen on main screen: Ctrl+F (⌘F) to return."), 8000);
-    } else {
-        activateWindow();
-    }
+    std::map<quint64, int> back = m_modesBefore;
+    m_modesBefore.clear();
+    if (back == now) back.clear(); // nothing to go back to: hidden
+    setAllOutputs(back, 0);
+}
+
+void MainWindow::addViewport()
+{
+    const int i = m_engine->addViewport();
+    if (i < 0) return;
+    m_undo->push(new cmd::AddLayer(m_engine, i, QStringLiteral("New Viewport")));
+    selectLayer(i);
+    statusBar()->showMessage(QStringLiteral("Viewport added: place it in the composition (Spatial), "
+                                            "choose its screen (Output)."),
+                             5000);
 }
 
 // ---------------------------------------------------------------------------
@@ -633,23 +659,36 @@ void MainWindow::refreshLayerList()
             Layer *l = m_engine->layer(i);
             LayerTable::Row r;
             r.name = l->name;
-            r.tag = l->isGroup ? QStringLiteral("▤") : layerTag(l->type != SourceType::None ? l->type : l->missingType);
+            r.tag = l->isViewport ? QStringLiteral("▭")
+                    : l->isGroup  ? QStringLiteral("▤")
+                                  : layerTag(l->type != SourceType::None ? l->type : l->missingType);
+            r.viewport = l->isViewport;
             r.group = l->isGroup;
-            r.member = l->parent != 0;
+            r.collapsed = l->isGroup && l->collapsed;
             r.locked = l->locked;
             r.lockedByGroup = !l->locked && m_engine->isLocked(i);
             r.effectsOn = l->effectsEnabled;
-            if (l->isGroup) {
-                r.collapsed = l->collapsed;
-            } else if (l->parent) {
-                const Layer *g = m_engine->layer(m_engine->indexOfId(l->parent));
-                r.collapsed = g && g->collapsed;
+            // Depth, and hidden inside a folded group (at any level above)
+            for (quint64 up = l->parent; up;) {
+                const Layer *g = m_engine->layer(m_engine->indexOfId(up));
+                if (!g) break;
+                ++r.depth;
+                r.hidden = r.hidden || g->collapsed;
+                up = g->parent;
             }
             r.visible = l->visible;
             r.opacity = l->opacity;
             r.blend = blendModeName(l->blend);
             r.error = !l->error.isEmpty();
             r.noPicture = l->type == SourceType::Audio || (l->type == SourceType::None && l->missingType == SourceType::Audio);
+            if (l->isViewport) {
+                static const QString kShown[] = {QStringLiteral("hidden"), QStringLiteral("window"), QStringLiteral("fullscreen")};
+                const QSize vs = l->viewportSize();
+                r.source = QStringLiteral("viewport %1 × %2").arg(vs.width()).arg(vs.height());
+                r.playback = QStringLiteral("%1 × %2 · %3").arg(vs.width()).arg(vs.height()).arg(kShown[std::clamp(l->vpMode, 0, 2)]);
+                rows.push_back(r);
+                continue;
+            }
             switch (l->isGroup ? SourceType::Image : l->type) {
             case SourceType::Video:
             case SourceType::Audio:
@@ -692,7 +731,10 @@ void MainWindow::refreshLayerList()
     const int n = int(rows.size());
     const int keep = qBound(-1, m_layerTable->currentRow(), n - 1);
     m_layerTable->setRows(rows);
-    const int sel = keep >= 0 ? keep : (n > 0 ? 0 : -1);
+    // Nothing selected yet: the first layer below the viewports (or the first viewport)
+    int firstLayer = 0;
+    while (firstLayer < n && rows[size_t(firstLayer)].viewport) ++firstLayer;
+    const int sel = keep >= 0 ? keep : n == 0 ? -1 : firstLayer < n ? firstLayer : 0;
     if (sel != m_layerTable->currentRow()) m_layerTable->setCurrentRow(sel);
     if (sel != m_inspector->layerIndex()) {
         m_inspector->setLayer(sel);
@@ -757,6 +799,12 @@ bool MainWindow::loadIntoLayer(int i, const QString &path)
         if (m_engine->layer(i)->isGroup) {
             lk.unlock();
             statusBar()->showMessage(QStringLiteral("A group has no source: drop the media onto one of its layers."), 6000);
+            return false;
+        }
+        if (m_engine->layer(i)->isViewport) {
+            lk.unlock();
+            statusBar()->showMessage(QStringLiteral("A viewport has no source: it shows the composition. "
+                                                    "Drop the media onto a layer."), 6000);
             return false;
         }
     }
@@ -935,7 +983,7 @@ void MainWindow::layerContextMenu(int row, const QPoint &globalPos)
     if (onLayer) {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(row);
-        group = l && l->isGroup;
+        group = l && (l->isGroup || l->isViewport); // no source of their own
         locked = m_engine->isLocked(row);
     }
     if (onLayer) {
@@ -1032,16 +1080,14 @@ void MainWindow::moveRows(const QList<int> &rows, int beforeRow, int parentRow)
 
 void MainWindow::createGroup()
 {
-    // Selected layers (not groups, not locked) go into the new group, placed where the first of them was
+    // Selected layers and groups (not locked) go into the new group, placed where the first of them was
     const LayerTree t = m_engine->structure();
     std::vector<quint64> ids;
     int at = -1;
     for (int r : m_layerTable->selectedRows()) {
-        if (r < 0 || r >= int(t.size()) || t[size_t(r)].isGroup || m_engine->isLocked(r)) continue;
+        if (r < 0 || r >= int(t.size()) || t[size_t(r)].kind == TreeNode::Viewport || m_engine->isLocked(r)) continue;
         ids.push_back(t[size_t(r)].id);
-        const int g = m_engine->groupIndexOf(r);
-        const int pos = g >= 0 ? g : r;
-        if (at < 0 || pos < at) at = pos;
+        if (at < 0 || r < at) at = r; // the new group goes where the first of them is, in the same group
     }
     if (at < 0) at = 0;
     m_undo->beginMacro(QStringLiteral("New Group"));
@@ -1063,9 +1109,10 @@ void MainWindow::ungroupCurrent()
 {
     int g = currentLayer();
     if (g < 0) return;
-    if (m_engine->groupIndexOf(g) >= 0) g = m_engine->groupIndexOf(g);
     const LayerTree t = m_engine->structure();
-    if (!t[size_t(g)].isGroup || refuseLocked(g)) return;
+    if (!t[size_t(g)].isGroup()) g = m_engine->groupIndexOf(g); // a layer: its group
+    if (g < 0) return;
+    if (!t[size_t(g)].isGroup() || refuseLocked(g)) return;
     const quint64 gid = t[size_t(g)].id;
     m_undo->beginMacro(QStringLiteral("Ungroup"));
     m_undo->push(new cmd::SetStructure(m_engine, t, tree::ungrouped(t, gid), QStringLiteral("Ungroup")));
@@ -1167,18 +1214,24 @@ void MainWindow::statusTick()
     refreshLayerList(); // playback positions (in-place update)
     const int pct = int(std::lround(m_engine->outputLevel() * 100));
     const QSize c = m_engine->compositionSize();
-    QStringList pubs;
-    for (int k = 0; k < kPublishKindCount; ++k)
-        if (m_engine->publishState(PublishKind(k)).level == PublishState::Ok) pubs << publishKindName(PublishKind(k));
-    const QString mode = m_outputMode == OutputFullscreen ? QStringLiteral("fullscreen ") + m_screenName
-                         : m_outputMode == OutputWindowed ? QStringLiteral("windowed")
-                                                          : QStringLiteral("hidden");
-    m_status->setText(QStringLiteral("%1 × %2   ·   %3 fps   ·   master %4%   ·   output: %5%6")
+    // Each viewport: shown how (F fullscreen, W window), and what it publishes
+    QStringList outs;
+    int shown = 0;
+    for (const auto &[id, o] : m_outputs) {
+        QStringList pubs;
+        for (int k = 0; k < kPublishKindCount; ++k)
+            if (m_engine->publishState(id, PublishKind(k)).level == PublishState::Ok) pubs << publishKindName(PublishKind(k));
+        if (o.mode) ++shown;
+        if (!pubs.isEmpty()) outs << QStringLiteral("%1 → %2").arg(o.title.section(QStringLiteral(" — "), 1), pubs.join('+'));
+    }
+    m_status->setText(QStringLiteral("%1 × %2   ·   %3 fps   ·   master %4%   ·   %5 of %6 viewport(s) shown%7")
                           .arg(c.width())
                           .arg(c.height())
                           .arg(m_engine->fps(), 0, 'f', 1)
                           .arg(pct)
-                          .arg(mode, pubs.isEmpty() ? QString() : QStringLiteral("   ·   published: ") + pubs.join(", "))
+                          .arg(shown)
+                          .arg(m_outputs.size())
+                          .arg(outs.isEmpty() ? QString() : QStringLiteral("   ·   ") + outs.join(QStringLiteral(", ")))
                       + (m_engine->blackout() ? QStringLiteral("   ·   BLACKOUT") : QString()));
 }
 
@@ -1231,9 +1284,7 @@ void MainWindow::updateTitle()
 QJsonObject MainWindow::uiState() const
 {
     QJsonObject o;
-    o["outputScreen"] = m_screenName;
     o["selectedLayer"] = currentLayer();
-    o["outputMode"] = m_outputMode == OutputFullscreen ? "fullscreen" : m_outputMode == OutputWindowed ? "window" : "hidden";
     return o;
 }
 
@@ -1256,9 +1307,7 @@ void MainWindow::afterProjectLoaded(const QJsonObject &ui)
 {
     m_undo->clear();
     m_autosaveDone = false;
-    const QString scr = ui.value("outputScreen").toString();
-    if (!scr.isEmpty()) m_screenName = scr;
-    buildOutputScreensMenu();
+    m_modesBefore.clear();
     m_master->syncFromEngine();
     m_bin->refresh();
     selectLayer(qBound(-1, ui.value("selectedLayer").toInt(0), m_engine->layerCount() - 1));
@@ -1392,14 +1441,12 @@ void MainWindow::offerRecovery()
     m_forceDirty = ui.value("autosaveDirty").toBool(true);
     afterProjectLoaded(loadedUi);
     if (!err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Recovery"), err);
-    QString mode = ui.value("outputMode").toString();
-    if (mode.isEmpty() && ui.value("outputVisible").toBool()) mode = "fullscreen"; // older sessions
-    if (mode == "fullscreen" || mode == "window") {
-        // Output comes back, but blacked out: the operator decides when to bring it back up.
+    const bool shown = std::any_of(m_outputs.begin(), m_outputs.end(), [](const auto &p) { return p.second.mode != 0; });
+    if (shown) {
+        // The outputs come back, but blacked out: the operator decides when to bring them back up.
         m_engine->setBlackout(true, 0.0);
         setBlackout(true);
-        setOutputMode(mode == "fullscreen" ? OutputFullscreen : OutputWindowed);
-        statusBar()->showMessage(QStringLiteral("Session restored — output blacked out: Ctrl+B (⌘B) to bring it back"), 15000);
+        statusBar()->showMessage(QStringLiteral("Session restored — outputs blacked out: Ctrl+B (⌘B) to bring them back"), 15000);
     } else {
         statusBar()->showMessage(QStringLiteral("Session restored"), 6000);
     }
@@ -1415,7 +1462,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
     s.setValue("ui/geometry", saveGeometry());
     if (auto *split = findChild<QSplitter *>("mainSplit2")) s.setValue("ui/mainSplit2", split->saveState());
     if (auto *top = findChild<QSplitter *>("topSplit2")) s.setValue("ui/topSplit2", top->saveState());
-    m_output->hideOutput();
+    for (auto &[id, o] : m_outputs) o.window->hideOutput();
     // Normal exit: no recovery to offer on next launch.
     if (m_autosaveEnabled) QFile::remove(autosavePath());
     e->accept();

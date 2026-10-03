@@ -11,6 +11,13 @@
 #include <QWindow>
 #include <cmath>
 
+#ifdef Q_OS_MACOS
+#define GL_SILENCE_DEPRECATION
+#include <OpenGL/OpenGL.h>
+#elif defined(Q_OS_WIN)
+#include <windows.h>
+#endif
+
 // ---------------------------------------------------------------------------
 // Render thread, OpenGL context, start and stop
 // ---------------------------------------------------------------------------
@@ -393,6 +400,26 @@ void Engine::present(const Layer &viewport, QSize px)
     drawQuad();
 }
 
+// Vertical sync of the swap to come. With several windows, only the last swap of the frame waits for the
+// screen: each one waiting in turn would divide the frame rate by the number of windows.
+// macOS: a setting of the context; Windows and Linux: of the window that is current.
+static void setSwapInterval(QOpenGLContext *ctx, int n)
+{
+#ifdef Q_OS_MACOS
+    Q_UNUSED(ctx);
+    const GLint v = n;
+    if (CGLContextObj c = CGLGetCurrentContext()) CGLSetParameter(c, kCGLCPSwapInterval, &v);
+#elif defined(Q_OS_WIN)
+    using Fn = BOOL(WINAPI *)(int);
+    static Fn fn = reinterpret_cast<Fn>(ctx->getProcAddress("wglSwapIntervalEXT"));
+    if (fn) fn(n);
+#else
+    using Fn = int (*)(unsigned);
+    static Fn fn = reinterpret_cast<Fn>(ctx->getProcAddress("glXSwapIntervalMESA"));
+    if (fn) fn(unsigned(n));
+#endif
+}
+
 // Each window on screen is made current in turn and swapped; the context goes back to the offscreen surface
 bool Engine::presentViewports()
 {
@@ -405,11 +432,13 @@ bool Engine::presentViewports()
             if (it != m_outWindows.end() && it->second.window && it->second.exposed) shown.push_back({l.get(), it->second});
         }
     }
-    for (const auto &[vp, out] : shown) {
+    for (size_t k = 0; k < shown.size(); ++k) {
+        const auto &[vp, out] = shown[k];
         if (!m_context->makeCurrent(out.window)) continue;
         m_currentSurface = out.window;
         present(*vp, out.pixels);
-        m_context->swapBuffers(out.window); // waits for that screen's vertical sync
+        setSwapInterval(m_context, k + 1 == shown.size() ? 1 : 0); // each time: on Windows and Linux, per window
+        m_context->swapBuffers(out.window); // the last one waits for its screen's vertical sync
     }
     if (m_currentSurface != m_surface) {
         m_context->makeCurrent(m_surface);

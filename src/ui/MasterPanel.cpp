@@ -36,10 +36,8 @@ MasterPanel::MasterPanel(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     v->setContentsMargins(8, 8, 8, 8);
     v->setSpacing(10);
     v->addWidget(buildMaster());
-    v->addWidget(buildOutput());
     v->addWidget(buildAudio());
     v->addWidget(buildComposition());
-    v->addWidget(buildPublish());
     v->addStretch();
     syncFromEngine();
     // Long screen or sound card names must not widen the panel beyond its column (they are elided).
@@ -240,57 +238,6 @@ void MasterPanel::refreshMeters()
 }
 
 // ---------------------------------------------------------------------------
-// Video Output
-// ---------------------------------------------------------------------------
-
-QWidget *MasterPanel::buildOutput()
-{
-    auto *g = new QGroupBox(QStringLiteral("Video Output"));
-    auto *v = new QVBoxLayout(g);
-    auto *form = new QFormLayout;
-    m_screens = new QComboBox;
-    form->addRow(QStringLiteral("Screen"), m_screens);
-    v->addLayout(form);
-    auto *row = new QHBoxLayout;
-    m_full = new QPushButton(QStringLiteral("Fullscreen"));
-    m_full->setCheckable(true);
-    m_full->setToolTip(QStringLiteral("Ctrl+F (⌘F on Mac) to enter and exit fullscreen"));
-    m_windowed = new QPushButton(QStringLiteral("Windowed"));
-    m_windowed->setCheckable(true);
-    m_windowed->setToolTip(QStringLiteral("Ctrl+Shift+F (⌘⇧F on Mac)"));
-    m_hide = new QPushButton(QStringLiteral("Hide"));
-    m_hide->setCheckable(true);
-    row->addWidget(m_full);
-    row->addWidget(m_windowed);
-    row->addWidget(m_hide);
-    v->addLayout(row);
-    v->addWidget(note(QStringLiteral("⌘F / Ctrl+F: fullscreen on the selected screen (the second screen if connected, "
-                                     "otherwise the main screen), and back. Also works from the output window.")));
-
-    connect(m_screens, qOverload<int>(&QComboBox::activated), this,
-            [this](int i) { emit screenChosen(m_screens->itemData(i).toString()); });
-    connect(m_full, &QPushButton::clicked, this, [this] { emit fullscreenRequested(); });
-    connect(m_windowed, &QPushButton::clicked, this, [this] { emit windowedRequested(); });
-    connect(m_hide, &QPushButton::clicked, this, [this] { emit hideRequested(); });
-    return g;
-}
-
-void MasterPanel::setScreens(const QList<QPair<QString, QString>> &screens, const QString &current)
-{
-    QSignalBlocker b(m_screens);
-    m_screens->clear();
-    for (const auto &s : screens) m_screens->addItem(s.first, s.second);
-    m_screens->setCurrentIndex(qMax(0, m_screens->findData(current)));
-}
-
-void MasterPanel::setOutputMode(int mode)
-{
-    m_hide->setChecked(mode == 0);
-    m_windowed->setChecked(mode == 1);
-    m_full->setChecked(mode == 2);
-}
-
-// ---------------------------------------------------------------------------
 // Composition
 // ---------------------------------------------------------------------------
 
@@ -313,12 +260,11 @@ QWidget *MasterPanel::buildComposition()
     size->addWidget(m_width);
     size->addWidget(new QLabel(QStringLiteral("×")));
     size->addWidget(m_height);
-    auto *fit = new QPushButton(QStringLiteral("= output screen"));
     form->addRow(QStringLiteral("Preset"), m_preset);
     form->addRow(QStringLiteral("Size"), size);
-    form->addRow(QString(), fit);
-    form->addRow(note(QStringLiteral("Set the composition to the projector's native resolution. "
-                                     "Mapping is relative: it follows size changes.")));
+    form->addRow(note(QStringLiteral("The pixel space every layer lives in. Each viewport shows a part of it, "
+                                     "placed by its Spatial tab: three 1920 × 1080 projectors side by side "
+                                     "make a 5760 × 1080 composition. Mapping is relative: it follows size changes.")));
 
     connect(m_preset, qOverload<int>(&QComboBox::activated), this, [this](int i) {
         const QSize s = m_preset->itemData(i).toSize();
@@ -331,7 +277,6 @@ QWidget *MasterPanel::buildComposition()
     });
     connect(m_width, qOverload<int>(&QSpinBox::valueChanged), this, [this] { applyComposition(); });
     connect(m_height, qOverload<int>(&QSpinBox::valueChanged), this, [this] { applyComposition(); });
-    connect(fit, &QPushButton::clicked, this, &MasterPanel::fitCompositionToScreenRequested);
     return g;
 }
 
@@ -344,94 +289,6 @@ void MasterPanel::applyComposition()
     emit compositionEdited();
 }
 
-// ---------------------------------------------------------------------------
-// Output Publishing
-// ---------------------------------------------------------------------------
-
-QWidget *MasterPanel::buildPublish()
-{
-    auto *g = new QGroupBox(QStringLiteral("Output Publishing"));
-    auto *v = new QVBoxLayout(g);
-    auto *grid = new QGridLayout;
-    grid->setColumnStretch(1, 1);
-    const QString tips[kPublishKindCount] = {
-        QStringLiteral("NDI: network. Requires NDI Tools or the NDI Runtime installed on this machine."),
-        QStringLiteral("OMT (Open Media Transport): network, free and open. Requires libomt and libvmx."),
-        QStringLiteral("Syphon: shares the image with apps on the same Mac (MadMapper, Resolume, OBS…)."),
-        QStringLiteral("Spout: shares the image with apps on the same PC (Resolume, TouchDesigner, OBS…)."),
-    };
-    for (int k = 0; k < kPublishKindCount; ++k) {
-        m_pubEnabled[k] = new QCheckBox(publishKindName(PublishKind(k)));
-        m_pubEnabled[k]->setToolTip(tips[k]);
-        m_pubName[k] = new QLineEdit;
-        m_pubName[k]->setPlaceholderText(QStringLiteral("Source name"));
-        m_pubName[k]->setToolTip(QStringLiteral("Name under which the output appears on receivers"));
-        m_pubState[k] = new QLabel;
-        m_pubState[k]->setWordWrap(true);
-        m_pubState[k]->setStyleSheet("font-size:11px;");
-        grid->addWidget(m_pubEnabled[k], k * 2, 0);
-        grid->addWidget(m_pubName[k], k * 2, 1);
-        grid->addWidget(m_pubState[k], k * 2 + 1, 0, 1, 2);
-        if (!publishCompiledIn(PublishKind(k))) {
-            m_pubEnabled[k]->setEnabled(false);
-            m_pubName[k]->setEnabled(false);
-        }
-        connect(m_pubEnabled[k], &QCheckBox::toggled, this, &MasterPanel::applyPublish);
-        connect(m_pubName[k], &QLineEdit::editingFinished, this, &MasterPanel::applyPublish);
-    }
-    v->addLayout(grid);
-
-    auto *form = new QFormLayout;
-    m_omtQuality = new QComboBox;
-    m_omtQuality->addItem(QStringLiteral("Auto"), 0);
-    m_omtQuality->addItem(QStringLiteral("Low"), 1);
-    m_omtQuality->addItem(QStringLiteral("Medium"), 50);
-    m_omtQuality->addItem(QStringLiteral("High"), 100);
-    form->addRow(QStringLiteral("OMT Quality"), m_omtQuality);
-    auto *lib = new QHBoxLayout;
-    m_libFolder = new QLineEdit;
-    m_libFolder->setPlaceholderText(QStringLiteral("standard locations"));
-    m_libFolder->setToolTip(QStringLiteral("Additional folder to search for the NDI (libndi) and OMT (libomt, libvmx) libraries"));
-    auto *browse = new QPushButton(QStringLiteral("…"));
-    browse->setFixedWidth(30);
-    lib->addWidget(m_libFolder, 1);
-    lib->addWidget(browse);
-    form->addRow(QStringLiteral("Libraries"), lib);
-    v->addLayout(form);
-    m_libInfo = note(QString());
-    v->addWidget(m_libInfo);
-    v->addWidget(note(QStringLiteral("NDI and OMT send the image at the composition resolution; "
-                                     "Syphon and Spout share it directly on the GPU.")));
-
-    connect(m_omtQuality, qOverload<int>(&QComboBox::activated), this, &MasterPanel::applyPublish);
-    connect(m_libFolder, &QLineEdit::editingFinished, this, &MasterPanel::applyPublish);
-    connect(browse, &QPushButton::clicked, this, [this] {
-        const QString d = QFileDialog::getExistingDirectory(this, QStringLiteral("NDI / OMT Library Folder"),
-                                                            m_libFolder->text());
-        if (d.isEmpty()) return;
-        m_libFolder->setText(d);
-        applyPublish();
-    });
-    return g;
-}
-
-void MasterPanel::applyPublish()
-{
-    if (m_syncing) return;
-    PublishSettings s = m_engine->publishSettings();
-    for (int k = 0; k < kPublishKindCount; ++k) {
-        s.targets[k].enabled = m_pubEnabled[k]->isChecked();
-        const QString n = m_pubName[k]->text().trimmed();
-        s.targets[k].name = n.isEmpty() ? QStringLiteral("Fulskrin") : n;
-    }
-    s.omtQuality = m_omtQuality->currentData().toInt();
-    s.libraryFolder = m_libFolder->text().trimmed();
-    if (s == m_engine->publishSettings()) return;
-    m_engine->setPublishSettings(s);
-    emit publishEdited();
-    refreshStatus();
-}
-
 void MasterPanel::syncFromEngine()
 {
     m_syncing = true;
@@ -439,13 +296,6 @@ void MasterPanel::syncFromEngine()
     m_width->setValue(c.width());
     m_height->setValue(c.height());
     m_preset->setCurrentIndex(qMax(0, m_preset->findData(c)));
-    const PublishSettings s = m_engine->publishSettings();
-    for (int k = 0; k < kPublishKindCount; ++k) {
-        m_pubEnabled[k]->setChecked(s.targets[k].enabled);
-        m_pubName[k]->setText(s.targets[k].name);
-    }
-    m_omtQuality->setCurrentIndex(qMax(0, m_omtQuality->findData(s.omtQuality)));
-    m_libFolder->setText(s.libraryFolder);
     m_audioVolume->setValue(int(std::lround(m_engine->audioVolume() * 100)));
     m_audioVolumeLabel->setText(volumeText(m_audioVolume->value()));
     m_audioMute->setChecked(m_engine->audioMuted());
@@ -479,28 +329,4 @@ void MasterPanel::refreshStatus()
         m_syncing = false;
     }
 
-    for (int k = 0; k < kPublishKindCount; ++k) {
-        const PublishState st = m_engine->publishState(PublishKind(k));
-        QString text = st.text, color = "#888";
-        if (!publishCompiledIn(PublishKind(k))) {
-            text = k == int(PublishKind::Syphon) ? QStringLiteral("macOS only") : QStringLiteral("Windows only");
-        } else if (st.level == PublishState::Ok) {
-            color = "#5fd47a";
-            if (st.receivers > 0) text += k == int(PublishKind::Syphon) ? QStringLiteral(" — client connected")
-                                                                        : QStringLiteral(" — %1 receiver(s)").arg(st.receivers);
-            else if (st.receivers == 0) text += QStringLiteral(" — no receivers");
-        } else if (st.level == PublishState::Error) {
-            color = "#ff6e5f";
-        }
-        if (text.isEmpty()) text = QStringLiteral("Disabled");
-        m_pubState[k]->setText(QStringLiteral("<span style='color:%1'>%2</span>").arg(color, text.toHtmlEscaped()));
-    }
-    // Library lookup: roughly every two seconds (disk access)
-    const QString folder = m_libFolder->text().trimmed();
-    if (m_libTick++ % 20 != 0 && folder == m_libCheckedFolder) return;
-    m_libCheckedFolder = folder;
-    const QString ndi = ndiLibraryPath(folder), omt = omtLibraryPath(folder);
-    m_libInfo->setText(QStringLiteral("NDI: %1<br>OMT: %2")
-                           .arg(ndi.isEmpty() ? QStringLiteral("not found") : ndi.toHtmlEscaped(),
-                                omt.isEmpty() ? QStringLiteral("not found") : omt.toHtmlEscaped()));
 }

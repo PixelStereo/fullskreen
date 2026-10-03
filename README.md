@@ -9,8 +9,8 @@ Video mapping for stage and installation work, on Mac / Windows / Linux.
 (Normal / Add / Screen / Multiply). Layers are created empty with **+**, then loaded by dropping a media onto
 them. One source per layer: video (anything FFmpeg reads, **with its sound**), still image, ISF generator, or
 audio file (an audio layer, same transport, no picture). Layers can be renamed, locked (padlock), multi-selected
-and grouped (⌘G); a group behaves as a layer without a source — ROI, color, mapping, effects and compositing
-apply to the composite of its layers. Right-click a layer to **copy its parameters** and paste them onto one or
+and grouped (⌘G), groups inside groups included; a group behaves as a layer without a source — ROI, color,
+mapping, effects and compositing apply to the composite of its layers. Right-click a layer to **copy its parameters** and paste them onto one or
 several others, either all of them or only the source, the ROI, the color, the spatial, the effects or the
 compositing.
 
@@ -52,13 +52,24 @@ The sound follows the layer's playhead (play, pause, seek, loop, speed — tape-
 milliseconds of the picture, and realigns with a short fade after a dropout or a seek. Everything is mixed to one
 stereo output (48 kHz).
 
-**Output.** Fullscreen on the chosen screen, synced to vertical refresh (⌘F), or windowed (⌘⇧F).
-On macOS the output takes a Space of its own, like any other application, and the Space is closed when it
-leaves fullscreen — the window is hidden only once macOS has finished the exit, never during it. Rendering runs
-on a dedicated thread, so a slow or blocked interface never interrupts the projected image. The **Master** tab
-holds the level fader, Blackout with fade (⌘B, fades the sound too), screen and mode, audio output, composition
-size, and **publishing** to **NDI**, **OMT**, **Syphon** (macOS) and **Spout** (Windows). Syphon and Spout are
-built in; NDI and OMT are loaded only when enabled, so Fulskrin runs without them.
+**Viewports.** The composition is one space of pixels (its size is set in the **Master** tab); every layer lives
+in it and is rendered once. A **viewport** is a window onto it, listed in a block at the top of the layer list:
+its Spatial tab places it in the composition (position, scale, *Pixel for Pixel*), or drag its frame in the
+preview; like a group it has ROI, color, effects and opacity; its **Output** tab sets its size in pixels, its
+screen, how it is shown there (hidden, window, fullscreen) and what it **publishes** — **NDI**, **OMT**,
+**Syphon** (macOS), **Spout** (Windows). Three 1920 × 1080 projectors side by side: a 5760 × 1080 composition and
+three viewports. Each item at the top of the list chooses the viewports it appears in (Compositing tab, all by
+default); inside a group, the group decides. Memories recall that routing and leave the viewports alone. There is
+always at least one viewport.
+
+**Output.** ⌘F puts every viewport fullscreen on its own screen, synced to vertical refresh, and a second ⌘F puts
+each one back how it was; ⌘⇧F does the same with windows. On macOS a fullscreen output takes a Space of its own,
+and the Space is closed when it leaves fullscreen — the window is hidden only once macOS has finished the exit.
+With several windows, only the last one presented waits for the vertical refresh, so the frame rate does not drop.
+Rendering runs on a dedicated thread, so a slow or blocked interface never interrupts the projected image. The
+**Master** tab drives every viewport: level fader, Blackout with fade (⌘B, fades the sound too), audio output and
+composition size. Syphon and Spout are built in; NDI and OMT are loaded only when enabled, so Fulskrin runs
+without them.
 
 **Media Bin.** Every media used by the project, grouped by type and searchable, with resolution, duration, sound
 format and how many layers use it. Missing files are shown in red and **Replace…** relinks them everywhere at
@@ -141,7 +152,7 @@ Ctrl on Windows and Linux, ⌘ on Mac.
 | Media Bin / Layers panel | ⇧1 / ⇧2 |
 | Play / pause the selected layer | Space |
 | In / out points at the position | I / O |
-| Fullscreen · windowed output | ⌘F · ⌘⇧F |
+| Every viewport fullscreen · in windows (again: back) | ⌘F · ⌘⇧F |
 | Blackout (picture and sound) | ⌘B |
 | Close the output from the output | ⇧Esc (Esc alone does nothing, for safety) |
 | Undo / redo | ⌘Z / ⌘⇧Z |
@@ -184,7 +195,10 @@ bundles are supported. Names are made OSC-safe: spaces become `_`, a duplicate n
 | `…/color/enabled` · `tempEnabled` · `tintEnabled` · `addEnabled` · `removeEnabled` | T | color switches |
 | `…/spatial/position` · `scale` · `corners/tl` `tr` `br` `bl` | ff | px · % · normalized |
 | `…/effects/enabled` · `effects/<effect>/enabled` · `effects/<effect>/<input>` | | effect chain |
-| `/layers/<group>/layers/<name>/…` | | layers of a group |
+| `/layers/<group>/layers/<name>/…` | | layers of a group (and so on, for groups inside groups) |
+| `/layers/<name>/viewports/<viewport>` | T | shown in that viewport (items at the top of the list) |
+| `/viewports/<name>/width` · `height` · `mode` | i | size in pixels; 0 hidden, 1 window, 2 fullscreen |
+| `/viewports/<name>/…` | | name, visible, opacity, ROI, color, spatial, effects, as for a group |
 | `/memories/recall` · `/memories/<n>/recall` · `/memories/count` | i · N · i | recall memory n (1 = first) |
 
 A locked layer refuses every write except `visible`, `locked` and the transport.
@@ -194,7 +208,7 @@ A locked layer refuses every write except `visible`, `locked` and the transport.
 ```
 src/engine/   engine, with no widget dependency (QtCore/QtGui/OpenGL + FFmpeg)
   Engine        one class, its methods spread over the six files below by concern:
-   · Engine      OpenGL context and render thread, runGl() tasks, output window, master and blackout
+   · Engine      OpenGL context and render thread, runGl() tasks, output windows, master and blackout
    · Layers      layers, order and groups, sources, transport, effect chain, copy of parameters
    · Render      one frame: sources, layers in dependency order, composite, preview, publishing
    · Project     a layer to and from JSON, saving and opening a .fulskrin
@@ -210,17 +224,19 @@ src/engine/   engine, with no widget dependency (QtCore/QtGui/OpenGL + FFmpeg)
   Osc           OSC (UDP) and OSCQuery (HTTP, WebSocket) server
   Zeroconf      DNS-SD announcement (Bonjour on macOS, own mDNS responder elsewhere)
 src/ui/       Qt Widgets interface
-  MainWindow, LayerInspector, ParamPanel, MappingView, OutputWindow
+  MainWindow, LayerInspector, ParamPanel, MappingView, OutputWindow (one per viewport)
   Commands      undo commands (QUndoStack)
   MediaBin, LayerTable, MasterPanel, SettingsPanel, MemoryPanel
+  ViewportOutput  Output tab of a viewport: size, screen and mode, publishing
   Widgets       click-to-reset labels, bars that are dragged and typed in one widget (SliderField,
                 RangeField), transport and play-mode icons drawn by hand, ROI editor, color editor
 isf/          bundled shaders
 test/         automated tests
 ```
 
-The engine owns its OpenGL context on a dedicated thread: it renders the composition, presents it in the output
-window (vertical sync) and publishes a copy for the interface preview. The interface reads and modifies layers
+The engine owns its OpenGL context on a dedicated thread: it renders the composition, cuts each viewport out of it,
+presents each one in its window (vertical sync) and publishes a copy of the whole composition for the interface
+preview. The interface reads and modifies layers
 under `Engine::Lock`; anything touching OpenGL goes through `Engine::runGl()`, which runs on the render thread.
 The interface can therefore be replaced, or the engine driven over OSC, without touching rendering.
 
@@ -242,11 +258,10 @@ test/ui_test.sh out/ui                     # Linux + Xvfb + openbox + xdotool: f
 - **CPU decoding to RGBA**: fine for a few HD streams. Several 4K streams will need GPU YUV→RGB conversion,
   compressed HAP textures and hardware decoding (VideoToolbox, D3D11VA, VAAPI).
 - **Sound**: one stereo output; no multichannel routing, per-layer output, fades or audio effects yet.
-- **Single output**: no multiple outputs, per-projector slicing or automatic edge blending
-  (the SoftEdges effect helps with manual blending).
+- **Viewports are rectangles** of the composition: no per-projector warp or automatic edge blending yet
+  (the SoftEdges effect on a viewport helps with manual blending).
 - No timeline, MIDI or DMX control; no camera, Syphon / Spout / NDI / OMT **inputs**.
-- Groups have one level (no group inside a group).
-- NDI and OMT send the composition read back from the GPU (one frame of latency, noticeable CPU load in 4K).
+- NDI and OMT send each viewport read back from the GPU (one frame of latency, noticeable CPU load in 4K).
   On Linux, OMT needs `avahi-daemon`, without which Fulskrin refuses to enable it. Syphon is OpenGL-only.
 - ISF audio inputs are not supported (black texture).
 - Transport and composition size are deliberately not undoable; undoing an effect-chain change reloads the

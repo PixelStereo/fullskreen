@@ -71,11 +71,14 @@ int main(int argc, char *argv[])
             for (auto &fx : l->effects)
                 if (!fx->error().isEmpty()) qWarning("Effect %s: %s", qPrintable(fx->name()), qPrintable(fx->error()));
         }
-        for (int k = 0; k < kPublishKindCount; ++k) {
-            const PublishState st = engine.publishState(PublishKind(k));
-            if (st.level != PublishState::Off)
-                qInfo("Publishing %s: %s (receivers: %d)", qPrintable(publishKindName(PublishKind(k))), qPrintable(st.text),
-                      st.receivers);
+        for (int v : engine.viewports()) {
+            const quint64 id = engine.layerId(v);
+            for (int k = 0; k < kPublishKindCount; ++k) {
+                const PublishState st = engine.publishState(id, PublishKind(k));
+                if (st.level != PublishState::Off)
+                    qInfo("Publishing %s %s: %s (receivers: %d)", qPrintable(engine.layer(v)->name),
+                          qPrintable(publishKindName(PublishKind(k))), qPrintable(st.text), st.receivers);
+            }
         }
         const bool ok = engine.grabOutput().save(cli.value(renderOpt));
         engine.shutdown();

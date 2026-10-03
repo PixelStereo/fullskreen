@@ -2,6 +2,7 @@
 #include <QJsonObject>
 #include <QMainWindow>
 #include <QTimer>
+#include <map>
 
 class Engine;
 class MappingView;
@@ -35,8 +36,6 @@ public:
     void setAutosaveEnabled(bool on) { m_autosaveEnabled = on; }
     void setQuiet(bool on) { m_quiet = on; } // tests: warnings in the status bar, no dialog
 
-    enum OutputMode { OutputHidden = 0, OutputWindowed = 1, OutputFullscreen = 2 };
-
 protected:
     void closeEvent(QCloseEvent *e) override;
     void dragEnterEvent(QDragEnterEvent *e) override;
@@ -45,7 +44,6 @@ protected:
 
 private:
     void buildMenus();
-    void buildOutputScreensMenu();
     void refreshLayerList();
     void refreshAll();
     void selectLayer(int index);
@@ -85,11 +83,11 @@ private:
     void setInOutAtPosition(bool in);
     void relinkMedia(const QString &from, const QString &to);
 
-    void setOutputMode(OutputMode mode);
-    void toggleFullscreen();
-    void toggleWindowed();
-    QScreen *selectedScreen() const;
-    void chooseScreen(const QString &name);
+    // Outputs: one window per viewport, shown on its screen as its Output tab says
+    void syncOutputs();
+    void toggleAllOutputs(int mode); // ⌘F (fullscreen) / ⌘⇧F (window): every viewport, then back to how each was
+    void setAllOutputs(const std::map<quint64, int> &modes, int otherwise);
+    void addViewport();
     void addIsfFolder();
     void rescanLibrary();
 
@@ -107,18 +105,20 @@ private:
     MemoryPanel *m_memories = nullptr;
     QTabWidget *m_leftTabs = nullptr;
     QTabWidget *m_tabs = nullptr;
-    OutputWindow *m_output = nullptr;
+    struct Output {
+        OutputWindow *window = nullptr;
+        QString screen, title;
+        int mode = 0;
+    };
+    std::map<quint64, Output> m_outputs;      // by viewport id
+    std::map<quint64, int> m_modesBefore;     // modes before ⌘F / ⌘⇧F, to go back to
     QLabel *m_status = nullptr;
     OscServer *m_osc = nullptr;
     QThread *m_oscThread = nullptr;
     QTimer m_statusTimer, m_renderTimer, m_autosaveTimer, m_binTimer, m_inspectorTimer;
 
-    QMenu *m_screensMenu = nullptr;
-    QActionGroup *m_screenGroup = nullptr;
     QAction *m_fullscreenAction = nullptr, *m_windowedAction = nullptr, *m_undoAction = nullptr, *m_redoAction = nullptr,
             *m_blackoutAction = nullptr;
-    QString m_screenName;
-    OutputMode m_outputMode = OutputHidden;
     int m_lastSelected = -1;
     QJsonObject m_paramClipboard;       // layer parameters copied with the right-click menu
     QString m_paramClipboardName;       // the layer they come from (shown in the menu)

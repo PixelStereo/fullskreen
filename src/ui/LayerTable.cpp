@@ -22,6 +22,7 @@
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cmath>
 #include <functional>
 
@@ -78,6 +79,14 @@ protected:
         return out;
     }
 
+    // The fold arrow of a group, indented with it
+    bool onArrow(int row, int x) const
+    {
+        const LayerTable::Row &r = (*rows)[size_t(row)];
+        const int dx = x - columnViewportPosition(ColName) - r.depth * kIndent;
+        return r.group && dx >= 0 && dx < kArrowZone;
+    }
+
     int lastVisibleRow() const
     {
         for (int r = rowCount() - 1; r >= 0; --r)
@@ -85,22 +94,28 @@ protected:
         return -1;
     }
 
+    // Where dragged rows would go: before which row, into which group (-1: top level)
     Target target(QPoint pos) const
     {
         Target t;
         const auto &R = *rows;
         const int n = int(R.size());
-        auto blockEnd = [&](int g) {
+        auto depth = [&](int r) { return r >= 0 && r < n ? R[size_t(r)].depth : -1; };
+        auto blockEnd = [&](int g) { // the row after a group and everything inside it
             int k = g + 1;
-            while (k < n && R[size_t(k)].member) ++k;
+            while (k < n && depth(k) > depth(g)) ++k;
             return k;
         };
-        auto groupOf = [&](int r) {
-            for (int k = r; k >= 0; --k)
-                if (R[size_t(k)].group) return k;
-            return -1;
+        auto parentAt = [&](int r, int level) { // the group at `level - 1` above r (r at depth >= level)
+            int p = -1;
+            for (int k = r - 1; k >= 0 && level > 0; --k)
+                if (depth(k) == level - 1) {
+                    p = k;
+                    break;
+                }
+            return p;
         };
-        const int indentX = columnViewportPosition(ColName) + kIndent;
+        const int nameX = columnViewportPosition(ColName);
         const int row = rowAt(pos.y());
         if (row < 0 || row >= n) {
             const int last = lastVisibleRow();
@@ -110,44 +125,37 @@ protected:
         const int y0 = rowViewportPosition(row), h = rowHeight(row);
         const double rel = double(pos.y() - y0) / std::max(1, h);
         const LayerTable::Row &r = R[size_t(row)];
-        if (r.group) {
+        const int d = r.depth;
+        if (r.group && rel > 0.25 && rel < 0.75) { // onto a group: at the end of its contents
             const int end = blockEnd(row);
-            if (rel > 0.25 && rel < 0.75) {
-                t.into = row;
-                t.parent = row;
-                t.before = end < n ? end : -1;
-            } else if (rel <= 0.25) {
-                t.before = row;
-                t.lineY = y0;
-            } else if (!r.collapsed && end > row + 1) {
-                t.before = row + 1;
-                t.parent = row;
-                t.lineY = y0 + h;
-                t.indent = kIndent;
-            } else {
-                t.before = end < n ? end : -1;
-                t.lineY = y0 + h;
-            }
-        } else if (r.member) {
-            const int g = groupOf(row);
-            if (rel < 0.5) {
-                t.before = row;
-                t.parent = g;
-                t.lineY = y0;
-                t.indent = kIndent;
-            } else {
-                const bool last = !(row + 1 < n && R[size_t(row + 1)].member);
-                t.before = row + 1 < n ? row + 1 : -1;
-                t.lineY = y0 + h;
-                if (!(last && pos.x() < indentX)) { // leaving the group: below its last layer, at the left
-                    t.parent = g;
-                    t.indent = kIndent;
-                }
-            }
-        } else {
-            t.before = rel < 0.5 ? row : (row + 1 < n ? row + 1 : -1);
-            t.lineY = rel < 0.5 ? y0 : y0 + h;
+            t.into = row;
+            t.parent = row;
+            t.before = end < n ? end : -1;
+            return t;
         }
+        if (rel < (r.group ? 0.25 : 0.5)) { // above the row, at its level
+            t.before = row;
+            t.parent = parentAt(row, d);
+            t.lineY = y0;
+            t.indent = d * kIndent;
+            return t;
+        }
+        t.lineY = y0 + h;
+        if (r.group && !r.collapsed && blockEnd(row) > row + 1) { // below an open group: first in it
+            t.before = row + 1;
+            t.parent = row;
+            t.indent = (d + 1) * kIndent;
+            return t;
+        }
+        // Below the row (a folded group: below its contents). At the end of a group, the pointer's
+        // horizontal position chooses the level: further left leaves the group.
+        const int next = r.group ? blockEnd(row) : row + 1;
+        const int nextDepth = next < n ? depth(next) : 0;
+        int level = d;
+        if (nextDepth < d) level = std::clamp((pos.x() - nameX) / kIndent, nextDepth, d);
+        t.before = next < n ? next : -1;
+        t.parent = parentAt(row + 1, level);
+        t.indent = level * kIndent;
         return t;
     }
 
@@ -161,8 +169,7 @@ protected:
             setCurrentCell(-1, -1);
             return;
         }
-        if (e->button() == Qt::LeftButton && col == ColName && rows && row < int(rows->size()) &&
-            (*rows)[size_t(row)].group && p.x() - columnViewportPosition(ColName) < kArrowZone) {
+        if (e->button() == Qt::LeftButton && col == ColName && rows && row < int(rows->size()) && onArrow(row, p.x())) {
             if (onCollapse) onCollapse(row);
             return;
         }
@@ -205,8 +212,7 @@ protected:
         const QPoint p = e->position().toPoint();
         const int row = rowAt(p.y()), col = columnAt(p.x());
         if (row >= 0 && col == ColName && rows && row < int(rows->size())) {
-            const bool arrow = (*rows)[size_t(row)].group && p.x() - columnViewportPosition(ColName) < kArrowZone;
-            if (arrow) {
+            if (onArrow(row, p.x())) {
                 if (onCollapse) onCollapse(row);
             } else if (onRename) {
                 onRename(row);
@@ -270,6 +276,16 @@ protected:
         QTableWidget::paintEvent(e);
         QPainter p(viewport());
         const QColor accent = theme::accent();
+        // The viewports, a block of their own at the top
+        if (rows) {
+            int lastVp = -1;
+            for (int r = 0; r < int(rows->size()) && (*rows)[size_t(r)].viewport; ++r) lastVp = r;
+            if (lastVp >= 0 && lastVp + 1 < int(rows->size())) {
+                const int y = rowViewportPosition(lastVp) + rowHeight(lastVp);
+                p.setPen(QPen(QColor(120, 120, 130), 2));
+                p.drawLine(0, y, viewport()->width(), y);
+            }
+        }
         if (m_internal) {
             if (m_target.into >= 0) {
                 p.setPen(QPen(accent, 2));
@@ -320,13 +336,15 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     auto *title = new QLabel(QStringLiteral("<b>Layers</b>"));
     auto *add = barButton(QStringLiteral("+"), QStringLiteral("New Layer (empty: drop a media onto it)"));
     auto *group = barButton(QStringLiteral("⊞"), QStringLiteral("New Group (Ctrl+G): the selected layers go into it"));
+    auto *vp = barButton(QStringLiteral("▭"), QStringLiteral("New Viewport: another window onto the composition, "
+                                                             "with its own size, screen and publishing"));
     auto *remove = barButton(QStringLiteral("−"), QStringLiteral("Delete the selected layers (Del)"));
     auto *dup = barButton(QStringLiteral("⧉"), QStringLiteral("Duplicate Layer (Ctrl+D)"));
     auto *up = barButton(QStringLiteral("▲"), QStringLiteral("Move Up (Ctrl+])"));
     auto *down = barButton(QStringLiteral("▼"), QStringLiteral("Move Down (Ctrl+[)"));
     (void)title;
     bar->setSpacing(2);
-    for (auto *b : {add, group, remove, dup, up, down}) bar->addWidget(b);
+    for (auto *b : {add, group, vp, remove, dup, up, down}) bar->addWidget(b);
     bar->addStretch();
     v->addLayout(bar);
 
@@ -346,7 +364,8 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     m_table->setHorizontalHeaderLabels({QString(), QString(), QStringLiteral("Layer"), QStringLiteral("Fx"),
                                         QStringLiteral("Opacity"), QStringLiteral("Blend"), QStringLiteral("Playback")});
     m_table->setToolTip(QStringLiteral("Top layer is drawn on top · drop a media onto a layer to load it · "
-                                       "drag layers onto a group · double-click a name to rename"));
+                                       "drag layers onto a group · double-click a name to rename · "
+                                       "the viewports, at the top, are windows onto the composition"));
     m_table->horizontalHeaderItem(ColVisible)->setToolTip(QStringLiteral("Visible"));
     m_table->horizontalHeaderItem(ColLock)->setToolTip(QStringLiteral("Locked: no edit allowed"));
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -381,6 +400,8 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     connect(m_table, &QTableWidget::currentCellChanged, this, [this](int row, int, int prev, int) {
         if (!m_updating && row != prev) emit currentRowChanged(row);
     });
+    // The opacity value of a selected row is drawn on the selection color: it takes the color that reads there
+    connect(m_table, &QTableWidget::itemSelectionChanged, this, &LayerTable::restyleSelection);
     connect(m_table, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *it) {
         if (m_updating || it->column() != ColVisible) return;
         emit visibilityToggled(it->row(), it->checkState() == Qt::Checked);
@@ -402,6 +423,7 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     connect(f2, &QShortcut::activated, this, [this] { startRename(currentRow()); });
     connect(add, &QToolButton::clicked, this, &LayerTable::addClicked);
     connect(group, &QToolButton::clicked, this, &LayerTable::groupClicked);
+    connect(vp, &QToolButton::clicked, this, &LayerTable::viewportClicked);
     connect(remove, &QToolButton::clicked, this, &LayerTable::removeClicked);
     connect(dup, &QToolButton::clicked, this, &LayerTable::duplicateClicked);
     connect(up, &QToolButton::clicked, this, [this] { emit moveClicked(-1); });
@@ -493,15 +515,18 @@ void LayerTable::updateRow(int r, const Row &row)
                      : row.lockedByGroup ? QStringLiteral("Locked by its group")
                                          : QStringLiteral("Click to lock (no edit allowed)"));
 
-    const QString prefix = row.group ? (row.collapsed ? QStringLiteral("▸  ") : QStringLiteral("▾  "))
-                           : row.member ? QStringLiteral("        ")
-                                        : QString();
+    // Indented by depth (about kIndent px per level); a group starts with its fold arrow
+    const QString prefix = QStringLiteral("        ").repeated(row.depth) +
+                           (row.group ? (row.collapsed ? QStringLiteral("▸  ") : QStringLiteral("▾  ")) : QString());
     QTableWidgetItem *name = text(ColName, prefix + row.tag + QStringLiteral("  ") + row.name,
                                   row.name + (row.source.isEmpty() ? QString() : QStringLiteral("\n") + row.source));
     QFont f = name->font();
     f.setBold(true);
     name->setFont(f);
-    name->setForeground(row.error ? QColor(255, 110, 95) : row.group ? QColor(255, 200, 140) : QColor(230, 230, 233));
+    name->setForeground(row.error      ? QColor(255, 110, 95)
+                        : row.viewport ? QColor(140, 200, 255)
+                        : row.group    ? QColor(255, 200, 140)
+                                       : QColor(230, 230, 233));
     // Effects: their number, the names on hover
     QTableWidgetItem *fx = text(ColEffects, row.effectCount ? QString::number(row.effectCount) : QStringLiteral("—"),
                                 row.effectCount ? (row.effectsOn ? QString() : QStringLiteral("Effects off\n")) +
@@ -509,12 +534,12 @@ void LayerTable::updateRow(int r, const Row &row)
                                                 : QStringLiteral("No effects"));
     fx->setTextAlignment(Qt::AlignCenter);
     fx->setForeground(row.effectsOn ? QColor(255, 200, 140) : QColor(110, 110, 115));
-    text(ColBlend, row.noPicture ? QStringLiteral("—") : row.blend);
+    text(ColBlend, row.noPicture || row.viewport ? QStringLiteral("—") : row.blend);
     text(ColPlayback, row.playback)->setFont(QFont(QStringLiteral("monospace")));
-    const QBrush bg = row.group ? QBrush(QColor(50, 50, 58)) : QBrush();
+    const QBrush bg = row.viewport ? QBrush(QColor(38, 48, 60)) : row.group ? QBrush(QColor(50, 50, 58)) : QBrush();
     for (int c = 0; c < ColCount; ++c)
         if (QTableWidgetItem *it = m_table->item(r, c)) it->setBackground(bg);
-    m_table->setRowHidden(r, row.member && row.collapsed);
+    m_table->setRowHidden(r, row.hidden);
 
     // Opacity: slider right in the row
     auto *cell = m_table->cellWidget(r, ColOpacity);
@@ -574,4 +599,17 @@ void LayerTable::setRows(const std::vector<Row> &rows)
     }
     for (int r = 0; r < int(rows.size()); ++r) updateRow(r, rows[size_t(r)]);
     m_updating = false;
+    restyleSelection();
+}
+
+void LayerTable::restyleSelection()
+{
+    const QList<int> sel = selectedRows();
+    const QString on = QStringLiteral("color:%1;").arg(theme::onAccent().name());
+    for (int r = 0; r < m_table->rowCount(); ++r)
+        if (QWidget *c = m_table->cellWidget(r, ColOpacity))
+            if (auto *label = c->findChild<QLabel *>()) {
+                const QString want = sel.contains(r) ? on : QString();
+                if (label->styleSheet() != want) label->setStyleSheet(want);
+            }
 }

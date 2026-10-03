@@ -137,7 +137,11 @@ int Engine::addViewport(const QString &name, QSize size)
         auto l = std::make_unique<Layer>();
         l->id = id = newIdLocked();
         l->isViewport = true;
-        const QSize px = size.isValid() && !size.isEmpty() ? size : m_compSize;
+        // By default, the size of the last viewport (the same projectors, side by side)
+        QSize px = m_compSize;
+        for (const auto &o : m_layers)
+            if (o->isViewport) px = o->viewportSize();
+        if (size.isValid() && !size.isEmpty()) px = size;
         l->vpWidth = px.width();
         l->vpHeight = px.height();
         const int n = viewportCountLocked();
@@ -434,6 +438,12 @@ int Engine::insertLayerJson(int at, const QJsonObject &o)
     {
         Lock lk(&m_mutex);
         id = m_layers[size_t(idx)]->id;
+        // A viewport (undo of its deletion) goes back to its place among the viewports
+        if (m_layers[size_t(idx)]->isViewport && at >= 0 && at < idx) {
+            auto l = std::move(m_layers[size_t(idx)]);
+            m_layers.erase(m_layers.begin() + idx);
+            m_layers.insert(m_layers.begin() + at, std::move(l));
+        }
         normalizeLocked();
     }
     emit layersChanged();

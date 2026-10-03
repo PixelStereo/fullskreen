@@ -2,6 +2,8 @@
 // composition is assembled, then read back for the interface preview and for publishing.
 #include "EngineInternal.h"
 
+#include <map>
+
 #include <QImage>
 #include <QOffscreenSurface>
 #include <QWindow>
@@ -387,12 +389,13 @@ void Engine::frame(double dt)
     rc.drawQuad = [this] { drawQuad(); };
     rc.blit = [this](GLuint t, const RenderTarget &rt) { blit(t, rt); };
 
-    // Members of a hidden group are hidden (and silent) too
+    // Members of a hidden group are hidden (and silent) too, at any depth. A group comes before its contents.
     {
-        const Layer *group = nullptr;
+        std::map<quint64, bool> shown; // group id → visible, groups above included
         for (auto &l : m_layers) {
-            if (l->isGroup) group = l.get();
-            l->parentVisible = !(l->parent && group && group->id == l->parent && !group->visible);
+            const auto up = l->parent ? shown.find(l->parent) : shown.end();
+            l->parentVisible = up == shown.end() || up->second;
+            if (l->isGroup) shown[l->id] = l->parentVisible && l->visible;
         }
     }
     stepFade(m_realDt);
@@ -456,7 +459,7 @@ void Engine::readSourcePreview()
         f->glUniform3f(m_prepAddLoc, 0, 0, 0);
         f->glUniform3f(m_prepRemoveLoc, 0, 0, 0);
         f->glUniform3f(m_prepBalanceLoc, 1, 1, 1);
-        f->glUniform1i(m_prepUnpremulLoc, l->isGroup ? 1 : 0);
+        f->glUniform1i(m_prepUnpremulLoc, l->isGroup || l->isViewport ? 1 : 0);
         drawQuad();
         img = QImage(w, h, QImage::Format_RGBA8888);
         f->glPixelStorei(GL_PACK_ALIGNMENT, 1);

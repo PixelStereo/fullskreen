@@ -12,14 +12,17 @@
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
 #include <QToolButton>
+#include <QPainter>
 #include <QWheelEvent>
 #include <cmath>
+#include <functional>
 
 static const QColor kSelected(255, 150, 40);
 static const QColor kHandle(255, 255, 255, 230);
 static const QColor kOutline(255, 150, 40, 220);
 static const QColor kOutlineOther(255, 255, 255, 70);
 static const QColor kGrid(255, 255, 255, 110);
+static const QColor kViewport(120, 190, 255, 230);
 
 MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent), m_engine(engine)
 {
@@ -149,24 +152,50 @@ Mapping *MappingView::mapping() const
     return hasPicture(l) ? &l->mapping : nullptr;
 }
 
-const Mapping *MappingView::groupMapping(int layer) const
+// The mappings of the groups holding a layer, innermost first
+std::vector<const Mapping *> MappingView::groupMappings(int layer) const
 {
-    const int g = m_engine->groupIndexOf(layer);
-    if (g < 0) return nullptr;
-    const Mapping &m = m_engine->layer(g)->mapping;
-    return m.isIdentity() ? nullptr : &m;
+    std::vector<const Mapping *> out;
+    for (int g = m_engine->groupIndexOf(layer); g >= 0; g = m_engine->groupIndexOf(g)) {
+        const Mapping &m = m_engine->layer(g)->mapping;
+        if (!m.isIdentity()) out.push_back(&m);
+    }
+    return out;
 }
 
 QPointF MappingView::outOf(int layer, QPointF p) const
 {
-    const Mapping *g = groupMapping(layer);
-    return g ? g->map(p.x(), p.y()) : p;
+    for (const Mapping *g : groupMappings(layer)) p = g->map(p.x(), p.y());
+    return p;
 }
 
 QPointF MappingView::canvasOf(int layer, QPointF p) const
 {
-    const Mapping *g = groupMapping(layer);
-    return g ? g->unmap(p, p) : p;
+    const std::vector<const Mapping *> chain = groupMappings(layer);
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) p = (*it)->unmap(p, p);
+    return p;
+}
+
+bool MappingView::isViewport(int layer) const
+{
+    const Layer *l = m_engine->layer(layer);
+    return l && l->isViewport;
+}
+
+// The viewport whose frame passes under the cursor (-1: none), the selected one first
+int MappingView::hitViewportFrame(QPointF p) const
+{
+    std::vector<int> order;
+    if (isViewport(m_layer)) order.push_back(m_layer);
+    for (int i : m_engine->viewports())
+        if (i != m_layer) order.push_back(i);
+    for (int i : order) {
+        const QRectF b = m_engine->layer(i)->mapping.bounds();
+        const QRectF r = QRectF(toWidget(b.topLeft()), toWidget(b.bottomRight())).normalized();
+        const QRectF outer = r.adjusted(-6, -6, 6, 6), inner = r.adjusted(6, 6, -6, -6);
+        if (outer.contains(p) && !(inner.isValid() && inner.contains(p))) return i;
+    }
+    return -1;
 }
 
 QRectF MappingView::viewRect() const
@@ -234,6 +263,47 @@ void MappingView::initializeGL() { m_draw.init(); }
 
 void MappingView::paintGL()
 {
+    paintScene();
+    paintViewportNames();
+}
+
+// Names of the viewports, at the top left of their frame
+void MappingView::paintViewportNames()
+{
+    std::vector<std::pair<QRectF, QString>> frames;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        for (int i : m_engine->viewports()) {
+            const Layer *l = m_engine->layer(i);
+            const QRectF b = l->mapping.bounds();
+            frames.push_back({QRectF(toWidget(b.topLeft()), toWidget(b.bottomRight())).normalized(), l->name});
+        }
+    }
+    QPainter p(this);
+    QFont f = p.font();
+    f.setPointSizeF(f.pointSizeF() * 0.9);
+    p.setFont(f);
+    std::vector<QRectF> placed; // viewports at the same place: their names one under the other
+    for (const auto &[r, name] : frames) {
+        QRectF t(r.left() + 4, r.top() + 3, std::max(40.0, r.width() - 8), 18);
+        for (bool moved = true; moved;) {
+            moved = false;
+            for (const QRectF &o : placed)
+                if (std::abs(o.top() - t.top()) < 16 && std::abs(o.left() - t.left()) < 60) {
+                    t.translate(0, 16);
+                    moved = true;
+                }
+        }
+        placed.push_back(t);
+        p.setPen(QColor(0, 0, 0, 200));
+        p.drawText(t.translated(1, 1), Qt::AlignLeft | Qt::AlignTop, name);
+        p.setPen(kViewport);
+        p.drawText(t, Qt::AlignLeft | Qt::AlignTop, name);
+    }
+}
+
+void MappingView::paintScene()
+{
     auto f = context()->extraFunctions();
     const qreal dpr = devicePixelRatioF();
     f->glViewport(0, 0, int(width() * dpr), int(height() * dpr));
@@ -258,13 +328,28 @@ void MappingView::paintGL()
     // Read layers under the lock (the render thread uses them concurrently)
     Engine::Lock lk(&m_engine->mutex());
 
+    // Frames of the viewports: always shown (the selected one is drawn below, as the current layer)
+    {
+        std::vector<float> frames;
+        for (int i : m_engine->viewports()) {
+            if (i == m_layer) continue;
+            const QRectF b = m_engine->layer(i)->mapping.bounds();
+            const QPointF a = toWidget(b.topLeft()), c = toWidget(b.bottomRight());
+            pushLine(frames, a, QPointF(c.x(), a.y()));
+            pushLine(frames, QPointF(c.x(), a.y()), c);
+            pushLine(frames, c, QPointF(a.x(), c.y()));
+            pushLine(frames, QPointF(a.x(), c.y()), a);
+        }
+        m_draw.drawLines(frames, kViewport);
+    }
+
     // Outlines of the other layers
     if (m_showAll) {
         std::vector<float> others;
         for (int i = 0; i < m_engine->layerCount(); ++i) {
             if (i == m_layer) continue;
             Layer *l = m_engine->layer(i);
-            if (!l->visible || !hasPicture(l)) continue;
+            if (l->isViewport || !l->visible || !hasPicture(l)) continue;
             auto pts = outline(l->mapping, 16);
             for (QPointF &q : pts) q = outOf(i, q);
             for (size_t k = 0; k < pts.size(); ++k)
@@ -277,6 +362,19 @@ void MappingView::paintGL()
     if (!m) return;
     const int cur = m_layer;
     auto W = [&](QPointF p) { return toWidget(outOf(cur, p)); }; // canvas of the layer -> widget
+
+    // A viewport: its frame, moved by dragging (no corners or mesh)
+    if (isViewport(cur)) {
+        std::vector<float> frame;
+        const QRectF b = m->bounds();
+        const QPointF a = toWidget(b.topLeft()), c = toWidget(b.bottomRight());
+        pushLine(frame, a, QPointF(c.x(), a.y()));
+        pushLine(frame, QPointF(c.x(), a.y()), c);
+        pushLine(frame, c, QPointF(a.x(), c.y()));
+        pushLine(frame, QPointF(a.x(), c.y()), a);
+        m_draw.drawLines(frame, m_engine->isLocked(cur) ? QColor(230, 80, 70, 220) : kSelected);
+        return;
+    }
 
     // Warp mesh
     if (m->meshMode) {
@@ -346,7 +444,7 @@ std::vector<MappingView::Handle> MappingView::allHandles() const
 {
     std::vector<Handle> out;
     Mapping *m = mapping();
-    if (!m) return out;
+    if (!m || isViewport(m_layer)) return out;
     if (m->meshMode) {
         for (int j = 0; j < m->rows; ++j)
             for (int i = 0; i < m->cols; ++i) out.push_back(Handle{1, i, j});
@@ -384,7 +482,7 @@ void MappingView::moveHandle(const Handle &h, QPointF norm)
 MappingView::Handle MappingView::hitHandle(QPointF p) const
 {
     Mapping *m = mapping();
-    if (!m) return {};
+    if (!m || isViewport(m_layer)) return {};
     Handle best;
     double bestD = 12.0;
     auto test = [&](const Handle &h) {
@@ -447,22 +545,35 @@ void MappingView::mousePressEvent(QMouseEvent *e)
     } else if (additive && mapping()) { // Ctrl/⌘+drag: selection rectangle
         m_rubber = true;
         m_rubberStart = m_rubberEnd = p;
-    } else if (m_layer >= 0 && insideLayer(m_layer, p)) {
+    } else if (const int vp = hitViewportFrame(p); vp >= 0) { // a viewport's frame: select it and drag it
+        m_selection.clear();
+        if (vp != m_layer) {
+            lk.unlock();
+            emit layerPicked(vp);
+            lk.relock();
+        }
+        m_dragLayer = !m_engine->isLocked(vp);
+    } else if (m_layer >= 0 && !isViewport(m_layer) && insideLayer(m_layer, p)) {
         m_selection.clear();
         m_dragLayer = !locked;
     } else {
-        // Select the topmost visible layer under the cursor (in a group: its layers before the group itself)
+        // Select the topmost visible layer under the cursor (in a group: its layers before the group itself,
+        // at any depth). Viewports are picked by their frame.
         m_selection.clear();
         std::vector<int> order;
         const int n = m_engine->layerCount();
-        for (int i = 0; i < n; ++i) {
+        std::function<void(int)> add = [&](int i) {
             const Layer *l = m_engine->layer(i);
-            if (l->parent) continue;
             if (l->isGroup) {
-                if (!l->visible) continue;
-                for (int k = i + 1; k < n && m_engine->layer(k)->parent == l->id; ++k) order.push_back(k);
+                if (!l->visible) return;
+                for (int k = i + 1; k < n; ++k)
+                    if (m_engine->layer(k)->parent == l->id) add(k);
             }
             order.push_back(i);
+        };
+        for (int i = 0; i < n; ++i) {
+            const Layer *l = m_engine->layer(i);
+            if (!l->parent && !l->isViewport) add(i);
         }
         for (int i : order) {
             if (m_engine->layer(i)->visible && insideLayer(i, p)) {
@@ -527,7 +638,7 @@ void MappingView::mouseReleaseEvent(QMouseEvent *)
     if (!dragging || !m_undo) return;
     const Mapping after = cmd::SetMapping::read(m_engine, m_layer);
     if (after.toJson() == m_dragBefore.toJson()) return;
-    const QString text = !handle ? QStringLiteral("Move Layer")
+    const QString text = !handle ? (isViewport(m_layer) ? QStringLiteral("Move Viewport") : QStringLiteral("Move Layer"))
                          : m_selection.size() > 1 ? QStringLiteral("Move %1 Points").arg(m_selection.size())
                                                   : QStringLiteral("Move Handle");
     m_undo->push(new cmd::SetMapping(m_engine, m_layer, m_dragBefore, after, text));

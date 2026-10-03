@@ -21,7 +21,10 @@ public:
         bool visible = true, error = false;
         bool noPicture = false; // audio layer: no opacity or blend
         float opacity = 1.f;
-        bool group = false, member = false, collapsed = false; // collapsed: the group, or the group of the member
+        bool viewport = false;      // a viewport: in the block at the top of the list
+        bool group = false, collapsed = false; // collapsed: the group itself is folded
+        bool hidden = false;        // inside a folded group
+        int depth = 0;              // 0 at the top level, 1 in a group, 2 in a group in a group…
         bool locked = false, lockedByGroup = false, effectsOn = true;
         int effectCount = 0;
     };
@@ -39,6 +42,7 @@ signals:
     void currentRowChanged(int row);
     void addClicked();
     void groupClicked();
+    void viewportClicked();
     void filesDropped(int row, const QStringList &paths); // row -1: below the last layer
     void visibilityToggled(int row, bool visible);
     void lockToggled(int row);
@@ -54,6 +58,7 @@ signals:
 
 private:
     void updateRow(int r, const Row &row);
+    void restyleSelection();
     QTableWidget *m_table;
     std::vector<Row> m_rows;
     bool m_updating = false;
