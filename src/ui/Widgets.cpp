@@ -1,5 +1,7 @@
 #include "Widgets.h"
 
+#include <QCheckBox>
+
 #include <QAbstractButton>
 #include <QAbstractSlider>
 #include <QAbstractSpinBox>
@@ -363,6 +365,11 @@ void ColorEditor::build(const QString &title)
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(4);
     auto *head = new QHBoxLayout;
+    m_switch = new QCheckBox;
+    m_switch->setChecked(true);
+    m_switch->hide();
+    head->addWidget(m_switch);
+    connect(m_switch, &QCheckBox::toggled, this, &ColorEditor::switchToggled);
     auto *name = new ResetLabel(QStringLiteral("<b>%1</b>").arg(title), [this] { apply(m_default, true); });
     name->setToolTip(QStringLiteral("Click to reset the color"));
     m_swatch = new QLabel;
@@ -538,6 +545,14 @@ void ColorEditor::sync(const Channel *)
     m_swatch->setStyleSheet(QStringLiteral("background:%1; border:1px solid #555; border-radius:3px;").arg(m_color.name()));
     if (!m_hex->hasFocus()) m_hex->setText(m_color.name().toUpper());
     m_syncing = false;
+}
+
+void ColorEditor::setSwitch(bool shown, bool on, const QString &tip)
+{
+    m_switch->setVisible(shown);
+    QSignalBlocker b(m_switch);
+    m_switch->setChecked(on);
+    if (!tip.isEmpty()) m_switch->setToolTip(tip);
 }
 
 void ColorEditor::setModels(int models)

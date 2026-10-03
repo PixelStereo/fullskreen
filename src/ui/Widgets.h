@@ -106,11 +106,14 @@ public:
     enum Model { Rgb = 1, Hsl = 2, Additive = 4, Subtractive = 8, All = 15 };
     ColorEditor(const QString &title, const QColor &defaultColor, QWidget *parent = nullptr);
     void setModels(int models);
+    // Switch shown next to the title: the color is kept but not applied while it is off
+    void setSwitch(bool shown, bool on, const QString &tip = QString());
     void setColor(const QColor &c);
     QColor color() const { return m_color; }
 
 signals:
     void colorEdited(const QColor &c);
+    void switchToggled(bool on);
 
 private:
     struct Channel {
@@ -122,6 +125,7 @@ private:
         QWidget *row = nullptr;
     };
     void build(const QString &title);
+    class QCheckBox *m_switch = nullptr;
     void addChannel(int model, int index, const QString &name, double max, const QString &suffix, const QString &gradient);
     double channelValue(int model, int index) const;
     void setChannel(int model, int index, double v);

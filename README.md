@@ -39,6 +39,9 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   **Tint** (green −100 … magenta +100), luminance kept; then a color removed from the picture (filter) and a color
   added to it (light): out = balance(in) × (1 − removed) + added. The colors are edited in RGB, HSL, additive
   (R G B light), subtractive (C M Y filters) or all of them together (linked), chosen per layer (Edit in).
+  Each parameter — Temp, Tint, the removed color, the added one — has its **own switch**, and the whole section has
+  one at the top: a switch turned off keeps its value (it comes back as it was) and simply stops applying it, which
+  makes a before / after easy. The switches are saved in the project, stored in memories and reachable by OSC.
 - **Negative speed** plays videos and sounds backwards, in every play mode (Loop goes on backwards from the end,
   One-shot stops on the first frame…); changing direction keeps the current position.
 - **Spatial tab**: position (center, composition pixels) and scale (% of the composition, X and Y linked by
@@ -192,6 +195,7 @@ cmake -S . -B build && cmake --build build -j
 | Reset a parameter | click its name |
 | Part of the source picture used | Source tab ▸ Crop: drag the sides of the rectangle |
 | Add / remove color | Color tab (RGB, HSL, additive, subtractive or all) |
+| Apply a color parameter or not | its check box in the Color tab (Color at the top switches the whole section) |
 | All effects on / off | Effects tab ▸ Effects enabled |
 | Close the output from the output | Shift+Esc (Esc alone does nothing, for safety) |
 | Match the composition to the projector | Master tab ▸ Composition ▸ "= output screen" |
@@ -254,6 +258,7 @@ Main addresses (layer and effect names are made OSC-safe: spaces become `_`; a d
 | `/layers/<name>/source/params/<input>` | per ISF type | ISF generator parameters |
 | `/layers/<name>/color/temp` · `color/tint` | f | −4000..4000 · −100..100 |
 | `/layers/<name>/color/add` · `color/remove` | fff | |
+| `/layers/<name>/color/enabled` · `color/tempEnabled` · `color/tintEnabled` · `color/addEnabled` · `color/removeEnabled` | T | switches of the color |
 | `/layers/<name>/spatial/position` · `scale` · `corners/tl` `tr` `br` `bl` | ff | px · % · normalized |
 | `/layers/<name>/effects/enabled` · `effects/<effect>/enabled` · `effects/<effect>/<input>` | | effect chain |
 | `/layers/<group>/layers/<name>/…` | | layers of a group |

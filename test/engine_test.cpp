@@ -724,6 +724,60 @@ int main(int argc, char **argv)
         std::printf("       master level at mid-fade: %.2f\n", mid);
         CHECK(mid > 0.25 && mid < 0.75);
     }
+    // Color switches: a parameter that is off keeps its value but is not applied
+    {
+        e.newProject();
+        e.fadeMaster(1.0, 0);
+        const int w = e.addLayer("white");
+        e.setLayerIsf(w, root + "/../isf/generators/SolidColor.fs", &err);
+        CHECK(waitFrames(4));
+        auto center = [&] {
+            const QImage im = e.grabOutput();
+            return im.isNull() ? QColor() : QColor(im.pixel(im.width() / 2, im.height() / 2));
+        };
+        CHECK(center().green() > 240);
+        {
+            Engine::Lock lk(&e.mutex());
+            Layer *l = e.layer(w);
+            l->color.remove[1] = 1.0f; // green removed
+            l->color.removeOn = false;
+        }
+        CHECK(waitFrames(4));
+        CHECK(center().green() > 240); // switched off: the picture is left alone
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(w)->color.removeOn = true;
+        }
+        CHECK(waitFrames(4));
+        CHECK(center().green() < 40 && center().red() > 240);
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(w)->color.enabled = false; // the whole section
+        }
+        CHECK(waitFrames(4));
+        CHECK(center().green() > 240);
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(std::abs(e.layer(w)->color.remove[1] - 1.0f) < 1e-6); // the value is kept
+        }
+        // Switches saved with the project (a project without them has everything on)
+        CHECK(e.saveProject(tmp + "/colorswitch.fulskrin", {}, &err));
+        CHECK(e.loadProject(tmp + "/colorswitch.fulskrin", nullptr, &err));
+        {
+            Engine::Lock lk(&e.mutex());
+            Layer *l = e.layer(0);
+            CHECK(l && !l->color.enabled && l->color.removeOn && std::abs(l->color.remove[1] - 1.0f) < 1e-6);
+        }
+        QJsonObject legacy = e.layerJson(0);
+        QJsonObject color = legacy.value("color").toObject();
+        for (const QString &k : {QStringLiteral("enabled"), QStringLiteral("removeOn")}) color.remove(k);
+        legacy["color"] = color;
+        e.replaceLayerJson(0, legacy);
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layer(0)->color.enabled && e.layer(0)->color.removeOn);
+        }
+    }
     // 6. Publishing: GPU readback -> send thread (BGRA, rows top to bottom)
     {
         e.newProject();

@@ -34,7 +34,23 @@ struct ColorAdjust {
     float temp = 0, tint = 0;
     float add[3] = {0, 0, 0};
     float remove[3] = {0, 0, 0};
+    // Switches: the whole color section, then one per parameter. A parameter switched off keeps its value
+    // (it comes back as it was) but is not applied.
+    bool enabled = true, tempOn = true, tintOn = true, addOn = true, removeOn = true;
     static constexpr float kTempRange = 4000, kTintRange = 100;
+
+    // What the rendering applies: a parameter that is off is neutral
+    ColorAdjust effective() const
+    {
+        ColorAdjust e = *this;
+        if (!enabled || !tempOn) e.temp = 0;
+        if (!enabled || !tintOn) e.tint = 0;
+        for (int c = 0; c < 3; ++c) {
+            if (!enabled || !addOn) e.add[c] = 0;
+            if (!enabled || !removeOn) e.remove[c] = 0;
+        }
+        return e;
+    }
     // Gains of the balance (1, 1, 1 when neutral)
     void balanceGains(float g[3]) const
     {
@@ -55,6 +71,9 @@ struct ColorAdjust {
     bool operator==(const ColorAdjust &o) const
     {
         if (temp != o.temp || tint != o.tint) return false;
+        if (enabled != o.enabled || tempOn != o.tempOn || tintOn != o.tintOn || addOn != o.addOn ||
+            removeOn != o.removeOn)
+            return false;
         for (int c = 0; c < 3; ++c)
             if (add[c] != o.add[c] || remove[c] != o.remove[c]) return false;
         return true;

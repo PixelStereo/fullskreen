@@ -704,23 +704,41 @@ QWidget *LayerInspector::buildCrop(const LayerSnapshot &s)
 QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
 {
     auto *g = new QWidget;
-    auto *v = new QVBoxLayout(g);
+    auto *outer = new QVBoxLayout(g);
+    outer->setContentsMargins(0, 0, 0, 0);
+    // Switch of the whole section: the values are kept, they are simply not applied
+    auto *master = new QCheckBox(QStringLiteral("Color"));
+    master->setChecked(s.color.enabled);
+    master->setStyleSheet("font-weight:bold;");
+    master->setToolTip(QStringLiteral("Apply the color of this layer.\nOff: every value is kept, the picture is left alone."));
+    outer->addWidget(master);
+    auto *body = new QWidget; // everything the switch above turns off
+    auto *v = new QVBoxLayout(body);
     v->setContentsMargins(0, 0, 0, 0);
+    body->setEnabled(s.color.enabled);
+    outer->addWidget(body);
+    connect(master, &QCheckBox::toggled, this, [this, body](bool on) {
+        body->setEnabled(on);
+        setProp(cmd::SetLayerProp::ColorOn, on);
+    });
+
     // Balance first, as in DaVinci Resolve: temperature (blue / yellow) and tint (green / magenta)
     {
         auto *box = new QGroupBox;
         auto *grid = new QGridLayout(box);
-        grid->addWidget(new QLabel(QStringLiteral("<b>Balance</b>")), 0, 0, 1, 3);
+        grid->addWidget(new QLabel(QStringLiteral("<b>Balance</b>")), 0, 0, 1, 4);
         struct Def {
             const char *name;
             double range, value;
             const char *gradient;
             int prop;
             QPointer<QDoubleSpinBox> *field;
+            bool on;
+            int onProp;
         } defs[] = {{"Temp", ColorAdjust::kTempRange, s.color.temp, "stop:0 #3a7bff, stop:0.5 #888, stop:1 #ffd23a",
-                     cmd::SetLayerProp::Temp, &m_temp},
+                     cmd::SetLayerProp::Temp, &m_temp, s.color.tempOn, cmd::SetLayerProp::TempOn},
                     {"Tint", ColorAdjust::kTintRange, s.color.tint, "stop:0 #2fd04a, stop:0.5 #888, stop:1 #e03ce0",
-                     cmd::SetLayerProp::Tint, &m_tint}};
+                     cmd::SetLayerProp::Tint, &m_tint, s.color.tintOn, cmd::SetLayerProp::TintOn}};
         int row = 1;
         for (const Def &d : defs) {
             auto *slider = new QSlider(Qt::Horizontal);
@@ -741,9 +759,15 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
             *d.field = spin;
             const double range = d.range;
             const int prop = d.prop;
-            grid->addWidget(new ResetLabel(QString::fromUtf8(d.name), [spin] { spin->setValue(0); }), row, 0);
-            grid->addWidget(slider, row, 1);
-            grid->addWidget(spin, row, 2);
+            auto *on = new QCheckBox;
+            on->setChecked(d.on);
+            on->setToolTip(QStringLiteral("Apply %1 (the value is kept either way)").arg(QString::fromUtf8(d.name)));
+            const int onProp = d.onProp;
+            connect(on, &QCheckBox::toggled, this, [this, onProp](bool v) { setProp(onProp, v); });
+            grid->addWidget(on, row, 0);
+            grid->addWidget(new ResetLabel(QString::fromUtf8(d.name), [spin] { spin->setValue(0); }), row, 1);
+            grid->addWidget(slider, row, 2);
+            grid->addWidget(spin, row, 3);
             connect(slider, &QSlider::valueChanged, this, [this, spin, range, prop](int x) {
                 QSignalBlocker b(spin);
                 spin->setValue(x / 1000.0 * range);
@@ -756,7 +780,7 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
             });
             ++row;
         }
-        grid->setColumnStretch(1, 1);
+        grid->setColumnStretch(2, 1);
         v->addWidget(box);
     }
 
@@ -798,9 +822,13 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
         v->addWidget(frame);
         ed->setModels(s.colorModels);
     }
+    m_colorAdd->setSwitch(true, s.color.addOn, QStringLiteral("Apply the added color (it is kept either way)"));
+    m_colorRemove->setSwitch(true, s.color.removeOn, QStringLiteral("Apply the removed color (it is kept either way)"));
     connect(m_colorAdd, &ColorEditor::colorEdited, this, [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorAdd, c); });
     connect(m_colorRemove, &ColorEditor::colorEdited, this,
             [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorRemove, c); });
+    connect(m_colorAdd, &ColorEditor::switchToggled, this, [this](bool on) { setProp(cmd::SetLayerProp::AddOn, on); });
+    connect(m_colorRemove, &ColorEditor::switchToggled, this, [this](bool on) { setProp(cmd::SetLayerProp::RemoveOn, on); });
     return g;
 }
 
