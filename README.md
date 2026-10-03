@@ -24,7 +24,8 @@ hidden group a reusable "source" — and anything that would make a picture feed
 row of transport buttons — play backwards, pause, play, back to the in point, one frame back, one frame on —
 a row of play modes with the in / out buttons, and three bars: **Position**, **Speed** and **Loop** (the played
 range, two handles). Each bar is one control: drag it, type the value at its right end, or use the wheel; Shift
-makes the drag ten times finer and the notable values catch the cursor. Play / pause is also Space.
+makes the drag ten times finer and the notable values catch the cursor. The same bar is used throughout —
+opacity, volume, ROI, the balance, the color channels, the parameters of every effect and generator. Play / pause is also Space.
 The play modes: One-shot (freezes on the last frame), Loop, Ping-pong (decoded backwards in short windows, so any
 codec works), Stop (black and silent at the end). **In / out points** per layer bound playback in both
 directions, draggable on the playback bar. The default mode for newly loaded media is a setting.
@@ -67,6 +68,9 @@ shows the content in the inspector, double-click or GO recalls it. Each layer of
 ROI, color, mapping, effects and ISF parameters — and **every stored value can be edited there**, without moving
 the composition. Numbers fade to the memory's values in its fade time; sources and effect chains switch at once;
 a layer deleted since is recreated; unchecked and locked layers are left alone.
+
+**Look.** The accent — the selected layer, the bars, the controls that are on, the links — is a very light grey
+by default and is changed in **Settings ▸ Interface ▸ Accent color**; the whole interface follows at once.
 
 **Control and safety.** The whole namespace is published with **OSCQuery** and settable by **OSC** (see below).
 **Undo / redo** covers mapping, parameters, layers, effects and source changes. The session **autosaves** every
@@ -131,6 +135,7 @@ Ctrl on Windows and Linux, ⌘ on Mac.
 | Rename · lock a layer | double-click or F2 · padlock or ⌘L |
 | Copy / paste a layer's parameters | right-click the layer |
 | Reset a parameter | click its name |
+| Accent color of the interface | Settings ▸ Interface |
 | Media Bin / Layers panel | ⇧1 / ⇧2 |
 | Play / pause the selected layer | Space |
 | In / out points at the position | I / O |

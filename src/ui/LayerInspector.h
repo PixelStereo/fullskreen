@@ -51,6 +51,7 @@ private:
     QWidget *buildCompositing(const LayerSnapshot &s);
     QWidget *buildMapping(const LayerSnapshot &s);
     QWidget *buildEffects(const LayerSnapshot &s);
+    void showEffectParams(); // parameters of the selected effect, swapped without rebuilding the list
     void editMapping(const QString &text, const std::function<void(Mapping &)> &fn, bool merge = false);
     void refreshSpatial(); // position / scale fields follow the mapping (handles dragged in the preview)
     void editEffects(const QString &text, const std::function<void()> &op);
@@ -67,12 +68,13 @@ private:
     QVBoxLayout *m_layout = nullptr;
     QWidget *m_content = nullptr;
 
+    QPointer<QWidget> m_fxDetail;
     QPointer<SliderField> m_position, m_speed;
     QPointer<RangeField> m_loop;
     QPointer<QButtonGroup> m_playButtons;
     QPointer<RoiEditor> m_roi;
     QPointer<ColorEditor> m_colorAdd, m_colorRemove;
-    QPointer<QDoubleSpinBox> m_temp, m_tint;
+    QPointer<SliderField> m_temp, m_tint;
     bool m_previewing = false;
     QPointer<QProgressBar> m_meter;
     QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY;

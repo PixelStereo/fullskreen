@@ -195,9 +195,11 @@ public:
 protected:
     void setHover(bool on)
     {
-        setStyleSheet(on ? "QLabel { border:2px dashed #ffa028; border-radius:6px; background:rgba(255,160,40,40);"
-                           " color:#ffd9a8; padding:8px; }"
-                         : "QLabel { border:2px dashed #55555c; border-radius:6px; color:#9a9aa0; padding:8px; }");
+        setStyleSheet(on ? QStringLiteral("QLabel { border:2px dashed %1; border-radius:6px; background:%2;"
+                                          " color:%3; padding:8px; }")
+                               .arg(theme::css(), theme::css(40), theme::accent().lighter(130).name())
+                         : QStringLiteral("QLabel { border:2px dashed #55555c; border-radius:6px; "
+                                          "color:#9a9aa0; padding:8px; }"));
     }
     static QString firstFile(const QMimeData *m)
     {
@@ -530,9 +532,10 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             b->setToolTip(tip);
             b->setCheckable(checkable);
             b->setAutoRaise(true);
-            b->setStyleSheet("QToolButton { padding:3px 7px; border-radius:3px; }"
-                             "QToolButton:checked { background:#ffa028; }"
-                             "QToolButton:hover { background:#3a3a3f; }");
+            b->setStyleSheet(QStringLiteral("QToolButton { padding:3px 7px; border-radius:3px; }"
+                                            "QToolButton:checked { background:%1; }"
+                                            "QToolButton:hover { background:#3a3a3f; }")
+                                 .arg(theme::css()));
             return b;
         };
 
@@ -801,47 +804,52 @@ QWidget *LayerInspector::buildRoi(const LayerSnapshot &s)
     m_roi->setRoi(s.roi);
     v->addWidget(m_roi);
     auto *grid = new QGridLayout;
-    static const char *kNames[] = {"Left", "Top", "Right", "Bottom"};
-    QDoubleSpinBox *fields[4];
-    const double values[4] = {s.roi.left(), s.roi.top(), s.roi.right(), s.roi.bottom()};
-    for (int k = 0; k < 4; ++k) {
-        auto *f = new QDoubleSpinBox;
-        f->setRange(0, 100);
-        f->setDecimals(1);
-        f->setSuffix(QStringLiteral(" %"));
-        f->setKeyboardTracking(false);
-        f->setValue(values[k] * 100);
-        fields[k] = f;
-        const double def = k < 2 ? 0.0 : 100.0;
-        grid->addWidget(new ResetLabel(QString::fromUtf8(kNames[k]), [f, def] { f->setValue(def); }), k / 2, (k % 2) * 2);
-        grid->addWidget(f, k / 2, (k % 2) * 2 + 1);
-    }
+    grid->setHorizontalSpacing(8);
+    grid->setVerticalSpacing(4);
     grid->setColumnStretch(1, 1);
-    grid->setColumnStretch(3, 1);
+    // Left / right and top / bottom are two ranges: one bar each, the bounds typed at either end
+    RangeField *bars[2];
+    const double bounds[2][2] = {{s.roi.left(), s.roi.right()}, {s.roi.top(), s.roi.bottom()}};
+    static const char *kRows[] = {"Left · Right", "Top · Bottom"};
+    for (int k = 0; k < 2; ++k) {
+        auto *bar = new RangeField;
+        bar->setRange(0, 100);
+        bar->setDecimals(1);
+        bar->setSuffix(QStringLiteral(" %"));
+        bar->setValues(bounds[k][0] * 100, bounds[k][1] * 100);
+        bars[k] = bar;
+        auto *name = new ResetLabel(QString::fromUtf8(kRows[k]), [bar] {
+            bar->setValues(0, 100);
+            emit bar->editingFinished();
+        });
+        name->setStyleSheet("color:#8a8a8e;");
+        name->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        grid->addWidget(name, k, 0);
+        grid->addWidget(bar, k, 1);
+    }
     v->addLayout(grid);
     auto apply = [this](const QRectF &r) {
         setProp(cmd::SetLayerProp::Roi, r);
         emit layerChanged();
     };
     QPointer<RoiEditor> editor = m_roi;
-    connect(m_roi, &RoiEditor::roiEdited, this, [apply, fields](const QRectF &r) {
-        const double vals[4] = {r.left(), r.top(), r.right(), r.bottom()};
-        for (int k = 0; k < 4; ++k) {
-            QSignalBlocker b(fields[k]);
-            fields[k]->setValue(vals[k] * 100);
-        }
+    connect(m_roi, &RoiEditor::roiEdited, this, [apply, bars](const QRectF &r) {
+        QSignalBlocker b0(bars[0]), b1(bars[1]);
+        bars[0]->setValues(r.left() * 100, r.right() * 100);
+        bars[1]->setValues(r.top() * 100, r.bottom() * 100);
         apply(r);
     });
-    for (int k = 0; k < 4; ++k)
-        connect(fields[k], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [apply, fields, editor] {
-            double l = fields[0]->value() / 100, t = fields[1]->value() / 100, r = fields[2]->value() / 100,
-                   b = fields[3]->value() / 100;
-            r = std::max(r, l + 0.001);
-            b = std::max(b, t + 0.001);
-            const QRectF rect(QPointF(l, t), QPointF(std::min(r, 1.0), std::min(b, 1.0)));
-            if (editor) editor->setRoi(rect);
-            apply(rect);
-        });
+    auto fromBars = [apply, bars, editor] {
+        const double l = bars[0]->low() / 100, r = std::max(bars[0]->high() / 100, bars[0]->low() / 100 + 0.001);
+        const double t = bars[1]->low() / 100, b = std::max(bars[1]->high() / 100, bars[1]->low() / 100 + 0.001);
+        const QRectF rect(QPointF(l, t), QPointF(std::min(r, 1.0), std::min(b, 1.0)));
+        if (editor) editor->setRoi(rect);
+        apply(rect);
+    };
+    for (RangeField *bar : bars) {
+        connect(bar, &RangeField::edited, this, [fromBars] { fromBars(); });
+        connect(bar, &RangeField::editingFinished, this, [fromBars] { fromBars(); });
+    }
     return box;
 }
 
@@ -874,34 +882,27 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
         struct Def {
             const char *name;
             double range, value;
-            const char *gradient;
+            QGradientStops gradient;
             int prop;
-            QPointer<QDoubleSpinBox> *field;
+            QPointer<SliderField> *field;
             bool on;
             int onProp;
-        } defs[] = {{"Temp", ColorAdjust::kTempRange, s.color.temp, "stop:0 #3a7bff, stop:0.5 #888, stop:1 #ffd23a",
+        } defs[] = {{"Temp", ColorAdjust::kTempRange, s.color.temp,
+                     {{0.0, QColor("#3a7bff")}, {0.5, QColor("#888888")}, {1.0, QColor("#ffd23a")}},
                      cmd::SetLayerProp::Temp, &m_temp, s.color.tempOn, cmd::SetLayerProp::TempOn},
-                    {"Tint", ColorAdjust::kTintRange, s.color.tint, "stop:0 #2fd04a, stop:0.5 #888, stop:1 #e03ce0",
+                    {"Tint", ColorAdjust::kTintRange, s.color.tint,
+                     {{0.0, QColor("#2fd04a")}, {0.5, QColor("#888888")}, {1.0, QColor("#e03ce0")}},
                      cmd::SetLayerProp::Tint, &m_tint, s.color.tintOn, cmd::SetLayerProp::TintOn}};
         int row = 1;
         for (const Def &d : defs) {
-            auto *slider = new QSlider(Qt::Horizontal);
-            slider->setRange(-1000, 1000);
-            slider->setStyleSheet(QStringLiteral("QSlider::groove:horizontal { height:6px; border-radius:3px;"
-                                                 " background:qlineargradient(x1:0,y1:0,x2:1,y2:0,%1); }"
-                                                 "QSlider::handle:horizontal { background:#eee; width:10px; margin:-5px 0;"
-                                                 " border-radius:5px; }")
-                                      .arg(QString::fromUtf8(d.gradient)));
-            auto *spin = new QDoubleSpinBox;
-            spin->setRange(-d.range, d.range);
-            spin->setDecimals(d.range >= 1000 ? 0 : 1);
-            spin->setSingleStep(d.range / 100);
-            spin->setKeyboardTracking(false);
-            spin->setFixedWidth(76);
-            spin->setValue(d.value);
-            slider->setValue(int(std::lround(d.value / d.range * 1000)));
-            *d.field = spin;
-            const double range = d.range;
+            auto *bar = new SliderField;
+            bar->setRange(-d.range, d.range);
+            bar->setDecimals(d.range >= 1000 ? 0 : 1);
+            bar->setSingleStep(d.range / 100);
+            bar->setSnaps({0});
+            bar->setGradient(d.gradient);
+            bar->setValue(d.value);
+            *d.field = bar;
             const int prop = d.prop;
             auto *on = new QCheckBox;
             on->setChecked(d.on);
@@ -909,19 +910,13 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
             const int onProp = d.onProp;
             connect(on, &QCheckBox::toggled, this, [this, onProp](bool v) { setProp(onProp, v); });
             grid->addWidget(on, row, 0);
-            grid->addWidget(new ResetLabel(QString::fromUtf8(d.name), [spin] { spin->setValue(0); }), row, 1);
-            grid->addWidget(slider, row, 2);
-            grid->addWidget(spin, row, 3);
-            connect(slider, &QSlider::valueChanged, this, [this, spin, range, prop](int x) {
-                QSignalBlocker b(spin);
-                spin->setValue(x / 1000.0 * range);
-                setProp(prop, spin->value());
-            });
-            connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, slider, range, prop](double x) {
-                QSignalBlocker b(slider);
-                slider->setValue(int(std::lround(x / range * 1000)));
-                setProp(prop, x);
-            });
+            grid->addWidget(new ResetLabel(QString::fromUtf8(d.name), [bar] {
+                                bar->setValue(0);
+                                emit bar->valueEdited(0);
+                            }),
+                            row, 1);
+            grid->addWidget(bar, row, 2, 1, 2);
+            connect(bar, &SliderField::valueEdited, this, [this, prop](double x) { setProp(prop, x); });
             ++row;
         }
         grid->setColumnStretch(2, 1);
@@ -981,22 +976,20 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
     auto *g = new QWidget; // titled by its sub-tab
     auto *form = new QFormLayout(g);
 
-    auto *row = new QWidget;
-    auto *h = new QHBoxLayout(row);
-    h->setContentsMargins(0, 0, 0, 0);
-    auto *slider = new QSlider(Qt::Horizontal);
-    slider->setRange(0, 100);
-    slider->setValue(int(std::lround(s.opacity * 100)));
-    auto *spin = new QSpinBox;
-    spin->setRange(0, 100);
-    spin->setSuffix(" %");
-    spin->setValue(slider->value());
-    h->addWidget(slider, 1);
-    h->addWidget(spin);
-    form->addRow(new ResetLabel(QStringLiteral("Opacity"), [spin] { spin->setValue(100); }), row);
-    connect(slider, &QSlider::valueChanged, spin, &QSpinBox::setValue);
-    connect(spin, qOverload<int>(&QSpinBox::valueChanged), slider, &QSlider::setValue);
-    connect(slider, &QSlider::valueChanged, this, [this](int v) { setProp(cmd::SetLayerProp::Opacity, v / 100.0); });
+    auto *opacity = new SliderField;
+    opacity->setRange(0, 100);
+    opacity->setDecimals(0);
+    opacity->setSuffix(QStringLiteral(" %"));
+    opacity->setSingleStep(1);
+    opacity->setTicks(10);
+    opacity->setSnaps({100});
+    opacity->setValue(s.opacity * 100);
+    form->addRow(new ResetLabel(QStringLiteral("Opacity"), [this, opacity] {
+                     opacity->setValue(100);
+                     setProp(cmd::SetLayerProp::Opacity, 1.0);
+                 }),
+                 opacity);
+    connect(opacity, &SliderField::valueEdited, this, [this](double v) { setProp(cmd::SetLayerProp::Opacity, v / 100.0); });
 
     auto *blend = new QComboBox;
     for (BlendMode m : {BlendMode::Normal, BlendMode::Add, BlendMode::Screen, BlendMode::Multiply})
@@ -1040,7 +1033,8 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
         link->setChecked(m_scaleLinked);
         link->setText(QStringLiteral("⛓"));
         link->setToolTip(QStringLiteral("Link width and height (keep the aspect ratio)"));
-        link->setStyleSheet("QToolButton:checked { background:#ffa028; color:#1b1b1d; }");
+        link->setStyleSheet(QStringLiteral("QToolButton:checked { background:%1; color:%2; }")
+                                .arg(theme::css(), theme::onAccent().name()));
         auto *posLabel = new ResetLabel(QStringLiteral("Position"), [this, comp] {
             m_posX->setValue(comp.width() / 2.0); // centered
             m_posY->setValue(comp.height() / 2.0);
@@ -1270,9 +1264,12 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
         });
     });
     connect(list, &QListWidget::currentRowChanged, this, [this](int r) {
+        // Only the parameters below are swapped. Rebuilding the whole tab here would destroy the list
+        // between the press and the release, and the click that picked the row would never reach its
+        // check box — which is why enabling an effect used to take two clicks.
         if (r >= 0 && r != m_selectedEffect) {
             m_selectedEffect = r;
-            QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+            showEffectParams();
         }
     });
     connect(remove, &QToolButton::clicked, this, [this] {
@@ -1303,15 +1300,47 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
         rebuild();
     });
 
-    const auto &fx = s.effects[size_t(m_selectedEffect)];
-    v->addWidget(new QLabel(QStringLiteral("<b>%1</b>").arg(fx.name.toHtmlEscaped())));
-    if (!fx.error.isEmpty()) v->addWidget(errorLabel(fx.error));
-    if (fx.valid) {
+    // Parameters of the selected effect: their own container, refilled in place
+    m_fxDetail = new QWidget;
+    auto *detail = new QVBoxLayout(m_fxDetail);
+    detail->setContentsMargins(0, 0, 0, 0);
+    v->addWidget(m_fxDetail);
+    showEffectParams();
+    return g;
+}
+
+// Name, error and parameters of the selected effect, replaced without touching the list above
+void LayerInspector::showEffectParams()
+{
+    if (!m_fxDetail) return;
+    auto *lay = static_cast<QVBoxLayout *>(m_fxDetail->layout());
+    while (QLayoutItem *item = lay->takeAt(0)) {
+        if (QWidget *w = item->widget()) {
+            w->setParent(nullptr);
+            w->deleteLater();
+        }
+        delete item;
+    }
+    QString name, error;
+    bool valid = false;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Layer *l = m_engine->layer(m_layer);
+        if (!l || l->effects.empty()) return;
+        m_selectedEffect = std::clamp(m_selectedEffect, 0, int(l->effects.size()) - 1);
+        const IsfInstance *fx = l->effects[size_t(m_selectedEffect)].get();
+        name = fx->name();
+        error = fx->error();
+        valid = fx->isValid();
+    }
+    lay->addWidget(new QLabel(QStringLiteral("<b>%1</b>").arg(name.toHtmlEscaped())));
+    if (!error.isEmpty()) lay->addWidget(errorLabel(error));
+    if (valid) {
         auto *params = new ParamPanel(m_engine, m_undo, m_layer, m_selectedEffect);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
-        v->addWidget(params);
+        lay->addWidget(params);
     }
-    return g;
+    lockInputs(m_fxDetail, m_locked);
 }
 
 void LayerInspector::refreshSpatial()
@@ -1366,7 +1395,7 @@ void LayerInspector::refreshDynamic()
             tint = l->color.tint;
         }
         for (auto [field, value] : {std::pair{m_temp.data(), temp}, std::pair{m_tint.data(), tint}})
-            if (field && !field->hasFocus() && std::abs(field->value() - value) > 1e-3) field->setValue(value); // its slider follows
+            if (field && !field->isDragging() && std::abs(field->value() - value) > 1e-3) field->setValue(value);
         if (m_roi) m_roi->setRoi(roi);
         if (m_colorAdd) m_colorAdd->setColor(add);
         if (m_colorRemove) m_colorRemove->setColor(remove);

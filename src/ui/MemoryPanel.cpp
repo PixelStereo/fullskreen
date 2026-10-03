@@ -34,7 +34,7 @@ static QIcon plusIcon()
     p.setRenderHint(QPainter::Antialiasing);
     p.setPen(QPen(QColor(120, 120, 128), 1, Qt::DashLine));
     p.drawRoundedRect(QRectF(1, 1, kThumb.width() - 2, kThumb.height() - 2), 4, 4);
-    p.setPen(QPen(QColor(255, 160, 40), 4, Qt::SolidLine, Qt::RoundCap));
+    p.setPen(QPen(theme::accent(), 4, Qt::SolidLine, Qt::RoundCap));
     const QPointF c(kThumb.width() / 2.0, kThumb.height() / 2.0);
     p.drawLine(c - QPointF(12, 0), c + QPointF(12, 0));
     p.drawLine(c - QPointF(0, 12), c + QPointF(0, 12));
@@ -163,7 +163,7 @@ static QPixmap tile(const QImage &thumb, bool active)
         p.drawImage(QPoint((kThumb.width() - s.width()) / 2, (kThumb.height() - s.height()) / 2), s);
     }
     if (active) { // last recalled
-        p.setPen(QPen(QColor(255, 160, 40), 4));
+        p.setPen(QPen(theme::accent(), 4));
         p.drawRect(QRect(QPoint(2, 2), kThumb - QSize(4, 4)));
     }
     return pm;

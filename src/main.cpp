@@ -1,41 +1,13 @@
 #include "Engine.h"
 #include "MainWindow.h"
+#include "Widgets.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QMessageBox>
-#include <QPalette>
-#include <QStyleFactory>
 #include <QSurfaceFormat>
 #include <QThread>
 #include <QTimer>
-
-static void applyDarkTheme(QApplication &app)
-{
-    app.setStyle(QStyleFactory::create("Fusion"));
-    QPalette p;
-    const QColor base(30, 30, 33), window(40, 40, 44), text(225, 225, 228), accent(255, 150, 40);
-    p.setColor(QPalette::Window, window);
-    p.setColor(QPalette::WindowText, text);
-    p.setColor(QPalette::Base, base);
-    p.setColor(QPalette::AlternateBase, window);
-    p.setColor(QPalette::ToolTipBase, base);
-    p.setColor(QPalette::ToolTipText, text);
-    p.setColor(QPalette::Text, text);
-    p.setColor(QPalette::Button, QColor(52, 52, 57));
-    p.setColor(QPalette::ButtonText, text);
-    p.setColor(QPalette::Highlight, accent);
-    p.setColor(QPalette::HighlightedText, Qt::black);
-    p.setColor(QPalette::Link, accent);
-    p.setColor(QPalette::PlaceholderText, QColor(130, 130, 135));
-    p.setColor(QPalette::Disabled, QPalette::Text, QColor(120, 120, 125));
-    p.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(120, 120, 125));
-    p.setColor(QPalette::Disabled, QPalette::WindowText, QColor(120, 120, 125));
-    app.setPalette(p);
-    app.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #4a4a50; border-radius: 4px; margin-top: 10px; "
-                      "padding-top: 8px; } "
-                      "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #ff9628; }");
-}
 
 int main(int argc, char *argv[])
 {
@@ -54,7 +26,7 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName("Fulskrin");
     QApplication::setOrganizationName("Fulskrin");
     QApplication::setApplicationVersion("0.1.0");
-    applyDarkTheme(app);
+    theme::applyToApplication(app);
 
     QCommandLineParser cli;
     cli.setApplicationDescription("Fulskrin — multi-layer video mapping, FFmpeg playback, ISF shaders");

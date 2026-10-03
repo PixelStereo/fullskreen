@@ -77,39 +77,16 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
 
         switch (in.type) {
         case IsfInput::Float: {
-            auto *w = new QWidget;
-            auto *h = new QHBoxLayout(w);
-            h->setContentsMargins(0, 0, 0, 0);
-            auto *slider = new QSlider(Qt::Horizontal);
-            slider->setFocusPolicy(Qt::ClickFocus); // Tab / Shift+Tab go from field to field
-            slider->setRange(0, 1000);
-            auto *spin = new QDoubleSpinBox;
-            spin->setRange(in.fMin, in.fMax);
-            const double mn = in.fMin, span = in.fMax - in.fMin;
-            spin->setDecimals(span >= 100 ? 1 : span >= 10 ? 2 : 3);
-            spin->setSingleStep(span / 100.0);
-            spin->setValue(in.fValue);
-            spin->setKeyboardTracking(false);
-            spin->setFixedWidth(80);
-            slider->setValue(int(std::lround((in.fValue - mn) / span * 1000)));
-            h->addWidget(slider, 1);
-            h->addWidget(spin);
-            connect(slider, &QSlider::valueChanged, this, [=](int v) {
-                const double val = mn + span * v / 1000.0;
-                {
-                    QSignalBlocker b(spin);
-                    spin->setValue(val);
-                }
-                setValue(idx, label, [val](IsfValue &x) { x.f = val; });
-            });
-            connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double v) {
-                {
-                    QSignalBlocker b(slider);
-                    slider->setValue(int(std::lround((v - mn) / span * 1000)));
-                }
-                setValue(idx, label, [v](IsfValue &x) { x.f = v; });
-            });
-            field = w;
+            const double span = in.fMax - in.fMin;
+            auto *bar = new SliderField;
+            bar->setRange(in.fMin, in.fMax);
+            bar->setDecimals(span >= 100 ? 1 : span >= 10 ? 2 : 3);
+            bar->setSingleStep(span / 100.0);
+            bar->setTicks(10);
+            bar->setValue(in.fValue);
+            connect(bar, &SliderField::valueEdited, this,
+                    [=](double v) { setValue(idx, label, [v](IsfValue &x) { x.f = v; }); });
+            field = bar;
             break;
         }
         case IsfInput::Bool: {
