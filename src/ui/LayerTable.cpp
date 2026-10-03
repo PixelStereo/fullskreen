@@ -388,6 +388,16 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     connect(m_table, &QTableWidget::cellClicked, this, [this](int row, int col) {
         if (col == ColLock) emit lockToggled(row);
     });
+    m_table->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_table, &QTableWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        const int row = m_table->rowAt(pos.y());
+        // Right-clicking outside the selection acts on the row under the cursor, as everywhere else
+        if (row >= 0 && !selectedRows().contains(row)) {
+            setCurrentRow(row);
+            emit currentRowChanged(row);
+        }
+        emit contextMenuRequested(row, m_table->viewport()->mapToGlobal(pos));
+    });
     auto *f2 = new QShortcut(QKeySequence(Qt::Key_F2), m_table, nullptr, nullptr, Qt::WidgetShortcut);
     connect(f2, &QShortcut::activated, this, [this] { startRename(currentRow()); });
     connect(add, &QToolButton::clicked, this, &LayerTable::addClicked);

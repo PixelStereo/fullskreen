@@ -28,10 +28,10 @@ origin() { # the largest window whose title ends with "Fulskrin" (main window)
     echo "main window at $X0,$Y0"
 }
 at() { xdotool mousemove $((X0 + $1)) $((Y0 + $2)); }
-crop() { echo "$3x$4+$((X0 + $1))+$((Y0 + $2))"; }
-lum() { convert "$OUT/$1.png" -crop "$2" +repage -colorspace Gray -format '%[fx:mean*255]' info:; }
+roi() { echo "$3x$4+$((X0 + $1))+$((Y0 + $2))"; }
+lum() { convert "$OUT/$1.png" -roi "$2" +repage -colorspace Gray -format '%[fx:mean*255]' info:; }
 same() { # number of differing pixels between two screenshots, within an area
-    convert "$OUT/$1.png" -crop "$3" +repage /tmp/_a.png; convert "$OUT/$2.png" -crop "$3" +repage /tmp/_b.png
+    convert "$OUT/$1.png" -roi "$3" +repage /tmp/_a.png; convert "$OUT/$2.png" -roi "$3" +repage /tmp/_b.png
     compare -metric AE /tmp/_a.png /tmp/_b.png null: 2>&1
 }
 PREVIEW=""
@@ -39,7 +39,7 @@ PREVIEW=""
 ../build/Fulskrin projects/demo.fulskrin >"$OUT/log1.txt" 2>&1 & APP=$!
 sleep 5
 xdotool key Return; sleep 1                      # "file not found" warning
-origin; PREVIEW=$(crop 400 180 700 380)
+origin; PREVIEW=$(roi 400 180 700 380)
 shot 01_opened; sleep 0.7; shot 01b
 echo "animated preview (pixels changed in 0.7 s): $(same 01_opened 01b "$PREVIEW")"
 
@@ -65,9 +65,9 @@ shot 07_dragged
 # --- Fullscreen on the main screen (single screen), then back, via keyboard
 at 750 650; xdotool click 1; sleep 0.3
 xdotool key ctrl+f; sleep 2.5; shot 08_fullscreen
-echo "fullscreen: pixels changed in the layers area: $(same 07_dragged 08_fullscreen "$(crop 0 760 1600 150)")"
+echo "fullscreen: pixels changed in the layers area: $(same 07_dragged 08_fullscreen "$(roi 0 760 1600 150)")"
 xdotool key ctrl+f; sleep 2; shot 09_restored
-echo "back: pixels changed in the layers area: $(same 07_dragged 09_restored "$(crop 0 760 900 150)")"
+echo "back: pixels changed in the layers area: $(same 07_dragged 09_restored "$(roi 0 760 900 150)")"
 
 # --- Master: blackout with fade, measured in the preview
 at 1265 34; xdotool click 1; sleep 1

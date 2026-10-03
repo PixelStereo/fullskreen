@@ -50,6 +50,7 @@ signals:
     void removeClicked();
     void duplicateClicked();
     void moveClicked(int delta);
+    void contextMenuRequested(int row, const QPoint &globalPos); // right-click on a row (-1: empty area)
 
 private:
     void updateRow(int r, const Row &row);

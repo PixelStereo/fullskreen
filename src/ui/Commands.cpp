@@ -66,7 +66,7 @@ static QString propText(SetLayerProp::Prop p)
     case SetLayerProp::EffectsEnabled: return QStringLiteral("Enable / Disable Effects");
     case SetLayerProp::ColorAdd: return QStringLiteral("Change Added Color");
     case SetLayerProp::ColorRemove: return QStringLiteral("Change Removed Color");
-    case SetLayerProp::Crop: return QStringLiteral("Change Crop");
+    case SetLayerProp::Roi: return QStringLiteral("Change ROI");
     case SetLayerProp::ColorOn: return QStringLiteral("Switch Color");
     case SetLayerProp::TempOn: return QStringLiteral("Switch Temperature");
     case SetLayerProp::TintOn: return QStringLiteral("Switch Tint");
@@ -104,7 +104,7 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
     case EffectsEnabled: return l->effectsEnabled;
     case ColorAdd: return QColor::fromRgbF(l->color.add[0], l->color.add[1], l->color.add[2]);
     case ColorRemove: return QColor::fromRgbF(l->color.remove[0], l->color.remove[1], l->color.remove[2]);
-    case Crop: return l->crop;
+    case Roi: return l->roi;
     case ColorOn: return l->color.enabled;
     case TempOn: return l->color.tempOn;
     case TintOn: return l->color.tintOn;
@@ -168,9 +168,9 @@ void SetLayerProp::apply(const QVariant &v)
     case RemoveOn: l->color.removeOn = v.toBool(); break;
     case Temp: l->color.temp = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTempRange), double(ColorAdjust::kTempRange))); break;
     case Tint: l->color.tint = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTintRange), double(ColorAdjust::kTintRange))); break;
-    case Crop: {
-        const QRectF r = v.toRectF().normalized() & Layer::fullCrop();
-        l->crop = r.isEmpty() ? Layer::fullCrop() : r;
+    case Roi: {
+        const QRectF r = v.toRectF().normalized() & Layer::fullRoi();
+        l->roi = r.isEmpty() ? Layer::fullRoi() : r;
         break;
     }
     default: break;
@@ -182,7 +182,7 @@ bool SetLayerProp::mergeWith(const QUndoCommand *other)
     auto *o = static_cast<const SetLayerProp *>(other);
     if (o->m_layer != m_layer || o->m_prop != m_prop) return false;
     if (m_prop != Name && m_prop != Opacity && m_prop != Speed && m_prop != Volume && m_prop != InPoint &&
-        m_prop != OutPoint && m_prop != ColorAdd && m_prop != ColorRemove && m_prop != Crop &&
+        m_prop != OutPoint && m_prop != ColorAdd && m_prop != ColorRemove && m_prop != Roi &&
         m_prop != Temp && m_prop != Tint)
         return false;
     if (o->m_time - m_time > kMergeWindowMs) return false;

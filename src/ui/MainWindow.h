@@ -78,6 +78,9 @@ private:
     bool refuseLocked(int layer); // status message if locked
     void duplicateCurrentLayer();
     void moveCurrentLayer(int delta);
+    void layerContextMenu(int row, const QPoint &globalPos);
+    void copyLayerParams(int row);                             // into m_paramClipboard
+    void pasteLayerParams(int parts, const QString &what);     // Engine::LayerParts, onto the selected layers
     void togglePlayCurrent();
     void setInOutAtPosition(bool in);
     void relinkMedia(const QString &from, const QString &to);
@@ -117,6 +120,8 @@ private:
     QString m_screenName;
     OutputMode m_outputMode = OutputHidden;
     int m_lastSelected = -1;
+    QJsonObject m_paramClipboard;       // layer parameters copied with the right-click menu
+    QString m_paramClipboardName;       // the layer they come from (shown in the menu)
 
     bool m_forceDirty = false;          // change outside the undo stack (composition, publishing, media bin)
     bool m_autosaveEnabled = true;

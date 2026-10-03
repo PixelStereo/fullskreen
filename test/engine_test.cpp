@@ -236,7 +236,7 @@ int main(int argc, char **argv)
         CHECK(tree::normalized(bad)[1].parent == 0);
     }
 
-    // 4c. Groups, crop, color, effects switch, lock, blackout (manual rendering)
+    // 4c. Groups, roi, color, effects switch, lock, blackout (manual rendering)
     {
         e.newProject();
         e.setCompositionSize(QSize(64, 32));
@@ -253,11 +253,11 @@ int main(int argc, char **argv)
         CHECK(e.setLayerImage(l, tmp + "/redblue.png", &err));
         QImage img = render();
         CHECK(px(img, 8, 16).red() > 250 && px(img, 56, 16).blue() > 250);
-        // Crop: the right half only fills the layer
-        e.layer(l)->crop = QRectF(0.5, 0, 0.5, 1);
+        // Roi: the right half only fills the layer
+        e.layer(l)->roi = QRectF(0.5, 0, 0.5, 1);
         img = render();
         CHECK(px(img, 8, 16).blue() > 250 && px(img, 8, 16).red() < 5);
-        e.layer(l)->crop = Layer::fullCrop();
+        e.layer(l)->roi = Layer::fullRoi();
         // Color: remove red, add green
         e.layer(l)->color.remove[0] = 1.0f;
         e.layer(l)->color.add[1] = 0.5f;
@@ -293,7 +293,7 @@ int main(int argc, char **argv)
         e.layer(l)->effectsEnabled = true;
         e.removeEffect(l, 0);
 
-        // Group: the layer moves in, the group's opacity, visibility, crop and color apply to it
+        // Group: the layer moves in, the group's opacity, visibility, roi and color apply to it
         int g = e.addGroup("G", 0);
         CHECK(e.layer(g)->isGroup && e.layerCount() == 2);
         const quint64 gid = e.layerId(g), lid = e.layerId(1);
@@ -305,10 +305,10 @@ int main(int argc, char **argv)
         img = render();
         CHECK(std::abs(px(img, 8, 16).red() - 128) < 6);
         e.layer(0)->opacity = 1.0f;
-        e.layer(0)->crop = QRectF(0, 0, 0.5, 1); // left half of the composition: red everywhere
+        e.layer(0)->roi = QRectF(0, 0, 0.5, 1); // left half of the composition: red everywhere
         img = render();
         CHECK(px(img, 56, 16).red() > 250 && px(img, 56, 16).blue() < 5);
-        e.layer(0)->crop = Layer::fullCrop();
+        e.layer(0)->roi = Layer::fullRoi();
         e.layer(0)->color.remove[2] = 1.0f;
         img = render();
         CHECK(px(img, 56, 16).blue() < 5 && px(img, 8, 16).red() > 250);
@@ -331,7 +331,7 @@ int main(int argc, char **argv)
         e.layer(0)->locked = false;
 
         // Save / load keeps the structure and the new properties
-        e.layer(1)->crop = QRectF(0.1, 0.2, 0.5, 0.6);
+        e.layer(1)->roi = QRectF(0.1, 0.2, 0.5, 0.6);
         e.layer(1)->color.add[2] = 0.25f;
         e.layer(1)->effectsEnabled = false;
         e.layer(0)->locked = true;
@@ -340,7 +340,7 @@ int main(int argc, char **argv)
         CHECK(e.loadProject(tmp + "/groups.fulskrin", nullptr, &err));
         CHECK(e.structure() == before);
         CHECK(e.layer(0)->locked && e.layer(0)->isGroup);
-        CHECK(QLineF(e.layer(1)->crop.topLeft(), QPointF(0.1, 0.2)).length() < 1e-9 && std::abs(e.layer(1)->crop.width() - 0.5) < 1e-9);
+        CHECK(QLineF(e.layer(1)->roi.topLeft(), QPointF(0.1, 0.2)).length() < 1e-9 && std::abs(e.layer(1)->roi.width() - 0.5) < 1e-9);
         CHECK(std::abs(e.layer(1)->color.add[2] - 0.25f) < 1e-6 && !e.layer(1)->effectsEnabled);
         e.layer(0)->locked = false;
         // Duplicate a group: its members are copied into the copy
@@ -359,8 +359,8 @@ int main(int argc, char **argv)
             CHECK(e.layerCount() == 3 && e.groupMembers(2).isEmpty());
             undo.undo();
             CHECK(e.structure() == t0);
-            undo.push(new cmd::SetLayerProp(&e, 1, cmd::SetLayerProp::Crop, e.layer(1)->crop, QRectF(0, 0, 0.5, 0.5)));
-            CHECK(e.layer(1)->crop == QRectF(0, 0, 0.5, 0.5));
+            undo.push(new cmd::SetLayerProp(&e, 1, cmd::SetLayerProp::Roi, e.layer(1)->roi, QRectF(0, 0, 0.5, 0.5)));
+            CHECK(e.layer(1)->roi == QRectF(0, 0, 0.5, 0.5));
             undo.undo();
             undo.push(new cmd::SetLayerProp(&e, 1, cmd::SetLayerProp::ColorRemove, QColor(Qt::black), QColor(Qt::red)));
             CHECK(e.layer(1)->color.remove[0] == 1.0f && e.layer(1)->color.remove[1] == 0.0f);
@@ -421,7 +421,7 @@ int main(int argc, char **argv)
         CHECK(server.handleMessage({L + "/color/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(1)->color.add[2] - 0.3f) < 1e-6);
         CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(1)->color.temp == -2000.0f);
         CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(1)->color.tint == 100.0f); // clipped
-        CHECK(server.handleMessage({L + "/source/crop/left", "f", {0.25}}) && std::abs(e.layer(1)->crop.left() - 0.25) < 1e-9);
+        CHECK(server.handleMessage({L + "/source/roi/left", "f", {0.25}}) && std::abs(e.layer(1)->roi.left() - 0.25) < 1e-9);
         CHECK(server.handleMessage({L + "/effects/FlipCrop/flipH", "T", {true}}));
         CHECK(e.layer(1)->effects[0]->inputs()[1].bValue || e.layer(1)->effects[0]->inputs()[2].bValue);
         CHECK(server.handleMessage({L + "/effects/enabled", "F", {false}}) && !e.layer(1)->effectsEnabled);
@@ -1401,6 +1401,166 @@ int main(int argc, char **argv)
     CHECK(!e.isThreaded());
     e.renderFrame(); // back to manual mode
     CHECK(!e.grabOutput().isNull());
+
+    // 12. Copy / paste of layer parameters, and a layer used as the source of another (pre-FX / post-FX)
+    {
+        e.newProject();
+        const QString isfDir = root + "/../isf";
+        const quint64 idA = e.layerId(e.addLayer("A"));
+        CHECK(e.setLayerIsf(e.indexOfId(idA), isfDir + "/generators/TestPattern.fs", &err));
+        // B is above A in the list: the render pass must still render A first (B's source)
+        const quint64 idB = e.layerId(e.addLayer("B", 0));
+        CHECK(e.setLayerIsf(e.indexOfId(idB), isfDir + "/generators/SolidColor.fs", &err));
+        auto A = [&] { return e.indexOfId(idA); };
+        auto B = [&] { return e.indexOfId(idB); };
+        CHECK(A() == 1 && B() == 0);
+
+        // A: a distinctive value in every part
+        {
+            Engine::Lock lk(&e.mutex());
+            Layer *l = e.layer(A());
+            l->roi = QRectF(QPointF(0.25, 0.1), QPointF(0.75, 0.6));
+            l->color.temp = 1000;
+            l->color.tintOn = false;
+            l->opacity = 0.25f;
+            l->blend = BlendMode::Multiply;
+            l->mapping.setCorner(1, QPointF(0.8, 0.2));
+        }
+        CHECK(e.addEffect(A(), isfDir + "/effects/Hue.fs", &err) == 0);
+        const QJsonObject clip = e.layerJson(A());
+
+        // One part at a time: nothing else moves
+        CHECK(e.applyLayerParts(B(), clip, Engine::PartRoi));
+        {
+            Engine::Lock lk(&e.mutex());
+            const Layer *l = e.layer(B());
+            CHECK(l->roi == QRectF(QPointF(0.25, 0.1), QPointF(0.75, 0.6)));
+            CHECK(l->color.temp == 0.f && l->opacity == 1.f && l->effects.empty());
+            CHECK(l->mapping.corners[1] == QPointF(1, 0));
+            CHECK(l->type == SourceType::Isf && l->sourcePath.endsWith("SolidColor.fs")); // its own media kept
+        }
+        CHECK(e.applyLayerParts(B(), clip, Engine::PartColor));
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layer(B())->color.temp == 1000.f && !e.layer(B())->color.tintOn);
+            CHECK(e.layer(B())->opacity == 1.f);
+        }
+        CHECK(e.applyLayerParts(B(), clip, Engine::PartSpatial | Engine::PartCompositing));
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layer(B())->mapping.corners[1] == QPointF(0.8, 0.2));
+            CHECK(e.layer(B())->opacity == 0.25f && e.layer(B())->blend == BlendMode::Multiply);
+            CHECK(e.layer(B())->effects.empty());
+        }
+        CHECK(e.applyLayerParts(B(), clip, Engine::PartEffects));
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layer(B())->effects.size() == 1 && e.layer(B())->effects[0]->name() == "Hue");
+            CHECK(e.layer(B())->type == SourceType::Isf && e.layer(B())->sourcePath.endsWith("SolidColor.fs"));
+        }
+        // Everything, the source included: B becomes a copy of A, with its own name and place
+        CHECK(e.applyLayerParts(B(), clip, Engine::PartAll));
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layer(B())->name == "B" && e.layer(B())->sourcePath.endsWith("TestPattern.fs"));
+        }
+        CHECK(B() == 0 && e.layerId(0) == idB);
+        // A locked layer refuses a paste
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(B())->locked = true;
+        }
+        CHECK(!e.applyLayerParts(B(), clip, Engine::PartRoi));
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(B())->locked = false;
+            e.layer(B())->roi = Layer::fullRoi();
+        }
+
+        // B's picture is A's, after A's effect chain
+        CHECK(e.setLayerSourceLayer(B(), idA, LayerTap::PostFx, &err));
+        e.renderFrame();
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layer(B())->type == SourceType::Layer && e.layer(B())->rawTex != 0);
+            CHECK(e.layer(B())->rawTex == e.layer(A())->finalTex);
+            CHECK(e.layer(A())->preFxTex != e.layer(A())->finalTex); // A has a ROI, a color and an effect
+        }
+        // ... or before it
+        CHECK(e.setLayerTap(B(), LayerTap::PreFx));
+        e.renderFrame();
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layer(B())->rawTex == e.layer(A())->preFxTex);
+        }
+        // Refused: itself, and anything that would feed the picture back on itself
+        CHECK(!e.setLayerSourceLayer(B(), idB, LayerTap::PostFx, &err) && !err.isEmpty());
+        CHECK(!e.setLayerSourceLayer(A(), idB, LayerTap::PostFx, &err) && !err.isEmpty());
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layerDependsOn(idB, idA) && !e.layerDependsOn(idA, idB));
+        }
+        // A group has no source of its own
+        const int g = e.addGroup("G", 0);
+        CHECK(!e.setLayerSourceLayer(g, idA, LayerTap::PostFx, &err));
+        // A hidden group used as a source is rendered all the same
+        const quint64 idG = e.layerId(g);
+        e.setStructure(tree::intoGroup(e.structure(), {idA}, idG));
+        CHECK(e.setLayerSourceLayer(B(), idG, LayerTap::PostFx, &err));
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(idG))->visible = false;
+        }
+        e.renderFrame();
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layer(e.indexOfId(idG))->finalTex != 0 && e.layer(e.indexOfId(idG))->referenced);
+            CHECK(e.layer(B())->rawTex == e.layer(e.indexOfId(idG))->finalTex);
+        }
+        // A member of a group cannot use its own group: the group is made of it
+        CHECK(!e.setLayerSourceLayer(e.indexOfId(idA), idG, LayerTap::PostFx, &err));
+
+        // Saved and read back
+        CHECK(e.saveProject(tmp + "/layersrc.fulskrin", {}, &err));
+        const QJsonObject saved = readJson(tmp + "/layersrc.fulskrin");
+        err.clear(); // the refusals above left their message there
+        CHECK(e.loadProject(tmp + "/layersrc.fulskrin", nullptr, &err) && err.isEmpty());
+        {
+            Engine::Lock lk(&e.mutex());
+            const Layer *l = e.layer(e.indexOfId(idB));
+            CHECK(l && l->type == SourceType::Layer && l->sourceLayer == idG && l->sourceTap == LayerTap::PostFx);
+        }
+        CHECK(e.saveProject(tmp + "/layersrc2.fulskrin", {}, &err));
+        CHECK(saved.value("layers") == readJson(tmp + "/layersrc2.fulskrin").value("layers"));
+
+        // The layer it used is gone, or a hand-edited project loops: the source is dropped, with a warning
+        e.removeLayer(e.indexOfId(idG)); // removes the group and its member
+        QStringList warnings;
+        e.fixLayerReferences(&warnings);
+        CHECK(warnings.size() == 1 && warnings[0].contains("gone"));
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layer(e.indexOfId(idB))->type == SourceType::None);
+        }
+        e.newProject();
+    }
+
+    // 13. A project saved when the ROI was still called "crop" still loads
+    {
+        e.newProject();
+        const int i = e.addLayer("Old");
+        CHECK(e.setLayerIsf(i, root + "/../isf/generators/TestPattern.fs", &err));
+        QJsonObject o = e.layerJson(i), src = o.value("source").toObject();
+        src["crop"] = QJsonArray{0.1, 0.2, 0.8, 0.9};
+        src.remove("roi");
+        o["source"] = src;
+        e.replaceLayerJson(i, o);
+        {
+            Engine::Lock lk(&e.mutex());
+            CHECK(e.layer(0)->roi == QRectF(QPointF(0.1, 0.2), QPointF(0.8, 0.9)));
+        }
+        e.newProject();
+    }
 
     std::printf("\n%s (%d failure(s))\n", failures ? "FAILED" : "ALL OK", failures);
     e.shutdown();

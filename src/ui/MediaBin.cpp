@@ -505,6 +505,19 @@ void MediaBin::contextMenu(const QPoint &pos)
         const bool isf = it->data(0, IsfRole).toBool();
         QAction *a = menu.addAction(QStringLiteral("Load into Selected Layer"), this, [this, p] { emit useAsSourceRequested(p); });
         a->setEnabled(!missing);
+        QMenu *into = menu.addMenu(QStringLiteral("Load into Layer"));
+        {
+            // Every layer of the composition, groups shown (disabled: they have no source) with their layers indented
+            Engine::Lock lk(&m_engine->mutex());
+            for (int i = 0; i < m_engine->layerCount(); ++i) {
+                Layer *l = m_engine->layer(i);
+                if (!l) continue;
+                const QString label = (l->parent ? QStringLiteral("      ") : QString()) + l->name;
+                QAction *la = into->addAction(label, this, [this, i, p] { emit loadIntoLayerRequested(i, p); });
+                la->setEnabled(!l->isGroup && !m_engine->isLocked(i));
+            }
+        }
+        into->setEnabled(!missing && !into->isEmpty());
         menu.addSeparator();
         menu.addAction(QStringLiteral("Relink File…"), this, &MediaBin::relinkSelected)->setEnabled(!isf);
         menu.addAction(m_reveal->text(), this, &MediaBin::revealSelected)->setEnabled(!missing);

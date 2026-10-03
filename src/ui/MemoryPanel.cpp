@@ -213,7 +213,7 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_fade->setSingleStep(0.5);
     m_fade->setSuffix(QStringLiteral(" s"));
     m_fade->setKeyboardTracking(false);
-    m_fade->setToolTip(QStringLiteral("Fade: opacity, volume, crop, color, mapping and ISF numbers move to the memory's "
+    m_fade->setToolTip(QStringLiteral("Fade: opacity, volume, ROI, color, mapping and ISF numbers move to the memory's "
                                       "values in this time; sources and effect chains change at once"));
     auto *fadeRow = new QHBoxLayout;
     fadeRow->addWidget(new ResetLabel(QStringLiteral("Fade"), [this] { m_fade->setValue(1.0); }));
@@ -572,6 +572,11 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         QTreeWidgetItem *sec = section(parent, QStringLiteral("Source"), QStringLiteral("source"));
         if (type == "none") {
             info(sec, QStringLiteral("Source"), QStringLiteral("—"));
+        } else if (type == "layer") {
+            const Layer *from = m_engine->layer(m_engine->indexOfId(src.value("layer").toString().toULongLong()));
+            info(sec, QStringLiteral("Layer"), from ? from->name : QStringLiteral("(gone)"));
+            choice(sec, QStringLiteral("Tap"), {"source", "tap"}, {"prefx", "postfx"},
+                   {QStringLiteral("Pre-FX"), QStringLiteral("Post-FX")});
         } else {
             info(sec, type == "isf" ? QStringLiteral("Shader") : QStringLiteral("File"),
                  QFileInfo(src.value("path").toString()).fileName(), src.value("path").toString());
@@ -593,11 +598,11 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         expand(sec);
     }
 
-    if (jsonAt(o, {"source", "crop"}).toArray().size() == 4) {
-        QTreeWidgetItem *sec = section(parent, QStringLiteral("Crop"), QStringLiteral("crop"));
+    if (jsonAt(o, {"source", "roi"}).toArray().size() == 4) {
+        QTreeWidgetItem *sec = section(parent, QStringLiteral("ROI"), QStringLiteral("roi"));
         static const char *kSides[] = {"Left", "Top", "Right", "Bottom"};
         for (int c = 0; c < 4; ++c)
-            num(sec, QString::fromLatin1(kSides[c]), {"source", "crop", QString::number(c)}, 0, 1, 100, 1,
+            num(sec, QString::fromLatin1(kSides[c]), {"source", "roi", QString::number(c)}, 0, 1, 100, 1,
                 QStringLiteral(" %"), 0.01);
         expand(sec);
     }

@@ -13,7 +13,16 @@
 #include <memory>
 #include <vector>
 
-enum class SourceType { None, Video, Image, Isf, Audio };
+// What feeds a layer's picture. `Layer`: the picture of another layer of the composition, tapped either
+// before or after its effect chain (see LayerTap) — the same picture can be mapped and treated twice.
+enum class SourceType { None, Video, Image, Isf, Audio, Layer };
+// Where the picture of a layer used as a source is taken
+enum class LayerTap {
+    PreFx = 0,  // after its ROI and color, before its effect chain
+    PostFx = 1, // after its effect chain (its own mapping and opacity are not part of it)
+};
+QString layerTapKey(LayerTap t);
+LayerTap layerTapFromKey(const QString &k);
 enum class BlendMode { Normal, Add, Screen, Multiply };
 // What a video or a sound does at its end: freeze on the last frame, loop, play backwards and forwards,
 // or stop and go black (and silent).
@@ -97,13 +106,17 @@ struct Layer {
     float opacity = 1.0f;
     BlendMode blend = BlendMode::Normal;
 
-    QRectF crop{0, 0, 1, 1};      // part of the source picture used (normalized, origin top left)
+    QRectF roi{0, 0, 1, 1};      // part of the source picture used (normalized, origin top left)
     ColorAdjust color;
     bool effectsEnabled = true;   // general switch of the effect chain
 
     SourceType type = SourceType::None;
     QString sourcePath;
     QString error;
+    // SourceType::Layer: the layer whose picture is used, and where it is tapped
+    quint64 sourceLayer = 0;
+    LayerTap sourceTap = LayerTap::PostFx;
+    bool referenced = false; // used as a source by another layer: rendered even when hidden (every frame)
     // File missing on load: path and type are kept (save, media bin, relink)
     SourceType missingType = SourceType::None;
 
@@ -141,8 +154,8 @@ struct Layer {
     RenderTarget fxTarget[2];
 
     RenderTarget groupTarget; // group: composite of its members (composition size)
-    RenderTarget prepTarget;  // crop + color
-    GLuint rawTex = 0;        // source picture before crop (crop preview)
+    RenderTarget prepTarget;  // roi + color
+    GLuint rawTex = 0;        // source picture before roi (roi preview)
     int rawW = 0, rawH = 0;
 
     Mapping mapping;
@@ -150,6 +163,8 @@ struct Layer {
     // Frame render result
     GLuint finalTex = 0;
     int finalW = 0, finalH = 0;
+    GLuint preFxTex = 0; // picture just before the effect chain (tap of a layer used as a source)
+    int preFxW = 0, preFxH = 0;
 
     bool hasTransport() const { return video || audio; }
     double duration() const { return video ? video->duration() : audio ? audio->duration() : 0.0; }
@@ -171,5 +186,5 @@ struct Layer {
     int sourceWidth() const { return type == SourceType::Isf ? genWidth : srcWidth; }
     int sourceHeight() const { return type == SourceType::Isf ? genHeight : srcHeight; }
     bool hasPicture() const { return isGroup || (type != SourceType::Audio && !(type == SourceType::None && missingType == SourceType::Audio)); }
-    static QRectF fullCrop() { return QRectF(0, 0, 1, 1); }
+    static QRectF fullRoi() { return QRectF(0, 0, 1, 1); }
 };
