@@ -65,21 +65,21 @@ private:
 
 // Part of the source picture used by a layer: preview of the whole picture with a rectangle whose sides are dragged
 // (they stay straight); dragging inside moves the rectangle. Numeric fields in % below.
-class CropEditor : public QWidget
+class RoiEditor : public QWidget
 {
     Q_OBJECT
 public:
-    explicit CropEditor(QWidget *parent = nullptr);
+    explicit RoiEditor(QWidget *parent = nullptr);
     void setImage(const QImage &img);
     void setAspect(double aspect); // used while no preview is available
-    void setCrop(const QRectF &r);
-    QRectF crop() const { return m_crop; }
+    void setRoi(const QRectF &r);
+    QRectF roi() const { return m_roi; }
     QSize sizeHint() const override { return QSize(320, 200); }
     bool hasHeightForWidth() const override { return true; }
     int heightForWidth(int w) const override;
 
 signals:
-    void cropEdited(const QRectF &r); // continuous while dragging
+    void roiEdited(const QRectF &r); // continuous while dragging
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -92,7 +92,7 @@ private:
     int hit(QPointF p) const;   // 0 left, 1 top, 2 right, 3 bottom, 4 inside, -1 none
     QImage m_image;
     double m_aspect = 16.0 / 9.0;
-    QRectF m_crop{0, 0, 1, 1}, m_dragStart;
+    QRectF m_roi{0, 0, 1, 1}, m_dragStart;
     int m_drag = -1;
     QPointF m_pressNorm;
 };

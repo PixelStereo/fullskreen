@@ -81,6 +81,9 @@ PlayMode playModeFromKey(const QString &k, PlayMode fallback)
     return fallback;
 }
 
+QString layerTapKey(LayerTap t) { return t == LayerTap::PreFx ? QStringLiteral("prefx") : QStringLiteral("postfx"); }
+LayerTap layerTapFromKey(const QString &k) { return k == "prefx" ? LayerTap::PreFx : LayerTap::PostFx; }
+
 BlendMode blendModeFromKey(const QString &k)
 {
     if (k == "add") return BlendMode::Add;
@@ -280,11 +283,11 @@ bool Engine::initialize(QString *err)
                                    "void main(){ o = vec4(texture(u_tex, v_uv).rgb, 1.0); }\n",
                                    &log);
     m_flipTexLoc = f->glGetUniformLocation(m_flipProgram, "u_tex");
-    // Layer preparation: crop (part of the source used), color (added / removed), unpremultiplied alpha (groups)
+    // Layer preparation: roi (part of the source used), color (added / removed), unpremultiplied alpha (groups)
     m_prepProgram = compileProgram(quadVs,
-                                   "#version 330 core\nuniform sampler2D u_tex; uniform vec4 u_crop; uniform vec3 u_add;\n"
+                                   "#version 330 core\nuniform sampler2D u_tex; uniform vec4 u_roi; uniform vec3 u_add;\n"
                                    "uniform vec3 u_remove; uniform vec3 u_balance; uniform int u_unpremul; in vec2 v_uv; out vec4 o;\n"
-                                   "void main(){ vec4 c = texture(u_tex, mix(u_crop.xy, u_crop.zw, v_uv));\n"
+                                   "void main(){ vec4 c = texture(u_tex, mix(u_roi.xy, u_roi.zw, v_uv));\n"
                                    "  if (u_unpremul != 0 && c.a > 0.0) c.rgb /= c.a;\n"
                                    "  o = vec4(clamp(c.rgb * u_balance * (1.0 - u_remove) + u_add, 0.0, 1.0), c.a); }\n",
                                    &log);
@@ -293,7 +296,7 @@ bool Engine::initialize(QString *err)
         return false;
     }
     m_prepTexLoc = f->glGetUniformLocation(m_prepProgram, "u_tex");
-    m_prepCropLoc = f->glGetUniformLocation(m_prepProgram, "u_crop");
+    m_prepRoiLoc = f->glGetUniformLocation(m_prepProgram, "u_roi");
     m_prepAddLoc = f->glGetUniformLocation(m_prepProgram, "u_add");
     m_prepRemoveLoc = f->glGetUniformLocation(m_prepProgram, "u_remove");
     m_prepUnpremulLoc = f->glGetUniformLocation(m_prepProgram, "u_unpremul");
@@ -818,6 +821,83 @@ void Engine::replaceLayerJson(int i, const QJsonObject &o)
     emit layersChanged();
 }
 
+// ROI of a saved source object (the whole picture when it is absent or degenerate)
+static QRectF roiFromJson(const QJsonObject &src)
+{
+    // "crop": the name this had in earlier projects
+    const QJsonArray c = src.value(src.contains("roi") ? "roi" : "crop").toArray();
+    if (c.size() != 4) return Layer::fullRoi();
+    const QRectF r = QRectF(QPointF(c[0].toDouble(), c[1].toDouble()), QPointF(c[2].toDouble(), c[3].toDouble()))
+                         .normalized() & Layer::fullRoi();
+    return r.isEmpty() ? Layer::fullRoi() : r;
+}
+
+static void colorFromJson(ColorAdjust &col, const QJsonObject &o)
+{
+    col.temp = float(std::clamp(o.value("temp").toDouble(0), -double(ColorAdjust::kTempRange), double(ColorAdjust::kTempRange)));
+    col.tint = float(std::clamp(o.value("tint").toDouble(0), -double(ColorAdjust::kTintRange), double(ColorAdjust::kTintRange)));
+    for (int c = 0; c < 3; ++c) {
+        col.add[c] = float(std::clamp(o.value("add").toArray().at(c).toDouble(0), 0.0, 1.0));
+        col.remove[c] = float(std::clamp(o.value("remove").toArray().at(c).toDouble(0), 0.0, 1.0));
+    }
+    // Switches: on in a project saved before they existed
+    col.enabled = o.value("enabled").toBool(true);
+    col.tempOn = o.value("tempOn").toBool(true);
+    col.tintOn = o.value("tintOn").toBool(true);
+    col.addOn = o.value("addOn").toBool(true);
+    col.removeOn = o.value("removeOn").toBool(true);
+}
+
+bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
+{
+    if (i < 0 || i >= layerCount() || o.isEmpty() || !parts || isLocked(i)) return false;
+    bool group = false;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        group = l->isGroup;
+    }
+    if (group) parts &= ~PartSource; // a group has no source of its own: it composites its layers
+
+    // With the source, the layer is rebuilt from a merged state (the media is opened again, as when one is
+    // loaded); the target keeps its identity and whatever the paste does not carry.
+    if (parts & PartSource) {
+        QJsonObject merged = layerJson(i), src = o.value("source").toObject();
+        if (!(parts & PartRoi)) src["roi"] = merged.value("source").toObject().value("roi");
+        merged["source"] = src;
+        if (parts & PartColor) merged["color"] = o.value("color");
+        if (parts & PartSpatial) merged["mapping"] = o.value("mapping");
+        if (parts & PartEffects) {
+            merged["effects"] = o.value("effects");
+            merged["effectsEnabled"] = o.value("effectsEnabled");
+        }
+        if (parts & PartCompositing)
+            for (const char *k : {"opacity", "blend"}) merged[QLatin1String(k)] = o.value(QLatin1String(k));
+        replaceLayerJson(i, merged);
+        fixLayerReferences(); // a pasted layer source must not make the picture feed back
+        return true;
+    }
+
+    // Everything else is set in place: the media goes on playing.
+    if (parts & PartEffects) setEffectsJson(i, o.value("effects").toArray());
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        if (parts & PartEffects) l->effectsEnabled = o.value("effectsEnabled").toBool(true);
+        if (parts & PartRoi) l->roi = roiFromJson(o.value("source").toObject());
+        if (parts & PartColor) colorFromJson(l->color, o.value("color").toObject());
+        if (parts & PartSpatial) l->mapping.fromJson(o.value("mapping").toObject());
+        if (parts & PartCompositing) {
+            l->opacity = float(std::clamp(o.value("opacity").toDouble(l->opacity), 0.0, 1.0));
+            l->blend = blendModeFromKey(o.value("blend").toString());
+        }
+    }
+    emit layersChanged();
+    return true;
+}
+
 int Engine::duplicateLayer(int i)
 {
     QJsonObject o = layerJson(i);
@@ -889,7 +969,9 @@ std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
     l.error.clear();
     l.srcWidth = l.srcHeight = 0;
     l.missingType = SourceType::None;
+    l.sourceLayer = 0;
     l.finalTex = 0;
+    l.preFxTex = 0;
     return g;
 }
 
@@ -915,6 +997,89 @@ void Engine::clearLayerSource(int i)
         g = detachSource(*l);
     }
     releaseGarbage(g);
+}
+
+// True when the picture of layer `id` depends on layer `onId`: directly (it is used as its source),
+// through a chain of such references, or because `id` is a group and one of its members depends on it.
+// The lock must be held.
+bool Engine::layerDependsOn(quint64 id, quint64 onId) const
+{
+    if (!id || !onId) return false;
+    std::vector<quint64> seen;
+    std::function<bool(quint64)> visit = [&](quint64 cur) -> bool {
+        if (cur == onId) return true;
+        if (std::find(seen.begin(), seen.end(), cur) != seen.end()) return false;
+        seen.push_back(cur);
+        for (const auto &l : m_layers) {
+            if (l->id != cur) continue;
+            if (l->type == SourceType::Layer && l->sourceLayer && visit(l->sourceLayer)) return true;
+            if (l->isGroup)
+                for (const auto &m : m_layers)
+                    if (m->parent == cur && visit(m->id)) return true;
+            break;
+        }
+        return false;
+    };
+    return visit(id);
+}
+
+// After a project is read (or a layer re-created): drops the references to a layer that is not there, and any
+// that would make a picture feed back on itself — a project edited by hand must not be able to do that.
+void Engine::fixLayerReferences(QStringList *warnings)
+{
+    Lock lk(&m_mutex);
+    for (auto &l : m_layers) {
+        if (l->type != SourceType::Layer) continue;
+        const bool exists = indexOfId(l->sourceLayer) >= 0;
+        if (exists && l->sourceLayer != l->id && !layerDependsOn(l->sourceLayer, l->id)) continue;
+        if (warnings)
+            *warnings << l->name + (exists ? QStringLiteral(": the layer it used feeds back on it, source dropped.")
+                                           : QStringLiteral(": the layer it used is gone, source dropped."));
+        l->type = SourceType::None;
+        l->sourceLayer = 0;
+    }
+}
+
+bool Engine::setLayerSourceLayer(int i, quint64 sourceId, LayerTap tap, QString *err)
+{
+    auto fail = [err](const QString &m) {
+        if (err) *err = m;
+        return false;
+    };
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l) return false;
+        if (l->isGroup) return fail(QStringLiteral("A group has no source: its picture is the composite of its layers."));
+        const int si = indexOfId(sourceId);
+        if (si < 0) return fail(QStringLiteral("That layer no longer exists."));
+        if (sourceId == l->id) return fail(QStringLiteral("A layer cannot be its own source."));
+        if (layerDependsOn(sourceId, l->id))
+            return fail(QStringLiteral("\"%1\" already uses this layer: the picture would feed back on itself.")
+                            .arg(m_layers[size_t(si)]->name));
+        g = detachSource(*l);
+        l->type = SourceType::Layer;
+        l->sourceLayer = sourceId;
+        l->sourceTap = tap;
+    }
+    releaseGarbage(g);
+    emit layersChanged();
+    return true;
+}
+
+// Tap of a layer already using another layer as its source
+bool Engine::setLayerTap(int i, LayerTap tap)
+{
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || l->type != SourceType::Layer) return false;
+        if (l->sourceTap == tap) return true;
+        l->sourceTap = tap;
+    }
+    emit layersChanged();
+    return true;
 }
 
 static bool isDefaultMapping(const Mapping &m)
@@ -1325,15 +1490,65 @@ void Engine::updateSource(Layer &l, double dt)
         l.sourceTex.upload(l.frameBuffer.data(), w, h);
 }
 
+// One frame of every layer, in dependency order: a layer whose source is another layer is rendered after it,
+// and a group after its members. A layer used as a source is rendered even when it is hidden.
+// A reference cycle (A on B, B on A) is not broken by an error: the layer reached a second time keeps the
+// texture of the previous frame, which gives a one-frame feedback loop.
+void Engine::renderPass(const IsfRenderContext &rc)
+{
+    const size_t n = m_layers.size();
+    for (auto &l : m_layers) l->referenced = false;
+    for (auto &l : m_layers) {
+        if (l->type != SourceType::Layer || !l->sourceLayer) continue;
+        const int si = indexOfId(l->sourceLayer);
+        if (si >= 0) m_layers[size_t(si)]->referenced = true;
+    }
+    enum { Todo = 0, Doing = 1, Done = 2 };
+    m_renderMark.assign(n, Todo);
+    std::function<void(size_t)> render = [&](size_t i) {
+        if (m_renderMark[i] != Todo) return; // done, or being rendered (cycle)
+        m_renderMark[i] = Doing;
+        Layer &l = *m_layers[i];
+        if (l.type == SourceType::Layer && l.sourceLayer) {
+            const int si = indexOfId(l.sourceLayer);
+            if (si >= 0) render(size_t(si));
+        }
+        if (l.isGroup) {
+            std::vector<Layer *> members;
+            for (size_t k = i + 1; k < n && m_layers[k]->parent == l.id; ++k) {
+                render(k);
+                members.push_back(m_layers[k].get());
+            }
+            if (l.visible || l.referenced) renderGroup(l, members, rc);
+            else l.finalTex = l.rawTex = l.preFxTex = 0;
+        } else {
+            renderLayer(l, rc);
+        }
+        m_renderMark[i] = Done;
+    };
+    for (size_t i = 0; i < n; ++i) render(i);
+}
+
 void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
 {
     l.finalTex = 0;
     l.rawTex = 0;
+    l.preFxTex = 0;
     if (l.isGroup) return;  // rendered from its members (renderGroup)
     if (l.ended) return; // Stop mode, after the end: nothing
     GLuint tex = 0;
     int w = 0, h = 0;
     switch (l.type) {
+    case SourceType::Layer:
+        // Picture of another layer, already rendered this frame (the render pass follows the references).
+        if (const Layer *s = l.sourceLayer ? layer(indexOfId(l.sourceLayer)) : nullptr) {
+            tex = l.sourceTap == LayerTap::PreFx ? s->preFxTex : s->finalTex;
+            w = l.sourceTap == LayerTap::PreFx ? s->preFxW : s->finalW;
+            h = l.sourceTap == LayerTap::PreFx ? s->preFxH : s->finalH;
+            l.srcWidth = w; // what the inspector and the ROI editor show
+            l.srcHeight = h;
+        }
+        break;
     case SourceType::Video:
     case SourceType::Image:
         tex = l.sourceTex.tex;
@@ -1354,17 +1569,17 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
     processLayer(l, tex, w, h, false, rc);
 }
 
-// Source picture -> crop and color (when needed) -> effect chain -> l.finalTex
+// Source picture -> roi and color (when needed) -> effect chain -> l.finalTex
 void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied, const IsfRenderContext &rc)
 {
     l.rawTex = tex;
     l.rawW = w;
     l.rawH = h;
-    QRectF c = l.crop.normalized() & Layer::fullCrop();
-    if (c.width() < 1e-4 || c.height() < 1e-4) c = Layer::fullCrop();
-    const bool cropped = c != Layer::fullCrop();
+    QRectF c = l.roi.normalized() & Layer::fullRoi();
+    if (c.width() < 1e-4 || c.height() < 1e-4) c = Layer::fullRoi();
+    const bool restricted = c != Layer::fullRoi();
     const ColorAdjust col = l.color.effective(); // switches honoured once, here
-    if (cropped || !col.isIdentity() || premultiplied) {
+    if (restricted || !col.isIdentity() || premultiplied) {
         auto f = gl();
         const int cw = std::max(1, int(std::lround(w * c.width()))), ch = std::max(1, int(std::lround(h * c.height())));
         l.prepTarget.ensure(cw, ch);
@@ -1374,8 +1589,8 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
         f->glActiveTexture(GL_TEXTURE0);
         f->glBindTexture(GL_TEXTURE_2D, tex);
         f->glUniform1i(m_prepTexLoc, 0);
-        // Crop: top-left origin in the UI, textures in OpenGL convention (origin bottom left)
-        f->glUniform4f(m_prepCropLoc, float(c.left()), float(1.0 - c.bottom()), float(c.right()), float(1.0 - c.top()));
+        // ROI: top-left origin in the UI, textures in OpenGL convention (origin bottom left)
+        f->glUniform4f(m_prepRoiLoc, float(c.left()), float(1.0 - c.bottom()), float(c.right()), float(1.0 - c.top()));
         f->glUniform3f(m_prepAddLoc, col.add[0], col.add[1], col.add[2]);
         f->glUniform3f(m_prepRemoveLoc, col.remove[0], col.remove[1], col.remove[2]);
         float gains[3];
@@ -1389,6 +1604,10 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
     } else if (l.prepTarget.fbo) {
         l.prepTarget.destroy();
     }
+
+    l.preFxTex = tex; // tap of a layer used as a source: after the ROI and the color, before the effects
+    l.preFxW = w;
+    l.preFxH = h;
 
     if (l.effectsEnabled) {
         int ping = 0;
@@ -1406,7 +1625,7 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
 }
 
 // A group's picture: its members composited on a transparent canvas the size of the composition
-// (premultiplied), then cropped, colored and processed by its effects like any layer.
+// (premultiplied), then restricted, colored and processed by its effects like any layer.
 void Engine::renderGroup(Layer &g, const std::vector<Layer *> &members, const IsfRenderContext &rc)
 {
     g.finalTex = 0;
@@ -1536,15 +1755,7 @@ void Engine::frame(double dt)
     }
     stepFade(m_realDt);
     for (auto &l : m_layers) updateSource(*l, dt);
-    for (auto &l : m_layers) renderLayer(*l, rc);
-    for (size_t i = 0; i < m_layers.size(); ++i) {
-        Layer &g = *m_layers[i];
-        if (!g.isGroup) continue;
-        std::vector<Layer *> members;
-        for (size_t k = i + 1; k < m_layers.size() && m_layers[k]->parent == g.id; ++k) members.push_back(m_layers[k].get());
-        if (g.visible) renderGroup(g, members, rc);
-        else g.finalTex = g.rawTex = 0;
-    }
+    renderPass(rc);
     composite();
     readSourcePreview();
     const bool publishChanged = m_publishDirty || m_tapDirty;
@@ -1576,11 +1787,11 @@ void Engine::readSourcePreview()
         auto f = gl();
         m_previewTarget.bind();
         f->glDisable(GL_BLEND);
-        f->glUseProgram(m_prepProgram); // unpremultiplied (groups), no crop, no color
+        f->glUseProgram(m_prepProgram); // unpremultiplied (groups), no roi, no color
         f->glActiveTexture(GL_TEXTURE0);
         f->glBindTexture(GL_TEXTURE_2D, l->rawTex);
         f->glUniform1i(m_prepTexLoc, 0);
-        f->glUniform4f(m_prepCropLoc, 0, 0, 1, 1);
+        f->glUniform4f(m_prepRoiLoc, 0, 0, 1, 1);
         f->glUniform3f(m_prepAddLoc, 0, 0, 0);
         f->glUniform3f(m_prepRemoveLoc, 0, 0, 0);
         f->glUniform3f(m_prepBalanceLoc, 1, 1, 1);
@@ -1716,6 +1927,11 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         src["playing"] = l.playing;
         break;
     case SourceType::Image: src["type"] = "image"; break;
+    case SourceType::Layer:
+        src["type"] = "layer";
+        src["layer"] = QString::number(l.sourceLayer); // ids are strings: JSON numbers are doubles
+        src["tap"] = layerTapKey(l.sourceTap);
+        break;
     case SourceType::Isf:
         src = l.generator ? l.generator->save(projectDir) : QJsonObject();
         src["type"] = "isf";
@@ -1738,12 +1954,12 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         }
         break;
     }
-    if (l.type != SourceType::None || l.missingType != SourceType::None) {
+    if ((l.type != SourceType::None && l.type != SourceType::Layer) || l.missingType != SourceType::None) {
         src["path"] = l.sourcePath;
         if (!projectDir.isEmpty()) src["relativePath"] = QDir(projectDir).relativeFilePath(l.sourcePath);
     }
-    const QRectF c = l.crop;
-    src["crop"] = QJsonArray{c.left(), c.top(), c.right(), c.bottom()};
+    const QRectF c = l.roi;
+    src["roi"] = QJsonArray{c.left(), c.top(), c.right(), c.bottom()};
     o["source"] = src;
     auto rgb = [](const float v[3]) { return QJsonArray{v[0], v[1], v[2]}; };
     o["color"] = QJsonObject{{"temp", l.color.temp},        {"tint", l.color.tint},
@@ -1787,24 +2003,8 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             m_nextId = std::max(m_nextId, id + 1);
         }
         l->parent = o.value("parent").toString().toULongLong();
-        const QJsonArray crop = o.value("source").toObject().value("crop").toArray();
-        l->crop = crop.size() == 4 ? QRectF(QPointF(crop[0].toDouble(), crop[1].toDouble()),
-                                            QPointF(crop[2].toDouble(), crop[3].toDouble())).normalized() & Layer::fullCrop()
-                                   : Layer::fullCrop();
-        if (l->crop.isEmpty()) l->crop = Layer::fullCrop();
-        const QJsonObject color = o.value("color").toObject();
-        l->color.temp = float(std::clamp(color.value("temp").toDouble(0), -double(ColorAdjust::kTempRange), double(ColorAdjust::kTempRange)));
-        l->color.tint = float(std::clamp(color.value("tint").toDouble(0), -double(ColorAdjust::kTintRange), double(ColorAdjust::kTintRange)));
-        for (int c = 0; c < 3; ++c) {
-            l->color.add[c] = float(std::clamp(color.value("add").toArray().at(c).toDouble(0), 0.0, 1.0));
-            l->color.remove[c] = float(std::clamp(color.value("remove").toArray().at(c).toDouble(0), 0.0, 1.0));
-        }
-        // Switches: on in a project saved before they existed
-        l->color.enabled = color.value("enabled").toBool(true);
-        l->color.tempOn = color.value("tempOn").toBool(true);
-        l->color.tintOn = color.value("tintOn").toBool(true);
-        l->color.addOn = color.value("addOn").toBool(true);
-        l->color.removeOn = color.value("removeOn").toBool(true);
+        l->roi = roiFromJson(o.value("source").toObject());
+        colorFromJson(l->color, o.value("color").toObject());
         name = l->name;
     }
 
@@ -1836,6 +2036,14 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             Lock lk(&m_mutex);
             markMissing(*layer(index), SourceType::Image, path, err);
         }
+    } else if (type == "layer") {
+        // The referenced layer may not be loaded yet: the id is kept as it is and checked once the project is read
+        // (fixLayerReferences); an unknown id simply shows nothing.
+        Lock lk(&m_mutex);
+        Layer *l = layer(index);
+        l->type = SourceType::Layer;
+        l->sourceLayer = src.value("layer").toString().toULongLong();
+        l->sourceTap = layerTapFromKey(src.value("tap").toString());
     } else if (type == "isf") {
         {
             Lock lk(&m_mutex);
@@ -1938,6 +2146,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         Lock lk(&m_mutex);
         normalizeLocked();
     }
+    fixLayerReferences(&warnings);
     QStringList bin;
     for (const QJsonValue &v : root.value("bin").toArray()) bin << resolvePath(v.toObject(), dir);
     addBinItems(bin);

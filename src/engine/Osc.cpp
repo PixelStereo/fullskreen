@@ -287,6 +287,7 @@ static QString sourceTypeKey(const Layer &l)
     case SourceType::Image: return QStringLiteral("image");
     case SourceType::Isf: return QStringLiteral("isf");
     case SourceType::Audio: return QStringLiteral("audio");
+    case SourceType::Layer: return QStringLiteral("layer");
     default: return QStringLiteral("none");
     }
 }
@@ -673,7 +674,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  return true;
              }));
     L.method(P + "/type", "s", 1, "Type", [](Layer &l) { return QVariantList{sourceTypeKey(l)}; }, nullptr).range =
-        {vals({"none", "video", "image", "isf", "audio", "group"})};
+        {vals({"none", "video", "image", "isf", "audio", "layer", "group"})};
     L.method(P + "/visible", "T", 3, "Visible", [](Layer &l) { return QVariantList{l.visible}; },
              L.edit([](Layer &l, const QVariantList &a) {
                  l.visible = truth(a.value(0));
@@ -704,26 +705,26 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  }))
             .range = {vals({"normal", "add", "screen", "multiply"})};
 
-        // Crop: part of the source used (normalized, origin top left)
+        // ROI: part of the source used (normalized, origin top left)
         static const char *kSides[] = {"left", "top", "right", "bottom"};
         static const char *kSideNames[] = {"Left", "Top", "Right", "Bottom"};
         for (int side = 0; side < 4; ++side) {
-            OscNode &n = L.method(P + "/source/crop/" + kSides[side], "f", 3, kSideNames[side],
+            OscNode &n = L.method(P + "/source/roi/" + kSides[side], "f", 3, kSideNames[side],
                                   [side](Layer &l) {
-                                      const QRectF c = l.crop;
+                                      const QRectF c = l.roi;
                                       const double v[4] = {c.left(), c.top(), c.right(), c.bottom()};
                                       return QVariantList{v[side]};
                                   },
                                   L.edit([side](Layer &l, const QVariantList &a) {
                                       if (a.isEmpty()) return false;
-                                      double v[4] = {l.crop.left(), l.crop.top(), l.crop.right(), l.crop.bottom()};
+                                      double v[4] = {l.roi.left(), l.roi.top(), l.roi.right(), l.roi.bottom()};
                                       v[side] = std::clamp(num(a[0]), 0.0, 1.0);
                                       const double minSize = 0.002;
                                       if (side == 0) v[0] = std::min(v[0], v[2] - minSize);
                                       if (side == 2) v[2] = std::max(v[2], v[0] + minSize);
                                       if (side == 1) v[1] = std::min(v[1], v[3] - minSize);
                                       if (side == 3) v[3] = std::max(v[3], v[1] + minSize);
-                                      l.crop = QRectF(QPointF(v[0], v[1]), QPointF(v[2], v[3])) & Layer::fullCrop();
+                                      l.roi = QRectF(QPointF(v[0], v[1]), QPointF(v[2], v[3])) & Layer::fullRoi();
                                       return true;
                                   }));
             n.range = {minMax(0, 1)};
@@ -855,6 +856,39 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      if (ext == "fs" || ext == "frag") return e->setLayerIsf(idx, path);
                      return e->setLayerFile(idx, path);
                  });
+        // Another layer as the source, by name (empty: no source), and where its picture is taken
+        L.method(P + "/source/layer", "s", 3, "Source Layer",
+                 [e](Layer &l) {
+                     const Layer *s = l.type == SourceType::Layer ? e->layer(e->indexOfId(l.sourceLayer)) : nullptr;
+                     return QVariantList{s ? s->name : QString()};
+                 },
+                 [e](int idx, const QVariantList &a) {
+                     const QString name = a.value(0).toString().trimmed();
+                     if (name.isEmpty()) {
+                         e->clearLayerSource(idx);
+                         return true;
+                     }
+                     quint64 id = 0;
+                     LayerTap tap = LayerTap::PostFx;
+                     {
+                         Engine::Lock lk(&e->mutex());
+                         if (Layer *l = e->layer(idx)) tap = l->sourceTap;
+                         for (int k = 0; k < e->layerCount(); ++k)
+                             if (const Layer *o = e->layer(k); o && o->name == name) {
+                                 id = o->id;
+                                 break;
+                             }
+                     }
+                     return id && e->setLayerSourceLayer(idx, id, tap);
+                 });
+        L.method(P + "/source/tap", "s", 3, "Source Tap",
+                 [](Layer &l) { return QVariantList{layerTapKey(l.sourceTap)}; },
+                 [e](int idx, const QVariantList &a) {
+                     const QString k = a.value(0).toString().toLower();
+                     if (k != "prefx" && k != "postfx") return false;
+                     return e->setLayerTap(idx, layerTapFromKey(k));
+                 })
+            .range = {vals({"prefx", "postfx"})};
     }
     if (transport) {
         L.method(P + "/source/play", "T", 3, "Play", [](Layer &l) { return QVariantList{l.playing}; },
@@ -942,7 +976,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     if (isGroup) add(P + "/layers", QString(), 0, "Layers");
     // Readable names of the containers
     static const std::pair<const char *, const char *> kNames[] = {
-        {"/source", "Source"}, {"/source/crop", "Crop"}, {"/source/params", "Parameters"}, {"/color", "Color"},
+        {"/source", "Source"}, {"/source/roi", "ROI"}, {"/source/params", "Parameters"}, {"/color", "Color"},
         {"/spatial", "Spatial"}, {"/spatial/corners", "Corners"}, {"/effects", "Effects"}};
     for (const auto &[suffix, name] : kNames) {
         auto it = m_nodes.find(P + suffix);

@@ -16,12 +16,12 @@ class QListWidget;
 class QProgressBar;
 class QDoubleSpinBox;
 class SeekBar;
-class CropEditor;
+class RoiEditor;
 class ColorEditor;
 class QComboBox;
 
 // Inspector for the selected layer or group, in sub-tabs: Source (drop zone, transport, sound, generator parameters,
-// crop), Color (added / removed), Spatial (mapping), Effects (ISF chain), Compositing (opacity, blend).
+// roi), Color (added / removed), Spatial (mapping), Effects (ISF chain), Compositing (opacity, blend).
 // All edits go through the undo stack. A locked layer shows its settings without allowing edits
 // (the transport stays available). A click on a parameter's name resets it.
 class LayerInspector : public QWidget
@@ -44,7 +44,7 @@ signals:
 
 private:
     QWidget *buildSource(const LayerSnapshot &s);
-    QWidget *buildCrop(const LayerSnapshot &s);
+    QWidget *buildRoi(const LayerSnapshot &s);
     QWidget *buildColor(const LayerSnapshot &s);
     QWidget *buildCompositing(const LayerSnapshot &s);
     QWidget *buildMapping(const LayerSnapshot &s);
@@ -66,7 +66,7 @@ private:
     QWidget *m_content = nullptr;
 
     QPointer<SeekBar> m_seek;
-    QPointer<CropEditor> m_crop;
+    QPointer<RoiEditor> m_roi;
     QPointer<ColorEditor> m_colorAdd, m_colorRemove;
     QPointer<QDoubleSpinBox> m_temp, m_tint;
     bool m_previewing = false;

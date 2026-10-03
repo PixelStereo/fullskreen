@@ -41,11 +41,11 @@ struct LayerSnapshot {
     quint64 id = 0;
     bool isGroup = false, locked = false, lockedByGroup = false;
     int members = 0;
-    QRectF crop{0, 0, 1, 1};
+    QRectF roi{0, 0, 1, 1};
     ColorAdjust color;
     bool effectsEnabled = true;
     int colorModels = 1;
-    double aspect = 16.0 / 9.0; // source picture (before crop)
+    double aspect = 16.0 / 9.0; // source picture (before roi)
     QString name, sourcePath, error;
     bool visible = true;
     float opacity = 1;
@@ -62,6 +62,10 @@ struct LayerSnapshot {
     AudioStream::Info audio;
     bool hasGenerator = false;
     int genW = 0, genH = 0;
+    // Another layer as the source, and the layers that could be chosen (id, name; cycles left out)
+    quint64 sourceLayer = 0;
+    LayerTap sourceTap = LayerTap::PostFx;
+    std::vector<std::pair<quint64, QString>> candidates;
     struct Fx {
         QString name, error;
         bool valid = false, enabled = true;
@@ -82,7 +86,7 @@ struct LayerSnapshot {
         s.locked = l->locked;
         s.lockedByGroup = !l->locked && e->isLocked(index);
         s.members = e->groupMembers(index).size();
-        s.crop = l->crop;
+        s.roi = l->roi;
         s.color = l->color;
         s.effectsEnabled = l->effectsEnabled;
         s.colorModels = l->colorModels;
@@ -119,6 +123,15 @@ struct LayerSnapshot {
         s.hasGenerator = l->generator != nullptr;
         s.genW = l->genWidth;
         s.genH = l->genHeight;
+        s.sourceLayer = l->sourceLayer;
+        s.sourceTap = l->sourceTap;
+        if (!l->isGroup)
+            for (int k = 0; k < e->layerCount(); ++k) {
+                const Layer *o = e->layer(k);
+                // Not itself, and not a layer that already depends on this one (the picture would feed back)
+                if (!o || o->id == l->id || e->layerDependsOn(o->id, l->id)) continue;
+                s.candidates.push_back({o->id, o->isGroup ? o->name + QStringLiteral(" (group)") : o->name});
+            }
         for (const auto &fx : l->effects) s.effects.push_back({fx->name(), fx->error(), fx->isValid(), fx->enabled});
         s.meshMode = l->mapping.meshMode;
         s.cols = l->mapping.cols;
@@ -369,7 +382,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
                                     .arg(s.members));
         info->setWordWrap(true);
         v->addWidget(info);
-        v->addWidget(buildCrop(s));
+        v->addWidget(buildRoi(s));
         return g;
     }
 
@@ -379,6 +392,13 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     case SourceType::Image: desc = QStringLiteral("Image — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
     case SourceType::Isf: desc = QStringLiteral("ISF Generator — %1").arg(QFileInfo(s.sourcePath).completeBaseName()); break;
     case SourceType::Audio: desc = QStringLiteral("Audio — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
+    case SourceType::Layer: {
+        QString from = QStringLiteral("(gone)");
+        for (const auto &c : s.candidates)
+            if (c.first == s.sourceLayer) from = c.second;
+        desc = QStringLiteral("Layer — %1, %2").arg(from, s.sourceTap == LayerTap::PreFx ? QStringLiteral("pre-FX") : QStringLiteral("post-FX"));
+        break;
+    }
     default: desc = QStringLiteral("No source"); break;
     }
     // Drop zone: the current media, replaced by whatever is dropped (Media Bin, Finder). × ejects it.
@@ -401,6 +421,53 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         emit layerChanged();
         rebuild();
     });
+
+    // Or the picture of another layer, tapped before or after its effect chain
+    {
+        auto *row = new QHBoxLayout;
+        auto *pick = new QComboBox;
+        pick->setToolTip(QStringLiteral("Use the picture of another layer as this layer's source"));
+        pick->addItem(QStringLiteral("Use a layer…"), QVariant(qulonglong(0)));
+        int current = 0;
+        for (const auto &c : s.candidates) {
+            pick->addItem(c.second, QVariant(qulonglong(c.first)));
+            if (s.type == SourceType::Layer && c.first == s.sourceLayer) current = pick->count() - 1;
+        }
+        pick->setCurrentIndex(current);
+        auto *tap = new QComboBox;
+        tap->addItem(QStringLiteral("Pre-FX"), int(LayerTap::PreFx));
+        tap->addItem(QStringLiteral("Post-FX"), int(LayerTap::PostFx));
+        tap->setCurrentIndex(s.sourceTap == LayerTap::PreFx ? 0 : 1);
+        tap->setToolTip(QStringLiteral("Where the picture is taken in that layer:\n"
+                                       "Pre-FX — after its ROI and color, before its effects\n"
+                                       "Post-FX — after its effects"));
+        tap->setEnabled(s.type == SourceType::Layer);
+        row->addWidget(pick, 1);
+        row->addWidget(tap, 0);
+        v->addLayout(row);
+        connect(pick, &QComboBox::activated, this, [this, pick, tap](int i) {
+            const quint64 id = pick->itemData(i).toULongLong();
+            if (!id) return;
+            const LayerTap t = LayerTap(tap->currentData().toInt());
+            QString err;
+            bool ok = false;
+            editSource(QStringLiteral("Use Layer as Source"),
+                       [this, id, t, &err, &ok] { ok = m_engine->setLayerSourceLayer(m_layer, id, t, &err); });
+            if (!ok && !err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Source"), err);
+            emit layerChanged();
+            rebuild();
+        });
+        connect(tap, &QComboBox::activated, this, [this, tap](int i) {
+            editSource(QStringLiteral("Change Source Tap"),
+                       [this, tap, i] { m_engine->setLayerTap(m_layer, LayerTap(tap->itemData(i).toInt())); });
+            emit layerChanged();
+            rebuild();
+        });
+        if (s.candidates.empty()) {
+            pick->setEnabled(false);
+            pick->setToolTip(QStringLiteral("No other layer can be used here without the picture feeding back on itself"));
+        }
+    }
 
     if (!s.error.isEmpty()) v->addWidget(errorLabel(s.error));
 
@@ -639,32 +706,32 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
     }
-    if (s.type == SourceType::Video || s.type == SourceType::Image || s.type == SourceType::Isf) v->addWidget(buildCrop(s));
+    if (s.type == SourceType::Video || s.type == SourceType::Image || s.type == SourceType::Isf) v->addWidget(buildRoi(s));
     return g;
 }
 
 // Part of the source picture used: preview with a rectangle whose sides are dragged, numeric fields in %
-QWidget *LayerInspector::buildCrop(const LayerSnapshot &s)
+QWidget *LayerInspector::buildRoi(const LayerSnapshot &s)
 {
     auto *box = new QGroupBox;
     auto *v = new QVBoxLayout(box);
     auto *head = new QHBoxLayout;
-    auto *title = new ResetLabel(QStringLiteral("<b>Crop</b>"), [this] {
-        setProp(cmd::SetLayerProp::Crop, Layer::fullCrop());
+    auto *title = new ResetLabel(QStringLiteral("<b>ROI</b>"), [this] {
+        setProp(cmd::SetLayerProp::Roi, Layer::fullRoi());
         rebuild();
     });
     title->setToolTip(QStringLiteral("Part of the source picture used by the layer — click to use the whole picture"));
     head->addWidget(title);
     head->addStretch();
     v->addLayout(head);
-    m_crop = new CropEditor;
-    m_crop->setAspect(s.aspect);
-    m_crop->setCrop(s.crop);
-    v->addWidget(m_crop);
+    m_roi = new RoiEditor;
+    m_roi->setAspect(s.aspect);
+    m_roi->setRoi(s.roi);
+    v->addWidget(m_roi);
     auto *grid = new QGridLayout;
     static const char *kNames[] = {"Left", "Top", "Right", "Bottom"};
     QDoubleSpinBox *fields[4];
-    const double values[4] = {s.crop.left(), s.crop.top(), s.crop.right(), s.crop.bottom()};
+    const double values[4] = {s.roi.left(), s.roi.top(), s.roi.right(), s.roi.bottom()};
     for (int k = 0; k < 4; ++k) {
         auto *f = new QDoubleSpinBox;
         f->setRange(0, 100);
@@ -681,11 +748,11 @@ QWidget *LayerInspector::buildCrop(const LayerSnapshot &s)
     grid->setColumnStretch(3, 1);
     v->addLayout(grid);
     auto apply = [this](const QRectF &r) {
-        setProp(cmd::SetLayerProp::Crop, r);
+        setProp(cmd::SetLayerProp::Roi, r);
         emit layerChanged();
     };
-    QPointer<CropEditor> editor = m_crop;
-    connect(m_crop, &CropEditor::cropEdited, this, [apply, fields](const QRectF &r) {
+    QPointer<RoiEditor> editor = m_roi;
+    connect(m_roi, &RoiEditor::roiEdited, this, [apply, fields](const QRectF &r) {
         const double vals[4] = {r.left(), r.top(), r.right(), r.bottom()};
         for (int k = 0; k < 4; ++k) {
             QSignalBlocker b(fields[k]);
@@ -700,7 +767,7 @@ QWidget *LayerInspector::buildCrop(const LayerSnapshot &s)
             r = std::max(r, l + 0.001);
             b = std::max(b, t + 0.001);
             const QRectF rect(QPointF(l, t), QPointF(std::min(r, 1.0), std::min(b, 1.0)));
-            if (editor) editor->setCrop(rect);
+            if (editor) editor->setRoi(rect);
             apply(rect);
         });
     return box;
@@ -1200,27 +1267,27 @@ void LayerInspector::refreshSpatial()
 void LayerInspector::refreshDynamic()
 {
     refreshSpatial();
-    // Crop preview: the source picture, read back by the render thread while the editor is shown
-    const bool wantPreview = m_crop && m_crop->isVisible();
+    // ROI preview: the source picture, read back by the render thread while the editor is shown
+    const bool wantPreview = m_roi && m_roi->isVisible();
     if (wantPreview) {
         m_engine->requestSourcePreview(m_layerId, 480);
         quint64 id = 0;
         const QImage img = m_engine->sourcePreview(&id);
-        if (id == m_layerId && !img.isNull()) m_crop->setImage(img);
+        if (id == m_layerId && !img.isNull()) m_roi->setImage(img);
     } else if (m_previewing) {
         m_engine->requestSourcePreview(0);
     }
     m_previewing = wantPreview;
-    // Values changed elsewhere (OSC, undo) follow in the color and crop editors
+    // Values changed elsewhere (OSC, undo) follow in the color and roi editors
     {
-        QRectF crop;
+        QRectF roi;
         QColor add, remove;
         double temp = 0, tint = 0;
         {
             Engine::Lock lk(&m_engine->mutex());
             Layer *l = m_engine->layer(m_layer);
             if (!l) return;
-            crop = l->crop;
+            roi = l->roi;
             add = QColor::fromRgbF(l->color.add[0], l->color.add[1], l->color.add[2]);
             remove = QColor::fromRgbF(l->color.remove[0], l->color.remove[1], l->color.remove[2]);
             temp = l->color.temp;
@@ -1228,7 +1295,7 @@ void LayerInspector::refreshDynamic()
         }
         for (auto [field, value] : {std::pair{m_temp.data(), temp}, std::pair{m_tint.data(), tint}})
             if (field && !field->hasFocus() && std::abs(field->value() - value) > 1e-3) field->setValue(value); // its slider follows
-        if (m_crop) m_crop->setCrop(crop);
+        if (m_roi) m_roi->setRoi(roi);
         if (m_colorAdd) m_colorAdd->setColor(add);
         if (m_colorRemove) m_colorRemove->setColor(remove);
     }

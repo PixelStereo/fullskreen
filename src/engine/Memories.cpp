@@ -8,7 +8,7 @@
 // Numbers of a layer that fade from one memory to the next
 struct LayerNumbers {
     float opacity = 1, volume = 1;
-    QRectF crop;
+    QRectF roi;
     ColorAdjust color;
     Mapping mapping;
     std::vector<std::vector<IsfValue>> isf; // [0] generator, [1 + k] effect k
@@ -26,7 +26,7 @@ static LayerNumbers numbersOf(const Layer &l)
     LayerNumbers n;
     n.opacity = l.opacity;
     n.volume = l.volume;
-    n.crop = l.crop;
+    n.roi = l.roi;
     n.color = l.color;
     n.mapping = l.mapping;
     auto values = [](const IsfInstance *inst) {
@@ -44,7 +44,7 @@ static void setNumbers(Layer &l, const LayerNumbers &n)
 {
     l.opacity = n.opacity;
     l.volume = n.volume;
-    l.crop = n.crop;
+    l.roi = n.roi;
     l.color = n.color;
     const unsigned rev = l.mapping.revision;
     l.mapping = n.mapping;
@@ -66,7 +66,7 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, dou
     LayerNumbers n = b;
     n.opacity = mixf(a.opacity, b.opacity, t);
     n.volume = mixf(a.volume, b.volume, t);
-    n.crop = QRectF(mixp(a.crop.topLeft(), b.crop.topLeft(), t), mixp(a.crop.bottomRight(), b.crop.bottomRight(), t));
+    n.roi = QRectF(mixp(a.roi.topLeft(), b.roi.topLeft(), t), mixp(a.roi.bottomRight(), b.roi.bottomRight(), t));
     n.color.temp = mixf(a.color.temp, b.color.temp, t);
     n.color.tint = mixf(a.color.tint, b.color.tint, t);
     for (int c = 0; c < 3; ++c) {
@@ -216,7 +216,8 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
         const QJsonObject cur = layerJson(idx);
         const QJsonObject curSrc = cur.value("source").toObject(), src = o.value("source").toObject();
         const bool group = o.value("group").toBool();
-        if (!group && (curSrc.value("type") != src.value("type") ||
+        if (!group && (curSrc.value("type") != src.value("type") || curSrc.value("layer") != src.value("layer") ||
+                       curSrc.value("tap") != src.value("tap") ||
                        QDir::cleanPath(curSrc.value("path").toString()) != QDir::cleanPath(src.value("path").toString()))) {
             replaceLayerJson(idx, o); // another media: loaded at once, no fade
             continue;
@@ -247,9 +248,9 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
         to = job->from;
         to.opacity = float(o.value("opacity").toDouble(to.opacity));
         to.volume = float(std::clamp(o.value("volume").toDouble(to.volume), 0.0, 2.0));
-        const QJsonArray crop = src.value("crop").toArray();
-        if (crop.size() == 4)
-            to.crop = QRectF(QPointF(crop[0].toDouble(), crop[1].toDouble()), QPointF(crop[2].toDouble(), crop[3].toDouble()));
+        const QJsonArray roi = src.value("roi").toArray();
+        if (roi.size() == 4)
+            to.roi = QRectF(QPointF(roi[0].toDouble(), roi[1].toDouble()), QPointF(roi[2].toDouble(), roi[3].toDouble()));
         const QJsonObject color = o.value("color").toObject();
         if (!color.isEmpty()) {
             to.color.temp = float(color.value("temp").toDouble(0));
@@ -286,6 +287,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
             jobs.push_back(job);
         }
     }
+    fixLayerReferences(); // layers re-created or sources changed: no reference left dangling or looping
     Lock lk(&m_mutex);
     m_fades = std::move(jobs);
     m_fadeT = 0;
@@ -356,6 +358,9 @@ Engine::Memory Engine::memoryFromJson(const QJsonObject &o, const QString &dir) 
         };
         QJsonObject src = l.value("source").toObject();
         if (src.value("type").toString() != "none") src = resolve(src);
+        if (src.contains("crop")) { // the name the ROI had in earlier projects
+            src["roi"] = src.take("crop");
+        }
         l["source"] = src;
         QJsonArray fx;
         for (const QJsonValue &e : l.value("effects").toArray()) fx.append(resolve(e.toObject()));

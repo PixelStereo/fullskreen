@@ -91,12 +91,35 @@ public:
     QJsonArray effectsJson(int i) const;
     void setEffectsJson(int i, const QJsonArray &a);
 
+    // Parts of a layer state (layerJson) that can be copied onto another layer
+    enum LayerParts {
+        PartSource = 1 << 0,      // media or generator, transport, sound (the media is opened again)
+        PartRoi = 1 << 1,         // part of the source picture used
+        PartColor = 1 << 2,       // balance, added / removed colors and their switches
+        PartSpatial = 1 << 3,     // mapping: corners and mesh
+        PartEffects = 1 << 4,     // ISF chain and its master switch
+        PartCompositing = 1 << 5, // opacity, blend mode
+        PartAll = PartSource | PartRoi | PartColor | PartSpatial | PartEffects | PartCompositing,
+    };
+    // Copies the chosen parts of `o` (a layerJson, from any layer or project) onto layer i, leaving its
+    // identity (id, name, group, place in the list) alone. False if the layer is missing or locked.
+    bool applyLayerParts(int i, const QJsonObject &o, int parts);
+
     bool setLayerVideo(int i, const QString &path, QString *err = nullptr);
     bool setLayerImage(int i, const QString &path, QString *err = nullptr);
     bool setLayerIsf(int i, const QString &path, QString *err = nullptr);
     bool setLayerAudio(int i, const QString &path, QString *err = nullptr);
     // Video, image or audio according to the file: a video file without a picture becomes an audio layer.
     bool setLayerFile(int i, const QString &path, QString *err = nullptr);
+    // Another layer of the composition as the source, tapped before or after its effect chain.
+    // Refused (with err) for a group, for the layer itself, and whenever the picture would feed back on itself.
+    bool setLayerSourceLayer(int i, quint64 sourceId, LayerTap tap, QString *err = nullptr);
+    bool setLayerTap(int i, LayerTap tap);
+    // True when the picture of layer `id` depends on layer `onId` (source references, members of a group).
+    // The lock must be held.
+    bool layerDependsOn(quint64 id, quint64 onId) const;
+    // Drops the layer sources that point nowhere or would feed back (after a project is read)
+    void fixLayerReferences(QStringList *warnings = nullptr);
     void clearLayerSource(int i);
     void setGeneratorSize(int i, int w, int h);
 
@@ -133,7 +156,7 @@ public:
     int addMemory(const Memory &m, int at = -1);
     void removeMemory(int i);
     QJsonArray captureLayers() const; // state of every layer, all included
-    // Applies layer states (those not excluded): opacity, volume, crop, color, mapping and ISF numbers fade in
+    // Applies layer states (those not excluded): opacity, volume, roi, color, mapping and ISF numbers fade in
     // `fade` seconds; sources and effect chains change at once; a layer that became visible fades in from 0,
     // one that becomes hidden fades out; layers removed since are recreated. Other layers are left alone.
     void applyLayers(const QJsonArray &layers, double fade);
@@ -193,7 +216,7 @@ public:
     double blackoutFade() const;
     double outputLevel() const { return masterLevel() * blackoutLevel(); }
 
-    // --- Source preview (crop editor): a downscaled copy of a layer's source picture (before crop),
+    // --- Source preview (roi editor): a downscaled copy of a layer's source picture (before roi),
     // read back by the render thread every few frames while requested.
     void requestSourcePreview(quint64 layerId, int maxSide = 360); // 0: stop
     QImage sourcePreview(quint64 *layerId = nullptr) const;
@@ -244,6 +267,7 @@ private:
     std::shared_ptr<Garbage> detachSource(Layer &l);
     void releaseGarbage(const std::shared_ptr<Garbage> &g);
     void updateSource(Layer &l, double dt);
+    void renderPass(const IsfRenderContext &rc); // every layer, in dependency order
     void renderLayer(Layer &l, const IsfRenderContext &rc);
     void processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied, const IsfRenderContext &rc);
     void renderGroup(Layer &g, const std::vector<Layer *> &members, const IsfRenderContext &rc);
@@ -293,7 +317,7 @@ private:
     GLsizei m_meshIndexCount = 0;
     GLuint m_blitProgram = 0, m_compProgram = 0, m_presentProgram = 0, m_prepProgram = 0;
     GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_presentTexLoc = -1;
-    GLint m_prepTexLoc = -1, m_prepCropLoc = -1, m_prepAddLoc = -1, m_prepRemoveLoc = -1, m_prepUnpremulLoc = -1, m_prepBalanceLoc = -1;
+    GLint m_prepTexLoc = -1, m_prepRoiLoc = -1, m_prepAddLoc = -1, m_prepRemoveLoc = -1, m_prepUnpremulLoc = -1, m_prepBalanceLoc = -1;
     GLuint m_blackTex = 0;
     RenderTarget m_output[2];
     std::atomic<int> m_published{0};
@@ -303,6 +327,7 @@ private:
     std::vector<std::unique_ptr<Layer>> m_layers;
     quint64 m_nextId = 1;
     std::vector<float> m_meshScratch;
+    std::vector<uint8_t> m_renderMark; // render pass: layer already rendered this frame (reused, no allocation)
 
     std::atomic<double> m_masterLevel{1.0};
     double m_masterTarget = 1.0, m_masterSpeed = 0.0; // units per second (0 = immediate)

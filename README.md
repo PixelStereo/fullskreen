@@ -9,15 +9,23 @@ Video mapping for stage and installation work, on Mac / Windows / Linux.
 (Normal / Add / Screen / Multiply). Layers are created empty with **+**, then loaded by dropping a media onto
 them. One source per layer: video (anything FFmpeg reads, **with its sound**), still image, ISF generator, or
 audio file (an audio layer, same transport, no picture). Layers can be renamed, locked (padlock), multi-selected
-and grouped (⌘G); a group behaves as a layer without a source — crop, color, mapping, effects and compositing
-apply to the composite of its layers.
+and grouped (⌘G); a group behaves as a layer without a source — ROI, color, mapping, effects and compositing
+apply to the composite of its layers. Right-click a layer to **copy its parameters** and paste them onto one or
+several others, either all of them or only the source, the ROI, the color, the spatial, the effects or the
+compositing.
+
+**A layer as a source.** A layer can take the picture of **another layer** of the composition instead of a file
+(Source tab ▸ *Use a layer…*), tapped either **pre-FX** (after that layer's ROI and color, before its effect
+chain) or **post-FX** (after it). The same picture is then mapped, colored and treated a second time, somewhere
+else on the stage. A layer used this way is rendered even when it is hidden — including a group, which makes a
+hidden group a reusable "source" — and anything that would make a picture feed back on itself is refused.
 
 **Transport.** Play / pause (Space), position, speed — including **negative speed** to play backwards — and four
 play modes: One-shot (freezes on the last frame), Loop, Ping-pong (decoded backwards in short windows, so any
 codec works), Stop (black and silent at the end). **In / out points** per layer bound playback in both
 directions, draggable on the playback bar. The default mode for newly loaded media is a setting.
 
-**Picture.** **Crop** chooses the part of the source used (drag the sides of the rectangle).
+**Picture.** The **ROI** chooses the part of the source picture used (drag the sides of the rectangle).
 **Color** works like DaVinci Resolve: balance (Temp −4000…4000, Tint −100…100, luminance kept), then a color
 removed (filter) and a color added (light) — `out = balance(in) × (1 − removed) + added` — edited in RGB, HSL,
 additive, subtractive or all together. Every color parameter has its own switch, plus one for the whole section:
@@ -48,11 +56,11 @@ built in; NDI and OMT are loaded only when enabled, so Fulskrin runs without the
 **Media Bin.** Every media used by the project, grouped by type and searchable, with resolution, duration, sound
 format and how many layers use it. Missing files are shown in red and **Replace…** relinks them everywhere at
 once. An **ISF › Generators** category lists the library's generators, filed by ISF category. Drag an item onto a
-layer to load it.
+layer to load it, or right-click it and pick the layer from **Load into Layer**.
 
 **Memories** (the scenes / cues of MadMapper). A grid of thumbnails storing the state of the layers; a click
 shows the content in the inspector, double-click or GO recalls it. Each layer of a memory **unfolds** — source,
-crop, color, mapping, effects and ISF parameters — and **every stored value can be edited there**, without moving
+ROI, color, mapping, effects and ISF parameters — and **every stored value can be edited there**, without moving
 the composition. Numbers fade to the memory's values in its fade time; sources and effect chains switch at once;
 a layer deleted since is recreated; unchecked and locked layers are left alone.
 
@@ -117,6 +125,7 @@ Ctrl on Windows and Linux, ⌘ on Mac.
 | Import to the Media Bin | ⌘I, or drop files onto it |
 | Group / ungroup | ⌘G / ⌘⇧G |
 | Rename · lock a layer | double-click or F2 · padlock or ⌘L |
+| Copy / paste a layer's parameters | right-click the layer |
 | Reset a parameter | click its name |
 | Media Bin / Layers panel | ⇧1 / ⇧2 |
 | Play / pause the selected layer | Space |
@@ -157,7 +166,8 @@ bundles are supported. Names are made OSC-safe: spaces become `_`, a duplicate n
 | `/layers/<name>/name` · `visible` · `locked` · `opacity` · `blend` · `type` | s · T · T · f · s · s | |
 | `…/source/file` · `play` · `restart` · `position` · `speed` · `mode` · `in` · `out` · `duration` | | media and transport |
 | `…/source/volume` · `mute` | f · T | sound of the layer |
-| `…/source/crop/left` · `top` · `right` · `bottom` | f 0..1 | part of the source used |
+| `…/source/roi/left` · `top` · `right` · `bottom` | f 0..1 | part of the source picture used |
+| `…/source/layer` · `tap` | s | another layer as the source (by name), `prefx` or `postfx` |
 | `…/source/params/<input>` | per ISF type | generator parameters |
 | `…/color/temp` · `tint` · `add` · `remove` | f · f · fff · fff | −4000..4000 · −100..100 |
 | `…/color/enabled` · `tempEnabled` · `tintEnabled` · `addEnabled` · `removeEnabled` | T | color switches |
@@ -187,7 +197,7 @@ src/ui/       Qt Widgets interface
   MainWindow, LayerInspector, ParamPanel, MappingView, OutputWindow
   Commands      undo commands (QUndoStack)
   MediaBin, LayerTable, MasterPanel, SettingsPanel, MemoryPanel
-  Widgets       click-to-reset labels, playback bar with in / out, crop editor, color editor
+  Widgets       click-to-reset labels, playback bar with in / out, ROI editor, color editor
 isf/          bundled shaders
 test/         automated tests
 ```

@@ -33,7 +33,7 @@ struct MemField {
 // which stores the current state of the layers, and an inspector showing what the selected memory contains.
 // Click: select (inspector) · double-click, Enter or GO: recall (with the memory's fade; undoable).
 // In the inspector, a layer can be left out of the memory (unchecked): the recall does not touch it.
-// Each layer unfolds (source, crop, color, mapping, effects): every stored value can be read and edited there,
+// Each layer unfolds (source, roi, color, mapping, effects): every stored value can be read and edited there,
 // which changes what the memory will apply, without touching the composition.
 class MemoryPanel : public QWidget
 {

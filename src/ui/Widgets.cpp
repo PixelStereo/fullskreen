@@ -190,10 +190,10 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *)
 }
 
 // ---------------------------------------------------------------------------
-// CropEditor
+// RoiEditor
 // ---------------------------------------------------------------------------
 
-CropEditor::CropEditor(QWidget *parent) : QWidget(parent)
+RoiEditor::RoiEditor(QWidget *parent) : QWidget(parent)
 {
     setMouseTracking(true);
     setMinimumHeight(120);
@@ -201,7 +201,7 @@ CropEditor::CropEditor(QWidget *parent) : QWidget(parent)
     setToolTip(QStringLiteral("Drag a side of the rectangle to keep only part of the picture; drag inside to move it"));
 }
 
-void CropEditor::setImage(const QImage &img)
+void RoiEditor::setImage(const QImage &img)
 {
     const bool resize = img.isNull() != m_image.isNull() ||
                         (!img.isNull() && std::abs(double(img.width()) / img.height() - m_aspect) > 1e-3);
@@ -211,7 +211,7 @@ void CropEditor::setImage(const QImage &img)
     update();
 }
 
-void CropEditor::setAspect(double aspect)
+void RoiEditor::setAspect(double aspect)
 {
     if (aspect <= 0 || !m_image.isNull()) return;
     m_aspect = aspect;
@@ -219,16 +219,16 @@ void CropEditor::setAspect(double aspect)
     update();
 }
 
-void CropEditor::setCrop(const QRectF &r)
+void RoiEditor::setRoi(const QRectF &r)
 {
-    if (m_drag >= 0 || r == m_crop) return;
-    m_crop = r;
+    if (m_drag >= 0 || r == m_roi) return;
+    m_roi = r;
     update();
 }
 
-int CropEditor::heightForWidth(int w) const { return std::clamp(int(std::lround((w - 16) / m_aspect)) + 16, 80, 400); }
+int RoiEditor::heightForWidth(int w) const { return std::clamp(int(std::lround((w - 16) / m_aspect)) + 16, 80, 400); }
 
-QRectF CropEditor::picture() const
+QRectF RoiEditor::picture() const
 {
     const QRectF area = QRectF(rect()).adjusted(8, 8, -8, -8);
     double w = area.width(), h = w / m_aspect;
@@ -239,7 +239,7 @@ QRectF CropEditor::picture() const
     return QRectF(area.center().x() - w / 2, area.center().y() - h / 2, w, h);
 }
 
-void CropEditor::paintEvent(QPaintEvent *)
+void RoiEditor::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
@@ -252,8 +252,8 @@ void CropEditor::paintEvent(QPaintEvent *)
     } else {
         p.drawImage(pic, m_image);
     }
-    const QRectF c(pic.left() + m_crop.left() * pic.width(), pic.top() + m_crop.top() * pic.height(),
-                   m_crop.width() * pic.width(), m_crop.height() * pic.height());
+    const QRectF c(pic.left() + m_roi.left() * pic.width(), pic.top() + m_roi.top() * pic.height(),
+                   m_roi.width() * pic.width(), m_roi.height() * pic.height());
     // Unused part dimmed
     QPainterPath outside;
     outside.addRect(pic);
@@ -275,11 +275,11 @@ void CropEditor::paintEvent(QPaintEvent *)
     }
 }
 
-int CropEditor::hit(QPointF p) const
+int RoiEditor::hit(QPointF p) const
 {
     const QRectF pic = picture();
-    const QRectF c(pic.left() + m_crop.left() * pic.width(), pic.top() + m_crop.top() * pic.height(),
-                   m_crop.width() * pic.width(), m_crop.height() * pic.height());
+    const QRectF c(pic.left() + m_roi.left() * pic.width(), pic.top() + m_roi.top() * pic.height(),
+                   m_roi.width() * pic.width(), m_roi.height() * pic.height());
     const double tol = 7;
     const bool inY = p.y() > c.top() - tol && p.y() < c.bottom() + tol;
     const bool inX = p.x() > c.left() - tol && p.x() < c.right() + tol;
@@ -298,16 +298,16 @@ int CropEditor::hit(QPointF p) const
     return side;
 }
 
-void CropEditor::mousePressEvent(QMouseEvent *e)
+void RoiEditor::mousePressEvent(QMouseEvent *e)
 {
     if (e->button() != Qt::LeftButton) return;
     m_drag = hit(e->position());
-    m_dragStart = m_crop;
+    m_dragStart = m_roi;
     const QRectF pic = picture();
     m_pressNorm = QPointF((e->position().x() - pic.left()) / pic.width(), (e->position().y() - pic.top()) / pic.height());
 }
 
-void CropEditor::mouseMoveEvent(QMouseEvent *e)
+void RoiEditor::mouseMoveEvent(QMouseEvent *e)
 {
     const QRectF pic = picture();
     const QPointF n((e->position().x() - pic.left()) / pic.width(), (e->position().y() - pic.top()) / pic.height());
@@ -337,14 +337,14 @@ void CropEditor::mouseMoveEvent(QMouseEvent *e)
     default: break;
     }
     const QRectF nc(QPointF(l, t), QPointF(r, b));
-    if (nc != m_crop) {
-        m_crop = nc;
+    if (nc != m_roi) {
+        m_roi = nc;
         update();
-        emit cropEdited(m_crop);
+        emit roiEdited(m_roi);
     }
 }
 
-void CropEditor::mouseReleaseEvent(QMouseEvent *) { m_drag = -1; }
+void RoiEditor::mouseReleaseEvent(QMouseEvent *) { m_drag = -1; }
 
 // ---------------------------------------------------------------------------
 // ColorEditor
@@ -601,7 +601,7 @@ void lockInputs(QWidget *root, bool locked)
         for (QWidget *p = w->parentWidget(); p && p != root; p = p->parentWidget()) parentAllowed |= p->property("allowLocked").toBool();
         if (parentAllowed) continue;
         if (qobject_cast<QAbstractButton *>(w) || qobject_cast<QAbstractSlider *>(w) || qobject_cast<QAbstractSpinBox *>(w) ||
-            qobject_cast<QComboBox *>(w) || qobject_cast<QLineEdit *>(w) || qobject_cast<CropEditor *>(w) ||
+            qobject_cast<QComboBox *>(w) || qobject_cast<QLineEdit *>(w) || qobject_cast<RoiEditor *>(w) ||
             qobject_cast<ResetLabel *>(w) || w->property("lockable").toBool())
             w->setEnabled(false);
     }

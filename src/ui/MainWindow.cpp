@@ -196,6 +196,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     });
     connect(m_layerTable, &LayerTable::moveRequested, this, &MainWindow::moveRows);
     connect(m_layerTable, &LayerTable::duplicateClicked, this, &MainWindow::duplicateCurrentLayer);
+    connect(m_layerTable, &LayerTable::contextMenuRequested, this, &MainWindow::layerContextMenu);
     connect(m_layerTable, &LayerTable::moveClicked, this, &MainWindow::moveCurrentLayer);
     auto *del = new QShortcut(QKeySequence::Delete, m_layerTable->table(), nullptr, nullptr, Qt::WidgetShortcut);
     connect(del, &QShortcut::activated, this, &MainWindow::removeCurrentLayer);
@@ -205,6 +206,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     // --- Media bin
     connect(m_bin, &MediaBin::relinkRequested, this, &MainWindow::relinkMedia);
     connect(m_bin, &MediaBin::useAsSourceRequested, this, [this](const QString &p) { loadIntoLayer(currentLayer(), p); });
+    connect(m_bin, &MediaBin::loadIntoLayerRequested, this, [this](int i, const QString &p) { loadIntoLayer(i, p); });
     connect(m_layerTable, &LayerTable::addClicked, this, &MainWindow::addEmptyLayer);
     connect(m_layerTable, &LayerTable::filesDropped, this, [this](int row, const QStringList &paths) {
         loadDropped(row >= 0 ? row : currentLayer(), paths);
@@ -603,6 +605,7 @@ static QString layerTag(SourceType t)
     case SourceType::Image: return QStringLiteral("▣");
     case SourceType::Isf: return QStringLiteral("◆");
     case SourceType::Audio: return QStringLiteral("♪");
+    case SourceType::Layer: return QStringLiteral("⧉");
     default: return QStringLiteral("○");
     }
 }
@@ -648,6 +651,14 @@ void MainWindow::refreshLayerList()
                                       : QFileInfo(l->sourcePath).fileName();
                 break;
             case SourceType::Isf: r.source = QStringLiteral("generator ") + QFileInfo(l->sourcePath).completeBaseName(); break;
+            case SourceType::Layer: {
+                const Layer *src = m_engine->layer(m_engine->indexOfId(l->sourceLayer));
+                r.source = QStringLiteral("layer %1 · %2")
+                               .arg(src ? src->name : QStringLiteral("(gone)"),
+                                    l->sourceTap == LayerTap::PreFx ? QStringLiteral("pre-fx") : QStringLiteral("post-fx"));
+                r.error = r.error || !src;
+                break;
+            }
             default: r.source = l->missingType != SourceType::None ? QFileInfo(l->sourcePath).fileName() + QStringLiteral(" — missing")
                                                                     : QStringLiteral("(empty)");
             }
@@ -869,6 +880,85 @@ void MainWindow::duplicateCurrentLayer()
     for (int k = 0; k <= members; ++k) m_undo->push(new cmd::AddLayer(m_engine, ni + k, QStringLiteral("Duplicate Layer")));
     m_undo->endMacro();
     selectLayer(ni);
+}
+
+// ---------------------------------------------------------------------------
+// Copy / paste of layer parameters (right-click on a layer)
+// ---------------------------------------------------------------------------
+
+void MainWindow::copyLayerParams(int row)
+{
+    const QJsonObject o = m_engine->layerJson(row);
+    if (o.isEmpty()) return;
+    m_paramClipboard = o;
+    m_paramClipboardName = o.value("name").toString();
+    statusBar()->showMessage(QStringLiteral("Parameters of \"%1\" copied.").arg(m_paramClipboardName), 4000);
+}
+
+// Pastes the chosen parts onto every selected layer (the one under the cursor if nothing is selected)
+void MainWindow::pasteLayerParams(int parts, const QString &what)
+{
+    if (m_paramClipboard.isEmpty()) return;
+    QList<int> rows = m_layerTable->selectedRows();
+    if (rows.isEmpty() && currentLayer() >= 0) rows << currentLayer();
+    QList<int> targets;
+    for (int i : rows)
+        if (i >= 0 && i < m_engine->layerCount() && !m_engine->isLocked(i)) targets << i;
+    if (targets.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Nothing to paste onto (locked layer?)."), 4000);
+        return;
+    }
+    const QString text = QStringLiteral("Paste %1").arg(what);
+    if (targets.size() > 1) m_undo->beginMacro(text);
+    for (int i : targets) {
+        const QJsonObject before = m_engine->layerJson(i);
+        if (m_engine->applyLayerParts(i, m_paramClipboard, parts))
+            m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, text));
+    }
+    if (targets.size() > 1) m_undo->endMacro();
+    refreshAll();
+    statusBar()->showMessage(QStringLiteral("%1 from \"%2\" onto %3 layer(s).").arg(text, m_paramClipboardName).arg(targets.size()), 4000);
+}
+
+void MainWindow::layerContextMenu(int row, const QPoint &globalPos)
+{
+    QMenu menu(this);
+    const bool onLayer = row >= 0 && row < m_engine->layerCount();
+    bool group = false, locked = false;
+    if (onLayer) {
+        Engine::Lock lk(&m_engine->mutex());
+        Layer *l = m_engine->layer(row);
+        group = l && l->isGroup;
+        locked = m_engine->isLocked(row);
+    }
+    if (onLayer) {
+        menu.addAction(QStringLiteral("Rename"), this, [this, row] { m_layerTable->startRename(row); })->setEnabled(!locked);
+        menu.addAction(QStringLiteral("Duplicate"), this, &MainWindow::duplicateCurrentLayer);
+        menu.addAction(locked ? QStringLiteral("Unlock") : QStringLiteral("Lock"), this, &MainWindow::toggleLockCurrent);
+        menu.addAction(QStringLiteral("Delete"), this, &MainWindow::removeCurrentLayer)->setEnabled(!locked);
+        menu.addSeparator();
+        menu.addAction(QStringLiteral("Copy Parameters"), this, [this, row] { copyLayerParams(row); });
+    }
+    QMenu *paste = menu.addMenu(m_paramClipboardName.isEmpty()
+                                    ? QStringLiteral("Paste Parameters")
+                                    : QStringLiteral("Paste Parameters from \"%1\"").arg(m_paramClipboardName));
+    paste->setEnabled(onLayer && !locked && !m_paramClipboard.isEmpty());
+    if (paste->isEnabled()) {
+        auto add = [&](const QString &label, int parts, const QString &what) {
+            paste->addAction(label, this, [this, parts, what] { pasteLayerParams(parts, what); });
+        };
+        add(QStringLiteral("Everything"), Engine::PartAll, QStringLiteral("Parameters"));
+        paste->addSeparator();
+        if (!group) add(QStringLiteral("Source"), Engine::PartSource, QStringLiteral("Source"));
+        add(QStringLiteral("ROI"), Engine::PartRoi, QStringLiteral("ROI"));
+        add(QStringLiteral("Color"), Engine::PartColor, QStringLiteral("Color"));
+        add(QStringLiteral("Spatial"), Engine::PartSpatial, QStringLiteral("Spatial"));
+        add(QStringLiteral("Effects"), Engine::PartEffects, QStringLiteral("Effects"));
+        add(QStringLiteral("Compositing"), Engine::PartCompositing, QStringLiteral("Compositing"));
+    }
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("New Layer"), this, &MainWindow::addEmptyLayer);
+    menu.exec(globalPos);
 }
 
 // Up / down among the layers of the same level (a group moves with its layers)
@@ -1143,8 +1233,13 @@ QJsonObject MainWindow::uiState() const
 bool MainWindow::maybeSave()
 {
     if (!isDirty()) return true;
-    auto r = QMessageBox::question(this, QStringLiteral("Fulskrin"), QStringLiteral("Save changes to the project?"),
-                                   QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    QMessageBox box(QMessageBox::Question, QStringLiteral("Fulskrin"), QStringLiteral("Save changes to the project?"),
+                    QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+    // ⌘D / Ctrl+D discards, as everywhere else on macOS
+    if (auto *discard = qobject_cast<QPushButton *>(box.button(QMessageBox::Discard)))
+        discard->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    box.setDefaultButton(QMessageBox::Save);
+    const int r = box.exec();
     if (r == QMessageBox::Cancel) return false;
     if (r == QMessageBox::Save) return save();
     return true;
