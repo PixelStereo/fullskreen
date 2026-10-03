@@ -1,9 +1,11 @@
 #include "Osc.h"
 #include "Engine.h"
+#include "Zeroconf.h"
 
 #include <QCryptographicHash>
 #include <QFileInfo>
 #include <QHostAddress>
+#include <QHostInfo>
 #include <QJsonDocument>
 #include <QNetworkDatagram>
 #include <QTcpServer>
@@ -374,7 +376,7 @@ void OscNamespace::build()
 
     // --- Master
     {
-        OscNode &n = add("/master/level", "f", 3, "Master level of the picture (0..1)");
+        OscNode &n = add("/master/level", "f", 3, "Level");
         n.range = {minMax(0, 1)};
         n.clip = "both";
         n.get = [e] { return QVariantList{e->masterTarget()}; };
@@ -385,7 +387,7 @@ void OscNamespace::build()
         };
     }
     {
-        OscNode &n = add("/master/blackout", "T", 3, "Blackout: fades the picture and the sound out (true) or back in");
+        OscNode &n = add("/master/blackout", "T", 3, "Blackout");
         n.get = [e] { return QVariantList{e->blackout()}; };
         n.set = [e](const QVariantList &a) {
             e->setBlackout(truth(a.value(0)));
@@ -393,7 +395,7 @@ void OscNamespace::build()
         };
     }
     {
-        OscNode &n = add("/master/fade", "f", 3, "Blackout fade duration (seconds)");
+        OscNode &n = add("/master/fade", "f", 3, "Fade Time");
         n.range = {minMax(0, 30)};
         n.clip = "both";
         n.get = [e] { return QVariantList{e->blackoutFade()}; };
@@ -404,7 +406,7 @@ void OscNamespace::build()
         };
     }
     {
-        OscNode &n = add("/master/volume", "f", 3, "Master volume of the sound (1 = unity gain)");
+        OscNode &n = add("/master/volume", "f", 3, "Volume");
         n.range = {minMax(0, 2)};
         n.clip = "both";
         n.get = [e] { return QVariantList{double(e->audioVolume())}; };
@@ -415,7 +417,7 @@ void OscNamespace::build()
         };
     }
     {
-        OscNode &n = add("/master/mute", "T", 3, "Mutes the sound output");
+        OscNode &n = add("/master/mute", "T", 3, "Mute");
         n.get = [e] { return QVariantList{e->audioMuted()}; };
         n.set = [e](const QVariantList &a) {
             e->setAudioMuted(truth(a.value(0)));
@@ -423,12 +425,12 @@ void OscNamespace::build()
         };
     }
     {
-        OscNode &n = add("/master/fps", "f", 1, "Rendering frame rate");
+        OscNode &n = add("/master/fps", "f", 1, "FPS");
         n.get = [e] { return QVariantList{e->fps()}; };
     }
     for (int axis = 0; axis < 2; ++axis) {
         OscNode &n = add(axis ? "/composition/height" : "/composition/width", "i", 3,
-                         axis ? "Composition height (pixels)" : "Composition width (pixels)");
+                         axis ? "Height" : "Width");
         n.range = {minMax(16, 16384)};
         n.clip = "both";
         n.get = [e, axis] {
@@ -459,7 +461,9 @@ void OscNamespace::build()
             items.push_back({l->id, l->parent, l->name});
         }
     }
-    add("/layers", QString(), 0, "Layers, from top to bottom; groups contain their layers");
+    add("/layers", QString(), 0, "Layers");
+    m_nodes["/master"].description = "Master";
+    m_nodes["/composition"].description = "Composition";
     QHash<quint64, QString> prefixOf;
     QHash<QString, int> used;
     for (const Item &it : items) {
@@ -470,6 +474,7 @@ void OscNamespace::build()
         used[key] += 1;
         prefixOf[it.id] = base + '/' + seg;
         addLayer(base + '/' + seg, it.id);
+        m_nodes[base + '/' + seg].description = it.name; // real name (spaces included) for the clients that show names
     }
 }
 
@@ -632,29 +637,29 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
         }
     }
 
-    L.method(P + "/name", "s", 3, "Layer name (its OSC address follows it)", [](Layer &l) { return QVariantList{l.name}; },
+    L.method(P + "/name", "s", 3, "Name", [](Layer &l) { return QVariantList{l.name}; },
              L.edit([](Layer &l, const QVariantList &a) {
                  const QString n = a.value(0).toString().trimmed();
                  if (n.isEmpty()) return false;
                  l.name = n;
                  return true;
              }));
-    L.method(P + "/type", "s", 1, "Source type", [](Layer &l) { return QVariantList{sourceTypeKey(l)}; }, nullptr).range =
+    L.method(P + "/type", "s", 1, "Type", [](Layer &l) { return QVariantList{sourceTypeKey(l)}; }, nullptr).range =
         {vals({"none", "video", "image", "isf", "audio", "group"})};
-    L.method(P + "/visible", "T", 3, "Visibility (also silences the layer)", [](Layer &l) { return QVariantList{l.visible}; },
+    L.method(P + "/visible", "T", 3, "Visible", [](Layer &l) { return QVariantList{l.visible}; },
              L.edit([](Layer &l, const QVariantList &a) {
                  l.visible = truth(a.value(0));
                  return true;
              }),
              true);
-    L.method(P + "/locked", "T", 3, "Lock: no edit allowed on the layer", [](Layer &l) { return QVariantList{l.locked}; },
+    L.method(P + "/locked", "T", 3, "Locked", [](Layer &l) { return QVariantList{l.locked}; },
              L.edit([](Layer &l, const QVariantList &a) {
                  l.locked = truth(a.value(0));
                  return true;
              }),
              true);
     if (picture) {
-        OscNode &op = L.method(P + "/opacity", "f", 3, "Opacity (0..1)", [](Layer &l) { return QVariantList{double(l.opacity)}; },
+        OscNode &op = L.method(P + "/opacity", "f", 3, "Opacity", [](Layer &l) { return QVariantList{double(l.opacity)}; },
                                L.edit([](Layer &l, const QVariantList &a) {
                                    if (a.isEmpty()) return false;
                                    l.opacity = float(std::clamp(num(a[0]), 0.0, 1.0));
@@ -662,7 +667,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                                }));
         op.range = {minMax(0, 1)};
         op.clip = "both";
-        L.method(P + "/blend", "s", 3, "Blend mode", [](Layer &l) { return QVariantList{blendModeKey(l.blend)}; },
+        L.method(P + "/blend", "s", 3, "Blend", [](Layer &l) { return QVariantList{blendModeKey(l.blend)}; },
                  L.edit([](Layer &l, const QVariantList &a) {
                      const QString k = a.value(0).toString().toLower();
                      if (!QStringList{"normal", "add", "screen", "multiply"}.contains(k)) return false;
@@ -673,8 +678,9 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
 
         // Crop: part of the source used (normalized, origin top left)
         static const char *kSides[] = {"left", "top", "right", "bottom"};
+        static const char *kSideNames[] = {"Left", "Top", "Right", "Bottom"};
         for (int side = 0; side < 4; ++side) {
-            OscNode &n = L.method(P + "/source/crop/" + kSides[side], "f", 3, "Part of the source picture used (0..1)",
+            OscNode &n = L.method(P + "/source/crop/" + kSides[side], "f", 3, kSideNames[side],
                                   [side](Layer &l) {
                                       const QRectF c = l.crop;
                                       const double v[4] = {c.left(), c.top(), c.right(), c.bottom()};
@@ -696,10 +702,23 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
             n.clip = "both";
         }
 
+        // Color: balance (temperature, tint), then removed and added
+        for (int which = 0; which < 2; ++which) {
+            const double range = which ? ColorAdjust::kTintRange : ColorAdjust::kTempRange;
+            OscNode &n = L.method(P + (which ? "/color/tint" : "/color/temp"), "f", 3, which ? "Tint" : "Temperature",
+                                  [which](Layer &l) { return QVariantList{double(which ? l.color.tint : l.color.temp)}; },
+                                  L.edit([which, range](Layer &l, const QVariantList &a) {
+                                      if (a.isEmpty()) return false;
+                                      (which ? l.color.tint : l.color.temp) = float(std::clamp(num(a[0]), -range, range));
+                                      return true;
+                                  }));
+            n.range = {minMax(-range, range)};
+            n.clip = "both";
+        }
         // Color: added and removed
         for (int which = 0; which < 2; ++which) {
             OscNode &n = L.method(P + (which ? "/color/remove" : "/color/add"), "fff", 3,
-                                  which ? "Color removed from the picture (R, G, B 0..1)" : "Color added to the picture (R, G, B 0..1)",
+                                  which ? "Remove" : "Add",
                                   [which](Layer &l) {
                                       const float *c = which ? l.color.remove : l.color.add;
                                       return QVariantList{double(c[0]), double(c[1]), double(c[2])};
@@ -715,7 +734,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
         }
 
         // Spatial: position (center, composition pixels), scale (% of the composition), corners (normalized)
-        L.method(P + "/spatial/position", "ff", 3, "Center of the layer (composition pixels)",
+        L.method(P + "/spatial/position", "ff", 3, "Position",
                  [e](Layer &l) {
                      const QSize c = e->compositionSize();
                      const QPointF p = l.mapping.bounds().center();
@@ -729,7 +748,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      l.mapping.setBounds(b);
                      return true;
                  }));
-        L.method(P + "/spatial/scale", "ff", 3, "Width and height of the layer (% of the composition)",
+        L.method(P + "/spatial/scale", "ff", 3, "Scale",
                  [](Layer &l) {
                      const QRectF b = l.mapping.bounds();
                      return QVariantList{b.width() * 100.0, b.height() * 100.0};
@@ -744,8 +763,9 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      return true;
                  }));
         static const char *kCorners[] = {"tl", "tr", "br", "bl"};
+        static const char *kCornerNames[] = {"Top Left", "Top Right", "Bottom Right", "Bottom Left"};
         for (int k = 0; k < 4; ++k)
-            L.method(P + "/spatial/corners/" + kCorners[k], "ff", 3, "Corner of the layer (normalized, 0..1 = composition)",
+            L.method(P + "/spatial/corners/" + kCorners[k], "ff", 3, kCornerNames[k],
                      [k](Layer &l) { return QVariantList{l.mapping.corners[k].x(), l.mapping.corners[k].y()}; },
                      L.edit([k](Layer &l, const QVariantList &a) {
                          if (a.size() < 2) return false;
@@ -754,14 +774,14 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      }));
 
         // Effects
-        L.method(P + "/effects/enabled", "T", 3, "General switch of the effect chain",
+        L.method(P + "/effects/enabled", "T", 3, "Enabled",
                  [](Layer &l) { return QVariantList{l.effectsEnabled}; }, L.edit([](Layer &l, const QVariantList &a) {
                      l.effectsEnabled = truth(a.value(0));
                      return true;
                  }));
         for (const auto &[k, seg] : effects) {
             const int slot = k;
-            L.method(P + "/effects/" + seg + "/enabled", "T", 3, "Effect on / off",
+            L.method(P + "/effects/" + seg + "/enabled", "T", 3, "Enabled",
                      [slot](Layer &l) {
                          return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->enabled} : QVariantList();
                      },
@@ -774,7 +794,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     }
 
     if (!isGroup) {
-        L.method(P + "/source/file", "s", 3, "Media file or ISF generator loaded into the layer",
+        L.method(P + "/source/file", "s", 3, "File",
                  [](Layer &l) { return QVariantList{l.sourcePath}; },
                  [e](int idx, const QVariantList &a) {
                      const QString path = a.value(0).toString();
@@ -788,13 +808,13 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  });
     }
     if (transport) {
-        L.method(P + "/source/play", "T", 3, "Playing (true) or paused", [](Layer &l) { return QVariantList{l.playing}; },
+        L.method(P + "/source/play", "T", 3, "Play", [](Layer &l) { return QVariantList{l.playing}; },
                  [e](int idx, const QVariantList &a) {
                      e->setLayerPlaying(idx, truth(a.value(0)));
                      return true;
                  },
                  true);
-        L.method(P + "/source/restart", "N", 2, "Plays from the in point (the out point backwards)", nullptr,
+        L.method(P + "/source/restart", "N", 2, "Restart", nullptr,
                  [e](int idx, const QVariantList &) {
                      double from;
                      {
@@ -809,16 +829,16 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      return true;
                  },
                  true);
-        L.method(P + "/source/position", "f", 3, "Playhead (seconds)", [](Layer &l) { return QVariantList{l.position()}; },
+        L.method(P + "/source/position", "f", 3, "Position", [](Layer &l) { return QVariantList{l.position()}; },
                  [e](int idx, const QVariantList &a) {
                      if (a.isEmpty()) return false;
                      e->seekLayer(idx, num(a[0]));
                      return true;
                  },
                  true);
-        L.method(P + "/source/duration", "f", 1, "Duration of the media (seconds)",
+        L.method(P + "/source/duration", "f", 1, "Duration",
                  [](Layer &l) { return QVariantList{l.duration()}; }, nullptr);
-        OscNode &sp = L.method(P + "/source/speed", "f", 3, "Playback speed (negative: backwards)",
+        OscNode &sp = L.method(P + "/source/speed", "f", 3, "Speed",
                                [](Layer &l) { return QVariantList{l.speed}; }, [e](int idx, const QVariantList &a) {
                                    if (a.isEmpty()) return false;
                                    e->setLayerSpeed(idx, std::clamp(num(a[0]), -8.0, 8.0));
@@ -826,7 +846,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                                });
         sp.range = {minMax(-8, 8)};
         sp.clip = "both";
-        L.method(P + "/source/mode", "s", 3, "Play mode", [](Layer &l) { return QVariantList{playModeKey(l.mode)}; },
+        L.method(P + "/source/mode", "s", 3, "Play Mode", [](Layer &l) { return QVariantList{playModeKey(l.mode)}; },
                  [e](int idx, const QVariantList &a) {
                      const QString k = a.value(0).toString().toLower();
                      if (!QStringList{"oneshot", "loop", "pingpong", "stop"}.contains(k)) return false;
@@ -836,7 +856,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
             .range = {vals({"oneshot", "loop", "pingpong", "stop"})};
         for (int which = 0; which < 2; ++which)
             L.method(P + (which ? "/source/out" : "/source/in"), "f", 3,
-                     which ? "Out point (seconds)" : "In point (seconds)",
+                     which ? "Out" : "In",
                      [which](Layer &l) {
                          return QVariantList{which ? (l.outPoint < 0 ? l.duration() : l.outPoint) : l.inPoint};
                      },
@@ -856,7 +876,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      });
     }
     if (sound) {
-        OscNode &v = L.method(P + "/source/volume", "f", 3, "Volume of the layer (1 = original level)",
+        OscNode &v = L.method(P + "/source/volume", "f", 3, "Volume",
                               [](Layer &l) { return QVariantList{double(l.volume)}; }, [e](int idx, const QVariantList &a) {
                                   if (a.isEmpty()) return false;
                                   e->setLayerVolume(idx, float(num(a[0])));
@@ -864,13 +884,25 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                               });
         v.range = {minMax(0, 2)};
         v.clip = "both";
-        L.method(P + "/source/mute", "T", 3, "Mutes the layer", [](Layer &l) { return QVariantList{l.muted}; },
+        L.method(P + "/source/mute", "T", 3, "Mute", [](Layer &l) { return QVariantList{l.muted}; },
                  [e](int idx, const QVariantList &a) {
                      e->setLayerMuted(idx, truth(a.value(0)));
                      return true;
                  });
     }
-    if (isGroup) add(P + "/layers", QString(), 0, "Layers of the group");
+    if (isGroup) add(P + "/layers", QString(), 0, "Layers");
+    // Readable names of the containers
+    static const std::pair<const char *, const char *> kNames[] = {
+        {"/source", "Source"}, {"/source/crop", "Crop"}, {"/source/params", "Parameters"}, {"/color", "Color"},
+        {"/spatial", "Spatial"}, {"/spatial/corners", "Corners"}, {"/effects", "Effects"}};
+    for (const auto &[suffix, name] : kNames) {
+        auto it = m_nodes.find(P + suffix);
+        if (it != m_nodes.end()) it->second.description = name;
+    }
+    for (const auto &[k, seg] : effects) {
+        auto it = m_nodes.find(P + "/effects/" + seg);
+        if (it != m_nodes.end() && it->second.description.isEmpty()) it->second.description = seg;
+    }
 }
 
 QJsonValue OscNamespace::jsonValue(const OscNode &n, const QVariant &v, int k)
@@ -880,7 +912,8 @@ QJsonValue OscNamespace::jsonValue(const OscNode &n, const QVariant &v, int k)
     if (t == 'i' || t == 'h') return v.toLongLong();
     if (t == 's') return v.toString();
     if (t == 'N' || t == 'I') return QJsonValue();
-    return v.toDouble();
+    const double d = v.toDouble();
+    return std::isfinite(d) ? d : 0.0;
 }
 
 QJsonObject OscNamespace::toJson(const QString &path) const
@@ -906,7 +939,7 @@ QJsonObject OscNamespace::toJson(const QString &path) const
             o["CLIPMODE"] = c;
         }
     }
-    if (!n->children.isEmpty()) {
+    if (!n->children.isEmpty() || n->type.isEmpty()) { // a container always has CONTENTS (even empty)
         QJsonObject contents;
         for (const QString &c : n->children) contents[c] = toJson(path == "/" ? "/" + c : path + "/" + c);
         o["CONTENTS"] = contents;
@@ -926,7 +959,7 @@ OscServer::OscServer(Engine *engine, QObject *parent) : QObject(parent), m_e(eng
 
 OscServer::~OscServer() { stop(); }
 
-bool OscServer::start(quint16 oscPort, quint16 queryPort, const QString &name)
+bool OscServer::start(quint16 oscPort, quint16 queryPort, const QString &name, bool announce)
 {
     stop();
     m_name = name;
@@ -946,11 +979,22 @@ bool OscServer::start(quint16 oscPort, quint16 queryPort, const QString &name)
     connect(m_http, &QTcpServer::newConnection, this, &OscServer::onConnection);
     m_listenTimer.start();
     m_status = QStringLiteral("OSC on UDP %1 · OSCQuery on http://<this machine>:%2").arg(this->oscPort()).arg(this->queryPort());
+    if (announce) {
+        m_zeroconf = new Zeroconf(this);
+        const QString instance = QStringLiteral("%1 (%2)").arg(name, QHostInfo::localHostName().section('.', 0, 0));
+        QString err;
+        if (m_zeroconf->start(instance, {{"_oscjson._tcp", this->queryPort(), {{"txtvers", "1"}}}, {"_osc._udp", this->oscPort(), {{"txtvers", "1"}}}}, &err))
+            m_status += QStringLiteral(" · announced as \"%1\"").arg(instance);
+        else
+            m_status += QStringLiteral(" · zeroconf: ") + err;
+    }
     return true;
 }
 
 void OscServer::stop()
 {
+    delete m_zeroconf; // goodbye sent
+    m_zeroconf = nullptr;
     m_listenTimer.stop();
     for (auto &c : m_clients) c.socket->deleteLater();
     m_clients.clear();
@@ -1018,7 +1062,7 @@ QJsonObject OscServer::hostInfo() const
         {"WS_PORT", int(queryPort())},
         {"EXTENSIONS", QJsonObject{{"ACCESS", true}, {"VALUE", true}, {"RANGE", true}, {"DESCRIPTION", true},
                                    {"TAGS", false}, {"EXTENDED_TYPE", false}, {"UNIT", false}, {"CRITICAL", false},
-                                   {"CLIPMODE", true}, {"LISTEN", true}, {"PATH_CHANGED", false}}},
+                                   {"CLIPMODE", true}, {"LISTEN", true}, {"PATH_CHANGED", true}}},
     };
 }
 
@@ -1107,6 +1151,7 @@ void OscServer::onData(QTcpSocket *s)
             s->write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                      "Sec-WebSocket-Accept: " + accept + "\r\n\r\n");
             c.websocket = true;
+            m_treeSignature = m_ns.signature(); // the client has just read the tree
         } else {
             int status = 200;
             const QByteArray body = httpGet(QString::fromUtf8(request.value(1)), &status);
@@ -1195,6 +1240,18 @@ void OscServer::onWsFrame(Client &c, int opcode, const QByteArray &payload)
 
 void OscServer::pushListened()
 {
+    // The tree changed (layer added, renamed, source or effect changed): clients fetch it again
+    bool websockets = false;
+    for (const Client &c : std::as_const(m_clients)) websockets |= c.websocket;
+    if (websockets) {
+        const QString sig = m_ns.signature();
+        if (sig != m_treeSignature) {
+            m_treeSignature = sig;
+            const QByteArray msg = QJsonDocument(QJsonObject{{"COMMAND", "PATH_CHANGED"}, {"DATA", "/"}}).toJson(QJsonDocument::Compact);
+            for (const Client &c : std::as_const(m_clients))
+                if (c.websocket) sendWs(c.socket, 1, msg);
+        }
+    }
     bool anyone = false;
     for (const Client &c : std::as_const(m_clients)) anyone |= c.websocket && !c.listening.isEmpty();
     if (!anyone) return;

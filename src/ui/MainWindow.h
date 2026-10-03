@@ -9,6 +9,7 @@ class LayerInspector;
 class LayerTable;
 class MediaBin;
 class MasterPanel;
+class SettingsPanel;
 class OutputWindow;
 class QLabel;
 class QMenu;
@@ -97,6 +98,7 @@ private:
     LayerTable *m_layerTable = nullptr;
     MediaBin *m_bin = nullptr;
     MasterPanel *m_master = nullptr;
+    SettingsPanel *m_settings = nullptr;
     QTabWidget *m_tabs = nullptr;
     OutputWindow *m_output = nullptr;
     QLabel *m_status = nullptr;

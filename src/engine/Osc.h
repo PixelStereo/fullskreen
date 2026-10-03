@@ -13,6 +13,8 @@
 // Names are made OSC-safe (spaces and reserved characters become '_') and unique among siblings ("_2").
 // A locked layer refuses every write except visible, locked and the transport (play, restart, position).
 // Writes do not go through the undo stack (show control); edited() tells the interface to refresh.
+// When layers, sources or effects change, WebSocket clients receive PATH_CHANGED and fetch the tree again.
+// The server is announced by zeroconf (_oscjson._tcp for OSCQuery, _osc._udp for OSC).
 
 #include <QByteArray>
 #include <QHash>
@@ -71,13 +73,13 @@ public:
     explicit OscNamespace(Engine *e) : m_e(e) {}
 
     void refresh();                         // rebuilds if the structure signature changed
+    QString signature() const;              // layers, sources, effects and parameters (not values)
     const OscNode *node(const QString &path) const;
     QStringList paths() const;              // every method (node with a type)
     QJsonObject toJson(const QString &path) const; // node and its contents (OSCQuery)
     static QJsonValue jsonValue(const OscNode &n, const QVariant &v, int k);
 
 private:
-    QString signature() const;
     void build();
     OscNode &add(const QString &path, const QString &type, int access, const QString &description);
     void addLayer(const QString &prefix, quint64 id);
@@ -95,7 +97,8 @@ public:
     ~OscServer() override;
 
     // Ports 0: chosen by the system (tests). Returns false if a port could not be opened.
-    bool start(quint16 oscPort, quint16 queryPort, const QString &name = QStringLiteral("Fulskrin"));
+    // announce: zeroconf (_oscjson._tcp, _osc._udp)
+    bool start(quint16 oscPort, quint16 queryPort, const QString &name = QStringLiteral("Fulskrin"), bool announce = true);
     void stop();
     bool isRunning() const;
     quint16 oscPort() const;
@@ -134,4 +137,6 @@ private:
     QHash<QTcpSocket *, Client> m_clients;
     QTimer m_listenTimer;
     QString m_name, m_status;
+    QString m_treeSignature; // tree last seen by the WebSocket clients (PATH_CHANGED when it changes)
+    class Zeroconf *m_zeroconf = nullptr;
 };

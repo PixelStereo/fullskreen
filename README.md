@@ -28,16 +28,17 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   freezes on the last frame), **Loop**, **Ping-pong** (forwards then backwards — the picture and the sound are
   decoded backwards in short windows, so any codec works, all-intra codecs such as HAP or ProRes being the
   lightest), **Stop** (plays once, then black and silent). The mode given to newly loaded media is set in the
-  **Preferences** (Loop by default).
+  **Settings** tab (Loop by default).
 - **In / out points** per video or sound layer: playback, loops and ping-pong stay within them, in both
   directions; One-shot / Stop end at the out point (the in point backwards). Saved in the project.
   They are shown on the playback bar of the Source tab (highlighted range between [ ] markers), and the markers
   can be dragged there.
 - **Crop**: in the Source tab of a layer or a group, a preview of the source picture with a rectangle whose sides are
   dragged (they stay straight) chooses the part of the picture used — the whole picture by default.
-- **Color tab**: a color added to the picture (light) and a color removed from it (filter):
-  out = in × (1 − removed) + added. Each color is edited in RGB, HSL, additive (R G B light), subtractive
-  (C M Y filters) or all of them together, linked.
+- **Color tab**: first the **balance**, as in DaVinci Resolve: **Temp** (blue −4000 … yellow +4000) and
+  **Tint** (green −100 … magenta +100), luminance kept; then a color removed from the picture (filter) and a color
+  added to it (light): out = balance(in) × (1 − removed) + added. The colors are edited in RGB, HSL, additive
+  (R G B light), subtractive (C M Y filters) or all of them together (linked), as chosen in the Settings tab.
 - **Negative speed** plays videos and sounds backwards, in every play mode (Loop goes on backwards from the end,
   One-shot stops on the first frame…); changing direction keeps the current position.
 - **Spatial tab**: position (center, composition pixels) and scale (% of the composition, X and Y linked by
@@ -89,6 +90,8 @@ Video mapping application for stage and installation work, on Mac / Windows / Li
   The **×** next to the drop zone ejects the media.
 - **Layer list at the bottom**, full width: visibility, lock, name, source, effects, opacity adjustable
   directly in the row, blend mode, playback position. Several layers can be selected (Ctrl/⌘ or Shift + click).
+- **Settings tab** (next to Layer and Master; also Preferences…, ⌘, / Ctrl+,): default play mode, color widgets of
+  the Color tab, OSC on / off and ports. Applied immediately.
 - **Layer tab** with sub-tabs: **Source** (drop zone, transport, sound, generator parameters, crop),
   **Color**, **Spatial** (mapping), **Effects** (ISF chain), **Compositing** (opacity, blend).
 - **OSC control and OSCQuery**: the whole namespace (master, composition, every layer and group: source,
@@ -183,7 +186,7 @@ cmake -S . -B build && cmake --build build -j
 | Publish via NDI, OMT, Syphon, Spout | Master tab ▸ Output Publishing |
 | Play / pause the selected video or audio layer | Space |
 | Play mode of a video or a sound | Source tab ▸ One-shot / Loop / Ping-pong / Stop |
-| Default play mode for newly loaded media | Preferences (⌘, on Mac, Ctrl+, elsewhere) |
+| Default play mode for newly loaded media | Settings tab (⌘, on Mac, Ctrl+, elsewhere) |
 | Play backwards | negative speed (Source tab), e.g. −1 × |
 | In / out points of a video or a sound | I / O keys at the current position, Source tab ▸ In / Out (↺: whole media), or drag the [ ] markers of the playback bar |
 | Zoom the preview (finer moves) | mouse wheel or pinch, or the − / + / Fit buttons at the top right of the preview |
@@ -213,13 +216,16 @@ The 68 ISF transitions are skipped: V1 has no notion of transitions between medi
 
 ## OSC
 
-Enabled by default in **Preferences ▸ OSC**: OSC messages on **UDP 9000**, OSCQuery on **TCP 9001**
-(HTTP and WebSocket on the same port). Writes made by OSC are not undoable (show control); the interface follows them.
+Enabled by default in **Settings ▸ OSC**: OSC messages on **UDP 1234**, OSCQuery on **TCP 5678**
+(HTTP and WebSocket on the same port) — the default ports of libossia / score.
+The server is **announced by zeroconf** (`_oscjson._tcp` for OSCQuery, `_osc._udp` for OSC, as "Fulskrin (<machine>)"):
+Bonjour on macOS, a built-in mDNS responder elsewhere (it shares port 5353 with Avahi / Windows). Writes made by OSC are not undoable (show control); the interface follows them.
 
 - `GET http://<machine>:9001/` returns the whole tree (OSCQuery JSON: `FULL_PATH`, `CONTENTS`, `TYPE`, `VALUE`,
   `RANGE`, `ACCESS`, `DESCRIPTION`, `CLIPMODE`); `GET /path?VALUE` one attribute; `GET /?HOST_INFO` the server.
 - WebSocket: `{"COMMAND":"LISTEN","DATA":"/path"}` / `IGNORE`; value changes are sent as binary OSC messages,
-  and OSC messages can be sent as binary frames.
+  and OSC messages can be sent as binary frames. When layers, sources or effects change (a project is opened,
+  a layer added or renamed…), the clients receive `PATH_CHANGED` and fetch the tree again.
 - OSC address patterns are supported (`/layers/*/opacity 0.5`), as well as bundles.
 
 Main addresses (layer and effect names are made OSC-safe: spaces become `_`; a duplicate name gets `_2`):
@@ -234,13 +240,13 @@ Main addresses (layer and effect names are made OSC-safe: spaces become `_`; a d
 | `/layers/<name>/source/volume` · `mute` | f · T | sound of the layer |
 | `/layers/<name>/source/crop/left` · `top` · `right` · `bottom` | f 0..1 | part of the source used |
 | `/layers/<name>/source/params/<input>` | per ISF type | ISF generator parameters |
+| `/layers/<name>/color/temp` · `color/tint` | f | −4000..4000 · −100..100 |
 | `/layers/<name>/color/add` · `color/remove` | fff | |
 | `/layers/<name>/spatial/position` · `scale` · `corners/tl` `tr` `br` `bl` | ff | px · % · normalized |
 | `/layers/<name>/effects/enabled` · `effects/<effect>/enabled` · `effects/<effect>/<input>` | | effect chain |
 | `/layers/<group>/layers/<name>/…` | | layers of a group |
 
 A locked layer refuses every write except `visible`, `locked` and the transport (`play`, `restart`, `position`).
-Zeroconf (`_oscjson._tcp`) is not announced yet: enter the machine's address and port in the client.
 
 ## Architecture
 
@@ -255,10 +261,12 @@ src/engine/   engine, with no widget dependency (QtCore/QtGui/OpenGL + FFmpeg)
   Mapping       4-corner homography + Catmull-Rom mesh
   LayerTree     order and grouping of the layers (ids), normalization, moves
   Osc           OSC (UDP) and OSCQuery (HTTP, WebSocket) server, namespace built from the engine
+  Zeroconf      DNS-SD announcement (Bonjour on macOS, own mDNS responder elsewhere)
 src/ui/       Qt Widgets interface
   MainWindow, LayerInspector, ParamPanel, MappingView (editing), OutputWindow (projector)
   Commands      undo commands (QUndoStack)
   MediaBin, LayerTable, MasterPanel   Media Bin, layer list, Master tab
+  SettingsPanel Settings tab (preferences of this machine)
   Widgets       click-to-reset labels, playback bar with in / out, crop editor, color editor
 isf/          bundled shaders
 test/         automated tests
@@ -292,7 +300,7 @@ generates one project per shader and per codec, plus the demo used by the UI tes
 - **Sound**: one stereo output; no multichannel routing, per-layer output assignment, fades or audio effects yet.
 - **Single output**: no multiple outputs, per-projector slicing or automatic edge blending yet
   (the SoftEdges effect helps with manual blending).
-- **No timeline, cues, MIDI or DMX control.** OSC has no zeroconf announcement yet.
+- **No timeline, cues, MIDI or DMX control.**
 - Groups have one level (no group inside a group).
 - **No Syphon / Spout / NDI / OMT inputs, and no camera input** (the output can be published, though).
 - NDI and OMT send the image at composition size, read back from the GPU (one frame of latency);

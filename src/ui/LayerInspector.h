@@ -67,6 +67,7 @@ private:
     QPointer<SeekBar> m_seek;
     QPointer<CropEditor> m_crop;
     QPointer<ColorEditor> m_colorAdd, m_colorRemove;
+    QPointer<QDoubleSpinBox> m_temp, m_tint;
     bool m_previewing = false;
     QPointer<QLabel> m_time;
     QPointer<QPushButton> m_play;
