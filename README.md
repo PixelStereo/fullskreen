@@ -182,8 +182,13 @@ A locked layer refuses every write except `visible`, `locked` and the transport.
 
 ```
 src/engine/   engine, with no widget dependency (QtCore/QtGui/OpenGL + FFmpeg)
-  Engine        composition, render thread, output presentation, JSON project, Media Bin
-  Memories      memories (snapshots of the layers) and their fades
+  Engine        one class, its methods spread over the six files below by concern:
+   · Engine      OpenGL context and render thread, runGl() tasks, output window, master and blackout
+   · Layers      layers, order and groups, sources, transport, effect chain, copy of parameters
+   · Render      one frame: sources, layers in dependency order, composite, preview, publishing
+   · Project     a layer to and from JSON, saving and opening a .fulskrin
+   · Media       file types read, media used by each layer, Media Bin, relinking
+   · Memories    memories (snapshots of the layers) and their fades
   Publish       NDI / OMT (loaded at runtime), Syphon (.mm), Spout; asynchronous GPU readback
   Isf           ISF parser and renderer (GLSL 330 core translation, passes, buffers)
   VideoDecoder  FFmpeg decoding on a thread, frame queue, seamless loop, seeking

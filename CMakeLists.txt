@@ -44,6 +44,10 @@ add_library(fulskrin_engine STATIC
   src/engine/Mapping.cpp
   src/engine/VideoDecoder.cpp
   src/engine/Engine.cpp
+  src/engine/Layers.cpp
+  src/engine/Render.cpp
+  src/engine/Project.cpp
+  src/engine/Media.cpp
   src/engine/Publish.cpp
   src/engine/AudioStream.cpp
   src/engine/AudioOutput.cpp
