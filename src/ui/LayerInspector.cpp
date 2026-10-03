@@ -477,17 +477,22 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             emit layerChanged();
         });
 
-        auto *seekRow = new QHBoxLayout;
+        // Playback bar on its own line, the numbers on the line below (position left, duration right)
         m_seek = new SeekBar;
         m_seek->setDuration(s.duration);
         m_seek->setInOut(s.inPoint, s.outPoint);
         m_seek->setProperty("allowLocked", true); // seeking is not an edit; the markers are disabled when locked
         m_seek->setMarkersEditable(!m_locked);
+        v->addWidget(m_seek);
+        auto *timeRow = new QHBoxLayout;
+        timeRow->setContentsMargins(2, 0, 2, 0);
         m_time = new QLabel;
-        m_time->setStyleSheet("font-family:monospace;");
-        seekRow->addWidget(m_seek, 1);
-        seekRow->addWidget(m_time);
-        v->addLayout(seekRow);
+        m_duration = new QLabel;
+        for (QLabel *l : {m_time.data(), m_duration.data()}) l->setStyleSheet("font-family:monospace; color:#aaa;");
+        timeRow->addWidget(m_time);
+        timeRow->addStretch();
+        timeRow->addWidget(m_duration);
+        v->addLayout(timeRow);
 
         // In / out points: the played range (loops and ping-pong stay within it). Keys I / O.
         auto *range = new QHBoxLayout;
@@ -1222,5 +1227,6 @@ void LayerInspector::refreshDynamic()
         m_seek->setPosition(p);
         m_seek->setInOut(in, out);
     }
-    if (m_time) m_time->setText(fmtTime(p) + " / " + fmtTime(d));
+    if (m_time) m_time->setText(fmtTime(p));
+    if (m_duration) m_duration->setText(fmtTime(d));
 }

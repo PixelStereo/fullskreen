@@ -70,7 +70,7 @@ private:
     QPointer<ColorEditor> m_colorAdd, m_colorRemove;
     QPointer<QDoubleSpinBox> m_temp, m_tint;
     bool m_previewing = false;
-    QPointer<QLabel> m_time;
+    QPointer<QLabel> m_time, m_duration;
     QPointer<QPushButton> m_play;
     QPointer<QProgressBar> m_meter;
     QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY;
