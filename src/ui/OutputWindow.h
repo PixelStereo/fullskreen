@@ -14,7 +14,8 @@ public:
     explicit OutputWindow(Engine *engine);
     ~OutputWindow() override;
 
-    // Fullscreen on a secondary screen, windowed if it is the UI screen.
+    // Fullscreen (its own Space on macOS) on the chosen screen, or a window.
+    // On macOS, leaving fullscreen is animated: the window is only hidden or moved once the Space has closed.
     void showOn(QScreen *screen, bool fullscreen);
     void hideOutput();
 
@@ -30,8 +31,9 @@ protected:
 
 private:
     void sync();
+    void showOnNow(QScreen *screen, bool fullscreen); // once no Space is left to close
+    void hideNow();
     Engine *m_engine;
     bool m_lastExposed = false;
-    bool m_borderlessFullscreen = false; // macOS: fullscreen without a separate Space
     QSize m_lastSize;
 };
