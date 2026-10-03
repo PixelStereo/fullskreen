@@ -1,6 +1,13 @@
 // Headless engine tests: load/save, video, ISF (multi-pass, .vs, errors).
 #include "Commands.h"
 #include "Engine.h"
+#include "LayerTree.h"
+#include "Osc.h"
+#include <QJsonArray>
+#include <QTcpSocket>
+#include <QUdpSocket>
+#include <QtEndian>
+#include <QColor>
 #include <QElapsedTimer>
 #include <QLineF>
 #include <mutex>
@@ -207,6 +214,290 @@ int main(int argc, char **argv)
         // Back to the very start of the stack
         while (undo.canUndo()) undo.undo();
         CHECK(e.layerCount() == 0);
+    }
+
+    // 4b. Structure helpers (groups)
+    {
+        LayerTree t = {{1, 0, false}, {2, 0, true}, {3, 2, false}, {4, 0, false}, {5, 2, false}};
+        LayerTree n = tree::normalized(t);
+        CHECK(n.size() == 5 && n[1].id == 2 && n[2].id == 3 && n[3].id == 5 && n[4].id == 4); // members follow
+        LayerTree in = tree::intoGroup(n, {1, 4}, 2);
+        CHECK(in[0].id == 2 && in.back().id == 4 && in.back().parent == 2 && in[3].id == 1 && in[3].parent == 2);
+        LayerTree out = tree::moved(in, {3}, 0, 0); // to the end, top level
+        CHECK(out.back().id == 3 && out.back().parent == 0);
+        LayerTree un = tree::ungrouped(in, 2);
+        CHECK(un.back().id == 2 && un[0].parent == 0 && un[0].id == 3);
+        LayerTree g = tree::moved(n, {2}, 1, 0); // a group moves with its members
+        CHECK(g[0].id == 2 && g[1].id == 3 && g[2].id == 5 && g[3].id == 1);
+        LayerTree bad = {{2, 0, true}, {6, 0, true}};
+        bad[1].parent = 2; // no group inside a group
+        CHECK(tree::normalized(bad)[1].parent == 0);
+    }
+
+    // 4c. Groups, crop, color, effects switch, lock, blackout (manual rendering)
+    {
+        e.newProject();
+        e.setCompositionSize(QSize(64, 32));
+        QImage rb(64, 32, QImage::Format_RGB32); // left half red, right half blue
+        for (int y = 0; y < 32; ++y)
+            for (int x = 0; x < 64; ++x) rb.setPixel(x, y, x < 32 ? qRgb(255, 0, 0) : qRgb(0, 0, 255));
+        rb.save(tmp + "/redblue.png");
+        auto render = [&] {
+            for (int k = 0; k < 2; ++k) e.renderFrame();
+            return e.grabOutput();
+        };
+        auto px = [](const QImage &img, int x, int y) { return QColor(img.pixel(x, y)); };
+        int l = e.addLayer("img");
+        CHECK(e.setLayerImage(l, tmp + "/redblue.png", &err));
+        QImage img = render();
+        CHECK(px(img, 8, 16).red() > 250 && px(img, 56, 16).blue() > 250);
+        // Crop: the right half only fills the layer
+        e.layer(l)->crop = QRectF(0.5, 0, 0.5, 1);
+        img = render();
+        CHECK(px(img, 8, 16).blue() > 250 && px(img, 8, 16).red() < 5);
+        e.layer(l)->crop = Layer::fullCrop();
+        // Color: remove red, add green
+        e.layer(l)->color.remove[0] = 1.0f;
+        e.layer(l)->color.add[1] = 0.5f;
+        img = render();
+        CHECK(px(img, 8, 16).red() < 5 && std::abs(px(img, 8, 16).green() - 128) < 4);
+        e.layer(l)->color = ColorAdjust();
+        // Effects switch: FlipCrop flips the picture, the general switch bypasses the chain
+        const int fx = e.addEffect(l, isf + "/effects/FlipCrop.fs", &err);
+        CHECK(fx == 0);
+        for (IsfInput &in : e.layer(l)->effects[0]->inputs())
+            if (in.name == "flipH") in.bValue = true;
+        img = render();
+        CHECK(px(img, 8, 16).blue() > 250);
+        e.layer(l)->effectsEnabled = false;
+        img = render();
+        CHECK(px(img, 8, 16).red() > 250);
+        e.layer(l)->effectsEnabled = true;
+        e.removeEffect(l, 0);
+
+        // Group: the layer moves in, the group's opacity, visibility, crop and color apply to it
+        int g = e.addGroup("G", 0);
+        CHECK(e.layer(g)->isGroup && e.layerCount() == 2);
+        const quint64 gid = e.layerId(g), lid = e.layerId(1);
+        e.setStructure(tree::intoGroup(e.structure(), {lid}, gid));
+        CHECK(e.groupIndexOf(1) == 0 && e.groupMembers(0) == QList<int>{1});
+        img = render();
+        CHECK(px(img, 8, 16).red() > 250 && px(img, 56, 16).blue() > 250); // a group with defaults changes nothing
+        e.layer(0)->opacity = 0.5f;
+        img = render();
+        CHECK(std::abs(px(img, 8, 16).red() - 128) < 6);
+        e.layer(0)->opacity = 1.0f;
+        e.layer(0)->crop = QRectF(0, 0, 0.5, 1); // left half of the composition: red everywhere
+        img = render();
+        CHECK(px(img, 56, 16).red() > 250 && px(img, 56, 16).blue() < 5);
+        e.layer(0)->crop = Layer::fullCrop();
+        e.layer(0)->color.remove[2] = 1.0f;
+        img = render();
+        CHECK(px(img, 56, 16).blue() < 5 && px(img, 8, 16).red() > 250);
+        e.layer(0)->color = ColorAdjust();
+        e.layer(0)->visible = false;
+        img = render();
+        CHECK(qGray(img.pixel(8, 16)) < 3 && !e.layer(1)->parentVisible);
+        e.layer(0)->visible = true;
+        // Source preview: the group's composite, at the requested size
+        e.requestSourcePreview(gid, 32);
+        for (int k = 0; k < 8; ++k) e.renderFrame();
+        quint64 pid = 0;
+        const QImage prev = e.sourcePreview(&pid);
+        CHECK(pid == gid && prev.width() == 32 && prev.height() == 16 && QColor(prev.pixel(4, 8)).red() > 250);
+        e.requestSourcePreview(0);
+        // Lock: of the layer itself or of its group
+        CHECK(!e.isLocked(1));
+        e.layer(0)->locked = true;
+        CHECK(e.isLocked(1) && e.isLocked(0));
+        e.layer(0)->locked = false;
+
+        // Save / load keeps the structure and the new properties
+        e.layer(1)->crop = QRectF(0.1, 0.2, 0.5, 0.6);
+        e.layer(1)->color.add[2] = 0.25f;
+        e.layer(1)->effectsEnabled = false;
+        e.layer(0)->locked = true;
+        const LayerTree before = e.structure();
+        CHECK(e.saveProject(tmp + "/groups.fulskrin", {}, &err));
+        CHECK(e.loadProject(tmp + "/groups.fulskrin", nullptr, &err));
+        CHECK(e.structure() == before);
+        CHECK(e.layer(0)->locked && e.layer(0)->isGroup);
+        CHECK(QLineF(e.layer(1)->crop.topLeft(), QPointF(0.1, 0.2)).length() < 1e-9 && std::abs(e.layer(1)->crop.width() - 0.5) < 1e-9);
+        CHECK(std::abs(e.layer(1)->color.add[2] - 0.25f) < 1e-6 && !e.layer(1)->effectsEnabled);
+        e.layer(0)->locked = false;
+        // Duplicate a group: its members are copied into the copy
+        const int dup = e.duplicateLayer(0);
+        CHECK(dup == 0 && e.layerCount() == 4 && e.layer(0)->isGroup && e.layer(1)->parent == e.layerId(0));
+        CHECK(e.layer(2)->isGroup && e.layer(3)->parent == e.layerId(2) && e.layerId(0) != e.layerId(2));
+        // Undo / redo of a structure change, and of a removed member
+        {
+            QUndoStack undo;
+            const LayerTree t0 = e.structure();
+            undo.push(new cmd::SetStructure(&e, t0, tree::ungrouped(t0, e.layerId(0)), QStringLiteral("Ungroup")));
+            CHECK(e.layer(0)->parent == 0 && e.layer(1)->isGroup);
+            undo.undo();
+            CHECK(e.structure() == t0);
+            undo.push(new cmd::RemoveLayer(&e, 3));
+            CHECK(e.layerCount() == 3 && e.groupMembers(2).isEmpty());
+            undo.undo();
+            CHECK(e.structure() == t0);
+            undo.push(new cmd::SetLayerProp(&e, 1, cmd::SetLayerProp::Crop, e.layer(1)->crop, QRectF(0, 0, 0.5, 0.5)));
+            CHECK(e.layer(1)->crop == QRectF(0, 0, 0.5, 0.5));
+            undo.undo();
+            undo.push(new cmd::SetLayerProp(&e, 1, cmd::SetLayerProp::ColorRemove, QColor(Qt::black), QColor(Qt::red)));
+            CHECK(e.layer(1)->color.remove[0] == 1.0f && e.layer(1)->color.remove[1] == 0.0f);
+            undo.undo();
+            CHECK(e.layer(1)->color.remove[0] == 0.0f);
+        }
+        // Removing a group keeps its members, at the top level
+        e.removeLayer(0);
+        CHECK(e.layerCount() == 3 && e.layer(0)->parent == 0 && !e.layer(0)->isGroup);
+
+        // Blackout: picture and sound
+        e.newProject();
+        e.setCompositionSize(QSize(64, 32));
+        l = e.addLayer("img");
+        e.setLayerImage(l, tmp + "/redblue.png", &err);
+        e.setBlackout(true, 0);
+        CHECK(e.blackout() && qGray(render().pixel(8, 16)) < 2 && e.audioOutput().fadeLevel() == 0.0f);
+        e.fadeMaster(1.0, 0); // the master fader does not end the blackout
+        CHECK(qGray(render().pixel(8, 16)) < 2);
+        e.setBlackout(false, 0);
+        CHECK(!e.blackout() && render().pixel(8, 16) != qRgb(0, 0, 0) && e.audioOutput().fadeLevel() == 1.0f);
+        e.newProject();
+    }
+
+    // 4d. OSC and OSCQuery
+    {
+        osc::Message m{"/a/b", "ifsTFNd", {7, 0.5, QStringLiteral("hey"), true, false, QVariant(), 2.25}};
+        std::vector<osc::Message> back;
+        CHECK(osc::decode(osc::encode(m), back) && back.size() == 1);
+        CHECK(back[0].address == "/a/b" && back[0].types == "ifsTFNd" && back[0].args[0].toInt() == 7 &&
+              back[0].args[1].toDouble() == 0.5 && back[0].args[2].toString() == "hey" && back[0].args[3].toBool() &&
+              !back[0].args[4].toBool() && back[0].args[6].toDouble() == 2.25);
+        QByteArray bundle("#bundle\0\0\0\0\0\0\0\0\1", 16);
+        for (const QByteArray &part : {osc::encode({"/x", "i", {1}}), osc::encode({"/y", "s", {QStringLiteral("z")}})}) {
+            char n[4];
+            qToBigEndian(qint32(part.size()), n);
+            bundle += QByteArray(n, 4) + part;
+        }
+        back.clear();
+        CHECK(osc::decode(bundle, back) && back.size() == 2 && back[1].address == "/y");
+        CHECK(osc::match("/layers/*/opacity", "/layers/A_b/opacity") && !osc::match("/layers/*/opacity", "/layers/a/b/opacity"));
+        CHECK(osc::match("/l/{foo,bar}/[a-c]?", "/l/bar/bx") && !osc::match("/l/{foo,bar}/[!a-c]", "/l/foo/a"));
+        CHECK(osc::safeName(" My layer/1 ") == "My_layer_1");
+
+        e.newProject();
+        e.setCompositionSize(QSize(64, 32));
+        const int li = e.addLayer("My layer");
+        e.setLayerImage(li, tmp + "/redblue.png", &err);
+        e.addEffect(li, isf + "/effects/FlipCrop.fs", &err);
+        const int gi = e.addGroup("G", 0);
+        e.setStructure(tree::intoGroup(e.structure(), {e.layerId(1)}, e.layerId(gi)));
+        OscServer server(&e);
+        CHECK(server.start(0, 0, "test"));
+        CHECK(server.oscPort() > 0 && server.queryPort() > 0);
+        const QString L = "/layers/G/layers/My_layer";
+        CHECK(server.handleMessage({L + "/opacity", "f", {0.25}}) && std::abs(e.layer(1)->opacity - 0.25f) < 1e-6);
+        CHECK(server.handleMessage({"/layers/G/layers/*/opacity", "f", {0.5}}) && std::abs(e.layer(1)->opacity - 0.5f) < 1e-6);
+        CHECK(server.handleMessage({L + "/color/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(1)->color.add[2] - 0.3f) < 1e-6);
+        CHECK(server.handleMessage({L + "/source/crop/left", "f", {0.25}}) && std::abs(e.layer(1)->crop.left() - 0.25) < 1e-9);
+        CHECK(server.handleMessage({L + "/effects/FlipCrop/flipH", "T", {true}}));
+        CHECK(e.layer(1)->effects[0]->inputs()[1].bValue || e.layer(1)->effects[0]->inputs()[2].bValue);
+        CHECK(server.handleMessage({L + "/effects/enabled", "F", {false}}) && !e.layer(1)->effectsEnabled);
+        CHECK(server.handleMessage({"/layers/G/opacity", "i", {0}}) && e.layer(0)->opacity == 0.0f);
+        CHECK(server.handleMessage({"/master/blackout", "T", {true}}) && e.blackout());
+        server.handleMessage({"/master/blackout", "i", {0}});
+        CHECK(!e.blackout());
+        // Locked group: its member refuses edits, visibility still works
+        CHECK(server.handleMessage({"/layers/G/locked", "T", {true}}) && e.isLocked(1));
+        CHECK(!server.handleMessage({L + "/opacity", "f", {0.9}}) && std::abs(e.layer(1)->opacity - 0.5f) < 1e-6);
+        CHECK(server.handleMessage({L + "/visible", "F", {false}}) && !e.layer(1)->visible);
+        server.handleMessage({"/layers/G/locked", "F", {false}});
+        // Renaming changes the address
+        CHECK(server.handleMessage({L + "/name", "s", {QStringLiteral("Front wall")}}) && e.layer(1)->name == "Front wall");
+        int status = 0;
+        QJsonObject v = QJsonDocument::fromJson(server.httpGet("/layers/G/layers/Front_wall/opacity?VALUE", &status)).object();
+        CHECK(status == 200 && v.value("VALUE").toArray().at(0).toDouble() == 0.5);
+        server.httpGet(L + "/opacity", &status);
+        CHECK(status == 404);
+        QJsonObject root = QJsonDocument::fromJson(server.httpGet("/", &status)).object();
+        const QJsonObject op = root["CONTENTS"].toObject()["layers"].toObject()["CONTENTS"].toObject()["G"].toObject()["CONTENTS"]
+                                   .toObject()["layers"].toObject()["CONTENTS"].toObject()["Front_wall"].toObject()["CONTENTS"]
+                                   .toObject()["opacity"].toObject();
+        CHECK(op.value("TYPE").toString() == "f" && op.value("ACCESS").toInt() == 3 &&
+              op.value("RANGE").toArray().at(0).toObject().value("MAX").toDouble() == 1.0);
+        CHECK(root["CONTENTS"].toObject()["master"].toObject()["CONTENTS"].toObject().contains("blackout"));
+        const QJsonObject host = QJsonDocument::fromJson(server.httpGet("/?HOST_INFO", &status)).object();
+        CHECK(host.value("OSC_PORT").toInt() == server.oscPort() && host.value("EXTENSIONS").toObject().value("LISTEN").toBool());
+
+        auto pump = [&](const std::function<bool()> &done) {
+            QElapsedTimer t;
+            t.start();
+            while (!done() && t.elapsed() < 3000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                QThread::msleep(2);
+            }
+            return done();
+        };
+        // Real UDP message
+        const QString F = "/layers/G/layers/Front_wall";
+        QUdpSocket udp;
+        udp.writeDatagram(osc::encode({F + "/opacity", "f", {0.75}}), QHostAddress::LocalHost, server.oscPort());
+        CHECK(pump([&] { return std::abs(e.layer(1)->opacity - 0.75f) < 1e-6; }));
+        // Real HTTP request
+        QTcpSocket http;
+        http.connectToHost(QHostAddress::LocalHost, server.queryPort());
+        CHECK(pump([&] { return http.state() == QAbstractSocket::ConnectedState; }));
+        http.write(QByteArray("GET ") + (F + "/opacity?VALUE").toUtf8() + " HTTP/1.1\r\nHost: x\r\n\r\n");
+        QByteArray reply;
+        pump([&] {
+            reply += http.readAll();
+            return reply.contains("VALUE");
+        });
+        CHECK(reply.startsWith("HTTP/1.1 200") && reply.contains("[0.75]"));
+        // WebSocket: LISTEN, then a change is pushed as a binary OSC message
+        QTcpSocket ws;
+        ws.connectToHost(QHostAddress::LocalHost, server.queryPort());
+        CHECK(pump([&] { return ws.state() == QAbstractSocket::ConnectedState; }));
+        ws.write("GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+        QByteArray wsIn;
+        CHECK(pump([&] {
+            wsIn += ws.readAll();
+            return wsIn.contains("\r\n\r\n");
+        }));
+        CHECK(wsIn.contains("101") && wsIn.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+        wsIn.clear();
+        auto wsSend = [&](int opcode, const QByteArray &payload) { // masked client frame
+            QByteArray f;
+            f.append(char(0x80 | opcode));
+            f.append(char(0x80 | payload.size()));
+            const char mask[4] = {1, 2, 3, 4};
+            f.append(mask, 4);
+            for (int k = 0; k < payload.size(); ++k) f.append(char(payload[k] ^ mask[k & 3]));
+            ws.write(f);
+        };
+        wsSend(1, QByteArray("{\"COMMAND\":\"LISTEN\",\"DATA\":\"") + (F + "/opacity").toUtf8() + "\"}");
+        QCoreApplication::processEvents();
+        wsSend(2, osc::encode({F + "/opacity", "f", {0.125}})); // an OSC message through the WebSocket
+        osc::Message got;
+        CHECK(pump([&] {
+            wsIn += ws.readAll();
+            while (wsIn.size() >= 2) {
+                const int len = wsIn[1] & 0x7F;
+                if (wsIn.size() < 2 + len) break;
+                std::vector<osc::Message> ms;
+                if (osc::decode(wsIn.mid(2, len), ms) && !ms.empty()) got = ms.back();
+                wsIn.remove(0, 2 + len);
+            }
+            return got.args.value(0).toDouble() == 0.125;
+        }));
+        CHECK(got.address == F + "/opacity" && got.types == "f");
+        ws.close();
+        http.close();
+        server.stop();
+        e.newProject();
     }
 
     // 5. Render thread

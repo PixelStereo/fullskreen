@@ -39,6 +39,9 @@ public:
     float masterVolume() const { return m_masterVolume.load(); }
     void setMuted(bool m) { m_muted = m; }
     bool muted() const { return m_muted.load(); }
+    // Blackout: the mix fades to `target` (0..1) in `seconds` seconds, ramped in the audio thread
+    void fadeTo(float target, double seconds);
+    float fadeLevel() const { return m_fadeLevel.load(); }
 
     // Peak levels of the mix (0..1+), with decay
     float peak(int channel) const { return m_peak[channel & 1].load(); }
@@ -57,5 +60,7 @@ private:
     std::atomic<float> m_masterVolume{1.0f};
     std::atomic<bool> m_muted{false};
     float m_gain = 1.0f; // ramped master gain (audio thread)
+    std::atomic<float> m_fadeTarget{1.0f}, m_fadeStep{1.0f}; // blackout: target and step per sample
+    std::atomic<float> m_fadeLevel{1.0f};
     std::atomic<float> m_peak[2] = {0.0f, 0.0f};
 };

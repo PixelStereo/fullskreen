@@ -39,7 +39,8 @@ private:
 class SetLayerProp : public QUndoCommand
 {
 public:
-    enum Prop { Name, Visible, Opacity, Blend, Speed, Mode, Volume, Muted, InPoint, OutPoint };
+    enum Prop { Name, Visible, Opacity, Blend, Speed, Mode, Volume, Muted, InPoint, OutPoint, Locked, EffectsEnabled,
+                ColorAdd, ColorRemove, Crop };
     SetLayerProp(Engine *e, int layer, Prop prop, const QVariant &before, const QVariant &after);
     void undo() override { apply(m_before); }
     void redo() override { apply(m_after); }
@@ -130,6 +131,19 @@ private:
     int m_index;
     QJsonObject m_before, m_after;
     bool m_first = true;
+};
+
+// Order and grouping of the layers (moves, groups); applied by redo
+class SetStructure : public QUndoCommand
+{
+public:
+    SetStructure(Engine *e, const LayerTree &before, const LayerTree &after, const QString &text);
+    void undo() override { m_e->setStructure(m_before); }
+    void redo() override { m_e->setStructure(m_after); }
+
+private:
+    Engine *m_e;
+    LayerTree m_before, m_after;
 };
 
 // Effect chain before / after (add, remove, reorder, enable); already done at push time

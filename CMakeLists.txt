@@ -12,7 +12,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-find_package(Qt6 6.2 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
+find_package(Qt6 6.2 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Network)
 
 # ---------------------------------------------------------------------------
 # FFmpeg: pkg-config (macOS Homebrew, Linux) or FFMPEG_ROOT (Windows, "shared" build)
@@ -48,9 +48,10 @@ add_library(fulskrin_engine STATIC
   src/engine/AudioStream.cpp
   src/engine/AudioOutput.cpp
   src/engine/MiniaudioImpl.cpp
+  src/engine/Osc.cpp
 )
 target_include_directories(fulskrin_engine PUBLIC src/engine)
-target_link_libraries(fulskrin_engine PUBLIC Qt6::Core Qt6::Gui Qt6::OpenGL ffmpeg)
+target_link_libraries(fulskrin_engine PUBLIC Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::Network ffmpeg)
 target_compile_definitions(fulskrin_engine PUBLIC GL_SILENCE_DEPRECATION)
 
 # ---------------------------------------------------------------------------
