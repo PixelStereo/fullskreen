@@ -37,6 +37,9 @@ public:
 
     // Final position (homography + warp) for (u,v) in [0,1].
     QPointF map(double u, double v) const;
+    // Inverse of map (Newton iterations from `guess`): (u,v) whose image is `p`
+    QPointF unmap(QPointF p, QPointF guess) const;
+    bool isIdentity() const; // full frame, no warp
 
     QPointF controlPoint(int i, int j) const;
     void setControlPoint(int i, int j, QPointF p);

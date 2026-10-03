@@ -125,6 +125,32 @@ QPointF Mapping::map(double u, double v) const
     return Homography::squareToQuad(corners).map(u, v) + offsetAt(u, v);
 }
 
+QPointF Mapping::unmap(QPointF p, QPointF guess) const
+{
+    QPointF uv = guess;
+    for (int it = 0; it < 30; ++it) {
+        const QPointF f = map(uv.x(), uv.y()) - p;
+        if (std::hypot(f.x(), f.y()) < 1e-10) break;
+        const double h = 1e-5;
+        const QPointF du = (map(uv.x() + h, uv.y()) - map(uv.x() - h, uv.y())) / (2 * h);
+        const QPointF dv = (map(uv.x(), uv.y() + h) - map(uv.x(), uv.y() - h)) / (2 * h);
+        const double det = du.x() * dv.y() - dv.x() * du.y();
+        if (std::fabs(det) < 1e-14) break;
+        uv -= QPointF((dv.y() * f.x() - dv.x() * f.y()) / det, (-du.y() * f.x() + du.x() * f.y()) / det);
+    }
+    return uv;
+}
+
+bool Mapping::isIdentity() const
+{
+    const QPointF def[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (int i = 0; i < 4; ++i)
+        if (std::hypot(corners[i].x() - def[i].x(), corners[i].y() - def[i].y()) > 1e-12) return false;
+    for (const QPointF &o : offsets)
+        if (!o.isNull()) return false;
+    return true;
+}
+
 QPointF Mapping::controlUV(int i, int j) const
 {
     return QPointF(double(i) / (cols - 1), double(j) / (rows - 1));

@@ -15,9 +15,15 @@ class QPushButton;
 class QListWidget;
 class QProgressBar;
 class QDoubleSpinBox;
+class SeekBar;
+class CropEditor;
+class ColorEditor;
+class QComboBox;
 
-// Inspector for the selected layer, in sub-tabs: Source (drop zone, transport, sound, generator parameters),
-// Spatial (mapping), Effects (ISF chain), Compositing (opacity, blend). All edits go through the undo stack.
+// Inspector for the selected layer or group, in sub-tabs: Source (drop zone, transport, sound, generator parameters,
+// crop), Color (added / removed), Spatial (mapping), Effects (ISF chain), Compositing (opacity, blend).
+// All edits go through the undo stack. A locked layer shows its settings without allowing edits
+// (the transport stays available). A click on a parameter's name resets it.
 class LayerInspector : public QWidget
 {
     Q_OBJECT
@@ -37,6 +43,8 @@ signals:
 
 private:
     QWidget *buildSource(const LayerSnapshot &s);
+    QWidget *buildCrop(const LayerSnapshot &s);
+    QWidget *buildColor(const LayerSnapshot &s);
     QWidget *buildCompositing(const LayerSnapshot &s);
     QWidget *buildMapping(const LayerSnapshot &s);
     QWidget *buildEffects(const LayerSnapshot &s);
@@ -50,11 +58,16 @@ private:
     QUndoStack *m_undo;
     int m_layer = -1;
     int m_selectedEffect = 0;
-    int m_subTab = 0; // Source / Spatial / Effects / Compositing
+    int m_subTab = 0; // Source / Color / Spatial / Effects / Compositing
+    quint64 m_layerId = 0;
+    bool m_locked = false;
     QVBoxLayout *m_layout = nullptr;
     QWidget *m_content = nullptr;
 
-    QPointer<QSlider> m_seek;
+    QPointer<SeekBar> m_seek;
+    QPointer<CropEditor> m_crop;
+    QPointer<ColorEditor> m_colorAdd, m_colorRemove;
+    bool m_previewing = false;
     QPointer<QLabel> m_time;
     QPointer<QPushButton> m_play;
     QPointer<QProgressBar> m_meter;

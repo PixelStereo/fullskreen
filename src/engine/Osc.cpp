@@ -918,7 +918,7 @@ QJsonObject OscNamespace::toJson(const QString &path) const
 // Server
 // ---------------------------------------------------------------------------
 
-OscServer::OscServer(Engine *engine, QObject *parent) : QObject(parent), m_e(engine), m_ns(engine)
+OscServer::OscServer(Engine *engine, QObject *parent) : QObject(parent), m_e(engine), m_ns(engine), m_listenTimer(this)
 {
     m_listenTimer.setInterval(40);
     connect(&m_listenTimer, &QTimer::timeout, this, &OscServer::pushListened);

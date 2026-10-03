@@ -154,6 +154,7 @@ set(APP_SOURCES
   src/ui/MediaBin.cpp
   src/ui/MasterPanel.cpp
   src/ui/PreferencesDialog.cpp
+  src/ui/Widgets.cpp
 )
 
 if(APPLE)

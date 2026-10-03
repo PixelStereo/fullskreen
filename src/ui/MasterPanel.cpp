@@ -73,7 +73,7 @@ QWidget *MasterPanel::buildMaster()
     m_blackout = new QPushButton(QStringLiteral("Blackout"));
     m_blackout->setCheckable(true);
     m_blackout->setMinimumHeight(34);
-    m_blackout->setToolTip(QStringLiteral("Fade to black / fade back in (Ctrl+B, ⌘B on Mac)"));
+    m_blackout->setToolTip(QStringLiteral("Fade the picture and the sound out / back in (Ctrl+B, ⌘B on Mac)"));
     m_blackout->setStyleSheet("QPushButton { font-weight:bold; } QPushButton:checked { background:#b3261e; color:white; }");
     m_fade = new QDoubleSpinBox;
     m_fade->setRange(0.0, 30.0);
@@ -87,16 +87,19 @@ QWidget *MasterPanel::buildMaster()
     row2->addWidget(m_fade);
     v->addLayout(row2);
 
+    // The fader sets the picture's level; the blackout (picture and sound) is applied on top of it.
     connect(m_master, &QSlider::valueChanged, this, [this](int val) {
-        // During a blackout, the fader sets the return level without lighting the output back up.
-        if (!m_blackout->isChecked()) m_engine->fadeMaster(val / 100.0, 0.05);
+        if (!m_syncing) m_engine->fadeMaster(val / 100.0, 0.05);
     });
     connect(m_blackout, &QPushButton::toggled, this, [this](bool on) {
-        m_engine->fadeMaster(on ? 0.0 : masterValue(), fadeTime());
+        if (!m_syncing) m_engine->setBlackout(on, fadeTime());
         emit blackoutChanged(on);
     });
-    connect(m_fade, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
-            [](double val) { QSettings().setValue("master/fade", val); });
+    m_engine->setBlackoutFade(m_fade->value());
+    connect(m_fade, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double val) {
+        QSettings().setValue("master/fade", val);
+        m_engine->setBlackoutFade(val);
+    });
     return g;
 }
 
@@ -104,7 +107,7 @@ void MasterPanel::setBlackout(bool on)
 {
     if (m_blackout->isChecked() == on) {
         // Replay the fade (e.g. after a recovery where the level was forced)
-        m_engine->fadeMaster(on ? 0.0 : masterValue(), fadeTime());
+        m_engine->setBlackout(on, fadeTime());
         return;
     }
     m_blackout->setChecked(on); // triggers the fade and blackoutChanged
@@ -452,7 +455,18 @@ void MasterPanel::syncFromEngine()
 
 void MasterPanel::refreshStatus()
 {
-    const int pct = int(std::lround(m_engine->masterLevel() * 100));
+    // Fader, blackout, fade time and sound follow the changes made elsewhere (OSC)
+    m_syncing = true;
+    const int fader = int(std::lround(m_engine->masterTarget() * 100));
+    if (!m_master->isSliderDown() && fader != m_master->value()) m_master->setValue(fader);
+    if (m_blackout->isChecked() != m_engine->blackout()) m_blackout->setChecked(m_engine->blackout());
+    if (!m_fade->hasFocus() && std::abs(m_fade->value() - m_engine->blackoutFade()) > 1e-6) m_fade->setValue(m_engine->blackoutFade());
+    const int vol = int(std::lround(m_engine->audioVolume() * 100));
+    if (!m_audioVolume->isSliderDown() && vol != m_audioVolume->value()) m_audioVolume->setValue(vol);
+    if (m_audioMute->isChecked() != m_engine->audioMuted()) m_audioMute->setChecked(m_engine->audioMuted());
+    m_syncing = false;
+
+    const int pct = int(std::lround(m_engine->outputLevel() * 100));
     m_masterLabel->setText(QStringLiteral("%1%").arg(pct));
     m_masterLabel->setStyleSheet(pct == 0 ? "color:#ff5a4f; font-weight:bold;" : "");
 

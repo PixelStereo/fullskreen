@@ -141,15 +141,32 @@ void MappingView::setLayer(int index)
 }
 
 // An audio layer has no picture: nothing to map.
-static bool hasPicture(const Layer *l)
-{
-    return l && l->type != SourceType::Audio && !(l->type == SourceType::None && l->missingType == SourceType::Audio);
-}
+static bool hasPicture(const Layer *l) { return l && l->hasPicture(); }
 
 Mapping *MappingView::mapping() const
 {
     Layer *l = m_engine->layer(m_layer);
     return hasPicture(l) ? &l->mapping : nullptr;
+}
+
+const Mapping *MappingView::groupMapping(int layer) const
+{
+    const int g = m_engine->groupIndexOf(layer);
+    if (g < 0) return nullptr;
+    const Mapping &m = m_engine->layer(g)->mapping;
+    return m.isIdentity() ? nullptr : &m;
+}
+
+QPointF MappingView::outOf(int layer, QPointF p) const
+{
+    const Mapping *g = groupMapping(layer);
+    return g ? g->map(p.x(), p.y()) : p;
+}
+
+QPointF MappingView::canvasOf(int layer, QPointF p) const
+{
+    const Mapping *g = groupMapping(layer);
+    return g ? g->unmap(p, p) : p;
 }
 
 QRectF MappingView::viewRect() const
@@ -249,6 +266,7 @@ void MappingView::paintGL()
             Layer *l = m_engine->layer(i);
             if (!l->visible || !hasPicture(l)) continue;
             auto pts = outline(l->mapping, 16);
+            for (QPointF &q : pts) q = outOf(i, q);
             for (size_t k = 0; k < pts.size(); ++k)
                 pushLine(others, toWidget(pts[k]), toWidget(pts[(k + 1) % pts.size()]));
         }
@@ -257,6 +275,8 @@ void MappingView::paintGL()
 
     Mapping *m = mapping();
     if (!m) return;
+    const int cur = m_layer;
+    auto W = [&](QPointF p) { return toWidget(outOf(cur, p)); }; // canvas of the layer -> widget
 
     // Warp mesh
     if (m->meshMode) {
@@ -265,29 +285,34 @@ void MappingView::paintGL()
         for (int j = 0; j < m->rows; ++j) {
             const double v = double(j) / (m->rows - 1);
             for (int k = 0; k < steps; ++k)
-                pushLine(grid, toWidget(m->map(double(k) / steps, v)), toWidget(m->map(double(k + 1) / steps, v)));
+                pushLine(grid, W(m->map(double(k) / steps, v)), W(m->map(double(k + 1) / steps, v)));
         }
         for (int i = 0; i < m->cols; ++i) {
             const double u = double(i) / (m->cols - 1);
             for (int k = 0; k < steps; ++k)
-                pushLine(grid, toWidget(m->map(u, double(k) / steps)), toWidget(m->map(u, double(k + 1) / steps)));
+                pushLine(grid, W(m->map(u, double(k) / steps)), W(m->map(u, double(k + 1) / steps)));
         }
         m_draw.drawLines(grid, kGrid);
     }
 
     std::vector<float> line;
     auto pts = outline(*m, 32);
-    for (size_t k = 0; k < pts.size(); ++k) pushLine(line, toWidget(pts[k]), toWidget(pts[(k + 1) % pts.size()]));
+    for (size_t k = 0; k < pts.size(); ++k) pushLine(line, W(pts[k]), W(pts[(k + 1) % pts.size()]));
     // Faint diagonals in corners mode, to judge the perspective
     if (!m->meshMode) {
-        pushLine(line, toWidget(m->corners[0]), toWidget(m->corners[2]));
-        pushLine(line, toWidget(m->corners[1]), toWidget(m->corners[3]));
+        pushLine(line, W(m->corners[0]), W(m->corners[2]));
+        pushLine(line, W(m->corners[1]), W(m->corners[3]));
+    }
+    // Locked layer: outline in red, no handles
+    if (m_engine->isLocked(m_layer)) {
+        m_draw.drawLines(line, QColor(230, 80, 70, 220));
+        return;
     }
     m_draw.drawLines(line, kOutline);
 
     std::vector<float> handles, sel, shadow;
     auto addHandle = [&](const Handle &h, float half) {
-        const QPointF p = toWidget(handlePos(h));
+        const QPointF p = W(handlePos(h));
         pushRect(shadow, p, half + 1.5f);
         pushRect(isSelected(h) ? sel : handles, p, half);
     };
@@ -363,7 +388,7 @@ MappingView::Handle MappingView::hitHandle(QPointF p) const
     Handle best;
     double bestD = 12.0;
     auto test = [&](const Handle &h) {
-        const QPointF w = toWidget(handlePos(h));
+        const QPointF w = toWidget(outOf(m_layer, handlePos(h)));
         const double d = std::hypot(w.x() - p.x(), w.y() - p.y());
         if (d < bestD) {
             bestD = d;
@@ -384,6 +409,7 @@ bool MappingView::insideLayer(int index, QPointF p) const
     Layer *l = m_engine->layer(index);
     if (!hasPicture(l)) return false;
     auto pts = outline(l->mapping, 16);
+    for (QPointF &q : pts) q = outOf(index, q);
     bool in = false;
     for (size_t i = 0, j = pts.size() - 1; i < pts.size(); j = i++) {
         const QPointF a = toWidget(pts[i]), b = toWidget(pts[j]);
@@ -405,7 +431,8 @@ void MappingView::mousePressEvent(QMouseEvent *e)
     Engine::Lock lk(&m_engine->mutex());
     const QPointF p = e->position();
     m_lastNorm = toNorm(p);
-    Handle h = hitHandle(p);
+    const bool locked = m_engine->isLocked(m_layer);
+    Handle h = locked ? Handle{} : hitHandle(p);
     const bool additive = e->modifiers() & Qt::ControlModifier; // Ctrl, ⌘ on Mac
     if (h.valid()) {
         if (additive) { // Ctrl/⌘+click: add or remove the point
@@ -422,16 +449,28 @@ void MappingView::mousePressEvent(QMouseEvent *e)
         m_rubberStart = m_rubberEnd = p;
     } else if (m_layer >= 0 && insideLayer(m_layer, p)) {
         m_selection.clear();
-        m_dragLayer = true;
+        m_dragLayer = !locked;
     } else {
-        // Select the topmost visible layer under the cursor
+        // Select the topmost visible layer under the cursor (in a group: its layers before the group itself)
         m_selection.clear();
-        for (int i = 0; i < m_engine->layerCount(); ++i) {
+        std::vector<int> order;
+        const int n = m_engine->layerCount();
+        for (int i = 0; i < n; ++i) {
+            const Layer *l = m_engine->layer(i);
+            if (l->parent) continue;
+            if (l->isGroup) {
+                if (!l->visible) continue;
+                for (int k = i + 1; k < n && m_engine->layer(k)->parent == l->id; ++k) order.push_back(k);
+            }
+            order.push_back(i);
+        }
+        for (int i : order) {
             if (m_engine->layer(i)->visible && insideLayer(i, p)) {
+                const bool pickedLocked = m_engine->isLocked(i);
                 lk.unlock();
                 emit layerPicked(i);
                 lk.relock();
-                m_dragLayer = true;
+                m_dragLayer = !pickedLocked;
                 break;
             }
         }
@@ -450,7 +489,8 @@ void MappingView::mouseMoveEvent(QMouseEvent *e)
     }
     Engine::Lock lk(&m_engine->mutex());
     const QPointF n = toNorm(e->position());
-    QPointF delta = n - m_lastNorm;
+    // Moves happen in the layer's own canvas (inside its group's mapping)
+    QPointF delta = canvasOf(m_layer, n) - canvasOf(m_layer, m_lastNorm);
     m_lastNorm = n;
     if (e->modifiers() & Qt::ShiftModifier) delta *= 0.1; // fine movement
     if (m_rubber) {
@@ -477,7 +517,7 @@ void MappingView::mouseReleaseEvent(QMouseEvent *)
         Engine::Lock lk(&m_engine->mutex());
         const QRectF r = QRectF(m_rubberStart, m_rubberEnd).normalized();
         for (const Handle &h : allHandles())
-            if (r.contains(toWidget(handlePos(h))) && !isSelected(h)) m_selection.push_back(h);
+            if (r.contains(toWidget(outOf(m_layer, handlePos(h)))) && !isSelected(h)) m_selection.push_back(h);
         update();
         return;
     }
@@ -528,7 +568,7 @@ void MappingView::keyPressEvent(QKeyEvent *e)
         return;
     default: QOpenGLWidget::keyPressEvent(e); return;
     }
-    if (!m) return;
+    if (!m || m_engine->isLocked(m_layer)) return;
     const Mapping before = *m;
     // One composition pixel, ×10 with Shift
     const QSize comp = m_engine->compositionSize();

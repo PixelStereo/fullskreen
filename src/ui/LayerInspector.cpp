@@ -2,6 +2,7 @@
 #include "Commands.h"
 #include "Engine.h"
 #include "ParamPanel.h"
+#include "Widgets.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -25,6 +26,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
@@ -36,6 +38,13 @@
 // Copy of a layer's state taken under the lock: widgets are built afterwards without blocking rendering.
 struct LayerSnapshot {
     bool valid = false;
+    quint64 id = 0;
+    bool isGroup = false, locked = false, lockedByGroup = false;
+    int members = 0;
+    QRectF crop{0, 0, 1, 1};
+    ColorAdjust color;
+    bool effectsEnabled = true;
+    double aspect = 16.0 / 9.0; // source picture (before crop)
     QString name, sourcePath, error;
     bool visible = true;
     float opacity = 1;
@@ -67,6 +76,17 @@ struct LayerSnapshot {
         Layer *l = e->layer(index);
         if (!l) return s;
         s.valid = true;
+        s.id = l->id;
+        s.isGroup = l->isGroup;
+        s.locked = l->locked;
+        s.lockedByGroup = !l->locked && e->isLocked(index);
+        s.members = e->groupMembers(index).size();
+        s.crop = l->crop;
+        s.color = l->color;
+        s.effectsEnabled = l->effectsEnabled;
+        const QSize comp = e->compositionSize();
+        const int sw = l->isGroup ? comp.width() : l->sourceWidth(), sh = l->isGroup ? comp.height() : l->sourceHeight();
+        if (sw > 0 && sh > 0) s.aspect = double(sw) / sh;
         s.name = l->name;
         s.sourcePath = l->sourcePath;
         s.error = l->error;
@@ -206,6 +226,7 @@ void LayerInspector::setLayer(int index)
 void LayerInspector::setProp(int prop, const QVariant &value)
 {
     const auto p = cmd::SetLayerProp::Prop(prop);
+    if (p != cmd::SetLayerProp::Visible && p != cmd::SetLayerProp::Locked && m_engine->isLocked(m_layer)) return;
     const QVariant before = cmd::SetLayerProp::read(m_engine, m_layer, p);
     if (!before.isValid() || before == value) return;
     m_undo->push(new cmd::SetLayerProp(m_engine, m_layer, p, before, value));
@@ -213,6 +234,7 @@ void LayerInspector::setProp(int prop, const QVariant &value)
 
 void LayerInspector::editMapping(const QString &text, const std::function<void(Mapping &)> &fn, bool merge)
 {
+    if (m_engine->isLocked(m_layer)) return;
     const Mapping before = cmd::SetMapping::read(m_engine, m_layer);
     Mapping after = before;
     fn(after);
@@ -223,6 +245,10 @@ void LayerInspector::editMapping(const QString &text, const std::function<void(M
 
 void LayerInspector::editEffects(const QString &text, const std::function<void()> &op)
 {
+    if (m_engine->isLocked(m_layer)) {
+        QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection); // undo the click on a checkbox
+        return;
+    }
     const QJsonArray before = m_engine->effectsJson(m_layer);
     op();
     m_undo->push(new cmd::SetEffects(m_engine, m_layer, before, text));
@@ -230,6 +256,7 @@ void LayerInspector::editEffects(const QString &text, const std::function<void()
 
 void LayerInspector::editSource(const QString &text, const std::function<void()> &op)
 {
+    if (m_engine->isLocked(m_layer)) return;
     const QJsonObject before = m_engine->layerJson(m_layer);
     op();
     m_undo->push(new cmd::ReplaceLayer(m_engine, m_layer, before, text));
@@ -260,15 +287,40 @@ void LayerInspector::rebuild()
         return;
     }
 
-    // Header: name + visibility
+    m_layerId = s.id;
+    m_locked = s.locked || s.lockedByGroup;
+    // Header: visibility, lock, name
     auto *head = new QHBoxLayout;
     auto *name = new QLineEdit(s.name);
     name->setStyleSheet("font-weight:bold; font-size:14px;");
+    name->setToolTip(s.isGroup ? QStringLiteral("Group name") : QStringLiteral("Layer name"));
     auto *vis = new QCheckBox(QStringLiteral("Visible"));
     vis->setChecked(s.visible);
-    head->addWidget(name, 1);
+    vis->setProperty("allowLocked", true);
+    auto *lock = new QToolButton;
+    lock->setCheckable(true);
+    lock->setChecked(s.locked);
+    lock->setIcon(padlockIcon(s.locked, s.lockedByGroup));
+    lock->setIconSize(QSize(18, 18));
+    lock->setToolTip(s.lockedByGroup ? QStringLiteral("Locked by its group") : QStringLiteral("Lock: no edit allowed on this layer (Ctrl+L)"));
+    lock->setStyleSheet("QToolButton:checked { background:#4a2422; }");
+    lock->setProperty("allowLocked", true);
+    lock->setEnabled(!s.lockedByGroup);
     head->addWidget(vis);
+    head->addWidget(lock);
+    head->addWidget(name, 1);
     v->addLayout(head);
+    connect(lock, &QToolButton::toggled, this, [this](bool on) {
+        setProp(cmd::SetLayerProp::Locked, on);
+        emit layerChanged();
+        QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+    });
+    if (m_locked) {
+        auto *banner = new QLabel(s.lockedByGroup ? QStringLiteral("Locked by its group — unlock the group to edit")
+                                                  : QStringLiteral("Locked — unlock (padlock) to edit; the transport stays available"));
+        banner->setStyleSheet("background:#3a2422; color:#ffb4a8; padding:4px 8px; border-radius:4px;");
+        v->addWidget(banner);
+    }
     connect(name, &QLineEdit::textEdited, this, [this](const QString &t) {
         setProp(cmd::SetLayerProp::Name, t);
         emit layerChanged();
@@ -282,10 +334,13 @@ void LayerInspector::rebuild()
     auto *tabs = new QTabWidget;
     tabs->setDocumentMode(true);
     tabs->addTab(page(buildSource(s)), QStringLiteral("Source"));
+    tabs->addTab(page(buildColor(s)), QStringLiteral("Color"));
     tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
     tabs->addTab(page(buildEffects(s)), QStringLiteral("Effects"));
     tabs->addTab(page(buildCompositing(s)), QStringLiteral("Compositing"));
-    if (s.type == SourceType::Audio) { // a sound has no picture: no mapping, effects or compositing
+    lockInputs(tabs, m_locked);
+    name->setEnabled(!m_locked);
+    if (s.type == SourceType::Audio) { // a sound has no picture: no color, mapping, effects or compositing
         for (int t = 1; t < tabs->count(); ++t) {
             tabs->setTabEnabled(t, false);
             tabs->setTabToolTip(t, QStringLiteral("An audio layer has no picture"));
@@ -304,6 +359,17 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     auto *g = new QWidget;
     auto *v = new QVBoxLayout(g);
     v->setContentsMargins(0, 0, 0, 0);
+
+    if (s.isGroup) {
+        auto *info = new QLabel(QStringLiteral("<b>Group</b> of %1 layer(s)<br><span style='font-size:11px; color:#999'>"
+                                               "Its picture is the composite of its layers. Drag layers onto it in the "
+                                               "layer list to add them.</span>")
+                                    .arg(s.members));
+        info->setWordWrap(true);
+        v->addWidget(info);
+        v->addWidget(buildCrop(s));
+        return g;
+    }
 
     QString desc;
     switch (s.type) {
@@ -361,8 +427,11 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
 
         auto *transport = new QHBoxLayout;
         m_play = new QPushButton(s.playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
+        m_play->setProperty("allowLocked", true);
         auto *rewind = toolButton(QStringLiteral("⏮"), QStringLiteral("Back to Start"));
+        rewind->setProperty("allowLocked", true);
         auto *speed = new QDoubleSpinBox;
+        auto *speedLabel = new ResetLabel(QStringLiteral("Speed"), [speed] { speed->setValue(1.0); });
         speed->setRange(-8.0, 8.0); // negative: backwards
         speed->setSingleStep(0.05);
         speed->setValue(s.speed);
@@ -371,6 +440,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         transport->addWidget(m_play);
         transport->addWidget(rewind);
         transport->addStretch();
+        transport->addWidget(speedLabel);
         transport->addWidget(speed);
         v->addLayout(transport);
 
@@ -406,8 +476,11 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         });
 
         auto *seekRow = new QHBoxLayout;
-        m_seek = new QSlider(Qt::Horizontal);
-        m_seek->setRange(0, 10000);
+        m_seek = new SeekBar;
+        m_seek->setDuration(s.duration);
+        m_seek->setInOut(s.inPoint, s.outPoint);
+        m_seek->setProperty("allowLocked", true); // seeking is not an edit; the markers are disabled when locked
+        m_seek->setMarkersEditable(!m_locked);
         m_time = new QLabel;
         m_time->setStyleSheet("font-family:monospace;");
         seekRow->addWidget(m_seek, 1);
@@ -434,11 +507,11 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         auto *setIn = toolButton(QStringLiteral("Set"), QStringLiteral("In point at the current position (I)"));
         auto *setOut = toolButton(QStringLiteral("Set"), QStringLiteral("Out point at the current position (O)"));
         auto *resetRange = toolButton(QStringLiteral("↺"), QStringLiteral("Whole media (clear in / out points)"));
-        range->addWidget(new QLabel(QStringLiteral("In")));
+        range->addWidget(new ResetLabel(QStringLiteral("In"), [inBox] { inBox->setValue(0); }));
         range->addWidget(inBox, 1);
         range->addWidget(setIn);
         range->addSpacing(8);
-        range->addWidget(new QLabel(QStringLiteral("Out")));
+        range->addWidget(new ResetLabel(QStringLiteral("Out"), [outBox] { outBox->setValue(outBox->maximum()); }));
         range->addWidget(outBox, 1);
         range->addWidget(setOut);
         range->addWidget(resetRange);
@@ -474,21 +547,21 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         connect(rewind, &QToolButton::clicked, this, [this] { m_engine->seekLayer(m_layer, 0); });
         connect(speed, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [this](double sp) { setProp(cmd::SetLayerProp::Speed, sp); });
-        const double duration = s.duration;
-        auto seekTo = [this, duration](int pos) {
-            if (duration > 0) m_engine->seekLayer(m_layer, duration * pos / 10000.0);
-        };
-        connect(m_seek, &QSlider::sliderMoved, this, seekTo);
-        connect(m_seek, &QSlider::actionTriggered, this, [this, seekTo](int action) {
-            if (action != QAbstractSlider::SliderMove) seekTo(m_seek->sliderPosition());
+        connect(m_seek, &SeekBar::seekRequested, this, [this](double t) { m_engine->seekLayer(m_layer, t); });
+        // Markers dragged on the bar: in / out points (successive moves merge into one undo step)
+        connect(m_seek, &SeekBar::inOutEdited, this, [this, inBox, outBox](bool in, double t) {
+            setProp(in ? cmd::SetLayerProp::InPoint : cmd::SetLayerProp::OutPoint, t);
+            QSignalBlocker b1(inBox), b2(outBox);
+            if (in) inBox->setValue(t);
+            else outBox->setValue(t < 0 ? outBox->maximum() : t);
         });
     }
 
     if (media && s.hasAudio) {
         // Sound: layer volume (undoable), mute, level
         auto *row = new QHBoxLayout;
-        auto *icon = new QLabel(QStringLiteral("Volume"));
         auto *vol = new QSlider(Qt::Horizontal);
+        auto *icon = new ResetLabel(QStringLiteral("Volume"), [vol] { vol->setValue(100); });
         vol->setRange(0, 200);
         vol->setValue(int(std::lround(s.volume * 100)));
         vol->setToolTip(QStringLiteral("Layer volume (100% = original level). Hiding the layer also silences it."));
@@ -530,7 +603,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         h->setValue(s.genH);
         auto *fit = new QPushButton(QStringLiteral("= composition"));
         auto *reload = toolButton(QStringLiteral("⟳"), QStringLiteral("Reload shader from disk"));
-        res->addWidget(new QLabel(QStringLiteral("Resolution")));
+        res->addWidget(new ResetLabel(QStringLiteral("Resolution"), [fit] { fit->click(); }));
         res->addWidget(w);
         res->addWidget(new QLabel(QStringLiteral("×")));
         res->addWidget(h);
@@ -559,6 +632,121 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
     }
+    if (s.type == SourceType::Video || s.type == SourceType::Image || s.type == SourceType::Isf) v->addWidget(buildCrop(s));
+    return g;
+}
+
+// Part of the source picture used: preview with a rectangle whose sides are dragged, numeric fields in %
+QWidget *LayerInspector::buildCrop(const LayerSnapshot &s)
+{
+    auto *box = new QGroupBox;
+    auto *v = new QVBoxLayout(box);
+    auto *head = new QHBoxLayout;
+    auto *title = new ResetLabel(QStringLiteral("<b>Crop</b>"), [this] {
+        setProp(cmd::SetLayerProp::Crop, Layer::fullCrop());
+        rebuild();
+    });
+    title->setToolTip(QStringLiteral("Part of the source picture used by the layer — click to use the whole picture"));
+    head->addWidget(title);
+    head->addStretch();
+    v->addLayout(head);
+    m_crop = new CropEditor;
+    m_crop->setAspect(s.aspect);
+    m_crop->setCrop(s.crop);
+    v->addWidget(m_crop);
+    auto *grid = new QGridLayout;
+    static const char *kNames[] = {"Left", "Top", "Right", "Bottom"};
+    QDoubleSpinBox *fields[4];
+    const double values[4] = {s.crop.left(), s.crop.top(), s.crop.right(), s.crop.bottom()};
+    for (int k = 0; k < 4; ++k) {
+        auto *f = new QDoubleSpinBox;
+        f->setRange(0, 100);
+        f->setDecimals(1);
+        f->setSuffix(QStringLiteral(" %"));
+        f->setKeyboardTracking(false);
+        f->setValue(values[k] * 100);
+        fields[k] = f;
+        const double def = k < 2 ? 0.0 : 100.0;
+        grid->addWidget(new ResetLabel(QString::fromUtf8(kNames[k]), [f, def] { f->setValue(def); }), k / 2, (k % 2) * 2);
+        grid->addWidget(f, k / 2, (k % 2) * 2 + 1);
+    }
+    grid->setColumnStretch(1, 1);
+    grid->setColumnStretch(3, 1);
+    v->addLayout(grid);
+    auto apply = [this](const QRectF &r) {
+        setProp(cmd::SetLayerProp::Crop, r);
+        emit layerChanged();
+    };
+    QPointer<CropEditor> editor = m_crop;
+    connect(m_crop, &CropEditor::cropEdited, this, [apply, fields](const QRectF &r) {
+        const double vals[4] = {r.left(), r.top(), r.right(), r.bottom()};
+        for (int k = 0; k < 4; ++k) {
+            QSignalBlocker b(fields[k]);
+            fields[k]->setValue(vals[k] * 100);
+        }
+        apply(r);
+    });
+    for (int k = 0; k < 4; ++k)
+        connect(fields[k], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [apply, fields, editor] {
+            double l = fields[0]->value() / 100, t = fields[1]->value() / 100, r = fields[2]->value() / 100,
+                   b = fields[3]->value() / 100;
+            r = std::max(r, l + 0.001);
+            b = std::max(b, t + 0.001);
+            const QRectF rect(QPointF(l, t), QPointF(std::min(r, 1.0), std::min(b, 1.0)));
+            if (editor) editor->setCrop(rect);
+            apply(rect);
+        });
+    return box;
+}
+
+QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
+{
+    auto *g = new QWidget;
+    auto *v = new QVBoxLayout(g);
+    v->setContentsMargins(0, 0, 0, 0);
+    // Color model of the editors, kept for the next layers
+    auto *models = new QComboBox;
+    models->addItem(QStringLiteral("RGB"), int(ColorEditor::Rgb));
+    models->addItem(QStringLiteral("HSL"), int(ColorEditor::Hsl));
+    models->addItem(QStringLiteral("Additive (R G B light)"), int(ColorEditor::Additive));
+    models->addItem(QStringLiteral("Subtractive (C M Y filters)"), int(ColorEditor::Subtractive));
+    models->addItem(QStringLiteral("All together"), int(ColorEditor::All));
+    models->setProperty("allowLocked", true); // a display choice, not an edit
+    const int model = QSettings().value("ui/colorModel", int(ColorEditor::Rgb)).toInt();
+    models->setCurrentIndex(std::max(0, models->findData(model)));
+    auto *row = new QHBoxLayout;
+    row->addWidget(new QLabel(QStringLiteral("Edit in")));
+    row->addWidget(models, 1);
+    v->addLayout(row);
+    auto *note = new QLabel(QStringLiteral("The picture is multiplied by the inverse of the removed color, "
+                                           "then the added color is added: out = in × (1 − removed) + added."));
+    note->setWordWrap(true);
+    note->setStyleSheet("color:#888; font-size:11px;");
+    v->addWidget(note);
+
+    auto toColor = [](const float c[3]) { return QColor::fromRgbF(c[0], c[1], c[2]); };
+    m_colorAdd = new ColorEditor(QStringLiteral("Add"), Qt::black);
+    m_colorAdd->setColor(toColor(s.color.add));
+    m_colorAdd->setToolTip(QStringLiteral("Color added to the picture, as light (black: nothing added)"));
+    m_colorRemove = new ColorEditor(QStringLiteral("Remove"), Qt::black);
+    m_colorRemove->setColor(toColor(s.color.remove));
+    m_colorRemove->setToolTip(QStringLiteral("Color removed from the picture, as a filter (black: nothing removed)"));
+    for (ColorEditor *ed : {m_colorAdd.data(), m_colorRemove.data()}) {
+        auto *frame = new QGroupBox;
+        auto *fv = new QVBoxLayout(frame);
+        fv->addWidget(ed);
+        v->addWidget(frame);
+        ed->setModels(models->currentData().toInt());
+    }
+    connect(models, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, models](int) {
+        const int m = models->currentData().toInt();
+        QSettings().setValue("ui/colorModel", m);
+        if (m_colorAdd) m_colorAdd->setModels(m);
+        if (m_colorRemove) m_colorRemove->setModels(m);
+    });
+    connect(m_colorAdd, &ColorEditor::colorEdited, this, [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorAdd, c); });
+    connect(m_colorRemove, &ColorEditor::colorEdited, this,
+            [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorRemove, c); });
     return g;
 }
 
@@ -579,7 +767,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
     spin->setValue(slider->value());
     h->addWidget(slider, 1);
     h->addWidget(spin);
-    form->addRow(QStringLiteral("Opacity"), row);
+    form->addRow(new ResetLabel(QStringLiteral("Opacity"), [spin] { spin->setValue(100); }), row);
     connect(slider, &QSlider::valueChanged, spin, &QSpinBox::setValue);
     connect(spin, qOverload<int>(&QSpinBox::valueChanged), slider, &QSlider::setValue);
     connect(slider, &QSlider::valueChanged, this, [this](int v) { setProp(cmd::SetLayerProp::Opacity, v / 100.0); });
@@ -588,7 +776,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
     for (BlendMode m : {BlendMode::Normal, BlendMode::Add, BlendMode::Screen, BlendMode::Multiply})
         blend->addItem(blendModeName(m), int(m));
     blend->setCurrentIndex(blend->findData(int(s.blend)));
-    form->addRow(QStringLiteral("Blend"), blend);
+    form->addRow(new ResetLabel(QStringLiteral("Blend"), [blend] { blend->setCurrentIndex(0); }), blend);
     connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this, blend](int i) { setProp(cmd::SetLayerProp::Blend, blend->itemData(i).toInt()); });
     return g;
@@ -627,12 +815,23 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
         link->setText(QStringLiteral("⛓"));
         link->setToolTip(QStringLiteral("Link width and height (keep the aspect ratio)"));
         link->setStyleSheet("QToolButton:checked { background:#ffa028; color:#1b1b1d; }");
-        grid->addWidget(new QLabel(QStringLiteral("Position")), 0, 0);
+        auto *posLabel = new ResetLabel(QStringLiteral("Position"), [this, comp] {
+            m_posX->setValue(comp.width() / 2.0); // centered
+            m_posY->setValue(comp.height() / 2.0);
+        });
+        auto *scaleLabel = new ResetLabel(QStringLiteral("Scale"), [this] {
+            const bool linked = m_scaleLinked;
+            m_scaleLinked = false;
+            m_scaleX->setValue(100.0);
+            m_scaleY->setValue(100.0);
+            m_scaleLinked = linked;
+        });
+        grid->addWidget(posLabel, 0, 0);
         grid->addWidget(new QLabel(QStringLiteral("X")), 0, 1);
         grid->addWidget(m_posX, 0, 2);
         grid->addWidget(new QLabel(QStringLiteral("Y")), 0, 4);
         grid->addWidget(m_posY, 0, 5);
-        grid->addWidget(new QLabel(QStringLiteral("Scale")), 1, 0);
+        grid->addWidget(scaleLabel, 1, 0);
         grid->addWidget(new QLabel(QStringLiteral("X")), 1, 1);
         grid->addWidget(m_scaleX, 1, 2);
         grid->addWidget(link, 1, 3);
@@ -772,6 +971,17 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     auto *g = new QWidget; // titled by its sub-tab
     auto *v = new QVBoxLayout(g);
 
+    // General switch of the chain
+    auto *all = new QCheckBox(QStringLiteral("Effects enabled"));
+    all->setChecked(s.effectsEnabled);
+    all->setToolTip(QStringLiteral("Turns the whole effect chain on or off (each effect keeps its own switch)"));
+    all->setStyleSheet("QCheckBox { font-weight:bold; }");
+    v->addWidget(all);
+    connect(all, &QCheckBox::toggled, this, [this](bool on) {
+        setProp(cmd::SetLayerProp::EffectsEnabled, on);
+        emit layerChanged();
+    });
+
     auto *bar = new QHBoxLayout;
     auto *add = new QPushButton(QStringLiteral("Add Effect"));
     auto *menu = new QMenu(add);
@@ -830,6 +1040,8 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     }
     list->setCurrentRow(m_selectedEffect);
     list->setMaximumHeight(qMin(160, 26 * count + 8));
+    if (!s.effectsEnabled) list->setStyleSheet("QListWidget { color:#777; }");
+    list->setProperty("allowLocked", true); // selecting an effect to see its parameters is not an edit
     v->addWidget(list);
 
     connect(list, &QListWidget::itemChanged, this, [this, list](QListWidgetItem *it) {
@@ -911,12 +1123,41 @@ void LayerInspector::refreshSpatial()
 void LayerInspector::refreshDynamic()
 {
     refreshSpatial();
+    // Crop preview: the source picture, read back by the render thread while the editor is shown
+    const bool wantPreview = m_crop && m_crop->isVisible();
+    if (wantPreview) {
+        m_engine->requestSourcePreview(m_layerId, 480);
+        quint64 id = 0;
+        const QImage img = m_engine->sourcePreview(&id);
+        if (id == m_layerId && !img.isNull()) m_crop->setImage(img);
+    } else if (m_previewing) {
+        m_engine->requestSourcePreview(0);
+    }
+    m_previewing = wantPreview;
+    // Values changed elsewhere (OSC, undo) follow in the color and crop editors
+    {
+        QRectF crop;
+        QColor add, remove;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(m_layer);
+            if (!l) return;
+            crop = l->crop;
+            add = QColor::fromRgbF(l->color.add[0], l->color.add[1], l->color.add[2]);
+            remove = QColor::fromRgbF(l->color.remove[0], l->color.remove[1], l->color.remove[2]);
+        }
+        if (m_crop) m_crop->setCrop(crop);
+        if (m_colorAdd) m_colorAdd->setColor(add);
+        if (m_colorRemove) m_colorRemove->setColor(remove);
+    }
     bool playing;
-    double d, p;
+    double d, p, in, out;
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(m_layer);
         if (!l || (l->type != SourceType::Video && l->type != SourceType::Audio)) return;
+        in = l->inPoint;
+        out = l->outPoint;
         if (m_meter) {
             const float pk = l->audio ? l->audio->peak() : 0.0f;
             const double db = pk > 1e-6f ? 20.0 * std::log10(pk) : -60.0;
@@ -927,9 +1168,10 @@ void LayerInspector::refreshDynamic()
         p = l->position();
     }
     if (m_play) m_play->setText(playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
-    if (m_seek && !m_seek->isSliderDown() && d > 0) {
-        QSignalBlocker b(m_seek);
-        m_seek->setValue(int(std::lround(p / d * 10000)));
+    if (m_seek) {
+        m_seek->setDuration(d);
+        m_seek->setPosition(p);
+        m_seek->setInOut(in, out);
     }
     if (m_time) m_time->setText(fmtTime(p) + " / " + fmtTime(d));
 }

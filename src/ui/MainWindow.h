@@ -17,6 +17,8 @@ class QActionGroup;
 class QScreen;
 class QTabWidget;
 class QUndoStack;
+class OscServer;
+class QThread;
 
 class MainWindow : public QMainWindow
 {
@@ -64,7 +66,13 @@ private:
     bool loadIntoLayer(int layer, const QString &path); // media, ISF generator or ISF effect (undoable)
     void loadDropped(int layer, const QStringList &paths);
     void addEmptyLayer();
-    void removeCurrentLayer();
+    void removeCurrentLayer(); // the selected layers (a group with its layers)
+    void createGroup();         // the selected layers go into it
+    void ungroupCurrent();
+    void toggleLockCurrent();
+    void moveRows(const QList<int> &rows, int beforeRow, int parentRow);
+    void startOsc();
+    bool refuseLocked(int layer); // status message if locked
     void duplicateCurrentLayer();
     void moveCurrentLayer(int delta);
     void togglePlayCurrent();
@@ -92,6 +100,8 @@ private:
     QTabWidget *m_tabs = nullptr;
     OutputWindow *m_output = nullptr;
     QLabel *m_status = nullptr;
+    OscServer *m_osc = nullptr;
+    QThread *m_oscThread = nullptr;
     QTimer m_statusTimer, m_renderTimer, m_autosaveTimer, m_binTimer, m_inspectorTimer;
 
     QMenu *m_screensMenu = nullptr;

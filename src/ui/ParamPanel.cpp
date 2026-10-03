@@ -1,6 +1,7 @@
 #include "ParamPanel.h"
 #include "Commands.h"
 #include "Engine.h"
+#include "Widgets.h"
 
 #include <QCheckBox>
 #include <QColorDialog>
@@ -236,7 +237,23 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
         }
         default: continue;
         }
-        form->addRow(label, field);
+        if (in.type == IsfInput::Event || in.type == IsfInput::Image || in.type == IsfInput::Audio ||
+            in.type == IsfInput::AudioFFT) {
+            form->addRow(label, field);
+            continue;
+        }
+        // A click on the parameter's name puts it back to its default value
+        IsfValue def;
+        def.f = in.fDefault;
+        def.b = in.bDefault;
+        def.l = in.lDefault;
+        def.p = in.pDefault;
+        std::copy(in.cDefault, in.cDefault + 4, def.c);
+        auto *name = new ResetLabel(label, [this, idx, label, def] {
+            setValue(idx, label, [def](IsfValue &x) { x = def; });
+            emit rebuildRequested();
+        });
+        form->addRow(name, field);
     }
 
     auto *reset = new QPushButton(QStringLiteral("Reset to Defaults"));
