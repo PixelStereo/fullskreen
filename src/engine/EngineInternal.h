@@ -59,8 +59,7 @@ inline void startMedia(Layer &l)
 // ROI of a saved source object (the whole picture when it is absent or degenerate)
 inline QRectF roiFromJson(const QJsonObject &src)
 {
-    // "crop": the name this had in earlier projects
-    const QJsonArray c = src.value(src.contains("roi") ? "roi" : "crop").toArray();
+    const QJsonArray c = src.value("roi").toArray();
     if (c.size() != 4) return Layer::fullRoi();
     const QRectF r = QRectF(QPointF(c[0].toDouble(), c[1].toDouble()), QPointF(c[2].toDouble(), c[3].toDouble()))
                          .normalized() & Layer::fullRoi();
@@ -75,7 +74,7 @@ inline void colorFromJson(ColorAdjust &col, const QJsonObject &o)
         col.add[c] = float(std::clamp(o.value("add").toArray().at(c).toDouble(0), 0.0, 1.0));
         col.remove[c] = float(std::clamp(o.value("remove").toArray().at(c).toDouble(0), 0.0, 1.0));
     }
-    // Switches: on in a project saved before they existed
+    // Switches: on when absent
     col.enabled = o.value("enabled").toBool(true);
     col.tempOn = o.value("tempOn").toBool(true);
     col.tintOn = o.value("tintOn").toBool(true);

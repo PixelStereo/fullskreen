@@ -3,12 +3,15 @@
 #include "Gl.h"
 #include "Isf.h"
 #include "Mapping.h"
+#include "Publish.h"
 #include "VideoDecoder.h"
 
 #include <QImage>
 #include <QRectF>
+#include <QSize>
 #include <QString>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <memory>
 #include <vector>
@@ -92,11 +95,25 @@ struct ColorAdjust {
 
 struct Layer {
     // Identity and structure. A group is a layer without source whose picture is the composite of its members;
-    // members immediately follow their group in the layer list (one level: no group inside a group).
+    // members immediately follow their group in the layer list, and a group can hold other groups.
+    // Layers and groups live in the composition: one pixel space, set in the Master.
+    // A viewport is a window onto that space with its own size in pixels, sent to a screen (and published).
+    // It holds nothing: it shows the part of the composition its Spatial places it on, with its own ROI,
+    // color, effects and opacity. Viewports come first in the list and are never inside a group.
     quint64 id = 0;     // unique in the composition, saved in the project
     quint64 parent = 0; // id of the group containing the layer (0: top level)
     bool isGroup = false;
     bool collapsed = false; // group folded in the layer list
+
+    // Viewport
+    bool isViewport = false;
+    int vpWidth = 1920, vpHeight = 1080; // size of its picture, in pixels
+    QString vpScreen;                    // screen it is shown on (empty: the main one)
+    int vpMode = 0;                      // 0 hidden, 1 windowed, 2 fullscreen
+    PublishSettings vpPublish;           // NDI, OMT, Syphon, Spout of this viewport
+    // Viewports this item is not drawn in (an item at the top of the list; inside a group, the group decides).
+    // Kept as exclusions: a viewport created later shows everything.
+    std::vector<quint64> hiddenIn;
     int colorModels = 1;    // models shown by the Color tab for this layer (interface state, saved)
 
     QString name;
@@ -153,7 +170,12 @@ struct Layer {
     std::vector<std::unique_ptr<IsfInstance>> effects;
     RenderTarget fxTarget[2];
 
-    RenderTarget groupTarget; // group: composite of its members (composition size)
+    RenderTarget groupTarget; // group: composite of its members; viewport: what it sees, at its own size
+    // Viewport: the picture its window shows (master level and blackout applied), double buffered so the
+    // interface and the publishers read the last finished frame
+    RenderTarget vpOut[2];
+    int vpBack = 1;
+    std::atomic<int> vpPublished{0};
     RenderTarget prepTarget;  // roi + color
     GLuint rawTex = 0;        // source picture before roi (roi preview)
     int rawW = 0, rawH = 0;
@@ -185,6 +207,11 @@ struct Layer {
     bool atEnd() const { return timeline().ended(clock); } // One-shot / Stop: played to the end
     int sourceWidth() const { return type == SourceType::Isf ? genWidth : srcWidth; }
     int sourceHeight() const { return type == SourceType::Isf ? genHeight : srcHeight; }
-    bool hasPicture() const { return isGroup || (type != SourceType::Audio && !(type == SourceType::None && missingType == SourceType::Audio)); }
+    bool hasPicture() const { return isGroup || isViewport || (type != SourceType::Audio && !(type == SourceType::None && missingType == SourceType::Audio)); }
+    QSize viewportSize() const { return QSize(std::max(1, vpWidth), std::max(1, vpHeight)); }
+    bool shownIn(quint64 viewport) const
+    {
+        return std::find(hiddenIn.begin(), hiddenIn.end(), viewport) == hiddenIn.end();
+    }
     static QRectF fullRoi() { return QRectF(0, 0, 1, 1); }
 };

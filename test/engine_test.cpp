@@ -58,6 +58,9 @@ int main(int argc, char **argv)
     Engine e;
     QString err;
     CHECK(e.initialize(&err));
+    // A composition is always shown through a viewport, and viewports come first in the list:
+    // the layers of these tests start at row V.
+    const int V = 1;
 
     // Compatibility mode: fulskrin_tests --check-isf <folder>  -> compiles and renders every shader in the folder
     if (argc >= 3 && QString(argv[1]) == "--check-isf") {
@@ -98,13 +101,13 @@ int main(int argc, char **argv)
     e.layer(gen)->mapping.meshMode = true;
     e.layer(gen)->mapping.setControlPoint(1, 1, QPointF(0.4, 0.3));
     e.layer(gen)->mapping.setCorner(1, QPointF(0.9, 0.1));
-    int vid = e.addLayer("Video", 1);
+    int vid = e.addLayer("Video", V + 1);
     CHECK(e.setLayerVideo(vid, root + "/media/h264.mp4", &err));
     e.addEffect(vid, isf + "/effects/ColorCorrection.fs", &err);
     e.addEffect(vid, isf + "/effects/Trails.fs", &err);
     e.layer(vid)->effects[0]->inputs()[1].fValue = 0.5;
     e.layer(vid)->blend = BlendMode::Screen;
-    CHECK(e.layerCount() == 2);
+    CHECK(e.layerCount() == V + 2);
     for (int i = 0; i < 10; ++i) e.renderFrame();
     const QPointF cp = e.layer(gen)->mapping.controlPoint(1, 1);
     CHECK(e.saveProject(tmp + "/a.fulskrin", {}, &err));
@@ -113,10 +116,10 @@ int main(int argc, char **argv)
     CHECK(e.saveProject(tmp + "/b.fulskrin", {}, &err));
     QJsonObject a = readJson(tmp + "/a.fulskrin"), b = readJson(tmp + "/b.fulskrin");
     CHECK(a.value("layers") == b.value("layers"));
-    CHECK(e.layer(0)->mapping.meshMode);
-    CHECK(QLineF(e.layer(0)->mapping.controlPoint(1, 1), cp).length() < 1e-9);
-    CHECK(e.layer(1)->blend == BlendMode::Screen);
-    CHECK(e.layer(1)->effects.size() == 2 && std::abs(e.layer(1)->effects[0]->inputs()[1].fValue - 0.5) < 1e-9);
+    CHECK(e.layer(V + 0)->mapping.meshMode);
+    CHECK(QLineF(e.layer(V + 0)->mapping.controlPoint(1, 1), cp).length() < 1e-9);
+    CHECK(e.layer(V + 1)->blend == BlendMode::Screen);
+    CHECK(e.layer(V + 1)->effects.size() == 2 && std::abs(e.layer(V + 1)->effects[0]->inputs()[1].fValue - 0.5) < 1e-9);
 
     { // Position / scale of the mapped shape: an exact affine transform of every point (corners and mesh warp)
         Mapping m;
@@ -200,40 +203,59 @@ int main(int argc, char **argv)
         // Delete, then restore identically
         const QJsonObject snap = e.layerJson(g);
         undo.push(new cmd::RemoveLayer(&e, g));
-        CHECK(e.layerCount() == 0);
+        CHECK(e.layerCount() == V + 0);
         undo.undo();
-        CHECK(e.layerCount() == 1);
-        CHECK(e.layerJson(0) == snap);
+        CHECK(e.layerCount() == V + 1);
+        CHECK(e.layerJson(V + 0) == snap);
         // Effects
-        const QJsonArray fxBefore = e.effectsJson(0);
-        e.addEffect(0, root + "/../isf/effects/Hue.fs", &err);
-        undo.push(new cmd::SetEffects(&e, 0, fxBefore, "effect"));
-        CHECK(e.layer(0)->effects.size() == 1);
+        const QJsonArray fxBefore = e.effectsJson(V + 0);
+        e.addEffect(V + 0, root + "/../isf/effects/Hue.fs", &err);
+        undo.push(new cmd::SetEffects(&e, V + 0, fxBefore, "effect"));
+        CHECK(e.layer(V + 0)->effects.size() == 1);
         undo.undo();
-        CHECK(e.layer(0)->effects.empty());
+        CHECK(e.layer(V + 0)->effects.empty());
         undo.redo();
-        CHECK(e.layer(0)->effects.size() == 1);
+        CHECK(e.layer(V + 0)->effects.size() == 1);
         // Back to the very start of the stack
         while (undo.canUndo()) undo.undo();
-        CHECK(e.layerCount() == 0);
+        CHECK(e.layerCount() == V + 0);
     }
 
-    // 4b. Structure helpers (groups)
+    // 4b. Structure helpers (viewports, groups inside groups)
     {
-        LayerTree t = {{1, 0, false}, {2, 0, true}, {3, 2, false}, {4, 0, false}, {5, 2, false}};
+        auto item = [](quint64 id, quint64 parent) { return TreeNode{id, parent, TreeNode::Item}; };
+        auto group = [](quint64 id, quint64 parent) { return TreeNode{id, parent, TreeNode::Group}; };
+        auto viewport = [](quint64 id) { return TreeNode{id, 0, TreeNode::Viewport}; };
+        LayerTree t = {item(1, 0), group(2, 0), item(3, 2), viewport(9), item(4, 0), item(5, 2)};
         LayerTree n = tree::normalized(t);
-        CHECK(n.size() == 5 && n[1].id == 2 && n[2].id == 3 && n[3].id == 5 && n[4].id == 4); // members follow
+        // Viewports first, then the contents of a group right after it
+        CHECK(n.size() == 6 && n[0].id == 9 && n[1].id == 1 && n[2].id == 2 && n[3].id == 3 && n[4].id == 5 &&
+              n[5].id == 4);
         LayerTree in = tree::intoGroup(n, {1, 4}, 2);
-        CHECK(in[0].id == 2 && in.back().id == 4 && in.back().parent == 2 && in[3].id == 1 && in[3].parent == 2);
+        CHECK(in[1].id == 2 && in.back().id == 4 && in.back().parent == 2 && in[4].id == 1 && in[4].parent == 2);
         LayerTree out = tree::moved(in, {3}, 0, 0); // to the end, top level
         CHECK(out.back().id == 3 && out.back().parent == 0);
         LayerTree un = tree::ungrouped(in, 2);
-        CHECK(un.back().id == 2 && un[0].parent == 0 && un[0].id == 3);
-        LayerTree g = tree::moved(n, {2}, 1, 0); // a group moves with its members
-        CHECK(g[0].id == 2 && g[1].id == 3 && g[2].id == 5 && g[3].id == 1);
-        LayerTree bad = {{2, 0, true}, {6, 0, true}};
-        bad[1].parent = 2; // no group inside a group
-        CHECK(tree::normalized(bad)[1].parent == 0);
+        CHECK(un.back().id == 2 && un[1].id == 3 && un[1].parent == 0);
+        LayerTree g = tree::moved(n, {2}, 1, 0); // a group moves with its contents
+        CHECK(g[1].id == 2 && g[2].id == 3 && g[3].id == 5 && g[4].id == 1);
+        // A group inside a group, and its contents follow it at every depth
+        LayerTree nest = tree::intoGroup(n, {2}, 0); // 0 is not a group: nothing moves
+        CHECK(nest == n);
+        LayerTree two = tree::normalized({viewport(9), group(10, 0), item(11, 10), group(2, 10), item(3, 2), item(4, 0)});
+        CHECK(two[1].id == 10 && two[2].id == 11 && two[3].id == 2 && two[4].id == 3 && two[5].id == 4);
+        CHECK(tree::depthOf(two, 3) == 2 && tree::depthOf(two, 2) == 1 && tree::depthOf(two, 4) == 0);
+        CHECK(tree::descendants(two, 10) == std::vector<quint64>({11, 2, 3}));
+        // Never inside itself (directly or through a group it holds), never inside a viewport
+        CHECK(tree::intoGroup(two, {10}, 2) == two);
+        LayerTree loop = {viewport(9), group(10, 2), group(2, 10)};
+        const LayerTree cut = tree::normalized(loop);
+        CHECK(cut[size_t(tree::indexOf(cut, 10))].parent == 0 || cut[size_t(tree::indexOf(cut, 2))].parent == 0);
+        LayerTree inVp = tree::normalized({viewport(9), item(1, 9)});
+        CHECK(inVp[1].parent == 0);
+        // Ungrouping a group inside a group: its contents go up one level only
+        LayerTree up = tree::ungrouped(two, 2);
+        CHECK(up[size_t(tree::indexOf(up, 3))].parent == 10);
     }
 
     // 4c. Groups, roi, color, effects switch, lock, blackout (manual rendering)
@@ -269,7 +291,7 @@ int main(int argc, char **argv)
             QImage gray(64, 32, QImage::Format_RGB32);
             gray.fill(qRgb(128, 128, 128));
             gray.save(tmp + "/gray.png");
-            const int gl = e.addLayer("gray", 0);
+            const int gl = e.addLayer("gray", V + 0);
             e.setLayerImage(gl, tmp + "/gray.png", &err);
             e.layer(gl)->color.temp = 4000;
             QColor c = px(render(), 32, 16);
@@ -294,29 +316,29 @@ int main(int argc, char **argv)
         e.removeEffect(l, 0);
 
         // Group: the layer moves in, the group's opacity, visibility, roi and color apply to it
-        int g = e.addGroup("G", 0);
-        CHECK(e.layer(g)->isGroup && e.layerCount() == 2);
-        const quint64 gid = e.layerId(g), lid = e.layerId(1);
+        int g = e.addGroup("G", V + 0);
+        CHECK(e.layer(g)->isGroup && e.layerCount() == V + 2);
+        const quint64 gid = e.layerId(g), lid = e.layerId(V + 1);
         e.setStructure(tree::intoGroup(e.structure(), {lid}, gid));
-        CHECK(e.groupIndexOf(1) == 0 && e.groupMembers(0) == QList<int>{1});
+        CHECK(e.groupIndexOf(V + 1) == V + 0 && e.groupMembers(V + 0) == QList<int>{V + 1});
         img = render();
         CHECK(px(img, 8, 16).red() > 250 && px(img, 56, 16).blue() > 250); // a group with defaults changes nothing
-        e.layer(0)->opacity = 0.5f;
+        e.layer(V + 0)->opacity = 0.5f;
         img = render();
         CHECK(std::abs(px(img, 8, 16).red() - 128) < 6);
-        e.layer(0)->opacity = 1.0f;
-        e.layer(0)->roi = QRectF(0, 0, 0.5, 1); // left half of the composition: red everywhere
+        e.layer(V + 0)->opacity = 1.0f;
+        e.layer(V + 0)->roi = QRectF(0, 0, 0.5, 1); // left half of the composition: red everywhere
         img = render();
         CHECK(px(img, 56, 16).red() > 250 && px(img, 56, 16).blue() < 5);
-        e.layer(0)->roi = Layer::fullRoi();
-        e.layer(0)->color.remove[2] = 1.0f;
+        e.layer(V + 0)->roi = Layer::fullRoi();
+        e.layer(V + 0)->color.remove[2] = 1.0f;
         img = render();
         CHECK(px(img, 56, 16).blue() < 5 && px(img, 8, 16).red() > 250);
-        e.layer(0)->color = ColorAdjust();
-        e.layer(0)->visible = false;
+        e.layer(V + 0)->color = ColorAdjust();
+        e.layer(V + 0)->visible = false;
         img = render();
-        CHECK(qGray(img.pixel(8, 16)) < 3 && !e.layer(1)->parentVisible);
-        e.layer(0)->visible = true;
+        CHECK(qGray(img.pixel(8, 16)) < 3 && !e.layer(V + 1)->parentVisible);
+        e.layer(V + 0)->visible = true;
         // Source preview: the group's composite, at the requested size
         e.requestSourcePreview(gid, 32);
         for (int k = 0; k < 8; ++k) e.renderFrame();
@@ -325,51 +347,51 @@ int main(int argc, char **argv)
         CHECK(pid == gid && prev.width() == 32 && prev.height() == 16 && QColor(prev.pixel(4, 8)).red() > 250);
         e.requestSourcePreview(0);
         // Lock: of the layer itself or of its group
-        CHECK(!e.isLocked(1));
-        e.layer(0)->locked = true;
-        CHECK(e.isLocked(1) && e.isLocked(0));
-        e.layer(0)->locked = false;
+        CHECK(!e.isLocked(V + 1));
+        e.layer(V + 0)->locked = true;
+        CHECK(e.isLocked(V + 1) && e.isLocked(V + 0));
+        e.layer(V + 0)->locked = false;
 
         // Save / load keeps the structure and the new properties
-        e.layer(1)->roi = QRectF(0.1, 0.2, 0.5, 0.6);
-        e.layer(1)->color.add[2] = 0.25f;
-        e.layer(1)->effectsEnabled = false;
-        e.layer(0)->locked = true;
+        e.layer(V + 1)->roi = QRectF(0.1, 0.2, 0.5, 0.6);
+        e.layer(V + 1)->color.add[2] = 0.25f;
+        e.layer(V + 1)->effectsEnabled = false;
+        e.layer(V + 0)->locked = true;
         const LayerTree before = e.structure();
         CHECK(e.saveProject(tmp + "/groups.fulskrin", {}, &err));
         CHECK(e.loadProject(tmp + "/groups.fulskrin", nullptr, &err));
         CHECK(e.structure() == before);
-        CHECK(e.layer(0)->locked && e.layer(0)->isGroup);
-        CHECK(QLineF(e.layer(1)->roi.topLeft(), QPointF(0.1, 0.2)).length() < 1e-9 && std::abs(e.layer(1)->roi.width() - 0.5) < 1e-9);
-        CHECK(std::abs(e.layer(1)->color.add[2] - 0.25f) < 1e-6 && !e.layer(1)->effectsEnabled);
-        e.layer(0)->locked = false;
+        CHECK(e.layer(V + 0)->locked && e.layer(V + 0)->isGroup);
+        CHECK(QLineF(e.layer(V + 1)->roi.topLeft(), QPointF(0.1, 0.2)).length() < 1e-9 && std::abs(e.layer(V + 1)->roi.width() - 0.5) < 1e-9);
+        CHECK(std::abs(e.layer(V + 1)->color.add[2] - 0.25f) < 1e-6 && !e.layer(V + 1)->effectsEnabled);
+        e.layer(V + 0)->locked = false;
         // Duplicate a group: its members are copied into the copy
-        const int dup = e.duplicateLayer(0);
-        CHECK(dup == 0 && e.layerCount() == 4 && e.layer(0)->isGroup && e.layer(1)->parent == e.layerId(0));
-        CHECK(e.layer(2)->isGroup && e.layer(3)->parent == e.layerId(2) && e.layerId(0) != e.layerId(2));
+        const int dup = e.duplicateLayer(V + 0);
+        CHECK(dup == V + 0 && e.layerCount() == V + 4 && e.layer(V + 0)->isGroup && e.layer(V + 1)->parent == e.layerId(V + 0));
+        CHECK(e.layer(V + 2)->isGroup && e.layer(V + 3)->parent == e.layerId(V + 2) && e.layerId(V + 0) != e.layerId(V + 2));
         // Undo / redo of a structure change, and of a removed member
         {
             QUndoStack undo;
             const LayerTree t0 = e.structure();
-            undo.push(new cmd::SetStructure(&e, t0, tree::ungrouped(t0, e.layerId(0)), QStringLiteral("Ungroup")));
-            CHECK(e.layer(0)->parent == 0 && e.layer(1)->isGroup);
+            undo.push(new cmd::SetStructure(&e, t0, tree::ungrouped(t0, e.layerId(V + 0)), QStringLiteral("Ungroup")));
+            CHECK(e.layer(V + 0)->parent == 0 && e.layer(V + 1)->isGroup);
             undo.undo();
             CHECK(e.structure() == t0);
-            undo.push(new cmd::RemoveLayer(&e, 3));
-            CHECK(e.layerCount() == 3 && e.groupMembers(2).isEmpty());
+            undo.push(new cmd::RemoveLayer(&e, V + 3));
+            CHECK(e.layerCount() == V + 3 && e.groupMembers(V + 2).isEmpty());
             undo.undo();
             CHECK(e.structure() == t0);
-            undo.push(new cmd::SetLayerProp(&e, 1, cmd::SetLayerProp::Roi, e.layer(1)->roi, QRectF(0, 0, 0.5, 0.5)));
-            CHECK(e.layer(1)->roi == QRectF(0, 0, 0.5, 0.5));
+            undo.push(new cmd::SetLayerProp(&e, V + 1, cmd::SetLayerProp::Roi, e.layer(V + 1)->roi, QRectF(0, 0, 0.5, 0.5)));
+            CHECK(e.layer(V + 1)->roi == QRectF(0, 0, 0.5, 0.5));
             undo.undo();
-            undo.push(new cmd::SetLayerProp(&e, 1, cmd::SetLayerProp::ColorRemove, QColor(Qt::black), QColor(Qt::red)));
-            CHECK(e.layer(1)->color.remove[0] == 1.0f && e.layer(1)->color.remove[1] == 0.0f);
+            undo.push(new cmd::SetLayerProp(&e, V + 1, cmd::SetLayerProp::ColorRemove, QColor(Qt::black), QColor(Qt::red)));
+            CHECK(e.layer(V + 1)->color.remove[0] == 1.0f && e.layer(V + 1)->color.remove[1] == 0.0f);
             undo.undo();
-            CHECK(e.layer(1)->color.remove[0] == 0.0f);
+            CHECK(e.layer(V + 1)->color.remove[0] == 0.0f);
         }
         // Removing a group keeps its members, at the top level
-        e.removeLayer(0);
-        CHECK(e.layerCount() == 3 && e.layer(0)->parent == 0 && !e.layer(0)->isGroup);
+        e.removeLayer(V + 0);
+        CHECK(e.layerCount() == V + 3 && e.layer(V + 0)->parent == 0 && !e.layer(V + 0)->isGroup);
 
         // Blackout: picture and sound
         e.newProject();
@@ -410,32 +432,32 @@ int main(int argc, char **argv)
         const int li = e.addLayer("My layer");
         e.setLayerImage(li, tmp + "/redblue.png", &err);
         e.addEffect(li, isf + "/effects/FlipCrop.fs", &err);
-        const int gi = e.addGroup("G", 0);
-        e.setStructure(tree::intoGroup(e.structure(), {e.layerId(1)}, e.layerId(gi)));
+        const int gi = e.addGroup("G", V + 0);
+        e.setStructure(tree::intoGroup(e.structure(), {e.layerId(V + 1)}, e.layerId(gi)));
         OscServer server(&e);
         CHECK(server.start(0, 0, "test", false));
         CHECK(server.oscPort() > 0 && server.queryPort() > 0);
         const QString L = "/layers/G/layers/My_layer";
-        CHECK(server.handleMessage({L + "/opacity", "f", {0.25}}) && std::abs(e.layer(1)->opacity - 0.25f) < 1e-6);
-        CHECK(server.handleMessage({"/layers/G/layers/*/opacity", "f", {0.5}}) && std::abs(e.layer(1)->opacity - 0.5f) < 1e-6);
-        CHECK(server.handleMessage({L + "/color/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(1)->color.add[2] - 0.3f) < 1e-6);
-        CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(1)->color.temp == -2000.0f);
-        CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(1)->color.tint == 100.0f); // clipped
-        CHECK(server.handleMessage({L + "/source/roi/left", "f", {0.25}}) && std::abs(e.layer(1)->roi.left() - 0.25) < 1e-9);
+        CHECK(server.handleMessage({L + "/opacity", "f", {0.25}}) && std::abs(e.layer(V + 1)->opacity - 0.25f) < 1e-6);
+        CHECK(server.handleMessage({"/layers/G/layers/*/opacity", "f", {0.5}}) && std::abs(e.layer(V + 1)->opacity - 0.5f) < 1e-6);
+        CHECK(server.handleMessage({L + "/color/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(V + 1)->color.add[2] - 0.3f) < 1e-6);
+        CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
+        CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
+        CHECK(server.handleMessage({L + "/source/roi/left", "f", {0.25}}) && std::abs(e.layer(V + 1)->roi.left() - 0.25) < 1e-9);
         CHECK(server.handleMessage({L + "/effects/FlipCrop/flipH", "T", {true}}));
-        CHECK(e.layer(1)->effects[0]->inputs()[1].bValue || e.layer(1)->effects[0]->inputs()[2].bValue);
-        CHECK(server.handleMessage({L + "/effects/enabled", "F", {false}}) && !e.layer(1)->effectsEnabled);
-        CHECK(server.handleMessage({"/layers/G/opacity", "i", {0}}) && e.layer(0)->opacity == 0.0f);
+        CHECK(e.layer(V + 1)->effects[0]->inputs()[1].bValue || e.layer(V + 1)->effects[0]->inputs()[2].bValue);
+        CHECK(server.handleMessage({L + "/effects/enabled", "F", {false}}) && !e.layer(V + 1)->effectsEnabled);
+        CHECK(server.handleMessage({"/layers/G/opacity", "i", {0}}) && e.layer(V + 0)->opacity == 0.0f);
         CHECK(server.handleMessage({"/master/blackout", "T", {true}}) && e.blackout());
         server.handleMessage({"/master/blackout", "i", {0}});
         CHECK(!e.blackout());
         // Locked group: its member refuses edits, visibility still works
-        CHECK(server.handleMessage({"/layers/G/locked", "T", {true}}) && e.isLocked(1));
-        CHECK(!server.handleMessage({L + "/opacity", "f", {0.9}}) && std::abs(e.layer(1)->opacity - 0.5f) < 1e-6);
-        CHECK(server.handleMessage({L + "/visible", "F", {false}}) && !e.layer(1)->visible);
+        CHECK(server.handleMessage({"/layers/G/locked", "T", {true}}) && e.isLocked(V + 1));
+        CHECK(!server.handleMessage({L + "/opacity", "f", {0.9}}) && std::abs(e.layer(V + 1)->opacity - 0.5f) < 1e-6);
+        CHECK(server.handleMessage({L + "/visible", "F", {false}}) && !e.layer(V + 1)->visible);
         server.handleMessage({"/layers/G/locked", "F", {false}});
         // Renaming changes the address
-        CHECK(server.handleMessage({L + "/name", "s", {QStringLiteral("Front wall")}}) && e.layer(1)->name == "Front wall");
+        CHECK(server.handleMessage({L + "/name", "s", {QStringLiteral("Front wall")}}) && e.layer(V + 1)->name == "Front wall");
         int status = 0;
         QJsonObject v = QJsonDocument::fromJson(server.httpGet("/layers/G/layers/Front_wall/opacity?VALUE", &status)).object();
         CHECK(status == 200 && v.value("VALUE").toArray().at(0).toDouble() == 0.5);
@@ -464,7 +486,7 @@ int main(int argc, char **argv)
         const QString F = "/layers/G/layers/Front_wall";
         QUdpSocket udp;
         udp.writeDatagram(osc::encode({F + "/opacity", "f", {0.75}}), QHostAddress::LocalHost, server.oscPort());
-        CHECK(pump([&] { return std::abs(e.layer(1)->opacity - 0.75f) < 1e-6; }));
+        CHECK(pump([&] { return std::abs(e.layer(V + 1)->opacity - 0.75f) < 1e-6; }));
         // Real HTTP request
         QTcpSocket http;
         http.connectToHost(QHostAddress::LocalHost, server.queryPort());
@@ -563,10 +585,10 @@ int main(int argc, char **argv)
         e.setCompositionSize(QSize(64, 32));
         const int a = e.addLayer("A");
         e.setLayerImage(a, tmp + "/redblue.png", &err);
-        const int b = e.addLayer("B", 1);
+        const int b = e.addLayer("B", V + 1);
         e.setLayerIsf(b, isf + "/generators/SolidColor.fs", &err);
-        e.layer(0)->opacity = 0.8f;
-        e.layer(1)->visible = false;
+        e.layer(V + 0)->opacity = 0.8f;
+        e.layer(V + 1)->visible = false;
         Engine::Memory m;
         m.name = "Look 1";
         m.fade = 0;
@@ -575,50 +597,50 @@ int main(int argc, char **argv)
         m.thumbnail.fill(Qt::red);
         CHECK(e.addMemory(m) == 0 && e.memoryCount() == 1);
         // Change things, then recall
-        e.layer(0)->opacity = 0.2f;
-        e.layer(0)->color.temp = 1000;
-        e.layer(0)->mapping.setCorner(0, QPointF(0.3, 0.3));
-        e.layer(1)->visible = true;
-        e.addEffect(0, isf + "/effects/FlipCrop.fs", &err);
+        e.layer(V + 0)->opacity = 0.2f;
+        e.layer(V + 0)->color.temp = 1000;
+        e.layer(V + 0)->mapping.setCorner(0, QPointF(0.3, 0.3));
+        e.layer(V + 1)->visible = true;
+        e.addEffect(V + 0, isf + "/effects/FlipCrop.fs", &err);
         e.recallMemory(0);
-        CHECK(std::abs(e.layer(0)->opacity - 0.8f) < 1e-6 && e.layer(0)->color.temp == 0.0f);
-        CHECK(e.layer(0)->mapping.corners[0] == QPointF(0, 0) || e.layer(0)->mapping.corners[0].y() > 0.0);
-        CHECK(e.layer(0)->effects.empty() && !e.layer(1)->visible);
+        CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6 && e.layer(V + 0)->color.temp == 0.0f);
+        CHECK(e.layer(V + 0)->mapping.corners[0] == QPointF(0, 0) || e.layer(V + 0)->mapping.corners[0].y() > 0.0);
+        CHECK(e.layer(V + 0)->effects.empty() && !e.layer(V + 1)->visible);
         // With a fade: halfway between, then the target; a layer becoming visible fades in from 0
         Engine::Memory m2 = m;
         m2.name = "Look 2";
         m2.fade = 0.4;
-        e.layer(0)->opacity = 0.0f;
-        e.layer(1)->visible = true;
+        e.layer(V + 0)->opacity = 0.0f;
+        e.layer(V + 1)->visible = true;
         m2.layers = e.captureLayers();
         e.addMemory(m2);
         e.recallMemory(0); // back to look 1, at once
         e.recallMemory(1);
-        CHECK(e.isFading() && e.layer(1)->visible && e.layer(1)->opacity < 0.05f);
+        CHECK(e.isFading() && e.layer(V + 1)->visible && e.layer(V + 1)->opacity < 0.05f);
         QElapsedTimer ft;
         ft.start();
         bool sawMiddle = false;
         while (e.isFading() && ft.elapsed() < 3000) {
             e.renderFrame();
-            sawMiddle |= e.layer(0)->opacity > 0.1f && e.layer(0)->opacity < 0.7f;
+            sawMiddle |= e.layer(V + 0)->opacity > 0.1f && e.layer(V + 0)->opacity < 0.7f;
             QThread::msleep(10);
         }
-        CHECK(!e.isFading() && sawMiddle && e.layer(0)->opacity == 0.0f && std::abs(e.layer(1)->opacity - 1.0f) < 1e-6);
+        CHECK(!e.isFading() && sawMiddle && e.layer(V + 0)->opacity == 0.0f && std::abs(e.layer(V + 1)->opacity - 1.0f) < 1e-6);
         // A layer removed since is recreated; a locked layer is left alone
-        e.removeLayer(1);
-        e.layer(0)->locked = true;
-        e.layer(0)->opacity = 0.5f;
+        e.removeLayer(V + 1);
+        e.layer(V + 0)->locked = true;
+        e.layer(V + 0)->opacity = 0.5f;
         e.recallMemory(0);
-        CHECK(e.layerCount() == 2 && e.layer(1)->name == "B" && std::abs(e.layer(0)->opacity - 0.5f) < 1e-6);
-        e.layer(0)->locked = false;
+        CHECK(e.layerCount() == V + 2 && e.layer(V + 1)->name == "B" && std::abs(e.layer(V + 0)->opacity - 0.5f) < 1e-6);
+        e.layer(V + 0)->locked = false;
         // Undo of a recall
         {
             QUndoStack undo;
-            e.layer(0)->opacity = 0.33f;
+            e.layer(V + 0)->opacity = 0.33f;
             undo.push(new cmd::RecallMemory(&e, 0));
-            CHECK(std::abs(e.layer(0)->opacity - 0.8f) < 1e-6);
+            CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6);
             undo.undo();
-            CHECK(std::abs(e.layer(0)->opacity - 0.33f) < 1e-6);
+            CHECK(std::abs(e.layer(V + 0)->opacity - 0.33f) < 1e-6);
         }
         // Saved with the project
         CHECK(e.saveProject(tmp + "/memories.fulskrin", {}, &err));
@@ -626,7 +648,7 @@ int main(int argc, char **argv)
         CHECK(e.memoryCount() == 2 && e.memory(1).name == "Look 2" && std::abs(e.memory(1).fade - 0.4) < 1e-9);
         CHECK(e.memory(0).thumbnail.width() == 16 && e.memory(0).layers.size() == 2);
         e.recallMemory(0);
-        CHECK(std::abs(e.layer(0)->opacity - 0.8f) < 1e-6);
+        CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6);
 
         // The inspector edits what a memory holds (its layers' JSON): the recall then applies the new values,
         // and the composition does not move until it is recalled.
@@ -644,14 +666,14 @@ int main(int argc, char **argv)
             l1["visible"] = true;
             edited.layers[0] = l0;
             edited.layers[1] = l1;
-            e.layer(0)->opacity = 0.8f;
+            e.layer(V + 0)->opacity = 0.8f;
             e.setMemory(0, edited);
-            CHECK(std::abs(e.layer(0)->opacity - 0.8f) < 1e-6); // editing a memory does not touch the layers
+            CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6); // editing a memory does not touch the layers
             CHECK(std::abs(e.memory(0).layers[0].toObject().value("opacity").toDouble() - 0.25) < 1e-9);
             e.recallMemory(0);
-            CHECK(std::abs(e.layer(0)->opacity - 0.25f) < 1e-6 && e.layer(0)->blend == BlendMode::Screen);
-            CHECK(e.layer(1)->visible);
-            const IsfInstance *gen = e.layer(1)->generator.get();
+            CHECK(std::abs(e.layer(V + 0)->opacity - 0.25f) < 1e-6 && e.layer(V + 0)->blend == BlendMode::Screen);
+            CHECK(e.layer(V + 1)->visible);
+            const IsfInstance *gen = e.layer(V + 1)->generator.get();
             double r = -1;
             for (const IsfInput &in : gen->inputs())
                 if (in.name == "color") r = in.cValue[0];
@@ -663,6 +685,120 @@ int main(int argc, char **argv)
         }
         e.newProject();
         CHECK(e.memoryCount() == 0);
+    }
+
+    // 4e. Viewports: windows onto one composition, routing, groups inside groups
+    {
+        e.newProject();
+        e.fadeMaster(1.0, 0);
+        e.setBlackout(false, 0);
+        e.setCompositionSize(QSize(64, 16));
+        const int v1 = e.viewports().first();
+        e.setViewportSize(v1, QSize(32, 16));
+        {
+            Engine::Lock lk(&e.mutex());
+            Mapping &m = e.layer(v1)->mapping; // left half of the composition
+            m.setCorner(0, QPointF(0, 0)), m.setCorner(1, QPointF(0.5, 0)), m.setCorner(2, QPointF(0.5, 1)),
+                m.setCorner(3, QPointF(0, 1));
+        }
+        const int v2i = e.addViewport(QStringLiteral("Right"), QSize(32, 16));
+        const quint64 vp1 = e.layerId(e.viewports().first()), vp2 = e.layerId(v2i);
+        {
+            Engine::Lock lk(&e.mutex());
+            const QRectF r = e.layer(e.indexOfId(vp2))->mapping.bounds(); // placed to the right of the first
+            CHECK(std::abs(r.left() - 0.5) < 1e-9 && std::abs(r.width() - 0.5) < 1e-9);
+        }
+        CHECK(e.viewports().size() == 2 && e.viewports()[0] == 0 && e.viewports()[1] == 1); // they come first
+        // One layer over the whole composition: red on the left half, blue on the right half
+        QImage wide(64, 16, QImage::Format_RGB32);
+        for (int y = 0; y < 16; ++y)
+            for (int x = 0; x < 64; ++x) wide.setPixel(x, y, x < 32 ? qRgb(255, 0, 0) : qRgb(0, 0, 255));
+        wide.save(tmp + "/wide.png");
+        const int li = e.addLayer("Wide");
+        CHECK(li == 2 && e.setLayerImage(li, tmp + "/wide.png", &err));
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(li)->mapping.resetCorners();
+        }
+        for (int k = 0; k < 3; ++k) e.renderFrame();
+        QImage a = e.grabViewport(vp1), b = e.grabViewport(vp2);
+        CHECK(a.size() == QSize(32, 16) && b.size() == QSize(32, 16));
+        CHECK(a.pixelColor(16, 8).red() > 250 && a.pixelColor(16, 8).blue() < 5); // each sees its part
+        CHECK(b.pixelColor(16, 8).blue() > 250 && b.pixelColor(16, 8).red() < 5);
+        // Left out of the second viewport: the first still shows it
+        e.setShownIn(li, vp2, false);
+        for (int k = 0; k < 2; ++k) e.renderFrame();
+        a = e.grabViewport(vp1);
+        b = e.grabViewport(vp2);
+        CHECK(a.pixelColor(16, 8).red() > 250 && b.pixelColor(16, 8).blue() < 5 && b.pixelColor(16, 8).red() < 5);
+        CHECK(e.layerJson(li).value("hiddenIn").toArray().size() == 1);
+        e.setShownIn(li, vp2, true);
+        // A viewport has its own color and opacity
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(vp2))->opacity = 0.5f;
+        }
+        for (int k = 0; k < 2; ++k) e.renderFrame();
+        b = e.grabViewport(vp2);
+        CHECK(std::abs(b.pixelColor(16, 8).blue() - 128) < 8);
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(vp2))->opacity = 1.0f;
+        }
+        // Groups inside groups: the layer goes into an inner group, held by an outer group
+        const quint64 lid = e.layerId(li);
+        const quint64 outer = e.layerId(e.addGroup("Outer", e.layerCount()));
+        const quint64 inner = e.layerId(e.addGroup("Inner", e.layerCount()));
+        e.setStructure(tree::intoGroup(e.structure(), {inner}, outer));
+        e.setStructure(tree::intoGroup(e.structure(), {lid}, inner));
+        CHECK(e.layer(e.indexOfId(lid))->parent == inner && e.layer(e.indexOfId(inner))->parent == outer);
+        CHECK(tree::depthOf(e.structure(), lid) == 2);
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(outer))->opacity = 0.5f;
+        }
+        for (int k = 0; k < 3; ++k) e.renderFrame();
+        a = e.grabViewport(vp1);
+        CHECK(std::abs(a.pixelColor(16, 8).red() - 128) < 8); // through both groups, at the outer's opacity
+        // Routing belongs to the top: a layer inside a group cannot be routed on its own
+        e.setShownIn(e.indexOfId(lid), vp1, false);
+        CHECK(e.layer(e.indexOfId(lid))->hiddenIn.empty());
+        // Removing a group: its contents go up one level only
+        e.removeLayer(e.indexOfId(inner));
+        CHECK(e.layer(e.indexOfId(lid))->parent == outer);
+        // Memories leave the viewports alone, but recall the routing of the layers
+        e.setShownIn(e.indexOfId(outer), vp2, false);
+        Engine::Memory mem;
+        mem.layers = e.captureLayers();
+        bool hasViewport = false;
+        for (const QJsonValue &v : mem.layers) hasViewport |= v.toObject().value("viewport").toBool();
+        CHECK(!hasViewport);
+        e.setShownIn(e.indexOfId(outer), vp2, true);
+        e.applyLayers(mem.layers, 0);
+        CHECK(!e.layer(e.indexOfId(outer))->shownIn(vp2));
+        // Saved and read back: sizes, places, screens, routing
+        e.setViewportOutput(e.indexOfId(vp2), QStringLiteral("HDMI-1"), 2);
+        CHECK(e.saveProject(tmp + "/viewports.fulskrin", {}, &err));
+        const QJsonObject saved = readJson(tmp + "/viewports.fulskrin");
+        CHECK(e.loadProject(tmp + "/viewports.fulskrin", nullptr, &err));
+        CHECK(e.viewports().size() == 2);
+        {
+            Engine::Lock lk(&e.mutex());
+            const Layer *v = e.layer(e.indexOfId(vp2));
+            CHECK(v && v->isViewport && v->viewportSize() == QSize(32, 16) && v->vpScreen == "HDMI-1" && v->vpMode == 2);
+            CHECK(std::abs(v->mapping.bounds().left() - 0.5) < 1e-9);
+            CHECK(!e.layer(e.indexOfId(outer))->shownIn(vp2));
+        }
+        CHECK(e.saveProject(tmp + "/viewports2.fulskrin", {}, &err));
+        CHECK(saved.value("layers") == readJson(tmp + "/viewports2.fulskrin").value("layers"));
+        // A viewport can go as long as another one stays
+        e.removeLayer(e.indexOfId(vp2));
+        CHECK(e.viewports().size() == 1);
+        e.removeLayer(e.viewports().first());
+        CHECK(e.viewports().size() == 1);
+        // A new project shows its composition through one viewport
+        e.newProject();
+        CHECK(e.viewports().size() == 1 && e.layerCount() == 1);
     }
 
     // 5. Render thread
@@ -716,11 +852,11 @@ int main(int argc, char **argv)
                 l->effects[0]->inputs()[1].fValue = 12;
                 l->opacity = 0.8f;
             }
-            int b = e.insertLayerJson(0, e.layerJson(a + 1 > e.layerCount() - 1 ? a : a));
+            int b = e.insertLayerJson(V + 0, e.layerJson(a + 1 > e.layerCount() - 1 ? a : a));
             e.setEffectsJson(b, QJsonArray());
             if (e.layerCount() > 6) {
                 e.removeLayer(e.layerCount() - 1);
-                e.removeLayer(0);
+                e.removeLayer(V + 0);
             }
             e.fadeMaster(ops % 2 ? 1.0 : 0.5, 0.1);
             ++ops;
@@ -799,17 +935,17 @@ int main(int argc, char **argv)
         CHECK(e.loadProject(tmp + "/colorswitch.fulskrin", nullptr, &err));
         {
             Engine::Lock lk(&e.mutex());
-            Layer *l = e.layer(0);
+            Layer *l = e.layer(V + 0);
             CHECK(l && !l->color.enabled && l->color.removeOn && std::abs(l->color.remove[1] - 1.0f) < 1e-6);
         }
-        QJsonObject legacy = e.layerJson(0);
+        QJsonObject legacy = e.layerJson(V + 0);
         QJsonObject color = legacy.value("color").toObject();
         for (const QString &k : {QStringLiteral("enabled"), QStringLiteral("removeOn")}) color.remove(k);
         legacy["color"] = color;
-        e.replaceLayerJson(0, legacy);
+        e.replaceLayerJson(V + 0, legacy);
         {
             Engine::Lock lk(&e.mutex());
-            CHECK(e.layer(0)->color.enabled && e.layer(0)->color.removeOn);
+            CHECK(e.layer(V + 0)->color.enabled && e.layer(V + 0)->color.removeOn);
         }
     }
     // 6. Publishing: GPU readback -> send thread (BGRA, rows top to bottom)
@@ -817,6 +953,7 @@ int main(int argc, char **argv)
         e.newProject();
         e.fadeMaster(1.0, 0);
         e.setCompositionSize(QSize(64, 32));
+        e.setViewportSize(e.viewports().first(), QSize(64, 32)); // what is published is the viewport's picture
         QImage img(64, 32, QImage::Format_RGBA8888);
         img.fill(QColor(255, 0, 0));
         for (int y = 16; y < 32; ++y)
@@ -828,16 +965,22 @@ int main(int argc, char **argv)
             Engine::Lock lk(&e.mutex());
             e.layer(li)->mapping.resetCorners();
         }
-        std::mutex m;
-        CpuFrame last;
-        int frames = 0;
-        e.setTestTap([&](const CpuFrame &f) {
-            std::lock_guard<std::mutex> lk(m);
-            last = f;
-            ++frames;
+        // Shared with the send thread, which may still deliver a frame after the tap is removed
+        struct TapState {
+            std::mutex m;
+            CpuFrame last;
+            int frames = 0;
+        };
+        auto tap = std::make_shared<TapState>();
+        e.setTestTap([tap](const CpuFrame &f) {
+            std::lock_guard<std::mutex> lk(tap->m);
+            tap->last = f;
+            ++tap->frames;
         });
         CHECK(waitFrames(20));
-        std::lock_guard<std::mutex> lk(m);
+        std::lock_guard<std::mutex> lk(tap->m);
+        const CpuFrame &last = tap->last;
+        const int frames = tap->frames;
         std::printf("       %d frames received by the send thread\n", frames);
         CHECK(frames >= 10);
         CHECK(last.width == 64 && last.height == 32 && last.stride == 256);
@@ -856,16 +999,17 @@ int main(int argc, char **argv)
         ps[PublishKind::Syphon].enabled = true;
         ps.omtQuality = 50;
         CHECK(PublishSettings::fromJson(ps.toJson()) == ps);
-        e.setPublishSettings(ps);
+        const quint64 vp = e.mainViewportId(); // each viewport publishes its own picture
+        e.setPublishSettings(vp, ps);
         CHECK(waitFrames(3));
-        const PublishState syphon = e.publishState(PublishKind::Syphon);
-        std::printf("       Syphon: %s\n       NDI: %s\n", qPrintable(syphon.text), qPrintable(e.publishState(PublishKind::Ndi).text));
+        const PublishState syphon = e.publishState(vp, PublishKind::Syphon);
+        std::printf("       Syphon: %s\n       NDI: %s\n", qPrintable(syphon.text), qPrintable(e.publishState(vp, PublishKind::Ndi).text));
         CHECK(publishCompiledIn(PublishKind::Syphon) ? syphon.level != PublishState::Unavailable
                                                      : syphon.level == PublishState::Unavailable);
-        CHECK(e.publishState(PublishKind::Omt).level == PublishState::Off);
-        e.setPublishSettings(PublishSettings());
+        CHECK(e.publishState(vp, PublishKind::Omt).level == PublishState::Off);
+        e.setPublishSettings(vp, PublishSettings());
         CHECK(waitFrames(3));
-        CHECK(e.publishState(PublishKind::Ndi).level == PublishState::Off);
+        CHECK(e.publishState(vp, PublishKind::Ndi).level == PublishState::Off);
     }
 
     // 7. Media: usage, missing file kept, relink, media bin
@@ -1376,18 +1520,11 @@ int main(int argc, char **argv)
                 CHECK(!e.layer(s1)->ended && e.layer(s1)->finalTex != 0);
             }
             CHECK(e.layerJson(s1).value("source").toObject().value("playMode").toString() == "oneshot");
-            // Default mode (preference) given to a newly loaded video; projects saved with "loop" still load
+            // Default mode (preference) given to a newly loaded video
             e.setDefaultPlayMode(PlayMode::PingPong);
             CHECK(e.setLayerVideo(s1, root + "/media/h264.mp4", &err));
             CHECK(e.layer(s1)->mode == PlayMode::PingPong);
             e.setDefaultPlayMode(PlayMode::Loop);
-            QJsonObject legacy = e.layerJson(s1);
-            QJsonObject src = legacy.value("source").toObject();
-            src.remove("playMode");
-            src["loop"] = false;
-            legacy["source"] = src;
-            e.replaceLayerJson(s1, legacy);
-            CHECK(e.layer(s1)->mode == PlayMode::OneShot);
             e.removeLayer(s1);
         }
         e.setLayerMuted(v, false);
@@ -1409,11 +1546,11 @@ int main(int argc, char **argv)
         const quint64 idA = e.layerId(e.addLayer("A"));
         CHECK(e.setLayerIsf(e.indexOfId(idA), isfDir + "/generators/TestPattern.fs", &err));
         // B is above A in the list: the render pass must still render A first (B's source)
-        const quint64 idB = e.layerId(e.addLayer("B", 0));
+        const quint64 idB = e.layerId(e.addLayer("B", V + 0));
         CHECK(e.setLayerIsf(e.indexOfId(idB), isfDir + "/generators/SolidColor.fs", &err));
         auto A = [&] { return e.indexOfId(idA); };
         auto B = [&] { return e.indexOfId(idB); };
-        CHECK(A() == 1 && B() == 0);
+        CHECK(A() == V + 1 && B() == V + 0);
 
         // A: a distinctive value in every part
         {
@@ -1464,7 +1601,7 @@ int main(int argc, char **argv)
             Engine::Lock lk(&e.mutex());
             CHECK(e.layer(B())->name == "B" && e.layer(B())->sourcePath.endsWith("TestPattern.fs"));
         }
-        CHECK(B() == 0 && e.layerId(0) == idB);
+        CHECK(B() == V + 0 && e.layerId(V + 0) == idB);
         // A locked layer refuses a paste
         {
             Engine::Lock lk(&e.mutex());
@@ -1501,7 +1638,7 @@ int main(int argc, char **argv)
             CHECK(e.layerDependsOn(idB, idA) && !e.layerDependsOn(idA, idB));
         }
         // A group has no source of its own
-        const int g = e.addGroup("G", 0);
+        const int g = e.addGroup("G", V + 0);
         CHECK(!e.setLayerSourceLayer(g, idA, LayerTap::PostFx, &err));
         // A hidden group used as a source is rendered all the same
         const quint64 idG = e.layerId(g);
@@ -1541,23 +1678,6 @@ int main(int argc, char **argv)
         {
             Engine::Lock lk(&e.mutex());
             CHECK(e.layer(e.indexOfId(idB))->type == SourceType::None);
-        }
-        e.newProject();
-    }
-
-    // 13. A project saved when the ROI was still called "crop" still loads
-    {
-        e.newProject();
-        const int i = e.addLayer("Old");
-        CHECK(e.setLayerIsf(i, root + "/../isf/generators/TestPattern.fs", &err));
-        QJsonObject o = e.layerJson(i), src = o.value("source").toObject();
-        src["crop"] = QJsonArray{0.1, 0.2, 0.8, 0.9};
-        src.remove("roi");
-        o["source"] = src;
-        e.replaceLayerJson(i, o);
-        {
-            Engine::Lock lk(&e.mutex());
-            CHECK(e.layer(0)->roi == QRectF(QPointF(0.1, 0.2), QPointF(0.8, 0.9)));
         }
         e.newProject();
     }

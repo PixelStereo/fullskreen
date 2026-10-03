@@ -31,6 +31,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <functional>
 #include <mutex>
 
@@ -83,6 +84,18 @@ public:
     int groupIndexOf(int i) const;         // index of the group containing layer i, -1 at the top level
     QList<int> groupMembers(int group) const;
     bool isLocked(int i) const;            // locked itself, or member of a locked group
+
+    // --- Viewports: windows onto the composition, each with its size in pixels, its screen and its
+    // publishing. Placed in the composition by their Spatial (mapping bounds); never inside a group.
+    int addViewport(const QString &name = {}, QSize size = {}); // index of the new viewport
+    bool isViewport(int i) const;
+    QList<int> viewports() const;          // indices, in list order (they come first)
+    quint64 mainViewportId() const;        // the first one
+    void setViewportSize(int i, QSize size);
+    void setViewportOutput(int i, const QString &screen, int mode); // mode: 0 hidden, 1 windowed, 2 fullscreen
+    // An item at the top of the list can be left out of some viewports (shown everywhere by default)
+    void setShownIn(int i, quint64 viewport, bool shown);
+    void ensureViewport(); // there is always at least one
 
     // JSON snapshot of a layer, and re-creation (undo / redo, duplicate)
     QJsonObject layerJson(int i) const;
@@ -196,10 +209,10 @@ public:
     bool audioMuted() const { return m_audio->muted(); }
     void setAudioMuted(bool m) { m_audio->setMuted(m); }
 
-    // --- Output publishing (NDI, OMT, Syphon, Spout)
-    void setPublishSettings(const PublishSettings &s);
-    PublishSettings publishSettings() const;
-    PublishState publishState(PublishKind k) const;
+    // --- Output publishing (NDI, OMT, Syphon, Spout): each viewport publishes its own picture
+    void setPublishSettings(quint64 viewport, const PublishSettings &s);
+    PublishSettings publishSettings(quint64 viewport) const;
+    PublishState publishState(quint64 viewport, PublishKind k) const;
     // Tests: receives the read-back frames (send thread)
     void setTestTap(std::function<void(const CpuFrame &)> fn);
 
@@ -222,18 +235,21 @@ public:
     QImage sourcePreview(quint64 *layerId = nullptr) const;
 
     // --- Output: window in which the render thread presents the composition
-    void setOutputWindow(QWindow *w);
-    void setOutputExposed(bool exposed, QSize pixelSize);
+    // One window per viewport; the render thread presents the viewport's picture into it
+    void setViewportWindow(quint64 viewport, QWindow *w);
+    void setViewportExposed(quint64 viewport, bool exposed, QSize pixelSize);
+    GLuint viewportTexture(quint64 viewport) const; // last finished picture of a viewport (shared context)
 
     // --- Rendering
     void renderFrame();                  // manual mode only
     GLuint outputTexture() const;        // last published frame (readable from a shared context)
     double fps() const { return m_fps.load(); }
-    QImage grabOutput();
+    QImage grabOutput();                 // the whole composition (interface preview)
+    QImage grabViewport(quint64 viewport);
     quint64 frameCount() const { return m_frameCount.load(); }
 
     // --- Project
-    void newProject();
+    void newProject();   // empty, with one viewport
     bool saveProject(const QString &path, const QJsonObject &uiState, QString *err);
     bool loadProject(const QString &path, QJsonObject *uiState, QString *err);
     QString projectPath() const;
@@ -261,7 +277,8 @@ private:
     void renderLoop();
     void runPendingTasks();
     void frame(double dt);
-    void present(QWindow *w, QSize px);
+    void present(const Layer &viewport, QSize px);
+    bool presentViewports(); // every viewport whose window is on screen (false: none)
     void releaseLayer(Layer &l);
     void releaseAll();
     std::shared_ptr<Garbage> detachSource(Layer &l);
@@ -271,7 +288,10 @@ private:
     void renderLayer(Layer &l, const IsfRenderContext &rc);
     void processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied, const IsfRenderContext &rc);
     void renderGroup(Layer &g, const std::vector<Layer *> &members, const IsfRenderContext &rc);
-    void compositeLayers(const RenderTarget &target, const std::vector<Layer *> &topToBottom);
+    // `view`: the part of the composition the target shows (normalized, origin top left)
+    void compositeLayers(const RenderTarget &target, const std::vector<Layer *> &topToBottom,
+                         const QRectF &view = QRectF(0, 0, 1, 1));
+    void renderViewport(Layer &v, const std::vector<Layer *> &shown, const IsfRenderContext &rc);
     void composite();
     void readSourcePreview();
     void stepFade(double dt); // memory fades (render thread, lock held)
@@ -279,15 +299,20 @@ private:
     Memory memoryFromJson(const QJsonObject &o, const QString &projectDir) const;
     void normalizeLocked(); // restores the structure invariants (lock held)
     quint64 newIdLocked();
+    void clearProject();
+    int viewportCountLocked() const;
     void drawQuad();
     void blit(GLuint tex, const RenderTarget &target);
     QString resolvePath(const QJsonObject &o, const QString &projectDir) const;
     QJsonObject layerToJson(const Layer &l, const QString &projectDir) const;
     void layerFromJson(int index, const QJsonObject &o, const QString &projectDir, QStringList *warnings);
     double nextDt();
-    void applyPublishing();               // render thread
-    void publishFrame(const RenderTarget &out);
-    void setPublishState(PublishKind k, PublishState st);
+    struct Publication;
+    void applyPublishing();               // render thread: every viewport's publishers follow its settings
+    void applyPublication(Publication &pub, const PublishSettings &s, bool withTap);
+    void publishFrame(Publication &pub, const RenderTarget &out);
+    void releasePublication(Publication &pub); // render thread
+    void setPublishState(Publication &pub, PublishKind k, PublishState st);
 
     mutable QRecursiveMutex m_mutex;
 
@@ -308,15 +333,18 @@ private:
     std::deque<std::shared_ptr<Task>> m_tasks;
 
     // Output window (read by the render thread)
-    QWindow *m_outWindow = nullptr;
-    bool m_outExposed = false;
-    QSize m_outPixels;
+    struct OutputSurface {
+        QWindow *window = nullptr;
+        bool exposed = false;
+        QSize pixels;
+    };
+    std::map<quint64, OutputSurface> m_outWindows; // by viewport id (render thread)
 
     GLuint m_quadVao = 0, m_quadVbo = 0;
     GLuint m_meshVao = 0, m_meshVbo = 0, m_meshIbo = 0;
     GLsizei m_meshIndexCount = 0;
     GLuint m_blitProgram = 0, m_compProgram = 0, m_presentProgram = 0, m_prepProgram = 0;
-    GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_presentTexLoc = -1;
+    GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_compViewLoc = -1, m_presentTexLoc = -1;
     GLint m_prepTexLoc = -1, m_prepRoiLoc = -1, m_prepAddLoc = -1, m_prepRemoveLoc = -1, m_prepUnpremulLoc = -1, m_prepBalanceLoc = -1;
     GLuint m_blackTex = 0;
     RenderTarget m_output[2];
@@ -363,22 +391,27 @@ private:
     IsfLibrary m_library;
     QStringList m_binItems;
 
-    // Publishing
-    PublishSettings m_publish, m_publishApplied;
-    bool m_publishDirty = false, m_publishInit = false;
-    std::function<void(const CpuFrame &)> m_tap;
+    // Publishing, one set of publishers per viewport (render thread; states read by the interface)
+    struct Publication {
+        PublishSettings applied;
+        bool init = false;
+        std::unique_ptr<GpuPublisher> gpu[kPublishKindCount];
+        std::shared_ptr<CpuPublisher> cpu[kPublishKindCount], tap;
+        std::unique_ptr<CpuSendThread> sender;
+        PublishState states[kPublishKindCount]; // guarded by m_stateMutex
+        RenderTarget readback;
+        GLuint pbo[2] = {0, 0};
+        int pboIndex = 0, pboW = 0, pboH = 0;
+        bool pboPending = false;
+        double pboTime = 0;
+        int announcedRate = 0;
+        double rateSince = 0;
+    };
+    std::map<quint64, std::unique_ptr<Publication>> m_pubs; // by viewport id
+    bool m_publishDirty = true;
+    std::function<void(const CpuFrame &)> m_tap; // tests: frames of the main viewport
     bool m_tapDirty = false;
-    std::unique_ptr<GpuPublisher> m_gpuPubs[kPublishKindCount];
-    std::shared_ptr<CpuPublisher> m_cpuPubs[kPublishKindCount], m_tapPub;
-    std::unique_ptr<CpuSendThread> m_sender;
     mutable std::mutex m_stateMutex;
-    PublishState m_states[kPublishKindCount];
-    RenderTarget m_readback;
-    GLuint m_flipProgram = 0, m_pbo[2] = {0, 0};
+    GLuint m_flipProgram = 0;
     GLint m_flipTexLoc = -1;
-    int m_pboIndex = 0, m_pboW = 0, m_pboH = 0;
-    bool m_pboPending = false;
-    double m_pboTime = 0;
-    int m_announcedRate = 0;
-    double m_rateSince = 0;
 };

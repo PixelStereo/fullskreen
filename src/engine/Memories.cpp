@@ -175,6 +175,7 @@ QJsonArray Engine::captureLayers() const
     Lock lk(&m_mutex);
     QJsonArray a;
     for (int i = 0; i < int(m_layers.size()); ++i) {
+        if (m_layers[size_t(i)]->isViewport) continue; // a viewport has one state, not one per memory
         QJsonObject o = layerJson(i);
         o["included"] = true;
         a.append(o);
@@ -205,7 +206,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
     std::vector<std::shared_ptr<FadeJob>> jobs;
     for (const QJsonValue &value : layers) {
         const QJsonObject o = value.toObject();
-        if (!o.value("included").toBool(true)) continue;
+        if (!o.value("included").toBool(true) || o.value("viewport").toBool()) continue;
         const quint64 id = o.value("id").toString().toULongLong();
         int idx = indexOfId(id);
         if (idx >= 0 && isLocked(idx)) continue; // a locked layer is not changed by a memory
@@ -237,6 +238,9 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
         l->blend = blendModeFromKey(o.value("blend").toString(blendModeKey(l->blend)));
         l->effectsEnabled = o.value("effectsEnabled").toBool(l->effectsEnabled);
         l->muted = o.value("muted").toBool(l->muted);
+        // Which viewports it is drawn in: a memory can send a layer to another projector
+        l->hiddenIn.clear();
+        for (const QJsonValue &v : o.value("hiddenIn").toArray()) l->hiddenIn.push_back(v.toString().toULongLong());
         const QJsonArray fx = o.value("effects").toArray();
         for (size_t k = 0; k < l->effects.size() && int(k) < fx.size(); ++k)
             l->effects[k]->enabled = fx[int(k)].toObject().value("enabled").toBool(true);
@@ -358,9 +362,6 @@ Engine::Memory Engine::memoryFromJson(const QJsonObject &o, const QString &dir) 
         };
         QJsonObject src = l.value("source").toObject();
         if (src.value("type").toString() != "none") src = resolve(src);
-        if (src.contains("crop")) { // the name the ROI had in earlier projects
-            src["roi"] = src.take("crop");
-        }
         l["source"] = src;
         QJsonArray fx;
         for (const QJsonValue &e : l.value("effects").toArray()) fx.append(resolve(e.toObject()));
