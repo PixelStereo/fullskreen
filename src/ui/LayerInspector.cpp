@@ -362,6 +362,12 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     v->setContentsMargins(0, 0, 0, 0);
 
     if (s.isGroup) {
+        auto *info = new QLabel(QStringLiteral("<b>Group</b> of %1 layer(s)<br><span style='font-size:11px; color:#999'>"
+                                               "Its picture is the composite of its layers. Drag layers onto it in the "
+                                               "layer list to add them.</span>")
+                                    .arg(s.members));
+        info->setWordWrap(true);
+        v->addWidget(info);
         v->addWidget(buildCrop(s));
         return g;
     }
@@ -416,7 +422,9 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         } else {
             text = audioText(s.audio) + QStringLiteral(" · ") + fmtTime(s.duration);
         }
-        zone->setToolTip(s.sourcePath + QStringLiteral("\n") + text); // details on hover only
+        auto *info = new QLabel(text);
+        info->setStyleSheet("color:#999; font-size:11px;");
+        v->addWidget(info);
 
         auto *transport = new QHBoxLayout;
         m_play = new QPushButton(s.playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
