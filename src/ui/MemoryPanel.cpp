@@ -604,14 +604,19 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
 
     if (o.contains("color")) {
         QTreeWidgetItem *sec = section(parent, QStringLiteral("Color"), QStringLiteral("color"));
+        flag(sec, QStringLiteral("Enabled"), {"color", "enabled"});
+        flag(sec, QStringLiteral("Temperature on"), {"color", "tempOn"});
         num(sec, QStringLiteral("Temperature"), {"color", "temp"}, -ColorAdjust::kTempRange, ColorAdjust::kTempRange, 1, 0,
             QStringLiteral(" K"), 10);
+        flag(sec, QStringLiteral("Tint on"), {"color", "tintOn"});
         num(sec, QStringLiteral("Tint"), {"color", "tint"}, -ColorAdjust::kTintRange, ColorAdjust::kTintRange, 1, 0,
             QString(), 1);
         static const char *kRgb[] = {"Red", "Green", "Blue"};
+        flag(sec, QStringLiteral("Add on"), {"color", "addOn"});
         for (int c = 0; c < 3; ++c)
             num(sec, QStringLiteral("Add ") + QString::fromLatin1(kRgb[c]), {"color", "add", QString::number(c)}, 0, 1,
                 100, 0, QStringLiteral(" %"), 0.01);
+        flag(sec, QStringLiteral("Remove on"), {"color", "removeOn"});
         for (int c = 0; c < 3; ++c)
             num(sec, QStringLiteral("Remove ") + QString::fromLatin1(kRgb[c]), {"color", "remove", QString::number(c)}, 0,
                 1, 100, 0, QStringLiteral(" %"), 0.01);
