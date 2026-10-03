@@ -108,16 +108,132 @@ int Engine::addLayer(const QString &name, int at)
         l->name = name.isEmpty() ? QStringLiteral("Layer %1").arg(m_layers.size() + 1) : name;
         l->genWidth = m_compSize.width();
         l->genHeight = m_compSize.height();
-        at = std::clamp(at, 0, int(m_layers.size()));
+        at = std::clamp(at, viewportCountLocked(), int(m_layers.size()));
         // Inserted inside a group's block: the new layer joins that group
-        if (at > 0 && at < int(m_layers.size())) {
-            const Layer &below = *m_layers[size_t(at)];
-            if (below.parent) l->parent = below.parent;
-        }
+        if (at < int(m_layers.size())) l->parent = m_layers[size_t(at)]->parent;
         m_layers.insert(m_layers.begin() + at, std::move(l));
     }
     emit layersChanged();
     return at;
+}
+
+// ---------------------------------------------------------------------------
+// Viewports
+// ---------------------------------------------------------------------------
+
+int Engine::viewportCountLocked() const
+{
+    int n = 0;
+    for (const auto &l : m_layers) n += l->isViewport;
+    return n;
+}
+
+// A new viewport is placed to the right of the last one, at its size in the composition's pixels
+int Engine::addViewport(const QString &name, QSize size)
+{
+    quint64 id;
+    {
+        Lock lk(&m_mutex);
+        auto l = std::make_unique<Layer>();
+        l->id = id = newIdLocked();
+        l->isViewport = true;
+        // By default, the size of the last viewport (the same projectors, side by side)
+        QSize px = m_compSize;
+        for (const auto &o : m_layers)
+            if (o->isViewport) px = o->viewportSize();
+        if (size.isValid() && !size.isEmpty()) px = size;
+        l->vpWidth = px.width();
+        l->vpHeight = px.height();
+        const int n = viewportCountLocked();
+        l->name = name.isEmpty() ? QStringLiteral("Viewport %1").arg(n + 1) : name;
+        l->vpPublish = PublishSettings();
+        for (PublishTarget &t : l->vpPublish.targets) t.name = QStringLiteral("Fulskrin %1").arg(l->name);
+        double x = 0;
+        for (const auto &o : m_layers)
+            if (o->isViewport) x = std::max(x, o->mapping.bounds().right());
+        const double w = double(px.width()) / std::max(1, m_compSize.width());
+        const double h = double(px.height()) / std::max(1, m_compSize.height());
+        if (x + w > 1.0 + 1e-9) x = 0; // no room left on the right: over the first one
+        const QPointF c[4] = {{x, 0}, {x + w, 0}, {x + w, h}, {x, h}};
+        for (int k = 0; k < 4; ++k) l->mapping.setCorner(k, c[k]);
+        m_layers.push_back(std::move(l));
+        normalizeLocked();
+    }
+    emit layersChanged();
+    return indexOfId(id);
+}
+
+bool Engine::isViewport(int i) const
+{
+    Lock lk(&m_mutex);
+    return i >= 0 && i < int(m_layers.size()) && m_layers[size_t(i)]->isViewport;
+}
+
+QList<int> Engine::viewports() const
+{
+    Lock lk(&m_mutex);
+    QList<int> out;
+    for (int i = 0; i < int(m_layers.size()); ++i)
+        if (m_layers[size_t(i)]->isViewport) out << i;
+    return out;
+}
+
+quint64 Engine::mainViewportId() const
+{
+    Lock lk(&m_mutex);
+    for (const auto &l : m_layers)
+        if (l->isViewport) return l->id;
+    return 0;
+}
+
+void Engine::setViewportSize(int i, QSize size)
+{
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || !l->isViewport) return;
+        l->vpWidth = std::clamp(size.width(), 1, 16384);
+        l->vpHeight = std::clamp(size.height(), 1, 16384);
+    }
+    emit layersChanged();
+}
+
+void Engine::setViewportOutput(int i, const QString &screen, int mode)
+{
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || !l->isViewport) return;
+        l->vpScreen = screen;
+        l->vpMode = std::clamp(mode, 0, 2);
+    }
+    emit layersChanged();
+}
+
+// Only an item at the top of the list is routed; inside a group, the group decides
+void Engine::setShownIn(int i, quint64 viewport, bool shown)
+{
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || l->isViewport || l->parent) return;
+        auto it = std::find(l->hiddenIn.begin(), l->hiddenIn.end(), viewport);
+        if (shown && it != l->hiddenIn.end()) l->hiddenIn.erase(it);
+        else if (!shown && it == l->hiddenIn.end()) l->hiddenIn.push_back(viewport);
+        else return;
+    }
+    emit layersChanged();
+}
+
+// A composition always has a viewport: the one the screen shows
+void Engine::ensureViewport()
+{
+    bool has = false;
+    {
+        Lock lk(&m_mutex);
+        has = viewportCountLocked() > 0;
+    }
+    if (!has) addViewport();
 }
 
 int Engine::addGroup(const QString &name, int at)
@@ -130,9 +246,9 @@ int Engine::addGroup(const QString &name, int at)
         l->id = newIdLocked();
         l->isGroup = true;
         l->name = name.isEmpty() ? QStringLiteral("Group %1").arg(groups + 1) : name;
-        at = std::clamp(at, 0, int(m_layers.size()));
-        // A group is never inside a group: placed before the block it would split
-        while (at > 0 && at < int(m_layers.size()) && m_layers[size_t(at)]->parent) --at;
+        at = std::clamp(at, viewportCountLocked(), int(m_layers.size()));
+        // Inside a group's block, the new group goes into that group
+        if (at < int(m_layers.size())) l->parent = m_layers[size_t(at)]->parent;
         m_layers.insert(m_layers.begin() + at, std::move(l));
     }
     emit layersChanged();
@@ -160,19 +276,29 @@ int Engine::indexOfId(quint64 id) const
     return -1;
 }
 
+// Node of a layer in the structure
+static TreeNode nodeOf(const Layer &l)
+{
+    TreeNode n;
+    n.id = l.id;
+    n.parent = l.parent;
+    n.kind = l.isViewport ? TreeNode::Viewport : l.isGroup ? TreeNode::Group : TreeNode::Item;
+    return n;
+}
+
 LayerTree Engine::structure() const
 {
     Lock lk(&m_mutex);
     LayerTree t;
     t.reserve(m_layers.size());
-    for (const auto &l : m_layers) t.push_back({l->id, l->parent, l->isGroup});
+    for (const auto &l : m_layers) t.push_back(nodeOf(*l));
     return t;
 }
 
 void Engine::normalizeLocked()
 {
     LayerTree t;
-    for (const auto &l : m_layers) t.push_back({l->id, l->parent, l->isGroup});
+    for (const auto &l : m_layers) t.push_back(nodeOf(*l));
     const LayerTree n = tree::normalized(t);
     if (n == t) return;
     std::vector<std::unique_ptr<Layer>> out;
@@ -236,8 +362,9 @@ bool Engine::isLocked(int i) const
     if (i < 0 || i >= int(m_layers.size())) return false;
     const Layer &l = *m_layers[size_t(i)];
     if (l.locked) return true;
-    const int g = groupIndexOf(i);
-    return g >= 0 && m_layers[size_t(g)]->locked;
+    for (int g = groupIndexOf(i); g >= 0; g = groupIndexOf(g))
+        if (m_layers[size_t(g)]->locked) return true;
+    return false;
 }
 
 void Engine::releaseLayer(Layer &l)
@@ -255,6 +382,8 @@ void Engine::releaseLayer(Layer &l)
     l.fxTarget[1].destroy();
     l.groupTarget.destroy();
     l.prepTarget.destroy();
+    l.vpOut[0].destroy();
+    l.vpOut[1].destroy();
     l.finalTex = l.rawTex = 0;
 }
 
@@ -264,11 +393,12 @@ void Engine::removeLayer(int i)
     {
         Lock lk(&m_mutex);
         if (i < 0 || i >= int(m_layers.size())) return;
+        if (m_layers[size_t(i)]->isViewport && viewportCountLocked() <= 1) return; // there is always one
         g->layer = std::move(m_layers[size_t(i)]);
         m_layers.erase(m_layers.begin() + i);
-        if (g->layer->isGroup) // its members go back to the top level, where they are
+        if (g->layer->isGroup) // its contents go up one level, where they are
             for (auto &l : m_layers)
-                if (l->parent == g->layer->id) l->parent = 0;
+                if (l->parent == g->layer->id) l->parent = g->layer->parent;
         normalizeLocked();
     }
     if (g->layer->video) g->layer->video->close(); // stop the decode thread outside the render thread
@@ -308,6 +438,12 @@ int Engine::insertLayerJson(int at, const QJsonObject &o)
     {
         Lock lk(&m_mutex);
         id = m_layers[size_t(idx)]->id;
+        // A viewport (undo of its deletion) goes back to its place among the viewports
+        if (m_layers[size_t(idx)]->isViewport && at >= 0 && at < idx) {
+            auto l = std::move(m_layers[size_t(idx)]);
+            m_layers.erase(m_layers.begin() + idx);
+            m_layers.insert(m_layers.begin() + at, std::move(l));
+        }
         normalizeLocked();
     }
     emit layersChanged();
@@ -341,7 +477,7 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
         Lock lk(&m_mutex);
         Layer *l = layer(i);
         if (!l) return false;
-        group = l->isGroup;
+        group = l->isGroup || l->isViewport;
     }
     if (group) parts &= ~PartSource; // a group has no source of its own: it composites its layers
 
@@ -387,20 +523,23 @@ int Engine::duplicateLayer(int i)
 {
     QJsonObject o = layerJson(i);
     if (o.isEmpty()) return -1;
-    const QList<int> members = groupMembers(i);
-    QList<QJsonObject> mem;
-    for (int m : members) mem << layerJson(m);
+    const quint64 original = layerId(i);
+    QList<QJsonObject> inside; // everything the group holds, in order
+    for (quint64 id : tree::descendants(structure(), original)) inside << layerJson(indexOfId(id));
     o["name"] = o.value("name").toString() + QStringLiteral(" copy");
-    o.remove("id"); // the copy gets its own id
+    o.remove("id"); // the copies get their own ids
     const int gi = insertLayerJson(i, o);
-    const quint64 gid = layerId(gi);
-    for (int k = 0; k < mem.size(); ++k) {
-        QJsonObject m = mem[k];
+    std::map<QString, quint64> newId{{QString::number(original), layerId(gi)}};
+    int at = gi + 1;
+    for (QJsonObject m : inside) {
+        const QString oldId = m.value("id").toString();
         m.remove("id");
-        m["parent"] = QString::number(gid);
-        insertLayerJson(gi + 1 + k, m);
+        m["parent"] = QString::number(newId[m.value("parent").toString()]);
+        const int k = insertLayerJson(at, m);
+        newId[oldId] = layerId(k);
+        at = k + 1;
     }
-    return gi;
+    return indexOfId(newId[QString::number(original)]);
 }
 
 QJsonArray Engine::effectsJson(int i) const
@@ -537,8 +676,10 @@ bool Engine::setLayerSourceLayer(int i, quint64 sourceId, LayerTap tap, QString 
         Layer *l = layer(i);
         if (!l) return false;
         if (l->isGroup) return fail(QStringLiteral("A group has no source: its picture is the composite of its layers."));
+        if (l->isViewport) return fail(QStringLiteral("A viewport has no source: it shows the composition."));
         const int si = indexOfId(sourceId);
         if (si < 0) return fail(QStringLiteral("That layer no longer exists."));
+        if (m_layers[size_t(si)]->isViewport) return fail(QStringLiteral("A viewport cannot be used as a source."));
         if (sourceId == l->id) return fail(QStringLiteral("A layer cannot be its own source."));
         if (layerDependsOn(sourceId, l->id))
             return fail(QStringLiteral("\"%1\" already uses this layer: the picture would feed back on itself.")

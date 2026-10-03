@@ -11,7 +11,8 @@ class QUndoStack;
 class QLabel;
 class QToolButton;
 
-// Output preview + interactive mapping editing for the selected layer.
+// Preview of the whole composition + interactive mapping editing for the selected layer. The viewports are
+// drawn as frames over it, with their names; dragging a frame moves the viewport in the composition.
 // Zoom (wheel, pinch, −/+/Fit buttons) gives finer control when moving the layer or its points:
 // moves are computed in composition coordinates, so a higher zoom means smaller steps.
 class MappingView : public QOpenGLWidget
@@ -53,8 +54,12 @@ private:
     };
 
     Mapping *mapping() const;
-    // Members of a group are mapped inside the group's canvas, itself mapped by the group (lock held)
-    const Mapping *groupMapping(int layer) const;
+    // Members of a group are mapped inside the group's canvas, itself mapped by the group, and so on up (lock held)
+    std::vector<const Mapping *> groupMappings(int layer) const;
+    bool isViewport(int layer) const;
+    int hitViewportFrame(QPointF widgetPos) const;
+    void paintScene();
+    void paintViewportNames();
     QPointF outOf(int layer, QPointF canvas) const;
     QPointF canvasOf(int layer, QPointF out) const;
     QRectF fitRect() const;  // composition fitted in the widget (zoom 1)

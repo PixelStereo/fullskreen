@@ -313,4 +313,12 @@ void SetEffects::redo()
     m_e->setEffectsJson(m_index, m_after);
 }
 
+SetShownIn::SetShownIn(Engine *e, quint64 layer, quint64 viewport, bool shown, const QString &text)
+    : m_e(e), m_layer(layer), m_viewport(viewport), m_shown(shown)
+{
+    setText(text);
+}
+
+void SetShownIn::apply(bool shown) { m_e->setShownIn(m_e->indexOfId(m_layer), m_viewport, shown); }
+
 } // namespace cmd

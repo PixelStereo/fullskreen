@@ -2,6 +2,8 @@
 // composition is assembled, then read back for the interface preview and for publishing.
 #include "EngineInternal.h"
 
+#include <map>
+
 #include <QImage>
 #include <QOffscreenSurface>
 #include <QWindow>
@@ -88,12 +90,24 @@ void Engine::renderPass(const IsfRenderContext &rc)
             const int si = indexOfId(l.sourceLayer);
             if (si >= 0) render(size_t(si));
         }
-        if (l.isGroup) {
-            std::vector<Layer *> members;
-            for (size_t k = i + 1; k < n && m_layers[k]->parent == l.id; ++k) {
+        if (l.isViewport) {
+            // What it sees: the items at the top of the list it shows, all rendered by now
+            std::vector<Layer *> shown;
+            for (size_t k = 0; k < n; ++k) {
+                Layer &o = *m_layers[k];
+                if (o.isViewport || o.parent || !o.shownIn(l.id)) continue;
                 render(k);
-                members.push_back(m_layers[k].get());
+                shown.push_back(&o);
             }
+            renderViewport(l, shown, rc);
+        } else if (l.isGroup) {
+            // Its direct contents, in list order (groups inside are rendered first, by the recursion)
+            std::vector<Layer *> members;
+            for (size_t k = i + 1; k < n; ++k)
+                if (m_layers[k]->parent == l.id) {
+                    render(k);
+                    members.push_back(m_layers[k].get());
+                }
             if (l.visible || l.referenced) renderGroup(l, members, rc);
             else l.finalTex = l.rawTex = l.preFxTex = 0;
         } else {
@@ -211,13 +225,32 @@ void Engine::renderGroup(Layer &g, const std::vector<Layer *> &members, const Is
     processLayer(g, g.groupTarget.tex, g.groupTarget.w, g.groupTarget.h, true, rc);
 }
 
-void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer *> &layers)
+// A viewport's picture: the part of the composition its Spatial places it on, drawn at its own size, then
+// with its own ROI, color and effects like a group.
+void Engine::renderViewport(Layer &v, const std::vector<Layer *> &shown, const IsfRenderContext &rc)
+{
+    v.finalTex = v.rawTex = v.preFxTex = 0;
+    if (!v.visible) return;
+    const QSize size = v.viewportSize();
+    v.groupTarget.ensure(size.width(), size.height());
+    v.groupTarget.clear(0, 0, 0, 0);
+    compositeLayers(v.groupTarget, shown, v.mapping.bounds());
+    processLayer(v, v.groupTarget.tex, v.groupTarget.w, v.groupTarget.h, true, rc);
+}
+
+// Draws the layers into the target; `view` is the part of the composition the target shows
+// (normalized, origin top left: the whole composition by default)
+void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer *> &layers, const QRectF &view)
 {
     auto f = gl();
     target.bind();
     f->glEnable(GL_BLEND);
     f->glUseProgram(m_compProgram);
     f->glUniform1i(m_compTexLoc, 0);
+    // Vertices are in the composition's clip space: scale and offset bring the view to the whole target
+    const double rw = std::max(1e-6, view.width()), rh = std::max(1e-6, view.height());
+    f->glUniform4f(m_compViewLoc, float(1.0 / rw), float(1.0 / rh), float((1.0 - 2.0 * view.left()) / rw - 1.0),
+                   float(1.0 - (1.0 - 2.0 * view.top()) / rh));
     f->glActiveTexture(GL_TEXTURE0);
     f->glBindVertexArray(m_meshVao);
     f->glBindBuffer(GL_ARRAY_BUFFER, m_meshVbo);
@@ -242,30 +275,66 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
     f->glBindVertexArray(0);
 }
 
+// The whole composition, for the interface preview, then each viewport's output. The master level and the
+// blackout are applied to both, into double buffers read by the interface, the windows and the publishers.
 void Engine::composite()
 {
     auto f = gl();
-    RenderTarget &out = m_output[m_back];
-    out.ensure(m_compSize.width(), m_compSize.height());
-    out.clear(0, 0, 0, 1);
-    std::vector<Layer *> top;
-    for (auto &l : m_layers)
-        if (!l->parent) top.push_back(l.get());
-    compositeLayers(out, top);
-
-    // Master and blackout: multiply the whole image by the level (constant blend color).
     const double master = m_masterLevel.load() * m_blackLevel.load();
-    if (master < 0.999) {
+    auto applyMaster = [&] {
+        if (master >= 0.999) return;
         f->glEnable(GL_BLEND);
         const float m = float(master);
         f->glBlendColor(m, m, m, 1.0f);
         f->glBlendFunc(GL_ZERO, GL_CONSTANT_COLOR);
         f->glUseProgram(m_blitProgram);
+        f->glActiveTexture(GL_TEXTURE0);
         f->glBindTexture(GL_TEXTURE_2D, m_blackTex);
         f->glUniform1i(m_blitTexLoc, 0);
         drawQuad();
+        f->glDisable(GL_BLEND);
+    };
+
+    RenderTarget &out = m_output[m_back];
+    out.ensure(m_compSize.width(), m_compSize.height());
+    out.clear(0, 0, 0, 1);
+    std::vector<Layer *> top;
+    for (auto &l : m_layers)
+        if (!l->parent && !l->isViewport) top.push_back(l.get());
+    compositeLayers(out, top);
+    out.bind();
+    applyMaster();
+
+    static const Mapping kFull;
+    for (auto &lp : m_layers) {
+        Layer &v = *lp;
+        if (!v.isViewport) continue;
+        RenderTarget &o = v.vpOut[v.vpBack];
+        const QSize size = v.viewportSize();
+        o.ensure(size.width(), size.height());
+        o.clear(0, 0, 0, 1);
+        if (v.finalTex && v.opacity > 0.0f) {
+            // The viewport's own picture fills its output, at its opacity
+            o.bind();
+            f->glEnable(GL_BLEND);
+            f->glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            f->glUseProgram(m_compProgram);
+            f->glUniform1i(m_compTexLoc, 0);
+            f->glUniform4f(m_compViewLoc, 1, 1, 0, 0);
+            f->glUniform1f(m_compOpacityLoc, v.opacity);
+            f->glActiveTexture(GL_TEXTURE0);
+            f->glBindVertexArray(m_meshVao);
+            f->glBindBuffer(GL_ARRAY_BUFFER, m_meshVbo);
+            kFull.buildVertices(kMeshSubdiv, m_meshScratch);
+            f->glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(m_meshScratch.size() * sizeof(float)), m_meshScratch.data());
+            f->glBindTexture(GL_TEXTURE_2D, v.finalTex);
+            f->glDrawElements(GL_TRIANGLES, m_meshIndexCount, GL_UNSIGNED_INT, nullptr);
+            f->glDisable(GL_BLEND);
+            f->glBindVertexArray(0);
+        }
+        o.bind();
+        applyMaster();
     }
-    f->glDisable(GL_BLEND);
     f->glBindVertexArray(0);
 }
 
@@ -320,12 +389,13 @@ void Engine::frame(double dt)
     rc.drawQuad = [this] { drawQuad(); };
     rc.blit = [this](GLuint t, const RenderTarget &rt) { blit(t, rt); };
 
-    // Members of a hidden group are hidden (and silent) too
+    // Members of a hidden group are hidden (and silent) too, at any depth. A group comes before its contents.
     {
-        const Layer *group = nullptr;
+        std::map<quint64, bool> shown; // group id → visible, groups above included
         for (auto &l : m_layers) {
-            if (l->isGroup) group = l.get();
-            l->parentVisible = !(l->parent && group && group->id == l->parent && !group->visible);
+            const auto up = l->parent ? shown.find(l->parent) : shown.end();
+            l->parentVisible = up == shown.end() || up->second;
+            if (l->isGroup) shown[l->id] = l->parentVisible && l->visible;
         }
     }
     stepFade(m_realDt);
@@ -336,8 +406,19 @@ void Engine::frame(double dt)
     const bool publishChanged = m_publishDirty || m_tapDirty;
     m_mutex.unlock();
 
-    if (publishChanged || !m_publishInit) applyPublishing();
-    publishFrame(m_output[m_back]);
+    if (publishChanged) applyPublishing();
+    {
+        std::vector<std::pair<Publication *, const RenderTarget *>> outs;
+        {
+            Lock lk(&m_mutex);
+            for (auto &l : m_layers) {
+                if (!l->isViewport) continue;
+                auto it = m_pubs.find(l->id);
+                if (it != m_pubs.end()) outs.push_back({it->second.get(), &l->vpOut[l->vpBack]});
+            }
+        }
+        for (auto &[pub, out] : outs) publishFrame(*pub, *out);
+    }
 
     auto f = gl();
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -345,6 +426,14 @@ void Engine::frame(double dt)
     f->glFinish();
     m_published = m_back;
     m_back = 1 - m_back;
+    {
+        Lock lk(&m_mutex);
+        for (auto &l : m_layers)
+            if (l->isViewport) {
+                l->vpPublished = l->vpBack;
+                l->vpBack = 1 - l->vpBack;
+            }
+    }
     ++m_frameCount;
 }
 
@@ -370,7 +459,7 @@ void Engine::readSourcePreview()
         f->glUniform3f(m_prepAddLoc, 0, 0, 0);
         f->glUniform3f(m_prepRemoveLoc, 0, 0, 0);
         f->glUniform3f(m_prepBalanceLoc, 1, 1, 1);
-        f->glUniform1i(m_prepUnpremulLoc, l->isGroup ? 1 : 0);
+        f->glUniform1i(m_prepUnpremulLoc, l->isGroup || l->isViewport ? 1 : 0);
         drawQuad();
         img = QImage(w, h, QImage::Format_RGBA8888);
         f->glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -385,18 +474,32 @@ void Engine::readSourcePreview()
 void Engine::renderFrame()
 {
     if (!m_initialized || m_threaded) return;
-    QSurface *target = (m_outWindow && m_outExposed) ? static_cast<QSurface *>(m_outWindow) : m_surface;
-    if (!m_context->makeCurrent(target)) {
-        target = m_surface;
-        m_context->makeCurrent(m_surface);
-    }
-    m_currentSurface = target;
+    if (!m_context->makeCurrent(m_surface)) return;
+    m_currentSurface = m_surface;
     frame(nextDt());
-    if (target == m_outWindow && m_outWindow) {
-        present(m_outWindow, m_outPixels);
-        m_context->swapBuffers(m_outWindow);
-    }
+    presentViewports();
     if (!m_framePending.exchange(true)) emit frameRendered();
+}
+
+// Last finished picture of one viewport (what its window and its publishers get)
+QImage Engine::grabViewport(quint64 viewport)
+{
+    QImage img;
+    runGl([this, viewport, &img] {
+        Lock lk(&m_mutex);
+        for (auto &l : m_layers) {
+            if (!l->isViewport || l->id != viewport) continue;
+            const RenderTarget &o = l->vpOut[l->vpPublished.load()];
+            if (!o.fbo) return;
+            img = QImage(o.w, o.h, QImage::Format_RGBA8888);
+            auto f = gl();
+            f->glBindFramebuffer(GL_FRAMEBUFFER, o.fbo);
+            f->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            f->glReadPixels(0, 0, o.w, o.h, GL_RGBA, GL_UNSIGNED_BYTE, img.bits());
+            f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
+    });
+    return img.mirrored(false, true);
 }
 
 QImage Engine::grabOutput()
@@ -418,18 +521,22 @@ QImage Engine::grabOutput()
 // ---------------------------------------------------------------------------
 // Publishing (NDI, OMT, Syphon, Spout)
 // ---------------------------------------------------------------------------
-void Engine::setPublishSettings(const PublishSettings &s)
+void Engine::setPublishSettings(quint64 viewport, const PublishSettings &s)
 {
     Lock lk(&m_mutex);
-    if (s == m_publish && m_publishInit) return;
-    m_publish = s;
-    m_publishDirty = true;
+    for (auto &l : m_layers)
+        if (l->isViewport && l->id == viewport && l->vpPublish != s) {
+            l->vpPublish = s;
+            m_publishDirty = true;
+        }
 }
 
-PublishSettings Engine::publishSettings() const
+PublishSettings Engine::publishSettings(quint64 viewport) const
 {
     Lock lk(&m_mutex);
-    return m_publish;
+    for (const auto &l : m_layers)
+        if (l->isViewport && l->id == viewport) return l->vpPublish;
+    return {};
 }
 
 void Engine::setTestTap(std::function<void(const CpuFrame &)> fn)
@@ -437,96 +544,143 @@ void Engine::setTestTap(std::function<void(const CpuFrame &)> fn)
     Lock lk(&m_mutex);
     m_tap = std::move(fn);
     m_tapDirty = true;
+    m_publishDirty = true;
 }
 
-PublishState Engine::publishState(PublishKind k) const
+PublishState Engine::publishState(quint64 viewport, PublishKind k) const
 {
     std::lock_guard<std::mutex> lk(m_stateMutex);
-    return m_states[int(k)];
+    auto it = m_pubs.find(viewport);
+    return it == m_pubs.end() ? PublishState() : it->second->states[int(k)];
 }
 
-void Engine::setPublishState(PublishKind k, PublishState st)
+void Engine::setPublishState(Publication &pub, PublishKind k, PublishState st)
 {
     std::lock_guard<std::mutex> lk(m_stateMutex);
-    m_states[int(k)] = std::move(st);
+    pub.states[int(k)] = std::move(st);
 }
 
 static bool isGpuKind(PublishKind k) { return k == PublishKind::Syphon || k == PublishKind::Spout; }
 
+// Every viewport's publishers follow its settings; those of a viewport that is gone are stopped.
 void Engine::applyPublishing()
 {
-    PublishSettings s;
+    std::vector<std::pair<quint64, PublishSettings>> want;
     std::function<void(const CpuFrame &)> tap;
     bool tapDirty;
     {
         Lock lk(&m_mutex);
-        s = m_publish;
+        for (const auto &l : m_layers)
+            if (l->isViewport) want.push_back({l->id, l->vpPublish});
         m_publishDirty = false;
         tap = m_tap;
         tapDirty = m_tapDirty;
         m_tapDirty = false;
     }
-    const bool first = !m_publishInit;
-    m_publishInit = true;
-    bool cpuChanged = tapDirty;
+    for (auto it = m_pubs.begin(); it != m_pubs.end();) {
+        const bool alive = std::any_of(want.begin(), want.end(), [&](const auto &w) { return w.first == it->first; });
+        if (alive) {
+            ++it;
+            continue;
+        }
+        releasePublication(*it->second);
+        std::lock_guard<std::mutex> lk(m_stateMutex);
+        it = m_pubs.erase(it);
+    }
+    for (size_t k = 0; k < want.size(); ++k) {
+        auto &slot = m_pubs[want[k].first];
+        if (!slot) {
+            std::lock_guard<std::mutex> lk(m_stateMutex);
+            slot = std::make_unique<Publication>();
+        }
+        Publication &pub = *slot;
+        // The test tap follows the main viewport
+        if (k == 0 && tapDirty) {
+            pub.tap = tap ? std::shared_ptr<CpuPublisher>(createTapPublisher(tap)) : nullptr;
+            pub.init = false; // the send thread is rebuilt below
+        } else if (k != 0 && pub.tap) {
+            pub.tap.reset();
+            pub.init = false;
+        }
+        applyPublication(pub, want[k].second, k == 0);
+    }
+}
 
+void Engine::applyPublication(Publication &pub, const PublishSettings &s, bool withTap)
+{
+    (void)withTap;
+    const bool first = !pub.init;
+    pub.init = true;
+    bool cpuChanged = first;
     for (int ki = 0; ki < kPublishKindCount; ++ki) {
         const PublishKind k = PublishKind(ki);
         const PublishTarget &want = s.targets[ki];
-        const PublishTarget &had = m_publishApplied.targets[ki];
-        const bool optionsChanged = s.libraryFolder != m_publishApplied.libraryFolder
-                                    || (k == PublishKind::Omt && s.omtQuality != m_publishApplied.omtQuality);
+        const PublishTarget &had = pub.applied.targets[ki];
+        const bool optionsChanged = s.libraryFolder != pub.applied.libraryFolder
+                                    || (k == PublishKind::Omt && s.omtQuality != pub.applied.omtQuality);
         if (!first && want == had && !(want.enabled && optionsChanged)) continue;
 
         if (isGpuKind(k)) {
-            m_gpuPubs[ki].reset();
-        } else if (m_cpuPubs[ki]) {
-            m_cpuPubs[ki].reset();
+            pub.gpu[ki].reset();
+        } else if (pub.cpu[ki]) {
+            pub.cpu[ki].reset();
             cpuChanged = true;
         }
         if (!want.enabled) {
-            setPublishState(k, {PublishState::Off, QStringLiteral("Disabled"), -1});
+            setPublishState(pub, k, {PublishState::Off, QStringLiteral("Disabled"), -1});
             continue;
         }
         if (!publishCompiledIn(k)) {
-            setPublishState(k, {PublishState::Unavailable,
-                                k == PublishKind::Syphon ? QStringLiteral("Syphon is only available on macOS")
-                                                         : QStringLiteral("Spout is only available on Windows"),
-                                -1});
+            setPublishState(pub, k,
+                            {PublishState::Unavailable,
+                             k == PublishKind::Syphon ? QStringLiteral("Syphon is only available on macOS")
+                                                      : QStringLiteral("Spout is only available on Windows"),
+                             -1});
             continue;
         }
         QString err;
         if (isGpuKind(k)) {
             auto p = k == PublishKind::Syphon ? createSyphonPublisher() : createSpoutPublisher();
             if (p && p->start(want.name, &err)) {
-                m_gpuPubs[ki] = std::move(p);
-                setPublishState(k, {PublishState::Ok, QStringLiteral("Active: \"%1\"").arg(want.name), -1});
+                pub.gpu[ki] = std::move(p);
+                setPublishState(pub, k, {PublishState::Ok, QStringLiteral("Active: \"%1\"").arg(want.name), -1});
             } else {
-                setPublishState(k, {PublishState::Error, err.isEmpty() ? QStringLiteral("Failed to start") : err, -1});
+                setPublishState(pub, k, {PublishState::Error, err.isEmpty() ? QStringLiteral("Failed to start") : err, -1});
             }
         } else {
             std::shared_ptr<CpuPublisher> p(k == PublishKind::Ndi ? createNdiPublisher() : createOmtPublisher());
             if (p->start(want.name, s, &err)) {
-                m_cpuPubs[ki] = p;
+                pub.cpu[ki] = p;
                 cpuChanged = true;
-                setPublishState(k, {PublishState::Ok, QStringLiteral("Active: \"%1\"").arg(want.name), 0});
+                setPublishState(pub, k, {PublishState::Ok, QStringLiteral("Active: \"%1\"").arg(want.name), 0});
             } else {
-                setPublishState(k, {PublishState::Error, err, -1});
+                setPublishState(pub, k, {PublishState::Error, err, -1});
             }
         }
     }
-    if (tapDirty) m_tapPub = tap ? std::shared_ptr<CpuPublisher>(createTapPublisher(tap)) : nullptr;
-    m_publishApplied = s;
-
+    pub.applied = s;
     if (cpuChanged) {
         std::vector<std::shared_ptr<CpuPublisher>> pubs;
-        for (auto &p : m_cpuPubs)
+        for (auto &p : pub.cpu)
             if (p) pubs.push_back(p);
-        if (m_tapPub) pubs.push_back(m_tapPub);
-        if (!pubs.empty() && !m_sender) m_sender = std::make_unique<CpuSendThread>();
-        if (m_sender) m_sender->setPublishers(std::move(pubs));
-        m_pboPending = false;
+        if (pub.tap) pubs.push_back(pub.tap);
+        if (!pubs.empty() && !pub.sender) pub.sender = std::make_unique<CpuSendThread>();
+        if (pub.sender) pub.sender->setPublishers(std::move(pubs));
+        pub.pboPending = false;
     }
+}
+
+// GPU publishers need the context, the send thread is stopped before the CPU publishers go
+void Engine::releasePublication(Publication &pub)
+{
+    for (auto &p : pub.gpu) p.reset();
+    if (pub.sender) pub.sender->setPublishers({});
+    pub.sender.reset();
+    for (auto &p : pub.cpu) p.reset();
+    pub.tap.reset();
+    pub.readback.destroy();
+    if (pub.pbo[0]) gl()->glDeleteBuffers(2, pub.pbo);
+    pub.pbo[0] = pub.pbo[1] = 0;
 }
 
 static int standardRate(double fps)
@@ -545,80 +699,80 @@ static int standardRate(double fps)
     return best;
 }
 
-void Engine::publishFrame(const RenderTarget &out)
+void Engine::publishFrame(Publication &pub, const RenderTarget &out)
 {
     for (int ki : {int(PublishKind::Syphon), int(PublishKind::Spout)})
-        if (m_gpuPubs[ki]) m_gpuPubs[ki]->publish(out.tex, out.w, out.h);
+        if (pub.gpu[ki]) pub.gpu[ki]->publish(out.tex, out.w, out.h);
 
     // Receiver count, about twice per second
     if ((m_frameCount.load() % 30) == 0) {
         std::lock_guard<std::mutex> lk(m_stateMutex);
         for (int ki = 0; ki < kPublishKindCount; ++ki) {
-            if (m_states[ki].level != PublishState::Ok) continue;
-            if (m_cpuPubs[ki]) m_states[ki].receivers = m_cpuPubs[ki]->receivers();
-            else if (m_gpuPubs[ki]) m_states[ki].receivers = m_gpuPubs[ki]->receivers();
+            if (pub.states[ki].level != PublishState::Ok) continue;
+            if (pub.cpu[ki]) pub.states[ki].receivers = pub.cpu[ki]->receivers();
+            else if (pub.gpu[ki]) pub.states[ki].receivers = pub.gpu[ki]->receivers();
         }
     }
 
-    if (!m_sender || !m_sender->hasPublishers() || !out.tex) {
-        m_pboPending = false;
+    if (!pub.sender || !pub.sender->hasPublishers() || !out.tex) {
+        pub.pboPending = false;
         return;
     }
     auto f = gl();
     const int w = out.w, h = out.h;
     const GLsizeiptr bytes = GLsizeiptr(w) * h * 4;
-    if (!m_pbo[0] || w != m_pboW || h != m_pboH) {
-        if (!m_pbo[0]) f->glGenBuffers(2, m_pbo);
-        for (GLuint b : m_pbo) {
+    if (!pub.pbo[0] || w != pub.pboW || h != pub.pboH) {
+        if (!pub.pbo[0]) f->glGenBuffers(2, pub.pbo);
+        for (GLuint b : pub.pbo) {
             f->glBindBuffer(GL_PIXEL_PACK_BUFFER, b);
             f->glBufferData(GL_PIXEL_PACK_BUFFER, bytes, nullptr, GL_STREAM_READ);
         }
-        m_pboW = w;
-        m_pboH = h;
-        m_pboPending = false;
+        pub.pboW = w;
+        pub.pboH = h;
+        pub.pboPending = false;
     }
-    m_readback.ensure(w, h);
+    pub.readback.ensure(w, h);
 
     // 1) Current frame flipped (top-to-bottom rows), then read back asynchronously into a PBO
-    m_readback.bind();
+    pub.readback.bind();
     f->glDisable(GL_BLEND);
     f->glUseProgram(m_flipProgram);
     f->glActiveTexture(GL_TEXTURE0);
     f->glBindTexture(GL_TEXTURE_2D, out.tex);
     f->glUniform1i(m_flipTexLoc, 0);
     drawQuad();
-    f->glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[m_pboIndex]);
+    f->glBindBuffer(GL_PIXEL_PACK_BUFFER, pub.pbo[pub.pboIndex]);
     f->glPixelStorei(GL_PACK_ALIGNMENT, 4);
     f->glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
 
     // 2) Previous frame, already available: copied to the send thread
-    if (m_pboPending) {
-        f->glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[1 - m_pboIndex]);
+    if (pub.pboPending) {
+        f->glBindBuffer(GL_PIXEL_PACK_BUFFER, pub.pbo[1 - pub.pboIndex]);
         const void *ptr = f->glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT);
         if (ptr) {
-            if (CpuFrame *cf = m_sender->acquire()) {
+            if (CpuFrame *cf = pub.sender->acquire()) {
                 cf->bgra.resize(size_t(bytes));
                 std::memcpy(cf->bgra.data(), ptr, size_t(bytes));
                 cf->width = w;
                 cf->height = h;
                 cf->stride = w * 4;
-                cf->timestamp100ns = qint64(m_pboTime);
+                cf->timestamp100ns = qint64(pub.pboTime);
                 // Announced frame rate: only changes if the new value holds for 2 s
                 const int rate = standardRate(m_fps.load());
                 const double nowS = m_clock.nsecsElapsed() / 1e9;
-                if (m_announcedRate == 0) m_announcedRate = rate;
-                if (rate == m_announcedRate) m_rateSince = nowS;
-                else if (nowS - m_rateSince > 2.0) m_announcedRate = rate;
-                cf->fpsN = m_announcedRate;
+                if (pub.announcedRate == 0) pub.announcedRate = rate;
+                if (rate == pub.announcedRate) pub.rateSince = nowS;
+                else if (nowS - pub.rateSince > 2.0) pub.announcedRate = rate;
+                cf->fpsN = pub.announcedRate;
                 cf->fpsD = 1;
-                m_sender->submit(cf);
+                pub.sender->submit(cf);
             }
             f->glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
         }
     }
     f->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    m_pboTime = double(m_clock.nsecsElapsed() / 100);
-    m_pboPending = true;
-    m_pboIndex = 1 - m_pboIndex;
+    pub.pboTime = double(m_clock.nsecsElapsed() / 100);
+    pub.pboPending = true;
+    pub.pboIndex = 1 - pub.pboIndex;
 }

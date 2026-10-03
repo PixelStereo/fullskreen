@@ -35,6 +35,15 @@ static void markMissing(Layer &l, SourceType type, const QString &path, const QS
 
 void Engine::newProject()
 {
+    clearProject();
+    ensureViewport(); // a new project shows its composition through one viewport
+    emit layersChanged();
+    emit memoriesChanged();
+}
+
+// Empties everything (layers, viewports, memories, media bin)
+void Engine::clearProject()
+{
     std::vector<std::unique_ptr<Layer>> old;
     {
         Lock lk(&m_mutex);
@@ -45,10 +54,7 @@ void Engine::newProject()
         m_fades.clear();
         m_audio->setMasterVolume(1.0f);
         m_audio->setMuted(false);
-        if (m_publish != PublishSettings()) {
-            m_publish = PublishSettings();
-            m_publishDirty = true;
-        }
+        m_publishDirty = true; // the publishers of the viewports that went are stopped
     }
     for (auto &l : old) {
         if (l->video) l->video->close();
@@ -89,6 +95,19 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     if (l.isGroup) {
         o["group"] = true;
         o["collapsed"] = l.collapsed;
+    }
+    if (l.isViewport) {
+        o["viewport"] = true;
+        o["width"] = l.vpWidth;
+        o["height"] = l.vpHeight;
+        o["screen"] = l.vpScreen;
+        o["outputMode"] = l.vpMode;
+        o["publish"] = l.vpPublish.toJson();
+    }
+    if (!l.hiddenIn.empty()) {
+        QJsonArray hidden;
+        for (quint64 v : l.hiddenIn) hidden.append(QString::number(v));
+        o["hiddenIn"] = hidden;
     }
     o["name"] = l.name;
     o["visible"] = l.visible;
@@ -181,6 +200,16 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         l->locked = o.value("locked").toBool(false);
         l->isGroup = o.value("group").toBool(false);
         l->collapsed = o.value("collapsed").toBool(false);
+        l->isViewport = o.value("viewport").toBool(false);
+        if (l->isViewport) {
+            l->vpWidth = std::clamp(o.value("width").toInt(1920), 1, 16384);
+            l->vpHeight = std::clamp(o.value("height").toInt(1080), 1, 16384);
+            l->vpScreen = o.value("screen").toString();
+            l->vpMode = std::clamp(o.value("outputMode").toInt(0), 0, 2);
+            l->vpPublish = PublishSettings::fromJson(o.value("publish").toObject());
+        }
+        l->hiddenIn.clear();
+        for (const QJsonValue &v : o.value("hiddenIn").toArray()) l->hiddenIn.push_back(v.toString().toULongLong());
         l->effectsEnabled = o.value("effectsEnabled").toBool(true);
         l->colorModels = o.value("colorModels").toInt(l->colorModels);
         // Saved id kept unless another layer already has it
@@ -209,9 +238,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         }
         const bool ok = video ? setLayerVideo(index, path, &err) : setLayerAudio(index, path, &err);
         if (!ok && warnings) *warnings << name + ": " + missingMessage(path, err);
-        // Saved mode ("loop": true / false in projects older than the play modes)
-        const PlayMode fallback = src.value("loop").toBool(true) ? PlayMode::Loop : PlayMode::OneShot;
-        setLayerPlayMode(index, playModeFromKey(src.value("playMode").toString(), fallback));
+        setLayerPlayMode(index, playModeFromKey(src.value("playMode").toString()));
         setLayerInOut(index, src.value("in").toDouble(0), src.value("out").toDouble(-1));
         Lock lk(&m_mutex);
         Layer *l = layer(index);
@@ -286,7 +313,6 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         for (const QString &p : m_binItems)
             bin.append(QJsonObject{{"path", p}, {"relativePath", QDir(dir).relativeFilePath(p)}});
         root["bin"] = bin;
-        root["publish"] = m_publish.toJson();
         root["audio"] = QJsonObject{{"volume", double(m_audio->masterVolume())}, {"muted", m_audio->muted()}};
         QJsonArray mems;
         for (const Memory &m : m_memories) mems.append(memoryToJson(m, dir));
@@ -321,7 +347,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         return false;
     }
     const QJsonObject root = doc.object();
-    newProject();
+    clearProject();
     const QJsonObject comp = root.value("composition").toObject();
     setCompositionSize(QSize(comp.value("width").toInt(1920), comp.value("height").toInt(1080)));
     const QString dir = QFileInfo(path).absolutePath();
@@ -335,11 +361,15 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         Lock lk(&m_mutex);
         normalizeLocked();
     }
+    ensureViewport();
     fixLayerReferences(&warnings);
+    {
+        Lock lk(&m_mutex);
+        m_publishDirty = true;
+    }
     QStringList bin;
     for (const QJsonValue &v : root.value("bin").toArray()) bin << resolvePath(v.toObject(), dir);
     addBinItems(bin);
-    if (root.contains("publish")) setPublishSettings(PublishSettings::fromJson(root.value("publish").toObject()));
     const QJsonObject audio = root.value("audio").toObject();
     m_audio->setMasterVolume(float(std::clamp(audio.value("volume").toDouble(1.0), 0.0, 2.0)));
     m_audio->setMuted(audio.value("muted").toBool(false));

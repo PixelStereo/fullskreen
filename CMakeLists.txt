@@ -82,7 +82,7 @@ if(APPLE)
   # Link the Core Audio frameworks directly rather than loading them at runtime
   target_compile_definitions(fulskrin_engine PRIVATE MA_NO_RUNTIME_LINKING)
   target_link_libraries(fulskrin_engine PRIVATE "-framework CoreFoundation" "-framework CoreAudio"
-    "-framework AudioToolbox")
+    "-framework AudioToolbox" "-framework OpenGL")
 elseif(UNIX)
   find_package(Threads REQUIRED)
   target_link_libraries(fulskrin_engine PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
@@ -159,6 +159,7 @@ set(APP_SOURCES
   src/ui/LayerTable.cpp
   src/ui/MediaBin.cpp
   src/ui/MasterPanel.cpp
+  src/ui/ViewportOutput.cpp
   src/ui/SettingsPanel.cpp
   src/ui/MemoryPanel.cpp
   src/ui/Widgets.cpp

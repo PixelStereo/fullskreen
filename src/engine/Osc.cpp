@@ -281,6 +281,7 @@ static QJsonObject vals(const QStringList &v)
 
 static QString sourceTypeKey(const Layer &l)
 {
+    if (l.isViewport) return QStringLiteral("viewport");
     if (l.isGroup) return QStringLiteral("group");
     switch (l.type) {
     case SourceType::Video: return QStringLiteral("video");
@@ -477,26 +478,30 @@ void OscNamespace::build()
         }
     }
 
-    // --- Layers (top level, then the members of each group)
+    // --- Viewports, then the layers (top level, then the contents of each group, at any depth)
     struct Item {
         quint64 id, parent;
         QString name;
+        bool viewport;
     };
     std::vector<Item> items;
     {
         Engine::Lock lk(&e->mutex());
         for (int i = 0; i < e->layerCount(); ++i) {
             const Layer *l = e->layer(i);
-            items.push_back({l->id, l->parent, l->name});
+            items.push_back({l->id, l->parent, l->name, l->isViewport});
         }
     }
     add("/layers", QString(), 0, "Layers");
+    add("/viewports", QString(), 0, "Viewports");
     m_nodes["/master"].description = "Master";
     m_nodes["/composition"].description = "Composition";
     QHash<quint64, QString> prefixOf;
     QHash<QString, int> used;
     for (const Item &it : items) {
-        const QString base = it.parent && prefixOf.contains(it.parent) ? prefixOf[it.parent] + "/layers" : QStringLiteral("/layers");
+        const QString base = it.viewport ? QStringLiteral("/viewports")
+                             : it.parent && prefixOf.contains(it.parent) ? prefixOf[it.parent] + "/layers"
+                                                                         : QStringLiteral("/layers");
         QString seg = osc::safeName(it.name);
         const QString key = base + '/' + seg;
         if (int n = used.value(key)) seg += QStringLiteral("_%1").arg(n + 1);
@@ -641,7 +646,8 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     LayerNodes L{this, e, id, [this](const QString &p, const QString &t, int a, const QString &d) -> OscNode & {
                      return add(p, t, a, d);
                  }};
-    bool isGroup, transport, sound, picture;
+    bool isGroup, isViewport, topLevel, transport, sound, picture;
+    std::vector<std::pair<quint64, QString>> viewports; // routing of a top-level item
     QStringList fxNames;
     std::vector<std::pair<int, QString>> effects;
     bool generator;
@@ -649,7 +655,20 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
         Engine::Lock lk(&e->mutex());
         Layer *l = find(e, id);
         if (!l) return;
-        isGroup = l->isGroup;
+        isViewport = l->isViewport;
+        isGroup = l->isGroup || isViewport; // no source of its own
+        topLevel = !l->parent && !isViewport;
+        if (topLevel) {
+            QHash<QString, int> seen;
+            for (int i = 0; i < e->layerCount(); ++i) {
+                const Layer *v = e->layer(i);
+                if (!v->isViewport) continue;
+                QString seg = osc::safeName(v->name);
+                if (int n = seen.value(seg)) seg += QStringLiteral("_%1").arg(n + 1);
+                seen[osc::safeName(v->name)] += 1;
+                viewports.push_back({v->id, seg});
+            }
+        }
         transport = l->hasTransport();
         sound = bool(l->audio);
         picture = l->hasPicture();
@@ -666,6 +685,39 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
         }
     }
 
+    if (isViewport) {
+        // Its size in pixels and where it is shown (0 hidden, 1 windowed, 2 fullscreen)
+        for (int axis = 0; axis < 2; ++axis) {
+            OscNode &n = L.method(P + (axis ? "/height" : "/width"), "i", 3, axis ? "Height" : "Width",
+                                  [axis](Layer &l) { return QVariantList{axis ? l.vpHeight : l.vpWidth}; },
+                                  L.edit([axis](Layer &l, const QVariantList &a) {
+                                      if (a.isEmpty()) return false;
+                                      (axis ? l.vpHeight : l.vpWidth) = std::clamp(int(std::lround(num(a[0]))), 1, 16384);
+                                      return true;
+                                  }));
+            n.range = {minMax(1, 16384)};
+        }
+        L.method(P + "/mode", "i", 3, "Output Mode", [](Layer &l) { return QVariantList{l.vpMode}; },
+                 L.edit([](Layer &l, const QVariantList &a) {
+                     if (a.isEmpty()) return false;
+                     l.vpMode = std::clamp(int(std::lround(num(a[0]))), 0, 2);
+                     return true;
+                 }))
+            .range = {minMax(0, 2)};
+    }
+    // Which viewports a top-level item is drawn in
+    for (const auto &[vid, seg] : viewports) {
+        const quint64 v = vid;
+        L.method(P + "/viewports/" + seg, "T", 3, "Shown",
+                 [v](Layer &l) { return QVariantList{l.shownIn(v)}; },
+                 L.edit([v](Layer &l, const QVariantList &a) {
+                     const bool on = truth(a.value(0));
+                     auto it = std::find(l.hiddenIn.begin(), l.hiddenIn.end(), v);
+                     if (on && it != l.hiddenIn.end()) l.hiddenIn.erase(it);
+                     else if (!on && it == l.hiddenIn.end()) l.hiddenIn.push_back(v);
+                     return true;
+                 }));
+    }
     L.method(P + "/name", "s", 3, "Name", [](Layer &l) { return QVariantList{l.name}; },
              L.edit([](Layer &l, const QVariantList &a) {
                  const QString n = a.value(0).toString().trimmed();
@@ -674,7 +726,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  return true;
              }));
     L.method(P + "/type", "s", 1, "Type", [](Layer &l) { return QVariantList{sourceTypeKey(l)}; }, nullptr).range =
-        {vals({"none", "video", "image", "isf", "audio", "layer", "group"})};
+        {vals({"none", "video", "image", "isf", "audio", "layer", "group", "viewport"})};
     L.method(P + "/visible", "T", 3, "Visible", [](Layer &l) { return QVariantList{l.visible}; },
              L.edit([](Layer &l, const QVariantList &a) {
                  l.visible = truth(a.value(0));

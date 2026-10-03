@@ -11,28 +11,29 @@
 #include "MacPresentation.h"
 #endif
 
-OutputWindow::OutputWindow(Engine *engine) : m_engine(engine)
+OutputWindow::OutputWindow(Engine *engine, quint64 viewport) : m_engine(engine), m_viewport(viewport)
 {
     setSurfaceType(QSurface::OpenGLSurface);
     setFormat(QSurfaceFormat::defaultFormat());
     setTitle(QStringLiteral("Fulskrin — Output"));
     create();
-    m_engine->setOutputWindow(this);
+    m_engine->setViewportWindow(m_viewport, this);
 }
 
 OutputWindow::~OutputWindow()
 {
-    m_engine->setOutputWindow(nullptr);
+    if (m_viewport) m_engine->setViewportWindow(m_viewport, nullptr);
 }
 
 void OutputWindow::sync()
 {
+    if (!m_viewport) return; // disposed
     const bool exposed = isVisible() && isExposed();
     const QSize px = size() * devicePixelRatio();
     if (exposed == m_lastExposed && px == m_lastSize) return;
     m_lastExposed = exposed;
     m_lastSize = px;
-    m_engine->setOutputExposed(exposed, px);
+    m_engine->setViewportExposed(m_viewport, exposed, px);
 }
 
 // Fullscreen takes a Space of its own on macOS, as any other application does. Leaving it is asynchronous
@@ -88,7 +89,7 @@ void OutputWindow::hideOutput()
         // The render thread lets go now; the window is hidden once the Space has closed.
         if (m_lastExposed) {
             m_lastExposed = false;
-            m_engine->setOutputExposed(false, m_lastSize);
+            m_engine->setViewportExposed(m_viewport, false, m_lastSize);
         }
         QPointer<OutputWindow> self = this;
         macExitFullScreen(this, [self] {
@@ -100,12 +101,39 @@ void OutputWindow::hideOutput()
     hideNow();
 }
 
+void OutputWindow::dispose()
+{
+    m_engine->setViewportWindow(m_viewport, nullptr);
+    m_viewport = 0;
+#ifdef Q_OS_MACOS
+    if (macIsFullScreen(this)) {
+        QPointer<OutputWindow> self = this;
+        macExitFullScreen(this, [self] {
+            if (self) self->deleteLater();
+        });
+        return;
+    }
+#endif
+    deleteLater();
+}
+
+QScreen *OutputWindow::screenNamed(const QString &name)
+{
+    const auto screens = QGuiApplication::screens();
+    for (QScreen *sc : screens)
+        if (sc->name() == name) return sc;
+    QScreen *primary = QGuiApplication::primaryScreen();
+    for (QScreen *sc : screens)
+        if (sc != primary) return sc;
+    return primary;
+}
+
 void OutputWindow::hideNow()
 {
     // The render thread stops using the window before it is hidden.
     if (m_lastExposed) {
         m_lastExposed = false;
-        m_engine->setOutputExposed(false, m_lastSize);
+        m_engine->setViewportExposed(m_viewport, false, m_lastSize);
     }
     hide();
 }

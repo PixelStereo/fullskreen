@@ -14,7 +14,8 @@ class QCheckBox;
 class QLineEdit;
 class QProgressBar;
 
-// "Master" tab: master level and blackout, audio output, composition, video output, publishing (NDI, OMT, Syphon, Spout).
+// "Master" tab, the project as a whole: master level and blackout (all the viewports at once), audio output,
+// and the composition — the pixel space the layers live in and the viewports are placed on.
 class MasterPanel : public QWidget
 {
     Q_OBJECT
@@ -26,35 +27,23 @@ public:
     double masterValue() const; // level set on the fader (0..1)
     double fadeTime() const;
 
-    // Available screens (display name, identifier) and the selected screen
-    void setScreens(const QList<QPair<QString, QString>> &screens, const QString &current);
-    void setOutputMode(int mode); // 0 hidden, 1 windowed, 2 fullscreen
-    void syncFromEngine();        // composition, publishing (after opening a project)
-    void refreshStatus();         // level, publishing status (called periodically)
+    void syncFromEngine();        // composition, sound (after opening a project)
+    void refreshStatus();         // level, composition (called periodically)
     void startAudio();            // opens the audio device saved in the settings (at launch)
 
 signals:
     void blackoutChanged(bool on);
-    void screenChosen(const QString &name);
-    void fullscreenRequested();
-    void windowedRequested();
-    void hideRequested();
     void compositionEdited();
-    void publishEdited();
     void audioEdited(); // master volume / mute (saved in the project)
-    void fitCompositionToScreenRequested();
 
 private:
     QWidget *buildMaster();
     QWidget *buildComposition();
-    QWidget *buildOutput();
-    QWidget *buildPublish();
     QWidget *buildAudio();
     void fillAudioDevices();
     void openAudioDevice(const QString &name);
     void refreshMeters();
     void applyComposition();
-    void applyPublish();
 
     Engine *m_engine;
     QSlider *m_master = nullptr;
@@ -63,14 +52,6 @@ private:
     QDoubleSpinBox *m_fade = nullptr;
     QComboBox *m_preset = nullptr;
     QSpinBox *m_width = nullptr, *m_height = nullptr;
-    QComboBox *m_screens = nullptr;
-    QPushButton *m_full = nullptr, *m_windowed = nullptr, *m_hide = nullptr;
-    QCheckBox *m_pubEnabled[kPublishKindCount] = {};
-    QLineEdit *m_pubName[kPublishKindCount] = {};
-    QLabel *m_pubState[kPublishKindCount] = {};
-    QComboBox *m_omtQuality = nullptr;
-    QLineEdit *m_libFolder = nullptr;
-    QLabel *m_libInfo = nullptr;
     QComboBox *m_audioDevice = nullptr;
     QSlider *m_audioVolume = nullptr;
     QLabel *m_audioVolumeLabel = nullptr, *m_audioState = nullptr;
@@ -78,6 +59,4 @@ private:
     QProgressBar *m_meter[2] = {};
     QTimer m_meterTimer;
     bool m_syncing = false;
-    unsigned m_libTick = 0;
-    QString m_libCheckedFolder = QStringLiteral("\x01");
 };

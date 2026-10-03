@@ -2,6 +2,7 @@
 #include "Commands.h"
 #include "Engine.h"
 #include "ParamPanel.h"
+#include "ViewportOutput.h"
 #include "Widgets.h"
 
 #include <QButtonGroup>
@@ -40,8 +41,17 @@
 struct LayerSnapshot {
     bool valid = false;
     quint64 id = 0;
-    bool isGroup = false, locked = false, lockedByGroup = false;
+    bool isGroup = false, isViewport = false, locked = false, lockedByGroup = false;
     int members = 0;
+    QSize vpSize;
+    // Routing: an item at the top of the list chooses its viewports; inside a group, its top group does
+    struct Route {
+        quint64 id;
+        QString name;
+        bool shown;
+    };
+    std::vector<Route> routes;
+    QString routedBy; // the top group of an item inside a group
     QRectF roi{0, 0, 1, 1};
     ColorAdjust color;
     bool effectsEnabled = true;
@@ -84,6 +94,8 @@ struct LayerSnapshot {
         s.valid = true;
         s.id = l->id;
         s.isGroup = l->isGroup;
+        s.isViewport = l->isViewport;
+        s.vpSize = l->viewportSize();
         s.locked = l->locked;
         s.lockedByGroup = !l->locked && e->isLocked(index);
         s.members = e->groupMembers(index).size();
@@ -92,7 +104,8 @@ struct LayerSnapshot {
         s.effectsEnabled = l->effectsEnabled;
         s.colorModels = l->colorModels;
         const QSize comp = e->compositionSize();
-        const int sw = l->isGroup ? comp.width() : l->sourceWidth(), sh = l->isGroup ? comp.height() : l->sourceHeight();
+        const QSize own = l->isViewport ? l->viewportSize() : l->isGroup ? comp : QSize(l->sourceWidth(), l->sourceHeight());
+        const int sw = own.width(), sh = own.height();
         if (sw > 0 && sh > 0) s.aspect = double(sw) / sh;
         s.name = l->name;
         s.sourcePath = l->sourcePath;
@@ -126,17 +139,28 @@ struct LayerSnapshot {
         s.genH = l->genHeight;
         s.sourceLayer = l->sourceLayer;
         s.sourceTap = l->sourceTap;
-        if (!l->isGroup)
+        if (!l->isGroup && !l->isViewport)
             for (int k = 0; k < e->layerCount(); ++k) {
                 const Layer *o = e->layer(k);
-                // Not itself, and not a layer that already depends on this one (the picture would feed back)
-                if (!o || o->id == l->id || e->layerDependsOn(o->id, l->id)) continue;
+                // Not itself, not a viewport, and not a layer that already depends on this one (the picture would feed back)
+                if (!o || o->isViewport || o->id == l->id || e->layerDependsOn(o->id, l->id)) continue;
                 s.candidates.push_back({o->id, o->isGroup ? o->name + QStringLiteral(" (group)") : o->name});
             }
         for (const auto &fx : l->effects) s.effects.push_back({fx->name(), fx->error(), fx->isValid(), fx->enabled});
         s.meshMode = l->mapping.meshMode;
         s.cols = l->mapping.cols;
         s.rows = l->mapping.rows;
+        if (!l->isViewport) {
+            const Layer *top = l;
+            while (top->parent) {
+                const Layer *g = e->layer(e->indexOfId(top->parent));
+                if (!g) break;
+                top = g;
+            }
+            if (top != l) s.routedBy = top->name;
+            for (int v : e->viewports())
+                if (const Layer *vp = e->layer(v)) s.routes.push_back({vp->id, vp->name, top->shownIn(vp->id)});
+        }
         return s;
     }
 };
@@ -306,6 +330,7 @@ void LayerInspector::rebuild()
 
     const LayerSnapshot s = LayerSnapshot::take(m_engine, m_layer);
     if (!s.valid) {
+        emit kindChanged(QStringLiteral("Layer"));
         auto *empty = new QLabel(QStringLiteral("No layer selected.\n\nCreate a layer with the + button,\n"
                                                 "then drop a video, image, sound\nor ISF generator onto it."));
         empty->setAlignment(Qt::AlignCenter);
@@ -317,11 +342,13 @@ void LayerInspector::rebuild()
 
     m_layerId = s.id;
     m_locked = s.locked || s.lockedByGroup;
+    const QString kind = s.isViewport ? QStringLiteral("Viewport") : s.isGroup ? QStringLiteral("Group") : QStringLiteral("Layer");
+    emit kindChanged(kind);
     // Header: visibility, lock, name
     auto *head = new QHBoxLayout;
     auto *name = new QLineEdit(s.name);
     name->setStyleSheet("font-weight:bold; font-size:14px;");
-    name->setToolTip(s.isGroup ? QStringLiteral("Group name") : QStringLiteral("Layer name"));
+    name->setToolTip(kind + QStringLiteral(" name"));
     auto *vis = new QCheckBox(QStringLiteral("Visible"));
     vis->setChecked(s.visible);
     vis->setProperty("allowLocked", true);
@@ -361,11 +388,19 @@ void LayerInspector::rebuild()
     // Sub-tabs; the current one is kept from one layer to the next
     auto *tabs = new QTabWidget;
     tabs->setDocumentMode(true);
+    tabs->setStyleSheet(QStringLiteral("QTabBar::tab { padding: 4px 7px; }")); // six tabs for a viewport
     tabs->addTab(page(buildSource(s)), QStringLiteral("Source"));
     tabs->addTab(page(buildColor(s)), QStringLiteral("Color"));
     tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
     tabs->addTab(page(buildEffects(s)), QStringLiteral("Effects"));
     tabs->addTab(page(buildCompositing(s)), QStringLiteral("Compositing"));
+    m_output = nullptr;
+    if (s.isViewport) { // its size, screen and publishing
+        m_output = new ViewportOutputPanel(m_engine, s.id);
+        connect(m_output, &ViewportOutputPanel::edited, this, &LayerInspector::projectEdited);
+        connect(m_output, &ViewportOutputPanel::edited, this, &LayerInspector::layerChanged);
+        tabs->addTab(page(m_output), QStringLiteral("Output"));
+    }
     lockInputs(tabs, m_locked);
     name->setEnabled(!m_locked);
     if (s.type == SourceType::Audio) { // a sound has no picture: no color, mapping, effects or compositing
@@ -388,6 +423,18 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     auto *v = new QVBoxLayout(g);
     v->setContentsMargins(0, 0, 0, 0);
 
+    if (s.isViewport) {
+        auto *info = new QLabel(QStringLiteral("<b>Viewport</b> %1 × %2<br><span style='font-size:11px; color:#999'>"
+                                               "A window onto the composition: it shows the region set in Spatial, "
+                                               "at its own size (Output). The layers at the top of the list choose "
+                                               "the viewports they appear in (Compositing).</span>")
+                                    .arg(s.vpSize.width())
+                                    .arg(s.vpSize.height()));
+        info->setWordWrap(true);
+        v->addWidget(info);
+        v->addWidget(buildRoi(s));
+        return g;
+    }
     if (s.isGroup) {
         auto *info = new QLabel(QStringLiteral("<b>Group</b> of %1 layer(s)<br><span style='font-size:11px; color:#999'>"
                                                "Its picture is the composite of its layers. Drag layers onto it in the "
@@ -990,6 +1037,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
                  }),
                  opacity);
     connect(opacity, &SliderField::valueEdited, this, [this](double v) { setProp(cmd::SetLayerProp::Opacity, v / 100.0); });
+    if (s.isViewport) return g; // drawn onto nothing: no blend, no routing
 
     auto *blend = new QComboBox;
     for (BlendMode m : {BlendMode::Normal, BlendMode::Add, BlendMode::Screen, BlendMode::Multiply})
@@ -998,6 +1046,33 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
     form->addRow(new ResetLabel(QStringLiteral("Blend"), [blend] { blend->setCurrentIndex(0); }), blend);
     connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this, blend](int i) { setProp(cmd::SetLayerProp::Blend, blend->itemData(i).toInt()); });
+
+    // Viewports it appears in: chosen at the top of the list (a group for everything inside it)
+    auto *routes = new QWidget;
+    auto *rv = new QVBoxLayout(routes);
+    rv->setContentsMargins(0, 0, 0, 0);
+    rv->setSpacing(2);
+    if (!s.routedBy.isEmpty()) {
+        auto *note = new QLabel(QStringLiteral("Routed by its group “%1”.").arg(s.routedBy.toHtmlEscaped()));
+        note->setStyleSheet("color:#999;");
+        note->setWordWrap(true);
+        rv->addWidget(note);
+    }
+    for (const auto &r : s.routes) {
+        auto *c = new QCheckBox(r.name);
+        c->setChecked(r.shown);
+        c->setEnabled(s.routedBy.isEmpty());
+        c->setToolTip(QStringLiteral("Shown in the viewport “%1”").arg(r.name));
+        rv->addWidget(c);
+        const quint64 vp = r.id;
+        connect(c, &QCheckBox::toggled, this, [this, vp, name = r.name](bool on) {
+            if (m_engine->isLocked(m_layer)) return;
+            m_undo->push(new cmd::SetShownIn(m_engine, m_layerId, vp, on,
+                                             (on ? QStringLiteral("Show in %1") : QStringLiteral("Hide from %1")).arg(name)));
+            emit layerChanged();
+        });
+    }
+    form->addRow(new QLabel(QStringLiteral("Viewports")), routes);
     return g;
 }
 
@@ -1099,6 +1174,41 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
                 [scale, this](double x) { scale(x, m_scaleY->value(), true); });
         connect(m_scaleY, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [scale, this](double y) { scale(m_scaleX->value(), y, false); });
+    }
+
+    if (s.isViewport) {
+        // A viewport is a rectangle of the composition: no corners, no mesh (the projector's warp comes later)
+        auto *actions = new QHBoxLayout;
+        auto *pixels = new QPushButton(QStringLiteral("Pixel for Pixel"));
+        pixels->setToolTip(QStringLiteral("One viewport pixel for one composition pixel: the region takes the "
+                                          "viewport's size, around its center"));
+        auto *whole = new QPushButton(QStringLiteral("Whole Composition"));
+        actions->addWidget(pixels);
+        actions->addWidget(whole);
+        actions->addStretch();
+        v->addLayout(actions);
+        auto *hint = new QLabel(QStringLiteral("The region of the composition this viewport shows. "
+                                               "In the preview, drag its frame to move it."));
+        hint->setWordWrap(true);
+        hint->setStyleSheet("color:#888; font-size:11px;");
+        v->addWidget(hint);
+        const QSize vs = s.vpSize;
+        connect(pixels, &QPushButton::clicked, this, [this, vs] {
+            const QSize c = m_engine->compositionSize();
+            editMapping(QStringLiteral("Pixel for Pixel"), [&](Mapping &m) {
+                QRectF b = m.bounds();
+                const QPointF center = b.center();
+                b.setSize(QSizeF(double(vs.width()) / c.width(), double(vs.height()) / c.height()));
+                b.moveCenter(center);
+                m.setBounds(b);
+            });
+            refreshSpatial();
+        });
+        connect(whole, &QPushButton::clicked, this, [this] {
+            editMapping(QStringLiteral("Whole Composition"), [](Mapping &m) { m.resetCorners(); });
+            refreshSpatial();
+        });
+        return g;
     }
 
     auto *modeRow = new QHBoxLayout;
@@ -1368,6 +1478,7 @@ void LayerInspector::refreshSpatial()
 void LayerInspector::refreshDynamic()
 {
     refreshSpatial();
+    if (m_output) m_output->refreshStatus(); // mode set by ⌘F or a closed window, publishing states
     // ROI preview: the source picture, read back by the render thread while the editor is shown
     const bool wantPreview = m_roi && m_roi->isVisible();
     if (wantPreview) {

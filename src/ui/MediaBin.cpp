@@ -511,8 +511,13 @@ void MediaBin::contextMenu(const QPoint &pos)
             Engine::Lock lk(&m_engine->mutex());
             for (int i = 0; i < m_engine->layerCount(); ++i) {
                 Layer *l = m_engine->layer(i);
-                if (!l) continue;
-                const QString label = (l->parent ? QStringLiteral("      ") : QString()) + l->name;
+                if (!l || l->isViewport) continue;
+                int depth = 0;
+                for (quint64 up = l->parent; up; ++depth) {
+                    const Layer *g = m_engine->layer(m_engine->indexOfId(up));
+                    up = g ? g->parent : 0;
+                }
+                const QString label = QStringLiteral("      ").repeated(depth) + l->name;
                 QAction *la = into->addAction(label, this, [this, i, p] { emit loadIntoLayerRequested(i, p); });
                 la->setEnabled(!l->isGroup && !m_engine->isLocked(i));
             }
