@@ -40,7 +40,6 @@ CompositionPanel::CompositionPanel(Engine *engine, QWidget *parent) : QWidget(pa
     v->addWidget(buildCompositionLevel());
     v->addWidget(buildAudio());
     v->addWidget(buildComposition());
-    v->addWidget(buildRendering());
     v->addStretch();
     syncFromEngine();
     // Long screen or sound card names must not widen the panel beyond its column (they are elided).
@@ -137,18 +136,8 @@ static QString volumeText(int pct)
 
 QWidget *CompositionPanel::buildAudio()
 {
-    auto *g = new QGroupBox(QStringLiteral("Audio Output"));
+    auto *g = new QGroupBox(QStringLiteral("Sound"));
     auto *v = new QVBoxLayout(g);
-
-    auto *devRow = new QHBoxLayout;
-    m_audioDevice = new QComboBox;
-    m_audioDevice->setToolTip(QStringLiteral("Sound card or audio interface used for the sound of every layer"));
-    auto *rescan = new QToolButton;
-    rescan->setText(QStringLiteral("⟳"));
-    rescan->setToolTip(QStringLiteral("Refresh the list of audio devices"));
-    devRow->addWidget(m_audioDevice, 1);
-    devRow->addWidget(rescan);
-    v->addLayout(devRow);
 
     auto *volRow = new QHBoxLayout;
     m_audioVolume = new SliderField;
@@ -163,7 +152,7 @@ QWidget *CompositionPanel::buildAudio()
     m_audioVolumeLabel = new QLabel(volumeText(100));
     m_audioVolumeLabel->setMinimumWidth(64);
     m_audioVolumeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_audioMute = new QCheckBox(QStringLiteral("Mute"));
+    m_audioMute = new FlagBox(QStringLiteral("Mute"));
     volRow->addWidget(m_audioVolume, 1);
     volRow->addWidget(m_audioVolumeLabel);
     volRow->addWidget(m_audioMute);
@@ -179,15 +168,7 @@ QWidget *CompositionPanel::buildAudio()
                                   "stop:0 #3fae5a, stop:0.8 #3fae5a, stop:0.93 #e0b43a, stop:1 #e5483c); }");
         v->addWidget(m_meter[c]);
     }
-    m_audioState = note(QString());
-    v->addWidget(m_audioState);
-
-    connect(rescan, &QToolButton::clicked, this, [this] { fillAudioDevices(); });
-    connect(m_audioDevice, qOverload<int>(&QComboBox::activated), this, [this](int) {
-        const QString name = m_audioDevice->currentData().toString();
-        QSettings().setValue("audio/device", name);
-        openAudioDevice(name);
-    });
+    v->addWidget(note(QStringLiteral("The sound card is chosen in Settings ▸ Audio.")));
     connect(m_audioVolume, &SliderField::valueEdited, this, [this](double v) {
         const int pct = int(std::lround(v));
         m_audioVolumeLabel->setText(volumeText(pct));
@@ -206,42 +187,6 @@ QWidget *CompositionPanel::buildAudio()
     return g;
 }
 
-void CompositionPanel::fillAudioDevices()
-{
-    const QString saved = QSettings().value("audio/device").toString();
-    QSignalBlocker b(m_audioDevice);
-    m_audioDevice->clear();
-    m_audioDevice->addItem(QStringLiteral("System default"), QString());
-    for (const QString &n : AudioOutput::deviceNames()) m_audioDevice->addItem(n, n);
-    int idx = m_audioDevice->findData(saved);
-    if (idx < 0 && !saved.isEmpty()) { // saved device currently unplugged: keep it visible
-        m_audioDevice->addItem(saved + QStringLiteral(" (not connected)"), saved);
-        idx = m_audioDevice->count() - 1;
-    }
-    m_audioDevice->setCurrentIndex(qMax(0, idx));
-}
-
-void CompositionPanel::openAudioDevice(const QString &name)
-{
-    QString err;
-    if (m_engine->startAudio(name, &err)) {
-        m_audioState->setText(QStringLiteral("Playing on \"%1\" · %2 kHz · latency %3 ms")
-                                  .arg(m_engine->audioOutput().deviceName())
-                                  .arg(AudioOutput::kSampleRate / 1000)
-                                  .arg(int(std::lround(m_engine->audioOutput().latency() * 1000))));
-        m_audioState->setStyleSheet("color:#888; font-size:11px;");
-    } else {
-        m_audioState->setText(err);
-        m_audioState->setStyleSheet("color:#ff6b5b; font-size:11px;");
-    }
-}
-
-void CompositionPanel::startAudio()
-{
-    fillAudioDevices();
-    openAudioDevice(QSettings().value("audio/device").toString());
-}
-
 void CompositionPanel::refreshMeters()
 {
     if (!isVisible()) return;
@@ -255,74 +200,6 @@ void CompositionPanel::refreshMeters()
 // ---------------------------------------------------------------------------
 // Composition
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Rendering: frame rate and antialiasing of this project, or the machine's defaults (Settings)
-// ---------------------------------------------------------------------------
-
-QWidget *CompositionPanel::buildRendering()
-{
-    auto *g = new QGroupBox(QStringLiteral("Rendering"));
-    auto *form = new QFormLayout(g);
-    m_rate = new QComboBox;
-    m_samples = new QComboBox;
-    m_mipmaps = new QComboBox;
-    m_depth = new QComboBox;
-    form->addRow(QStringLiteral("Frame rate"), m_rate);
-    form->addRow(QStringLiteral("Antialiasing"), m_samples);
-    form->addRow(QStringLiteral("Mipmaps"), m_mipmaps);
-    form->addRow(QStringLiteral("Color depth"), m_depth);
-    m_depth->setToolTip(QStringLiteral("Precision of the picture while it is mixed: 10 bits avoids banding in gradients and "
-                                       "after color and effects, and costs more memory and GPU time. The outputs stay 8 bits."));
-    auto *n = note(QStringLiteral("Saved with the project; Default: the machine's choice (Settings ▸ Rendering)."));
-    form->addRow(n);
-    refreshRenderDefaults();
-    auto apply = [this] {
-        if (m_syncing) return;
-        Engine::RenderSettings r;
-        r.frameRate = m_rate->currentData().toDouble();
-        r.samples = m_samples->currentData().toInt();
-        r.mipmaps = m_mipmaps->currentData().toInt();
-        r.depth = m_depth->currentData().toInt();
-        m_engine->setRenderSettings(r);
-        emit compositionEdited();
-    };
-    for (QComboBox *c : {m_rate, m_samples, m_mipmaps, m_depth}) connect(c, qOverload<int>(&QComboBox::activated), this, apply);
-    return g;
-}
-
-void CompositionPanel::refreshRenderDefaults()
-{
-    const Engine::RenderSettings d = m_engine->renderDefaults();
-    m_syncing = true;
-    m_rate->clear();
-    m_rate->addItem(QStringLiteral("Default (%1)").arg(renderChoice::frameRateName(d.frameRate)), -1.0);
-    for (double r : renderChoice::frameRates()) m_rate->addItem(renderChoice::frameRateName(r), r);
-    m_samples->clear();
-    m_samples->addItem(QStringLiteral("Default (%1)").arg(renderChoice::samplesName(d.samples)), -1);
-    for (int s : renderChoice::samples()) m_samples->addItem(renderChoice::samplesName(s), s);
-    m_mipmaps->clear();
-    m_mipmaps->addItem(QStringLiteral("Default (%1)").arg(d.mipmaps > 0 ? QStringLiteral("On") : QStringLiteral("Off")), -1);
-    m_mipmaps->addItem(QStringLiteral("Off"), 0);
-    m_mipmaps->addItem(QStringLiteral("On"), 1);
-    m_depth->clear();
-    m_depth->addItem(QStringLiteral("Default (%1)").arg(renderChoice::depthName(d.depth)), -1);
-    for (int b : renderChoice::depths()) m_depth->addItem(renderChoice::depthName(b), b);
-    m_syncing = false;
-    syncRendering();
-}
-
-void CompositionPanel::syncRendering()
-{
-    if (!m_rate) return;
-    const Engine::RenderSettings r = m_engine->renderSettings();
-    m_syncing = true;
-    m_rate->setCurrentIndex(std::max(0, m_rate->findData(r.frameRate < 0 ? -1.0 : r.frameRate)));
-    m_samples->setCurrentIndex(std::max(0, m_samples->findData(r.samples < 0 ? -1 : r.samples)));
-    m_mipmaps->setCurrentIndex(std::max(0, m_mipmaps->findData(r.mipmaps < 0 ? -1 : r.mipmaps)));
-    m_depth->setCurrentIndex(std::max(0, m_depth->findData(r.depth < 0 ? -1 : r.depth)));
-    m_syncing = false;
-}
 
 QWidget *CompositionPanel::buildComposition()
 {
@@ -383,7 +260,6 @@ void CompositionPanel::syncFromEngine()
     m_audioVolumeLabel->setText(volumeText(int(m_audioVolume->value())));
     m_audioMute->setChecked(m_engine->audioMuted());
     m_syncing = false;
-    syncRendering();
     refreshStatus();
 }
 

@@ -68,6 +68,23 @@ static QStringList easingCurveKeys()
             QStringLiteral("easeInOut"), QStringLiteral("easeInCubic"), QStringLiteral("easeOutCubic")};
 }
 
+// The object a field's row refers to: a layer of the memory, or (-1) its composition
+static QJsonObject rowObject(const Engine::Memory &m, int row)
+{
+    if (row < 0) return m.composition;
+    return row < m.layers.size() ? m.layers.at(row).toObject() : QJsonObject();
+}
+static bool setRowObject(Engine::Memory &m, int row, const QJsonObject &o)
+{
+    if (row < 0) {
+        m.composition = o;
+        return true;
+    }
+    if (row >= m.layers.size()) return false;
+    m.layers[row] = o;
+    return true;
+}
+
 // Value at `path` inside a JSON tree; a numeric component addresses an array.
 static QJsonValue jsonAt(const QJsonValue &root, const QStringList &path, int from = 0)
 {
@@ -383,7 +400,12 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
         emit edited();
     });
     connect(m_layers, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *it, int col) {
-        if (m_filling || col != 0 || !it->data(0, IdRole).isValid()) return;
+        if (m_filling || col != 0) return;
+        if (it->data(0, KeyRole).toString() == QLatin1String("composition")) {
+            setCompositionIncluded(selected(), it->checkState(0) == Qt::Checked);
+            return;
+        }
+        if (!it->data(0, IdRole).isValid()) return;
         setInclusion(selected(), it->data(0, IdRole).toULongLong(), it->checkState(0) == Qt::Checked);
     });
     connect(m_layers, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *it) {
@@ -465,6 +487,7 @@ void MemoryPanel::showInspector(int i)
     m_name->setText(m.name);
     m_fade->setValue(m.fade);
     QTreeWidgetItem *current = nullptr;
+    fillComposition(m.composition);
     for (int row = 0; row < m.layers.size(); ++row) {
         const QJsonObject o = m.layers[row].toObject();
         auto *it = new QTreeWidgetItem(m_layers, {(o.contains("parent") ? QStringLiteral("    ") : QString()) + o.value("name").toString(),
@@ -509,7 +532,7 @@ QTreeWidgetItem *MemoryPanel::addField(QTreeWidgetItem *parent, const MemField &
     m_fields.push_back(f);
     if (!f.timeKey.isEmpty()) {
         const Engine::Memory m = m_engine->memory(selected());
-        const QJsonValue t = m.layers.at(f.row).toObject().value("timing").toObject().value(f.timeKey);
+        const QJsonValue t = rowObject(m, f.row).value("timing").toObject().value(f.timeKey);
         it->setText(ColTime, timeText(t));
         it->setForeground(ColTime, t.isDouble() ? QColor(230, 230, 233) : QColor(130, 130, 136));
     }
@@ -528,7 +551,7 @@ void MemoryPanel::refreshRows()
             const QVariant fi = c->data(0, FieldRole);
             if (fi.isValid()) {
                 const MemField &f = m_fields[size_t(fi.toInt())];
-                const QJsonObject o = m.layers.at(f.row).toObject();
+                const QJsonObject o = rowObject(m, f.row);
                 c->setText(ColValue, f.kind == MemField::Info ? c->text(ColValue) : valueText(f, jsonAt(o, f.path)));
                 if (!f.timeKey.isEmpty()) {
                     const QJsonValue t = o.value("timing").toObject().value(f.timeKey);
@@ -579,7 +602,7 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
     }
     const MemField f = m_fields[size_t(fi.toInt())];
     const Engine::Memory m = m_engine->memory(mi);
-    const QJsonObject o = m.layers.at(f.row).toObject();
+    const QJsonObject o = rowObject(m, f.row);
     const QJsonValue value = jsonAt(o, f.path);
 
     // Where it is: layer › section › value
@@ -618,7 +641,7 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
         break;
     }
     case MemField::Bool: {
-        auto *c = new QCheckBox(f.label);
+        auto *c = new FlagBox(f.label);
         c->setChecked(value.toBool());
         m_detailLayout->addWidget(c);
         connect(c, &QCheckBox::toggled, this, [this, f](bool on) { applyField(f, QJsonValue(on)); });
@@ -650,8 +673,9 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
         auto *box = new QWidget;
         auto *bv = new QVBoxLayout(box);
         bv->setContentsMargins(0, 10, 0, 0);
-        bv->addWidget(new QLabel(f.timeKey == "source" ? QStringLiteral("<b>Transition of the source</b>")
-                                                        : QStringLiteral("<b>Transition</b>")));
+        bv->addWidget(new QLabel(f.timeKey == "source"         ? QStringLiteral("<b>Transition of the source</b>")
+                                 : f.timeKey == "text/content" ? QStringLiteral("<b>Typing (typewriter)</b>")
+                                                                : QStringLiteral("<b>Transition</b>")));
         auto *row = new QHBoxLayout;
         auto *group = new QButtonGroup(box);
         const char *names[] = {"CUT", "FOLLOW", "TIME"};
@@ -678,7 +702,8 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
         auto *note = new QLabel(QStringLiteral("CUT: at once · FOLLOW: the memory's fade (%1 s) · TIME: this value "
                                                "only, in its own time%2")
                                     .arg(m.fade, 0, 'f', 1)
-                                    .arg(f.timeKey == "roi" || f.timeKey == "mapping" || f.timeKey.startsWith("color/")
+                                    .arg(f.timeKey == "roi" || f.timeKey == "mapping" || f.timeKey.startsWith("color/") ||
+                                                     (f.timeKey.startsWith("text/") && f.timeKey.endsWith("olor"))
                                              ? QStringLiteral(" (shared by the whole %1)").arg(f.timeKey.section('/', -1))
                                              : QString()));
         note->setWordWrap(true);
@@ -795,9 +820,6 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         num(parent, QStringLiteral("Volume"), {"volume"}, 0, 2, 100, 0, QStringLiteral(" %"), 0.01);
         flag(parent, QStringLiteral("Muted"), {"muted"});
     }
-    if (type == "text") {
-        num(parent, QStringLiteral("Text Animation"), {"textAnimation"}, 0, 1, 100, 0, QStringLiteral(" %"), 0.01);
-    }
 
     // Parameters of a shader (generator or effect), from the values the memory holds
     auto isfParams = [&](QTreeWidgetItem *p, const QStringList &base, int slot) {
@@ -871,16 +893,39 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
             isfParams(sec, {"source", "params"}, -1);
         }
         if (type == "text") {
-            info(sec, QStringLiteral("Content"), jsonAt(o, {"source", "content"}).toString());
+            // Text generator: the text (its typing time: the typewriter), the words and switches set at once, the
+            // numbers that fade, each with its time and easing
+            QTreeWidgetItem *content = info(sec, QStringLiteral("Text"), jsonAt(o, {"source", "content"}).toString());
+            m_fields[size_t(content->data(0, FieldRole).toInt())].timeKey = Engine::timingKey({"source", "content"});
             info(sec, QStringLiteral("Font"), jsonAt(o, {"source", "font"}).toString());
-            num(sec, QStringLiteral("Size"), {"source", "size"}, 8, 512, 1, 0, QStringLiteral(" px"), 1);
-            info(sec, QStringLiteral("Color"), jsonAt(o, {"source", "color"}).toString());
-            choice(sec, QStringLiteral("Alignment"), {"source", "align"}, {"1", "4", "2", "32", "8", "16", "33", "36", "34"},
-                   {QStringLiteral("Left Top"), QStringLiteral("Center Top"), QStringLiteral("Right Top"),
-                    QStringLiteral("Left Center"), QStringLiteral("Center"), QStringLiteral("Right Center"),
-                    QStringLiteral("Left Bottom"), QStringLiteral("Center Bottom"), QStringLiteral("Right Bottom")});
-            num(sec, QStringLiteral("Line Height"), {"source", "lineHeight"}, 0.5, 3, 1, 2, QStringLiteral(" ×"), 0.05);
-            num(sec, QStringLiteral("Letter Spacing"), {"source", "letterSpacing"}, -20, 20, 1, 1, QStringLiteral(" px"), 0.5);
+            num(sec, QStringLiteral("Size"), {"source", "size"}, 1, 1000, 1, 0, QStringLiteral(" px"), 1);
+            static const char *kRgba[] = {"R", "G", "B", "A"};
+            auto rgba = [&](QTreeWidgetItem *p, const QString &label, const QString &key) {
+                for (int c = 0; c < 4; ++c)
+                    num(p, label + " " + QString::fromLatin1(kRgba[c]), {"source", key, QString::number(c)}, 0, 1, 255, 0,
+                        QString(), 1.0 / 255);
+            };
+            rgba(sec, QStringLiteral("Color"), QStringLiteral("color"));
+            flag(sec, QStringLiteral("Bold"), {"source", "bold"});
+            flag(sec, QStringLiteral("Italic"), {"source", "italic"});
+            flag(sec, QStringLiteral("Underline"), {"source", "underline"});
+            flag(sec, QStringLiteral("Strikethrough"), {"source", "strike"});
+            choice(sec, QStringLiteral("Align"), {"source", "hAlign"}, {"left", "center", "right", "justify"},
+                   {QStringLiteral("Left"), QStringLiteral("Center"), QStringLiteral("Right"), QStringLiteral("Justified")});
+            choice(sec, QStringLiteral("Vertical"), {"source", "vAlign"}, {"top", "middle", "bottom"},
+                   {QStringLiteral("Top"), QStringLiteral("Middle"), QStringLiteral("Bottom")});
+            num(sec, QStringLiteral("Line spacing"), {"source", "lineHeight"}, 0.1, 10, 1, 2, QStringLiteral(" ×"), 0.05);
+            num(sec, QStringLiteral("Letter spacing"), {"source", "letterSpacing"}, -200, 500, 1, 1, QStringLiteral(" px"), 0.5);
+            QTreeWidgetItem *outline = section(sec, QStringLiteral("Outline"), QStringLiteral("textOutline"));
+            num(outline, QStringLiteral("Width"), {"source", "outline"}, 0, 200, 1, 1, QStringLiteral(" px"), 0.5);
+            rgba(outline, QStringLiteral("Color"), QStringLiteral("outlineColor"));
+            expand(outline);
+            QTreeWidgetItem *shadow = section(sec, QStringLiteral("Shadow"), QStringLiteral("textShadow"));
+            flag(shadow, QStringLiteral("On"), {"source", "shadow"});
+            rgba(shadow, QStringLiteral("Color"), QStringLiteral("shadowColor"));
+            num(shadow, QStringLiteral("X"), {"source", "shadowX"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
+            num(shadow, QStringLiteral("Y"), {"source", "shadowY"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
+            expand(shadow);
             num(sec, QStringLiteral("Width"), {"source", "width"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
             num(sec, QStringLiteral("Height"), {"source", "height"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
         }
@@ -964,8 +1009,7 @@ void MemoryPanel::applyField(const MemField &f, const QJsonValue &value)
     const int i = selected();
     if (i < 0) return;
     Engine::Memory m = m_engine->memory(i);
-    if (f.row < 0 || f.row >= m.layers.size()) return;
-    m.layers[f.row] = jsonWith(m.layers[f.row].toObject(), f.path, value).toObject();
+    if (!setRowObject(m, f.row, jsonWith(rowObject(m, f.row), f.path, value).toObject())) return;
     m_applying = true;
     m_engine->setMemory(i, m);
     m_applying = false;
@@ -979,14 +1023,14 @@ void MemoryPanel::applyTime(int row, const QString &key, double seconds)
     const int i = selected();
     if (i < 0 || key.isEmpty()) return;
     Engine::Memory m = m_engine->memory(i);
-    if (row < 0 || row >= m.layers.size()) return;
-    QJsonObject o = m.layers[row].toObject();
+    if (row >= m.layers.size()) return;
+    QJsonObject o = rowObject(m, row);
     QJsonObject timing = o.value("timing").toObject();
     if (seconds < 0) timing.remove(key);
     else timing[key] = seconds;
     if (timing.isEmpty()) o.remove("timing");
     else o["timing"] = timing;
-    m.layers[row] = o;
+    setRowObject(m, row, o);
     m_applying = true;
     m_engine->setMemory(i, m);
     m_applying = false;
@@ -1000,13 +1044,13 @@ void MemoryPanel::applyEasingCurve(int row, const QString &paramKey, const QStri
     const int i = selected();
     if (i < 0 || paramKey.isEmpty() || curveKey.isEmpty()) return;
     Engine::Memory m = m_engine->memory(i);
-    if (row < 0 || row >= m.layers.size()) return;
-    QJsonObject o = m.layers[row].toObject();
+    if (row >= m.layers.size()) return;
+    QJsonObject o = rowObject(m, row);
     QJsonObject timing = o.value("timing").toObject();
     const QString key = paramKey + "/curve";
     timing[key] = curveKey;
     o["timing"] = timing;
-    m.layers[row] = o;
+    setRowObject(m, row, o);
     m_applying = true;
     m_engine->setMemory(i, m);
     m_applying = false;
@@ -1019,6 +1063,7 @@ void MemoryPanel::store()
     Engine::Memory m;
     m.name = QStringLiteral("Memory %1").arg(m_engine->memoryCount() + 1);
     m.layers = m_engine->captureLayers();
+    m.composition = m_engine->captureComposition();
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     const int i = m_engine->addMemory(m);
     m_list->setCurrentItem(m_list->topLevelItem(i));
@@ -1054,6 +1099,13 @@ void MemoryPanel::updateMemory(int i)
         layers[k] = o;
     }
     m.layers = layers;
+    // The composition: left out stays out, its times are kept
+    QJsonObject comp = m_engine->captureComposition();
+    if (!m.composition.isEmpty()) {
+        comp["included"] = m.composition.value("included").toBool(true);
+        if (m.composition.contains("timing")) comp["timing"] = m.composition.value("timing");
+    }
+    m.composition = comp;
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     m_engine->setMemory(i, m);
     emit edited();
@@ -1066,6 +1118,62 @@ void MemoryPanel::removeMemory(int i)
     else if (m_active > i) --m_active;
     m_engine->removeMemory(i);
     emit edited();
+}
+
+void MemoryPanel::setCompositionIncluded(int i, bool included)
+{
+    if (i < 0) return;
+    Engine::Memory m = m_engine->memory(i);
+    if (m.composition.isEmpty()) m.composition = m_engine->captureComposition();
+    m.composition["included"] = included;
+    m_applying = true;
+    m_engine->setMemory(i, m);
+    m_applying = false;
+    emit edited();
+}
+
+// The composition in the memory: its level, the sound's volume and mute (a memory stored before they were kept:
+// nothing, the recall leaves them)
+void MemoryPanel::fillComposition(const QJsonObject &c)
+{
+    auto *top = new QTreeWidgetItem(m_layers, {QStringLiteral("Composition"),
+                                               c.isEmpty() ? QStringLiteral("—")
+                                                           : QStringLiteral("%1%").arg(std::lround(c.value("level").toDouble(1) * 100))});
+    top->setData(0, KeyRole, QStringLiteral("composition"));
+    QFont bold = top->font(0);
+    bold.setBold(true);
+    top->setFont(0, bold);
+    if (c.isEmpty()) {
+        top->setFlags(Qt::ItemIsEnabled);
+        top->setToolTip(0, QStringLiteral("Stored before memories kept the composition: Update to add it"));
+        return;
+    }
+    top->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+    top->setCheckState(0, c.value("included").toBool(true) ? Qt::Checked : Qt::Unchecked);
+    auto num = [&](const QString &label, const QString &key, double hi, const QString &tip) {
+        MemField f;
+        f.kind = MemField::Number;
+        f.row = -1;
+        f.path = {key};
+        f.min = 0;
+        f.max = hi;
+        f.scale = 100;
+        f.decimals = 0;
+        f.suffix = QStringLiteral(" %");
+        f.step = 0.01;
+        f.label = label;
+        f.timeKey = key;
+        addField(top, f, c.value(key))->setToolTip(0, tip);
+    };
+    num(QStringLiteral("Level"), QStringLiteral("level"), 1, QStringLiteral("The composition fader (the blackout stays apart)"));
+    num(QStringLiteral("Volume"), QStringLiteral("volume"), 2, QStringLiteral("Master volume of the sound"));
+    MemField mute;
+    mute.kind = MemField::Bool;
+    mute.row = -1;
+    mute.path = {QStringLiteral("muted")};
+    mute.label = QStringLiteral("Mute");
+    addField(top, mute, c.value("muted"));
+    top->setExpanded(m_expanded.contains(QStringLiteral("composition")));
 }
 
 void MemoryPanel::setInclusion(int i, quint64 id, bool included)

@@ -683,6 +683,92 @@ int main(int argc, char **argv)
             CHECK(Engine::timingKey({"source", "roi", "2"}) == "roi" && Engine::timingKey({"color", "add", "1"}) == "color/add" &&
                   Engine::timingKey({"effects", "0", "params", "radius"}) == "effects/0/params/radius" &&
                   Engine::timingKey({"source", "speed"}).isEmpty());
+            // Text generator: the memory's text is typed over its time (erased back to what both share, then
+            // typed); its style moves on its own times
+            {
+                const int xi = e.addLayer("Words", e.layerCount());
+                const quint64 xid = e.layerId(xi);
+                auto X = [&] { return e.layer(e.indexOfId(xid)); };
+                CHECK(e.setLayerText(xi) && X()->type == SourceType::Text);
+                e.setLayerTextContent(xi, "Hello");
+                e.editLayerText(xi, [](Layer &l) {
+                    l.text.size = 40;
+                    l.text.color = Qt::white;
+                });
+                QJsonObject st = e.layerJson(e.indexOfId(xid));
+                QJsonObject src = st.value("source").toObject();
+                CHECK(src.value("type") == "text" && src.value("color").isArray() && src.value("hAlign") == "center");
+                src["content"] = "Help me";
+                src["size"] = 80;
+                src["bold"] = true;
+                src["color"] = QJsonArray{1, 0, 0, 1};
+                st["source"] = src;
+                st["timing"] = QJsonObject{{"text/size", 2.0}, {"text/color", 0}};
+                e.applyLayers(QJsonArray{st}, 1.0);
+                CHECK(X()->text.content == "Help me" && X()->text.shown() == "Hello" && X()->text.bold);
+                CHECK(X()->text.color == QColor(255, 0, 0)); // a cut
+                e.advanceFades(0.5); // 6 steps (erase "lo", type "p me") at an even pace: 3 done
+                CHECK(X()->text.shown() == "Help" && X()->text.size > 40 && X()->text.size < 80);
+                e.advanceFades(0.6);
+                CHECK(X()->text.shown() == "Help me" && X()->text.size < 80 && e.isFading());
+                e.advanceFades(1.0);
+                CHECK(X()->text.size == 80 && !e.isFading());
+                // Typed by hand: no typewriter
+                e.setLayerTextContent(xi, "Hi");
+                CHECK(X()->text.shown() == "Hi");
+                // A cut types nothing
+                src["content"] = "Cut";
+                st["source"] = src;
+                st["timing"] = QJsonObject{{"text/content", 0}};
+                e.applyLayers(QJsonArray{st}, 1.0);
+                CHECK(X()->text.shown() == "Cut");
+                e.advanceFades(3.0);
+                CHECK(Engine::timingKey({"source", "color", "2"}) == "text/color" &&
+                      Engine::timingKey({"source", "content"}) == "text/content" &&
+                      Engine::timingKey({"source", "params", "size"}) == "source/params/size");
+                // Kept in range when read from a file
+                src["size"] = 100000;
+                src["lineHeight"] = -3;
+                st["source"] = src;
+                st.remove("timing");
+                e.applyLayers(QJsonArray{st}, 0.0);
+                CHECK(X()->text.size == 1000 && X()->text.lineHeight > 0);
+                e.removeLayer(e.indexOfId(xid));
+            }
+            // The composition in a memory: its level and the sound's volume fade on their times, mute at once
+            {
+                e.fadeMaster(1.0, 0);
+                e.setAudioVolume(1.0f);
+                e.setAudioMuted(false);
+                QJsonObject c = e.captureComposition();
+                CHECK(c.value("included").toBool() && c.value("level").toDouble() == 1.0 && c.contains("volume"));
+                c["level"] = 0.0;
+                c["volume"] = 0.5;
+                c["muted"] = true;
+                c["timing"] = QJsonObject{{"volume", 0}};
+                e.applyComposition(c, 1.0);
+                CHECK(std::abs(e.audioVolume() - 0.5f) < 1e-6 && e.audioMuted() && e.masterTarget() > 0.99);
+                e.advanceFades(0.5);
+                CHECK(e.masterTarget() > 0.05 && e.masterTarget() < 0.95);
+                e.advanceFades(0.6);
+                CHECK(e.masterTarget() == 0.0);
+                // Left out: nothing moves
+                c["included"] = false;
+                c["level"] = 1.0;
+                e.applyComposition(c, 0.0);
+                CHECK(e.masterTarget() == 0.0);
+                // Saved with the project
+                Engine::Memory mc;
+                mc.name = "Comp";
+                mc.composition = c;
+                const int mi = e.addMemory(mc);
+                CHECK(e.saveProject(tmp + "/comp.fulskrin", {}, &err));
+                CHECK(readJson(tmp + "/comp.fulskrin").value("memories").toArray().at(mi).toObject().value("composition") == c);
+                e.removeMemory(mi);
+                e.fadeMaster(1.0, 0);
+                e.setAudioVolume(1.0f);
+                e.setAudioMuted(false);
+            }
             // Soft edge (crop) and per-viewport opacity: stored, recalled, and faded
             {
                 const quint64 vp = 4242;
@@ -1127,13 +1213,13 @@ int main(int argc, char **argv)
         CHECK(renderBits() == 16 && e.effectiveRender().depth == 10);
         CHECK(std::abs(c10.red() - c8.red()) <= 1 && std::abs(c10.green() - c8.green()) <= 1 && std::abs(c10.blue() - c8.blue()) <= 1);
         CHECK(std::abs(c10.red() - 100) <= 1 && std::abs(c10.green() - 50) <= 1); // half of (200, 100, 50)
-        // A project keeps its own choice; the default applies when it has none
+        // Rendering is the machine's (Settings): a project does not keep it
         const QString p = tmp + "/depth.fulskrin";
         CHECK(e.saveProject(p, QJsonObject(), &err));
         e.newProject();
         CHECK(e.renderSettings().depth == -1);
         CHECK(e.loadProject(p, nullptr, &err));
-        CHECK(e.renderSettings().depth == 10);
+        CHECK(e.renderSettings().depth == -1 && !readJson(p).contains("render"));
         Engine::RenderSettings d = e.renderDefaults();
         d.depth = 10;
         e.setRenderDefaults(d);
@@ -1406,14 +1492,14 @@ int main(int argc, char **argv)
         e.setRenderSettings(rs);
         const auto [lo, hi] = spread();
         CHECK(lo > 90 && hi < 165); // grey everywhere
-        // Saved with the project
+        // Not saved with the project: the machine's choice applies to every project
         rs = Engine::RenderSettings{30, 8, 1};
         e.setRenderSettings(rs);
         CHECK(e.saveProject(tmp + "/render.fulskrin", {}, &err));
         e.newProject();
         CHECK(e.renderSettings().frameRate < 0 && e.renderSettings().samples < 0); // a new project: the defaults
         CHECK(e.loadProject(tmp + "/render.fulskrin", nullptr, &err));
-        CHECK(e.renderSettings().frameRate == 30 && e.renderSettings().samples == 8 && e.renderSettings().mipmaps == 1);
+        CHECK(e.renderSettings().frameRate < 0 && e.renderSettings().samples < 0 && e.renderSettings().mipmaps < 0);
         e.setRenderSettings({});
     }
 

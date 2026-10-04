@@ -301,6 +301,7 @@ SetStructure::SetStructure(Engine *e, const LayerTree &before, const LayerTree &
 RecallMemory::RecallMemory(Engine *e, int memory) : m_e(e), m_memory(memory)
 {
     m_before = e->captureLayers();
+    m_beforeComposition = e->captureComposition();
     setText(QStringLiteral("Recall \"%1\"").arg(e->memory(memory).name));
 }
 
@@ -310,7 +311,9 @@ void RecallMemory::redo()
         m_first = false;
         m_e->recallMemory(m_memory);
     } else {
-        m_e->applyLayers(m_e->memory(m_memory).layers, 0, true);
+        const Engine::Memory m = m_e->memory(m_memory);
+        if (!m.layers.isEmpty()) m_e->applyLayers(m.layers, 0, true);
+        m_e->applyComposition(m.composition, 0);
     }
 }
 

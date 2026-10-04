@@ -156,7 +156,7 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
         QStringLiteral("Spout: shares the picture with apps on the same PC (Resolume, TouchDesigner, OBS…)."),
     };
     for (int k = 0; k < kPublishKindCount; ++k) {
-        m_pubEnabled[k] = new QCheckBox(publishKindName(PublishKind(k)));
+        m_pubEnabled[k] = new FlagBox(publishKindName(PublishKind(k)));
         m_pubEnabled[k]->setToolTip(tips[k]);
         m_pubEnabled[k]->setChecked(ps.targets[k].enabled);
         m_pubName[k] = new QLineEdit(ps.targets[k].name);

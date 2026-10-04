@@ -12,11 +12,15 @@
 inline constexpr int kMeshSubdiv = 40;
 
 // Resources removed from the composition (under lock), then released in the render thread.
+// The Text generator's settings in a layer state (Project.cpp)
+QJsonObject textJson(const TextSource &t);
+void readTextJson(TextSource &t, const QJsonObject &o); // onto the current values, then kept in range
+
 struct Engine::Garbage {
     std::unique_ptr<VideoDecoder> video;
     std::unique_ptr<VideoTexture> videoTex;
     std::shared_ptr<AudioStream> audio;
-    Texture2D tex;
+    Texture2D tex, textTex;
     std::unique_ptr<IsfInstance> generator;
     RenderTarget generatorTarget;
     std::vector<std::unique_ptr<IsfInstance>> effects;

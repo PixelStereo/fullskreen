@@ -229,7 +229,7 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     m_del->setToolTip(QStringLiteral("Delete the sequence"));
     for (QPushButton *b : {m_add, m_dup, m_del}) sb->addWidget(b);
     left->addLayout(sb);
-    m_loop = new QCheckBox(QStringLiteral("Loop: GO on the last step plays the first"));
+    m_loop = new FlagBox(QStringLiteral("Loop: GO on the last step plays the first"));
     left->addWidget(m_loop);
     h->addLayout(left, 1);
 

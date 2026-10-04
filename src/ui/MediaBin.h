@@ -30,6 +30,7 @@ signals:
 private:
     void probe(const QString &path);
     void refreshIsf();
+    void refreshInputs(); // Inputs: the built-in generators that are not ISF (Text)
     void updateButtons();
     void importDialog();
     void relinkSelected();
@@ -40,7 +41,7 @@ private:
 
     Engine *m_engine;
     QTreeWidget *m_tree;
-    QTreeWidgetItem *m_videos, *m_images, *m_audios, *m_isf, *m_isfGenerators;
+    QTreeWidgetItem *m_videos, *m_images, *m_audios, *m_inputs, *m_isf, *m_isfGenerators;
     QPushButton *m_relink, *m_remove, *m_reveal;
     QLabel *m_summary;
     QLineEdit *m_search = nullptr;

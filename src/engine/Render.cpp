@@ -3,6 +3,8 @@
 #include "EngineInternal.h"
 
 #include <map>
+#include <memory>
+#include <vector>
 
 #include <QFont>
 #include <QFontMetrics>
@@ -27,92 +29,83 @@
 #define GL_MAP_READ_BIT 0x0001
 #endif
 
-// Render text layer to QImage with word wrapping, line breaking, and animation support
-static QImage renderTextLayer(const Layer &l)
+// The Text generator's picture: the text shown now (typed so far, during a typewriter), wrapped to the layer's
+// width, with its alignment (left, center, right, justified; top, middle, bottom), line spacing and letter spacing.
+// Flipped like the images (the sources are stored bottom-up).
+static QImage renderTextLayer(const Layer &l, const QString &text)
 {
-    const int w = std::max(1, l.textWidth), h = std::max(1, l.textHeight);
-    QImage img(w, h, QImage::Format_RGBA8888);
+    const int w = std::max(1, l.text.width), h = std::max(1, l.text.height);
+    QImage img(w, h, QImage::Format_RGBA8888_Premultiplied);
     img.fill(Qt::transparent);
+    if (text.isEmpty()) return img.convertToFormat(QImage::Format_RGBA8888);
 
-    if (l.textContent.isEmpty()) return img;
+    QFont font(l.text.font);
+    font.setPixelSize(std::max(1, l.text.size));
+    font.setLetterSpacing(QFont::AbsoluteSpacing, l.text.letterSpacing);
+    font.setBold(l.text.bold);
+    font.setItalic(l.text.italic);
+    font.setUnderline(l.text.underline);
+    font.setStrikeOut(l.text.strike);
 
-    QPainter painter(&img);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    // Set up font
-    QFont font(l.textFont);
-    font.setPixelSize(l.textSize);
-    painter.setFont(font);
-
-    // Apply text animation as opacity if it's a numeric fade (0..1)
-    QColor textColor = l.textColor;
-    if (l.textAnimation >= 0.0 && l.textAnimation <= 1.0) {
-        textColor.setAlphaF(l.textColor.alphaF() * l.textAnimation);
-    }
-    painter.setPen(textColor);
-
-    // Use QTextLayout for word wrapping and line breaking
-    QTextLayout layout(l.textContent, font);
     QTextOption option;
     option.setWrapMode(QTextOption::WordWrap);
-    option.setAlignment(Qt::Alignment(l.textAlign));
-    layout.setTextOption(option);
+    option.setAlignment(l.text.align & Qt::AlignHorizontal_Mask ? (l.text.align & Qt::AlignHorizontal_Mask) : Qt::AlignLeft);
 
-    // Calculate line spacing
-    QFontMetrics fm(font);
-    const int lineHeight = int(fm.lineSpacing() * l.textLineHeight);
-
-    // Layout the text with wrapping
-    layout.beginLayout();
-    QVector<QTextLine> lines;
-    int y = 0;
-    while (y + lineHeight <= h) {
-        QTextLine line = layout.createLine();
-        if (!line.isValid()) break;
-        line.setLineWidth(w);
-        line.setPosition(QPointF(0, y));
-        lines.append(line);
-        y += lineHeight;
-    }
-    layout.endLayout();
-
-    if (lines.isEmpty()) {
-        painter.end();
-        return img;
-    }
-
-    // Calculate total height for vertical alignment
-    const int totalHeight = lineHeight * lines.size();
-    int yOffset = 0;
-    if (l.textAlign & Qt::AlignBottom) {
-        yOffset = h - totalHeight;
-    } else if (l.textAlign & Qt::AlignVCenter) {
-        yOffset = (h - totalHeight) / 2;
-    }
-
-    // Draw all lines
-    for (int i = 0; i < lines.size(); ++i) {
-        const QTextLine &line = lines[i];
-        const int lineY = yOffset + i * lineHeight;
-
-        // Apply letter spacing if needed
-        if (std::abs(l.textLetterSpacing) > 1e-6f) {
-            // For custom letter spacing, draw character by character
-            const QString lineText = l.textContent.mid(line.textStart(), line.textLength());
-            float charX = 0;
-            for (int j = 0; j < lineText.length(); ++j) {
-                painter.drawText(QPointF(charX, lineY + fm.ascent()), lineText.mid(j, 1));
-                charX += fm.horizontalAdvance(lineText[j]) + l.textLetterSpacing;
-            }
-        } else {
-            // Standard text drawing without custom letter spacing
-            painter.drawText(QPointF(0, lineY + fm.ascent()), l.textContent.mid(line.textStart(), line.textLength()));
+    // One layout per paragraph (a line break starts another)
+    const QFontMetricsF fm(font);
+    const double step = fm.lineSpacing() * std::max(0.1f, l.text.lineHeight);
+    struct Line { QTextLayout *layout; QTextLine line; double y; };
+    std::vector<std::unique_ptr<QTextLayout>> layouts;
+    std::vector<Line> lines;
+    double y = 0;
+    for (const QString &para : text.split(QChar('\n'))) {
+        auto layout = std::make_unique<QTextLayout>(para.isEmpty() ? QStringLiteral(" ") : para, font);
+        layout->setTextOption(option);
+        layout->beginLayout();
+        for (;;) {
+            QTextLine line = layout->createLine();
+            if (!line.isValid()) break;
+            line.setLineWidth(w);
+            line.setPosition(QPointF(0, y));
+            lines.push_back({layout.get(), line, y});
+            y += step;
         }
+        layout->endLayout();
+        layouts.push_back(std::move(layout));
     }
+    const double total = y;
+    double top = 0;
+    if (l.text.align & Qt::AlignBottom) top = h - total;
+    else if (l.text.align & Qt::AlignVCenter) top = (h - total) / 2;
 
+    QPainter painter(&img);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::TextAntialiasing);
+    painter.setFont(font);
+    // The lines drawn in one color at an offset; the layout's alignment applies inside the width
+    auto draw = [&](const QColor &c, double dx, double dy) {
+        painter.setPen(c);
+        for (const Line &ln : lines) ln.line.draw(&painter, QPointF(dx, top + dy));
+    };
+    // The outline: the text repeated around its place (a ring of copies), under the fill
+    auto drawOutlined = [&](const QColor &outline, const QColor &fill, double dx, double dy, bool withFill) {
+        if (l.text.outline > 0.01f) {
+            const int n = std::clamp(int(l.text.outline * 6), 16, 48);
+            for (int k = 0; k < n; ++k) {
+                const double a = 2 * M_PI * k / n;
+                draw(outline, dx + std::cos(a) * l.text.outline, dy + std::sin(a) * l.text.outline);
+            }
+        }
+        if (withFill) draw(fill, dx, dy);
+    };
+    if (l.text.shadow) { // the shadow has the shape of the text and its outline, in its own color
+        QColor sc = l.text.shadowColor;
+        if (l.text.outline > 0.01f) drawOutlined(sc, sc, l.text.shadowX, l.text.shadowY, true);
+        else draw(sc, l.text.shadowX, l.text.shadowY);
+    }
+    drawOutlined(l.text.outlineColor, l.text.color, 0, 0, true);
     painter.end();
-    return img;
+    return img.convertToFormat(QImage::Format_RGBA8888).mirrored(false, true);
 }
 
 void Engine::drawQuad()
@@ -297,14 +290,23 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
         }
         break;
     case SourceType::Text: {
-        // Render text layer to image and upload to GPU
-        const QImage textImg = renderTextLayer(l);
-        if (!textImg.isNull()) {
-            l.textSourceTex.upload(textImg.constBits(), textImg.width(), textImg.height());
-            tex = l.textSourceTex.tex;
-            w = l.textSourceTex.w;
-            h = l.textSourceTex.h;
+        // Redrawn only when what is shown changes (typed characters, edits, style)
+        const QString shown = l.text.shown();
+        const QString key = QStringLiteral("%1\n%2|%3|%4|%5|%6|%7|%8x%9|%10").arg(shown, l.text.font).arg(l.text.size)
+                                .arg(l.text.color.name(QColor::HexArgb)).arg(int(l.text.align))
+                                .arg(l.text.lineHeight).arg(l.text.letterSpacing).arg(l.text.width).arg(l.text.height)
+                                .arg(QStringLiteral("%1%2%3%4|%5%6|%7%8|%9").arg(l.text.bold).arg(l.text.italic).arg(l.text.underline)
+                                         .arg(l.text.strike).arg(l.text.outline).arg(l.text.outlineColor.name(QColor::HexArgb))
+                                         .arg(l.text.shadow).arg(l.text.shadowColor.name(QColor::HexArgb))
+                                         .arg(QStringLiteral("%1,%2").arg(l.text.shadowX).arg(l.text.shadowY)));
+        if (!l.textTex.tex || key != l.textKey) {
+            const QImage img = renderTextLayer(l, shown);
+            l.textTex.upload(img.constBits(), img.width(), img.height());
+            l.textKey = key;
         }
+        tex = l.textTex.tex;
+        w = l.textTex.w;
+        h = l.textTex.h;
         break;
     }
     default: break;
@@ -741,6 +743,8 @@ void Engine::frame(double dt)
     if (!m_fadesManual) {
         stepFade(m_realDt);
         stepTransitions(m_realDt);
+        stepTypewriters(m_realDt);
+        stepCompositionFade(m_realDt);
     }
     markNeeded();
     for (auto &l : m_layers) updateSource(*l, dt);

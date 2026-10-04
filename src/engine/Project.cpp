@@ -9,6 +9,78 @@
 #include <QSaveFile>
 #include <cmath>
 
+// The Text generator in a layer state: colors as [r, g, b, a] (0..1, so that a memory's panel edits and fades them
+// like the shaders' colors), alignment as words.
+static QJsonArray colorJson(const QColor &c) { return QJsonArray{c.redF(), c.greenF(), c.blueF(), c.alphaF()}; }
+static QColor colorFromJson(const QJsonValue &v, const QColor &fallback)
+{
+    if (v.isString()) {
+        const QColor c(v.toString());
+        return c.isValid() ? c : fallback;
+    }
+    const QJsonArray a = v.toArray();
+    if (a.size() < 3) return fallback;
+    auto ch = [&](int k, double d) { return std::clamp(k < a.size() ? a[k].toDouble(d) : d, 0.0, 1.0); };
+    return QColor::fromRgbF(float(ch(0, 0)), float(ch(1, 0)), float(ch(2, 0)), float(ch(3, 1)));
+}
+static const char *const kHAlign[] = {"left", "center", "right", "justify"};
+static const Qt::AlignmentFlag kHFlag[] = {Qt::AlignLeft, Qt::AlignHCenter, Qt::AlignRight, Qt::AlignJustify};
+static const char *const kVAlign[] = {"top", "middle", "bottom"};
+static const Qt::AlignmentFlag kVFlag[] = {Qt::AlignTop, Qt::AlignVCenter, Qt::AlignBottom};
+
+QJsonObject textJson(const TextSource &t)
+{
+    QString h = QStringLiteral("left"), v = QStringLiteral("top");
+    for (int k = 0; k < 4; ++k)
+        if (t.align & kHFlag[k]) h = QString::fromLatin1(kHAlign[k]);
+    for (int k = 0; k < 3; ++k)
+        if (t.align & kVFlag[k]) v = QString::fromLatin1(kVAlign[k]);
+    return QJsonObject{{"content", t.content},       {"font", t.font},
+                       {"size", t.size},             {"color", colorJson(t.color)},
+                       {"hAlign", h},                {"vAlign", v},
+                       {"lineHeight", t.lineHeight}, {"letterSpacing", t.letterSpacing},
+                       {"bold", t.bold},             {"italic", t.italic},
+                       {"underline", t.underline},   {"strike", t.strike},
+                       {"outline", t.outline},       {"outlineColor", colorJson(t.outlineColor)},
+                       {"shadow", t.shadow},         {"shadowColor", colorJson(t.shadowColor)},
+                       {"shadowX", t.shadowX},       {"shadowY", t.shadowY},
+                       {"width", t.width},           {"height", t.height}};
+}
+
+// Onto the current values: what the state does not hold stays as it is
+void readTextJson(TextSource &t, const QJsonObject &o)
+{
+    t.content = o.value("content").toString(t.content);
+    t.font = o.value("font").toString(t.font);
+    t.size = o.value("size").toInt(t.size);
+    t.color = colorFromJson(o.value("color"), t.color);
+    if (o.contains("hAlign") || o.contains("vAlign")) {
+        int h = Qt::AlignLeft, v = Qt::AlignTop;
+        for (int k = 0; k < 4; ++k)
+            if (o.value("hAlign").toString() == QLatin1String(kHAlign[k])) h = kHFlag[k];
+        for (int k = 0; k < 3; ++k)
+            if (o.value("vAlign").toString() == QLatin1String(kVAlign[k])) v = kVFlag[k];
+        t.align = Qt::Alignment(h | v);
+    } else if (o.contains("align")) {
+        t.align = Qt::Alignment(o.value("align").toInt(int(t.align)));
+    }
+    t.lineHeight = float(o.value("lineHeight").toDouble(t.lineHeight));
+    t.letterSpacing = float(o.value("letterSpacing").toDouble(t.letterSpacing));
+    t.bold = o.value("bold").toBool(t.bold);
+    t.italic = o.value("italic").toBool(t.italic);
+    t.underline = o.value("underline").toBool(t.underline);
+    t.strike = o.value("strike").toBool(t.strike);
+    t.outline = float(o.value("outline").toDouble(t.outline));
+    t.outlineColor = colorFromJson(o.value("outlineColor"), t.outlineColor);
+    t.shadow = o.value("shadow").toBool(t.shadow);
+    t.shadowColor = colorFromJson(o.value("shadowColor"), t.shadowColor);
+    t.shadowX = float(o.value("shadowX").toDouble(t.shadowX));
+    t.shadowY = float(o.value("shadowY").toDouble(t.shadowY));
+    t.width = o.value("width").toInt(t.width);
+    t.height = o.value("height").toInt(t.height);
+    t.sanitize();
+}
+
 QString Engine::projectPath() const
 {
     Lock lk(&m_mutex);
@@ -157,15 +229,8 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         break;
     case SourceType::Text: {
         src["type"] = "text";
-        src["content"] = l.textContent;
-        src["font"] = l.textFont;
-        src["size"] = l.textSize;
-        src["color"] = l.textColor.name();
-        src["align"] = int(l.textAlign);
-        src["lineHeight"] = l.textLineHeight;
-        src["letterSpacing"] = l.textLetterSpacing;
-        src["width"] = l.textWidth;
-        src["height"] = l.textHeight;
+        const QJsonObject tj = textJson(l.text);
+        for (auto it = tj.constBegin(); it != tj.constEnd(); ++it) src[it.key()] = it.value();
         break;
     }
     default:
@@ -313,15 +378,8 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         Lock lk(&m_mutex);
         Layer *l = layer(index);
         l->type = SourceType::Text;
-        l->textContent = src.value("content").toString();
-        l->textFont = src.value("font").toString("Arial");
-        l->textSize = src.value("size").toInt(48);
-        l->textColor = QColor(src.value("color").toString("#ffffff"));
-        l->textAlign = Qt::Alignment(src.value("align").toInt(int(Qt::AlignCenter)));
-        l->textLineHeight = float(src.value("lineHeight").toDouble(1.2));
-        l->textLetterSpacing = float(src.value("letterSpacing").toDouble(0.0));
-        l->textWidth = src.value("width").toInt(1920);
-        l->textHeight = src.value("height").toInt(1080);
+        l->text = TextSource{};
+        readTextJson(l->text, src);
     }
 
     for (const QJsonValue &v : o.value("effects").toArray()) {
@@ -354,8 +412,6 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         root["app"] = "Fulskrin";
         root["formatVersion"] = 1;
         root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()}};
-        root["render"] = QJsonObject{{"frameRate", m_render.frameRate}, {"antialiasing", m_render.samples},
-                                     {"mipmaps", m_render.mipmaps}, {"depth", m_render.depth}};
         QJsonArray layers;
         for (const auto &l : m_layers) layers.append(layerToJson(*l, dir));
         root["layers"] = layers;
@@ -402,15 +458,8 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     clearProject();
     const QJsonObject comp = root.value("composition").toObject();
     setCompositionSize(QSize(comp.value("width").toInt(1920), comp.value("height").toInt(1080)));
-    {
-        const QJsonObject r = root.value("render").toObject();
-        RenderSettings rs;
-        rs.frameRate = std::clamp(r.value("frameRate").toDouble(-1), -1.0, 1000.0);
-        rs.samples = std::clamp(r.value("antialiasing").toInt(-1), -1, 16);
-        rs.mipmaps = std::clamp(r.value("mipmaps").toInt(-1), -1, 1);
-        rs.depth = r.value("depth").toInt(-1) == 10 ? 10 : (r.value("depth").toInt(-1) == 8 ? 8 : -1);
-        setRenderSettings(rs);
-    }
+    // Rendering is the machine's (Settings): a "render" saved by earlier versions in the project is ignored
+    setRenderSettings(RenderSettings());
     const QString dir = QFileInfo(path).absolutePath();
     QStringList warnings;
     const QJsonArray layers = root.value("layers").toArray();

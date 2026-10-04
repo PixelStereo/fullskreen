@@ -392,7 +392,7 @@ void ColorEditor::build(const QString &title)
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(4);
     auto *head = new QHBoxLayout;
-    m_switch = new QCheckBox;
+    m_switch = new FlagBox;
     m_switch->setChecked(true);
     m_switch->hide();
     head->addWidget(m_switch);
@@ -714,6 +714,104 @@ private:
 
 NumberBox::NumberBox(QWidget *parent) : QDoubleSpinBox(parent) { new NumberDrag(this, lineEdit()); }
 IntBox::IntBox(QWidget *parent) : QSpinBox(parent) { new NumberDrag(this, lineEdit()); }
+
+namespace {
+QColor flagEdge(bool hover, bool enabled)
+{
+    QColor c = hover ? QColor(165, 165, 172) : QColor(105, 105, 112);
+    if (!enabled) c.setAlphaF(0.45);
+    return c;
+}
+} // namespace
+
+FlagBox::FlagBox(QWidget *parent) : FlagBox(QString(), parent) {}
+FlagBox::FlagBox(const QString &text, QWidget *parent) : QCheckBox(text, parent)
+{
+    setCursor(Qt::PointingHandCursor);
+    connect(theme::notifier(), &theme::Notifier::changed, this, qOverload<>(&QWidget::update));
+}
+
+QSize FlagBox::sizeHint() const
+{
+    const QFontMetrics fm(font());
+    const int tw = text().isEmpty() ? 0 : fm.horizontalAdvance(text()) + 8;
+    return QSize(16 + tw + 2, std::max(20, fm.height() + 4));
+}
+
+void FlagBox::enterEvent(QEnterEvent *e)
+{
+    m_hover = true;
+    update();
+    QCheckBox::enterEvent(e);
+}
+
+void FlagBox::leaveEvent(QEvent *e)
+{
+    m_hover = false;
+    update();
+    QCheckBox::leaveEvent(e);
+}
+
+void FlagBox::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    const bool on = isChecked(), en = isEnabled();
+    const QRectF box(1.5, (height() - 14) / 2.0, 14, 14);
+    if (on) {
+        QColor a = theme::accent();
+        if (!en) a.setAlphaF(0.4);
+        p.setPen(Qt::NoPen);
+        p.setBrush(a);
+        p.drawRoundedRect(box, 3, 3);
+        QColor tick = theme::onAccent();
+        if (!en) tick.setAlphaF(0.6);
+        p.setPen(QPen(tick, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath path;
+        path.moveTo(box.left() + 3.2, box.center().y() + 0.3);
+        path.lineTo(box.left() + 5.8, box.bottom() - 3.6);
+        path.lineTo(box.right() - 3, box.top() + 3.6);
+        p.drawPath(path);
+    } else {
+        p.setPen(QPen(flagEdge(m_hover, en), 1.2));
+        p.setBrush(QColor(24, 24, 27));
+        p.drawRoundedRect(box, 3, 3);
+    }
+    if (!text().isEmpty()) {
+        p.setPen(palette().color(en ? QPalette::Active : QPalette::Disabled, QPalette::WindowText));
+        p.setFont(font());
+        p.drawText(QRectF(box.right() + 8, 0, width() - box.right() - 8, height()), Qt::AlignVCenter | Qt::AlignLeft, text());
+    }
+}
+
+ToggleButton::ToggleButton(const QString &text, QWidget *parent) : QToolButton(parent)
+{
+    setText(text);
+    setCheckable(true);
+    setCursor(Qt::PointingHandCursor);
+    connect(theme::notifier(), &theme::Notifier::changed, this, qOverload<>(&QWidget::update));
+}
+
+void ToggleButton::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    const bool on = isChecked(), en = isEnabled();
+    const QRectF r = QRectF(rect()).adjusted(1, 1, -1, -1);
+    QColor fill = on ? theme::accent() : QColor(52, 52, 57);
+    if (!on && underMouse()) fill = QColor(66, 66, 72);
+    if (on && isDown()) fill = fill.darker(115);
+    if (!en) fill.setAlphaF(0.45);
+    p.setPen(on ? Qt::NoPen : QPen(QColor(90, 90, 97), 1));
+    p.setBrush(fill);
+    p.drawRoundedRect(r, 4, 4);
+    QColor fg = on ? theme::onAccent() : QColor(205, 205, 210);
+    if (!en) fg.setAlphaF(0.5);
+    p.setPen(fg);
+    p.setFont(font());
+    p.drawText(rect(), Qt::AlignCenter, text());
+}
 
 void lockInputs(QWidget *root, bool locked)
 {

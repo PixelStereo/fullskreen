@@ -2,6 +2,8 @@
 // Small interface building blocks shared by the inspector and the parameter panels.
 
 #include <QBrush>
+#include <QCheckBox>
+#include <QToolButton>
 #include <QColor>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
@@ -284,4 +286,37 @@ class IntBox : public QSpinBox
 {
 public:
     explicit IntBox(QWidget *parent = nullptr);
+};
+
+// The application's check box (it replaces QCheckBox everywhere): a small square that fills with the accent when it
+// is on, as the switches of MadMapper or Ableton Live. It is a QCheckBox, so the code that reads it is unchanged.
+class FlagBox : public QCheckBox
+{
+    Q_OBJECT
+public:
+    explicit FlagBox(QWidget *parent = nullptr);
+    explicit FlagBox(const QString &text, QWidget *parent = nullptr);
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+    bool hitButton(const QPoint &pos) const override { return rect().contains(pos); }
+    void enterEvent(QEnterEvent *e) override;
+    void leaveEvent(QEvent *e) override;
+
+private:
+    bool m_hover = false;
+};
+
+// A checkable button (bold, italic…) that is plainly colored with the accent while it is on.
+class ToggleButton : public QToolButton
+{
+    Q_OBJECT
+public:
+    explicit ToggleButton(const QString &text, QWidget *parent = nullptr);
+    QSize sizeHint() const override { return QSize(30, 26); }
+
+protected:
+    void paintEvent(QPaintEvent *) override;
 };

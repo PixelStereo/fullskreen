@@ -84,8 +84,8 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_master = new CompositionPanel(m_engine);
     m_tabs = new QTabWidget;
     m_tabs->addTab(scrolled(m_inspector), QStringLiteral("Layer"));
-    m_tabs->addTab(scrolled(m_master), QStringLiteral("Master"));
-    m_settings = new SettingsPanel;
+    m_tabs->addTab(scrolled(m_master), QStringLiteral("Composition"));
+    m_settings = new SettingsPanel(m_engine);
     m_tabs->addTab(scrolled(m_settings), QStringLiteral("Settings"));
     connect(m_settings, &SettingsPanel::playModeChanged, this,
             [this] { m_engine->setDefaultPlayMode(SettingsPanel::defaultPlayMode()); });
@@ -98,7 +98,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_engine->setDefaultColorModels(SettingsPanel::colorModels());
     // Rendering: the machine's defaults, and the main screen's refresh rate (the pace without an output shown)
     m_engine->setRenderDefaults(SettingsPanel::renderDefaults());
-    m_master->refreshRenderDefaults();
     auto screenRate = [this] {
         if (QScreen *sc = QGuiApplication::primaryScreen()) m_engine->setScreenRefreshRate(sc->refreshRate());
     };
@@ -240,7 +239,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_inspectorTimer.setInterval(250);
     connect(&m_inspectorTimer, &QTimer::timeout, m_inspector, &LayerInspector::rebuild);
 
-    // --- Master
+    // --- Composition
     connect(m_master, &CompositionPanel::blackoutChanged, this, [this](bool on) {
         QSignalBlocker b(m_blackoutAction);
         m_blackoutAction->setChecked(on);
@@ -248,7 +247,6 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_master, &CompositionPanel::compositionEdited, this, &MainWindow::markDirty);
     connect(m_settings, &SettingsPanel::renderDefaultsChanged, this, [this] {
         m_engine->setRenderDefaults(SettingsPanel::renderDefaults());
-        m_master->refreshRenderDefaults();
     });
     connect(m_master, &CompositionPanel::audioEdited, this, &MainWindow::markDirty);
 
@@ -326,7 +324,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_statusTimer.setInterval(100);
     connect(&m_statusTimer, &QTimer::timeout, this, &MainWindow::statusTick);
     m_statusTimer.start();
-    m_master->startAudio(); // sound card saved in the settings (system default otherwise)
+    m_settings->startAudio(); // sound card saved in the settings (system default otherwise)
     if (!m_engine->isThreaded()) {
         // Platform without OpenGL rendering on a separate thread: rendering is clocked by the UI.
         m_renderTimer.setTimerType(Qt::PreciseTimer);
@@ -702,6 +700,7 @@ static QString layerTag(SourceType t)
     case SourceType::Video: return QStringLiteral("▶");
     case SourceType::Image: return QStringLiteral("▣");
     case SourceType::Isf: return QStringLiteral("◆");
+    case SourceType::Text: return QStringLiteral("T");
     case SourceType::Audio: return QStringLiteral("♪");
     case SourceType::Layer: return QStringLiteral("⧉");
     default: return QStringLiteral("○");
@@ -762,6 +761,7 @@ void MainWindow::refreshLayerList()
                                       : QFileInfo(l->sourcePath).fileName();
                 break;
             case SourceType::Isf: r.source = QStringLiteral("generator ") + QFileInfo(l->sourcePath).completeBaseName(); break;
+            case SourceType::Text: r.source = QStringLiteral("text ") + l->text.content.left(40).replace('\n', ' '); break;
             case SourceType::Layer: {
                 const Layer *src = m_engine->layer(m_engine->indexOfId(l->sourceLayer));
                 r.source = QStringLiteral("layer %1 · %2")
@@ -787,7 +787,7 @@ void MainWindow::refreshLayerList()
                 r.playback = QStringLiteral("%1 %2 / %3  %4")
                                  .arg(l->ended ? QStringLiteral("■") : !l->playing ? QStringLiteral("❚❚") : l->speed < 0 ? QStringLiteral("◀") : QStringLiteral("▶"),
                                       fmtClock(l->position()), fmtClock(l->duration()), kModeSymbol[int(l->mode)]);
-            } else if (l->type == SourceType::Isf) {
+            } else if (l->type == SourceType::Isf || l->type == SourceType::Text) {
                 r.playback = QStringLiteral("real time");
             }
             rows.push_back(r);
@@ -839,6 +839,28 @@ bool MainWindow::loadIntoLayer(int i, const QString &path)
         return false;
     }
     if (refuseLocked(i)) return false;
+    if (isTextGeneratorPath(path)) { // the built-in Text generator, dragged from the Media Bin
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(i);
+            if (l && (l->isGroup || l->isViewport)) {
+                lk.unlock();
+                statusBar()->showMessage(QStringLiteral("A group or a viewport has no source: drop the text onto a layer."), 6000);
+                return false;
+            }
+        }
+        const QJsonObject before = m_engine->layerJson(i);
+        if (!m_engine->setLayerText(i)) return false;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(i);
+            if (l && l->name.startsWith(QStringLiteral("Layer "))) l->name = QStringLiteral("Text");
+        }
+        m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Load Text Generator")));
+        selectLayer(i);
+        refreshAll();
+        return true;
+    }
     const QFileInfo fi(path);
     const QString ext = fi.suffix().toLower();
     auto fail = [&](const QString &err) {
@@ -898,7 +920,9 @@ void MainWindow::loadDropped(int layer, const QStringList &paths)
     for (const QString &p : paths) {
         const QString ext = QFileInfo(p).suffix().toLower();
         const bool effect = kIsfExt.contains(ext) && IsfInstance::readHeader(p).isFilter;
-        if (effect) {
+        if (isTextGeneratorPath(p)) { // built in: never imported into the Media Bin
+            if (!sourceLoaded) sourceLoaded = loadIntoLayer(layer, p);
+        } else if (effect) {
             loadIntoLayer(layer, p);
         } else if (!sourceLoaded) {
             sourceLoaded = loadIntoLayer(layer, p);
@@ -1313,7 +1337,7 @@ void MainWindow::statusTick()
         if (o.mode) ++shown;
         if (!pubs.isEmpty()) outs << QStringLiteral("%1 → %2").arg(o.title.section(QStringLiteral(" — "), 1), pubs.join('+'));
     }
-    m_status->setText(QStringLiteral("%1 × %2   ·   %3 fps   ·   master %4%   ·   %5 of %6 viewport(s) shown%7")
+    m_status->setText(QStringLiteral("%1 × %2   ·   %3 fps   ·   composition %4%   ·   %5 of %6 viewport(s) shown%7")
                           .arg(c.width())
                           .arg(c.height())
                           .arg(m_engine->fps(), 0, 'f', 1)

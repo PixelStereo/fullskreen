@@ -8,10 +8,14 @@
 
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFontComboBox>
+#include <QFontDatabase>
 #include <QMimeData>
+#include <QPlainTextEdit>
 #include <QTabWidget>
 #include <QUrl>
 #include <QDoubleSpinBox>
@@ -33,10 +37,12 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
+#include <QTimer>
 #include <QToolButton>
 #include <QUndoStack>
 #include <QVBoxLayout>
 #include <cmath>
+#include <memory>
 
 // Copy of a layer's state taken under the lock: widgets are built afterwards without blocking rendering.
 struct LayerSnapshot {
@@ -86,6 +92,7 @@ struct LayerSnapshot {
     std::vector<Fx> effects;
     bool meshMode = false;
     int cols = 4, rows = 4;
+    TextSource text; // Text generator
 
     static LayerSnapshot take(Engine *e, int index)
     {
@@ -154,6 +161,7 @@ struct LayerSnapshot {
         s.meshMode = l->mapping.meshMode;
         s.cols = l->mapping.cols;
         s.rows = l->mapping.rows;
+        s.text = l->text;
         if (!l->isViewport) {
             const Layer *top = l;
             while (top->parent) {
@@ -353,7 +361,7 @@ void LayerInspector::rebuild()
     auto *name = new QLineEdit(s.name);
     name->setStyleSheet("font-weight:bold; font-size:14px;");
     name->setToolTip(kind + QStringLiteral(" name"));
-    auto *vis = new QCheckBox(QStringLiteral("Visible"));
+    auto *vis = new FlagBox(QStringLiteral("Visible"));
     vis->setChecked(s.visible);
     vis->setProperty("allowLocked", true);
     auto *lock = new QToolButton;
@@ -464,6 +472,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     case SourceType::Image: desc = QStringLiteral("Image — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
     case SourceType::Isf: desc = QStringLiteral("ISF Generator — %1").arg(QFileInfo(s.sourcePath).completeBaseName()); break;
     case SourceType::Audio: desc = QStringLiteral("Audio — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
+    case SourceType::Text: desc = QStringLiteral("Text"); break;
     case SourceType::Layer: {
         QString from = QStringLiteral("(gone)");
         for (const auto &c : s.candidates)
@@ -473,6 +482,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     }
     default: desc = QStringLiteral("No source"); break;
     }
+
     // Drop zone: the current media, replaced by whatever is dropped (Media Bin, Finder). × ejects it.
     const bool loaded = s.type != SourceType::None;
     auto *zoneRow = new QHBoxLayout;
@@ -493,6 +503,205 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         emit layerChanged();
         rebuild();
     });
+
+    // Text generator: the text typed here, and how it is set
+    if (s.type == SourceType::Text) {
+        // Edits apply at once; the undo step is pushed when the editing pauses
+        struct Pending { QJsonObject before; QString label; bool has = false; };
+        auto pend = std::make_shared<Pending>();
+        auto *commit = new QTimer(g);
+        commit->setSingleShot(true);
+        commit->setInterval(700);
+        connect(commit, &QTimer::timeout, this, [this, pend] {
+            if (!pend->has) return;
+            pend->has = false;
+            m_undo->push(new cmd::ReplaceLayer(m_engine, m_layer, pend->before, pend->label));
+        });
+        auto live = [this, pend, commit](const QString &label, const std::function<void()> &op) {
+            if (m_engine->isLocked(m_layer)) return;
+            if (!pend->has) {
+                pend->has = true;
+                pend->before = m_engine->layerJson(m_layer);
+            }
+            pend->label = label;
+            op();
+            commit->start();
+        };
+        auto style = [this, live](const QString &label, std::function<void(Layer &)> fn) {
+            live(label, [this, fn] { m_engine->editLayerText(m_layer, fn); });
+        };
+        auto colorButton = [this, style](const QColor &c, const QString &label, std::function<void(Layer &, const QColor &)> set) {
+            auto *b = new QPushButton;
+            b->setFixedWidth(48);
+            b->setEnabled(!m_locked);
+            auto paint = [b](const QColor &x) {
+                b->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #666; border-radius: 2px;").arg(x.name()));
+            };
+            paint(c);
+            connect(b, &QPushButton::clicked, this, [this, b, c, label, set, style, paint] {
+                const QColor cur = b->property("color").value<QColor>().isValid() ? b->property("color").value<QColor>() : c;
+                const QColor picked = QColorDialog::getColor(cur, this, label, QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid()) return;
+                b->setProperty("color", picked);
+                paint(picked);
+                style(label, [set, picked](Layer &l) { set(l, picked); });
+            });
+            return b;
+        };
+        auto spin = [this](double v, double lo, double hi, double step, int dec, const QString &suffix) {
+            auto *x = new NumberBox;
+            x->setRange(lo, hi);
+            x->setSingleStep(step);
+            x->setDecimals(dec);
+            x->setSuffix(suffix);
+            x->setValue(v);
+            x->setEnabled(!m_locked);
+            return x;
+        };
+
+        auto *editor = new QPlainTextEdit;
+        editor->setPlainText(s.text.content);
+        editor->setMinimumHeight(90);
+        editor->setPlaceholderText(QStringLiteral("Type the text here"));
+        editor->setToolTip(QStringLiteral("The text of this layer. A memory that holds another text types it (typewriter) over its fade."));
+        editor->setReadOnly(m_locked);
+        v->addWidget(editor);
+        connect(editor, &QPlainTextEdit::textChanged, this, [this, editor, live] {
+            live(QStringLiteral("Edit Text"), [this, editor] { m_engine->setLayerTextContent(m_layer, editor->toPlainText()); });
+        });
+
+        auto *fmt = new QFormLayout;
+        fmt->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        auto *fontBox = new QFontComboBox;
+        fontBox->setCurrentFont(QFont(s.text.font));
+        fontBox->setEnabled(!m_locked);
+        fmt->addRow(QStringLiteral("Font"), fontBox);
+        connect(fontBox, &QFontComboBox::currentFontChanged, this, [style](const QFont &f) {
+            const QString family = f.family();
+            style(QStringLiteral("Text Font"), [family](Layer &l) { l.text.font = family; });
+        });
+
+        auto *size = new IntBox;
+        size->setRange(1, 1000);
+        size->setSuffix(QStringLiteral(" px"));
+        size->setValue(s.text.size);
+        size->setEnabled(!m_locked);
+        auto *colorRow = new QHBoxLayout;
+        colorRow->addWidget(size);
+        colorRow->addWidget(colorButton(s.text.color, QStringLiteral("Text Color"), [](Layer &l, const QColor &c) { l.text.color = c; }));
+        colorRow->addStretch();
+        fmt->addRow(QStringLiteral("Size / color"), colorRow);
+        connect(size, QOverload<int>::of(&QSpinBox::valueChanged), this, [style](int px) {
+            style(QStringLiteral("Text Size"), [px](Layer &l) { l.text.size = px; });
+        });
+
+        // Bold, italic, underline, strikethrough
+        auto *styleRow = new QHBoxLayout;
+        struct Toggle { const char *label, *tip; bool on; bool TextSource::*field; };
+        const Toggle toggles[] = {{"B", "Bold", s.text.bold, &TextSource::bold},
+                                  {"I", "Italic", s.text.italic, &TextSource::italic},
+                                  {"U", "Underline", s.text.underline, &TextSource::underline},
+                                  {"S", "Strikethrough", s.text.strike, &TextSource::strike}};
+        for (const Toggle &t : toggles) {
+            auto *b = new ToggleButton(QString::fromLatin1(t.label));
+            b->setToolTip(QString::fromLatin1(t.tip));
+            b->setChecked(t.on);
+            b->setEnabled(!m_locked);
+            QFont f = b->font();
+            f.setBold(t.label[0] == 'B');
+            f.setItalic(t.label[0] == 'I');
+            f.setUnderline(t.label[0] == 'U');
+            f.setStrikeOut(t.label[0] == 'S');
+            b->setFont(f);
+            styleRow->addWidget(b);
+            auto field = t.field;
+            connect(b, &QToolButton::toggled, this, [style, field, tip = QString::fromLatin1(t.tip)](bool on) {
+                style(tip, [field, on](Layer &l) { l.text.*field = on; });
+            });
+        }
+        styleRow->addStretch();
+        fmt->addRow(QStringLiteral("Style"), styleRow);
+
+        // Alignment: left, center, right, justified; top, middle, bottom
+        auto *hAlign = new QComboBox;
+        hAlign->addItem(QStringLiteral("Left"), int(Qt::AlignLeft));
+        hAlign->addItem(QStringLiteral("Center"), int(Qt::AlignHCenter));
+        hAlign->addItem(QStringLiteral("Right"), int(Qt::AlignRight));
+        hAlign->addItem(QStringLiteral("Justified"), int(Qt::AlignJustify));
+        auto *vAlign = new QComboBox;
+        vAlign->addItem(QStringLiteral("Top"), int(Qt::AlignTop));
+        vAlign->addItem(QStringLiteral("Middle"), int(Qt::AlignVCenter));
+        vAlign->addItem(QStringLiteral("Bottom"), int(Qt::AlignBottom));
+        const int h0 = hAlign->findData(int(s.text.align & Qt::AlignHorizontal_Mask));
+        const int v0 = vAlign->findData(int(s.text.align & Qt::AlignVertical_Mask));
+        hAlign->setCurrentIndex(h0 >= 0 ? h0 : 0);
+        vAlign->setCurrentIndex(v0 >= 0 ? v0 : 0);
+        hAlign->setEnabled(!m_locked);
+        vAlign->setEnabled(!m_locked);
+        auto *alignRow = new QHBoxLayout;
+        alignRow->addWidget(hAlign);
+        alignRow->addWidget(vAlign);
+        fmt->addRow(QStringLiteral("Align"), alignRow);
+        auto setAlign = [style, hAlign, vAlign] {
+            const int a = hAlign->currentData().toInt() | vAlign->currentData().toInt();
+            style(QStringLiteral("Text Alignment"), [a](Layer &l) { l.text.align = Qt::Alignment(a); });
+        };
+        connect(hAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
+        connect(vAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
+
+        auto *lineSp = spin(s.text.lineHeight, 0.2, 5.0, 0.05, 2, QStringLiteral(" ×"));
+        lineSp->setToolTip(QStringLiteral("Space between the lines (1 = the font's own)"));
+        fmt->addRow(QStringLiteral("Line spacing"), lineSp);
+        connect(lineSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Line Spacing"), [x](Layer &l) { l.text.lineHeight = float(x); });
+        });
+        auto *letterSp = spin(s.text.letterSpacing, -50, 200, 0.5, 1, QStringLiteral(" px"));
+        letterSp->setToolTip(QStringLiteral("Space added between the letters"));
+        fmt->addRow(QStringLiteral("Letter spacing"), letterSp);
+        connect(letterSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Letter Spacing"), [x](Layer &l) { l.text.letterSpacing = float(x); });
+        });
+
+        // Outline
+        auto *outline = spin(s.text.outline, 0, 100, 0.5, 1, QStringLiteral(" px"));
+        auto *outlineRow = new QHBoxLayout;
+        outlineRow->addWidget(outline);
+        outlineRow->addWidget(colorButton(s.text.outlineColor, QStringLiteral("Outline Color"),
+                                          [](Layer &l, const QColor &c) { l.text.outlineColor = c; }));
+        outlineRow->addStretch();
+        fmt->addRow(QStringLiteral("Outline"), outlineRow);
+        connect(outline, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Text Outline"), [x](Layer &l) { l.text.outline = float(x); });
+        });
+
+        // Shadow
+        auto *shadow = new FlagBox(QStringLiteral("On"));
+        shadow->setChecked(s.text.shadow);
+        shadow->setEnabled(!m_locked);
+        auto *shadowRow = new QHBoxLayout;
+        shadowRow->addWidget(shadow);
+        shadowRow->addWidget(colorButton(s.text.shadowColor, QStringLiteral("Shadow Color"),
+                                         [](Layer &l, const QColor &c) { l.text.shadowColor = c; }));
+        auto *sx = spin(s.text.shadowX, -200, 200, 1, 0, QStringLiteral(" x"));
+        auto *sy = spin(s.text.shadowY, -200, 200, 1, 0, QStringLiteral(" y"));
+        shadowRow->addWidget(sx);
+        shadowRow->addWidget(sy);
+        fmt->addRow(QStringLiteral("Shadow"), shadowRow);
+        connect(shadow, &QCheckBox::toggled, this, [style](bool on) {
+            style(QStringLiteral("Text Shadow"), [on](Layer &l) { l.text.shadow = on; });
+        });
+        connect(sx, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.text.shadowX = float(x); });
+        });
+        connect(sy, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.text.shadowY = float(x); });
+        });
+
+        v->addLayout(fmt);
+        v->addStretch();
+        return g;
+    }
 
     // Or the picture of another layer, tapped before or after its effect chain
     {
@@ -821,7 +1030,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         auto *icon = new ResetLabel(QStringLiteral("Volume"), [vol] { vol->setValue(100); emit vol->valueEdited(100); });
         icon->setStyleSheet("color:#8a8a8e;");
         icon->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        auto *mute = new QCheckBox(QStringLiteral("Mute"));
+        auto *mute = new FlagBox(QStringLiteral("Mute"));
         mute->setChecked(s.muted);
         row->addWidget(icon);
         row->addWidget(vol, 1);
@@ -884,7 +1093,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
     }
-    if (s.type == SourceType::Video || s.type == SourceType::Image || s.type == SourceType::Isf) v->addWidget(buildRoi(s));
+    if (s.type == SourceType::Video || s.type == SourceType::Image || s.type == SourceType::Isf || s.type == SourceType::Text) v->addWidget(buildRoi(s));
     return g;
 }
 
@@ -962,7 +1171,7 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
     auto *outer = new QVBoxLayout(g);
     outer->setContentsMargins(0, 0, 0, 0);
     // Switch of the whole section: the values are kept, they are simply not applied
-    auto *master = new QCheckBox(QStringLiteral("Color"));
+    auto *master = new FlagBox(QStringLiteral("Color"));
     master->setChecked(s.color.enabled);
     master->setStyleSheet("font-weight:bold;");
     master->setToolTip(QStringLiteral("Apply the color of this layer.\nOff: every value is kept, the picture is left alone."));
@@ -1006,7 +1215,7 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
         pick->setToolTip(QStringLiteral("Where the color applies: fully where the chosen layer's picture is white, not at "
                                         "all where it is black or transparent, in proportion in between. That picture is "
                                         "stretched over this layer's, after its ROI. The layer can stay hidden."));
-        auto *inv = new QCheckBox(QStringLiteral("Invert"));
+        auto *inv = new FlagBox(QStringLiteral("Invert"));
         inv->setChecked(s.color.maskInvert);
         inv->setEnabled(s.color.maskLayer != 0);
         row->addWidget(label);
@@ -1057,7 +1266,7 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
             bar->setValue(d.value);
             *d.field = bar;
             const int prop = d.prop;
-            auto *on = new QCheckBox;
+            auto *on = new FlagBox;
             on->setChecked(d.on);
             on->setToolTip(QStringLiteral("Apply %1 (the value is kept either way)").arg(QString::fromUtf8(d.name)));
             const int onProp = d.onProp;
@@ -1486,7 +1695,7 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     auto *v = new QVBoxLayout(g);
 
     // General switch of the chain
-    auto *all = new QCheckBox(QStringLiteral("Effects enabled"));
+    auto *all = new FlagBox(QStringLiteral("Effects enabled"));
     all->setChecked(s.effectsEnabled);
     all->setToolTip(QStringLiteral("Turns the whole effect chain on or off (each effect keeps its own switch)"));
     all->setStyleSheet("QCheckBox { font-weight:bold; }");
@@ -1666,7 +1875,7 @@ void LayerInspector::showEffectParams()
         pick->setToolTip(QStringLiteral("Where this effect applies: fully where the chosen layer's picture is white, not at "
                                         "all where it is black or transparent, in proportion in between. That picture is "
                                         "stretched over this layer's, before the mapping. The layer can stay hidden."));
-        auto *inv = new QCheckBox(QStringLiteral("Invert"));
+        auto *inv = new FlagBox(QStringLiteral("Invert"));
         inv->setChecked(invert);
         inv->setEnabled(maskId != 0);
         row->addWidget(label);

@@ -6,7 +6,7 @@
 
 class QCheckBox;
 
-// Choices of the rendering settings, shared by Settings (the machine's defaults) and Master (the project's)
+// Choices of the rendering settings (Settings ▸ Rendering)
 namespace renderChoice {
 QList<double> frameRates(); // 0: the screen's refresh rate
 QString frameRateName(double fps);
@@ -19,13 +19,14 @@ class QComboBox;
 class QLabel;
 class QSpinBox;
 
-// "Settings" tab, next to Layer and Master: application preferences, saved on this machine (not in the project)
-// and applied as soon as they change.
+// "Settings" tab, next to Layer and Composition: the preferences of this machine (not saved in the project), in
+// sub-tabs (Playback, Rendering, Audio, Interface, OSC), applied as soon as they change.
 class SettingsPanel : public QWidget
 {
     Q_OBJECT
 public:
-    explicit SettingsPanel(QWidget *parent = nullptr);
+    explicit SettingsPanel(Engine *engine, QWidget *parent = nullptr);
+    void startAudio(); // opens the sound card saved on this machine (at launch)
 
     // Mode given to a video or a sound when it is loaded into a layer (Loop unless changed)
     static PlayMode defaultPlayMode();
@@ -47,7 +48,7 @@ public:
     // the path saved on this machine (Crossfade by default), found again by its file name in the library
     static QString defaultTransition(const IsfLibrary &library);
     void setTransitions(const QVector<IsfEntry> &transitions, const QString &current); // the library's
-    // Frame rate, antialiasing and mipmaps of the projects that keep the default (Master)
+    // Frame rate, antialiasing, mipmaps and color depth, for every project
     static Engine::RenderSettings renderDefaults();
 
 signals:
@@ -59,6 +60,13 @@ signals:
     void renderDefaultsChanged();
 
 private:
+    QWidget *buildAudio();
+    void fillAudioDevices();
+    void openAudioDevice(const QString &name);
+
+    Engine *m_engine;
+    QComboBox *m_audioDevice = nullptr;
+    QLabel *m_audioState = nullptr;
     QComboBox *m_playMode = nullptr, *m_colorModels = nullptr, *m_transition = nullptr, *m_rate = nullptr,
               *m_samples = nullptr, *m_depth = nullptr;
     QCheckBox *m_mipmaps = nullptr, *m_hardware = nullptr;
