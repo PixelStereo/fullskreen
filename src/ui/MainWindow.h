@@ -12,6 +12,8 @@ class MediaBin;
 class MasterPanel;
 class SettingsPanel;
 class MemoryPanel;
+class SequenceBar;
+class SequenceWindow;
 class OutputWindow;
 class QLabel;
 class QMenu;
@@ -80,6 +82,11 @@ private:
     void copyLayerParams(int row);                             // into m_paramClipboard
     void pasteLayerParams(int parts, const QString &what);     // Engine::LayerParts, onto the selected layers
     void togglePlayCurrent();
+    // Sequences: GO plays the next step of the current sequence, GO BACK the previous one (Space, Shift+Space)
+    void sequenceGo();
+    void sequenceBack();
+    void sequenceGoTo(int step);
+    void openSequences();
     void setInOutAtPosition(bool in);
     void relinkMedia(const QString &from, const QString &to);
 
@@ -103,6 +110,9 @@ private:
     MasterPanel *m_master = nullptr;
     SettingsPanel *m_settings = nullptr;
     MemoryPanel *m_memories = nullptr;
+    SequenceBar *m_seqBar = nullptr;
+    SequenceWindow *m_seqWindow = nullptr;
+    int m_cueUndoIndex = -1; // undo index when the current step was played: anything since is a change
     QTabWidget *m_leftTabs = nullptr;
     QTabWidget *m_tabs = nullptr;
     struct Output {

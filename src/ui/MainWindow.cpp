@@ -7,6 +7,7 @@
 #include "MasterPanel.h"
 #include "MediaBin.h"
 #include "MemoryPanel.h"
+#include "SequencePanel.h"
 #include "OutputWindow.h"
 #include "Osc.h"
 #include "SettingsPanel.h"
@@ -47,6 +48,7 @@
 #include <QTabWidget>
 #include <QThread>
 #include <QUndoStack>
+#include <QVBoxLayout>
 #include <QUrl>
 #include <cmath>
 
@@ -111,7 +113,15 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 
     auto *top = new QSplitter(Qt::Horizontal);
     top->addWidget(m_leftTabs);
-    top->addWidget(m_view);
+    // The preview, with the sequences' bar under it
+    m_seqBar = new SequenceBar(m_engine);
+    auto *center = new QWidget;
+    auto *cv = new QVBoxLayout(center);
+    cv->setContentsMargins(0, 0, 0, 0);
+    cv->setSpacing(0);
+    cv->addWidget(m_view, 1);
+    cv->addWidget(m_seqBar);
+    top->addWidget(center);
     top->addWidget(m_tabs);
     top->setStretchFactor(0, 0);
     top->setStretchFactor(1, 1);
@@ -262,8 +272,25 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     auto *keyOut = new QShortcut(QKeySequence(Qt::Key_O), this);
     connect(keyOut, &QShortcut::activated, this, [this] { setInOutAtPosition(false); });
     connect(m_inspector, &LayerInspector::setInOutRequested, this, &MainWindow::setInOutAtPosition);
-    auto *space = new QShortcut(QKeySequence(Qt::Key_Space), this);
-    connect(space, &QShortcut::activated, this, &MainWindow::togglePlayCurrent);
+    // Space: GO, the next step of the sequence (also from the sequences' window and the outputs)
+    auto *space = new QShortcut(QKeySequence(Qt::Key_Space), this, nullptr, nullptr, Qt::ApplicationShortcut);
+    connect(space, &QShortcut::activated, this, &MainWindow::sequenceGo);
+    auto *spaceBack = new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Space), this, nullptr, nullptr, Qt::ApplicationShortcut);
+    connect(spaceBack, &QShortcut::activated, this, &MainWindow::sequenceBack);
+    m_seqWindow = new SequenceWindow(m_engine, this);
+    connect(m_seqBar, &SequenceBar::goRequested, this, &MainWindow::sequenceGo);
+    connect(m_seqBar, &SequenceBar::backRequested, this, &MainWindow::sequenceBack);
+    connect(m_seqBar, &SequenceBar::windowRequested, this, &MainWindow::openSequences);
+    connect(m_seqWindow, &SequenceWindow::goToRequested, this, &MainWindow::sequenceGoTo);
+    connect(m_seqWindow, &SequenceWindow::edited, this, &MainWindow::markDirty);
+    // Played elsewhere (OSC) or another sequence: nothing changed since; any edit afterwards: the bar says so
+    connect(m_engine, &Engine::sequencePositionChanged, this, [this] {
+        m_cueUndoIndex = m_undo->index();
+        m_seqBar->setModified(false);
+    });
+    connect(m_undo, &QUndoStack::indexChanged, this, [this](int i) {
+        if (m_engine->sequencePosition() >= 0 && i != m_cueUndoIndex) m_seqBar->setModified(true);
+    });
 
     // A screen plugged in or out: the outputs go back to their screens (or to another one meanwhile),
     // and the Output tab lists the screens again
@@ -347,7 +374,8 @@ bool MainWindow::handleControlKey(int key, Qt::KeyboardModifiers mods)
     if (ctrl && key == Qt::Key_B) setBlackout(!m_master->isBlackout());
     else if (ctrl && shift && key == Qt::Key_F) toggleAllOutputs(1);
     else if (ctrl && key == Qt::Key_F) toggleAllOutputs(2);
-    else if (!ctrl && key == Qt::Key_Space) togglePlayCurrent();
+    else if (!ctrl && shift && key == Qt::Key_Space) sequenceBack();
+    else if (!ctrl && key == Qt::Key_Space) sequenceGo();
     else return false;
     return true;
 }
@@ -442,7 +470,13 @@ void MainWindow::buildMenus()
     layer->addAction(QStringLiteral("Move Down"), QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), this,
                      [this] { moveCurrentLayer(+1); });
     layer->addSeparator();
-    layer->addAction(QStringLiteral("Play / Pause (Space)"), this, &MainWindow::togglePlayCurrent);
+    layer->addAction(QStringLiteral("Play / Pause"), this, &MainWindow::togglePlayCurrent);
+
+    QMenu *seq = menuBar()->addMenu(QStringLiteral("&Sequence"));
+    seq->addAction(QStringLiteral("GO — next step (Space)"), this, &MainWindow::sequenceGo);
+    seq->addAction(QStringLiteral("GO BACK — previous step (Shift+Space)"), this, &MainWindow::sequenceBack);
+    seq->addSeparator();
+    seq->addAction(QStringLiteral("Sequences…"), this, &MainWindow::openSequences);
 
     QMenu *comp = menuBar()->addMenu(QStringLiteral("C&omposition"));
     comp->addAction(QStringLiteral("Composition Size (Master tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
@@ -1190,6 +1224,29 @@ void MainWindow::setInOutAtPosition(bool in)
     m_undo->push(new cmd::SetLayerProp(m_engine, i, prop, before, pos));
     m_inspector->rebuild();
     statusBar()->showMessage((in ? QStringLiteral("In point: %1 s") : QStringLiteral("Out point: %1 s")).arg(pos, 0, 'f', 2), 3000);
+}
+
+void MainWindow::sequenceGo() { sequenceGoTo(m_engine->sequenceNext()); }
+
+void MainWindow::sequenceBack() { sequenceGoTo(m_engine->sequencePrevious()); }
+
+// The step's memory is recalled (undoable), then the step becomes the current one: the bar shows it unchanged
+void MainWindow::sequenceGoTo(int step)
+{
+    const Engine::Sequence s = m_engine->sequence(m_engine->currentSequence());
+    if (step < 0 || step >= int(s.steps.size())) return;
+    const int mi = m_engine->indexOfMemory(s.steps[size_t(step)].memory);
+    if (mi >= 0) m_memories->recall(mi);
+    m_engine->setSequencePosition(step);
+    m_cueUndoIndex = m_undo->index();
+    m_seqBar->setModified(false);
+}
+
+void MainWindow::openSequences()
+{
+    m_seqWindow->show();
+    m_seqWindow->raise();
+    m_seqWindow->activateWindow();
 }
 
 void MainWindow::togglePlayCurrent()

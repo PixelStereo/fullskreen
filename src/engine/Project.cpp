@@ -39,6 +39,8 @@ void Engine::newProject()
     ensureViewport(); // a new project shows its composition through one viewport
     emit layersChanged();
     emit memoriesChanged();
+    emit sequencesChanged();
+    emit sequencePositionChanged();
 }
 
 // Empties everything (layers, viewports, memories, media bin)
@@ -52,6 +54,8 @@ void Engine::clearProject()
         m_binItems.clear();
         m_memories.clear();
         m_nextMemoryId = 1;
+        m_sequences.clear();
+        m_currentSequence = m_sequencePosition = -1;
         m_fades.clear();
         for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
         m_transitions.clear();
@@ -325,6 +329,8 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         QJsonArray mems;
         for (const Memory &m : m_memories) mems.append(memoryToJson(m, dir));
         root["memories"] = mems;
+        root["sequences"] = sequencesToJson();
+        root["currentSequence"] = m_currentSequence;
     }
     root["ui"] = uiState;
     // Atomic write: a crash during save does not corrupt the existing file.
@@ -393,8 +399,11 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         for (const Memory &m : m_memories) m_nextMemoryId = std::max(m_nextMemoryId, m.id + 1);
         for (Memory &m : m_memories)
             if (!m.id) m.id = m_nextMemoryId++;
+        sequencesFromJson(root.value("sequences").toArray(), root.value("currentSequence").toInt(0));
     }
     emit memoriesChanged();
+    emit sequencesChanged();
+    emit sequencePositionChanged();
     if (uiState) *uiState = root.value("ui").toObject();
     setProjectPath(QFileInfo(path).absoluteFilePath());
     emit layersChanged();

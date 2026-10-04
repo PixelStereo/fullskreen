@@ -764,6 +764,38 @@ int main(int argc, char **argv)
             CHECK(e.memory(2).id != e.memory(1).id);
             e.removeMemory(2);
         }
+        // Sequences: steps recalling memories, GO / GO BACK, loop, saved with the project
+        {
+            Engine::Sequence seq;
+            seq.name = "Show";
+            seq.steps = {{e.memory(1).id, "Act 1"}, {e.memory(0).id, "Act 2"}, {987654, "gone"}};
+            CHECK(e.addSequence(seq) == 0 && e.currentSequence() == 0 && e.sequencePosition() == -1);
+            CHECK(e.sequenceNext() == 0 && e.sequencePrevious() == -1);
+            e.layer(V + 0)->opacity = 0.1f;
+            CHECK(e.sequenceGo() && e.sequencePosition() == 0); // memory 1 ("Look 2"): layer 0 at 0, with its fade
+            CHECK(e.sequenceGo() && e.sequencePosition() == 1 && std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6); // memory 0, at once
+            CHECK(e.sequenceGo() && e.sequencePosition() == 2); // its memory is gone: the position moves, nothing else
+            CHECK(e.sequenceNext() == -1 && !e.sequenceGo()); // the end, no loop
+            seq.loop = true;
+            e.setSequence(0, seq);
+            CHECK(e.sequenceNext() == 0);
+            CHECK(e.sequenceBack() && e.sequencePosition() == 1);
+            e.setSequencePosition(0);
+            CHECK(e.sequencePrevious() == 2); // loop: before the first, the last
+            Engine::Sequence copy = e.sequence(0);
+            copy.name = "Copy";
+            CHECK(e.addSequence(copy) == 1 && e.currentSequence() == 0);
+            e.setCurrentSequence(1);
+            CHECK(e.sequencePosition() == -1);
+            CHECK(e.saveProject(tmp + "/sequences.fulskrin", {}, &err));
+            CHECK(e.loadProject(tmp + "/sequences.fulskrin", nullptr, &err));
+            CHECK(e.sequenceCount() == 2 && e.currentSequence() == 1 && e.sequence(0).loop &&
+                  e.sequence(0).steps.size() == 3 && e.sequence(0).steps[0].text == "Act 1" &&
+                  e.sequence(0).steps[0].memory == e.memory(1).id);
+            e.removeSequence(1);
+            e.removeSequence(0);
+            CHECK(e.sequenceCount() == 0 && e.currentSequence() == -1 && !e.sequenceGo());
+        }
         // A recall shows what was stored: a layer the memory does not know fades out and is hidden
         {
             const int xi = e.addLayer("Extra", V);

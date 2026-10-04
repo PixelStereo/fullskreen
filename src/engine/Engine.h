@@ -185,6 +185,33 @@ public:
     // the layers the state holds but leaves out ("included": false), not the locked ones.
     void applyLayers(const QJsonArray &layers, double fade, bool hideOthers = false);
     int indexOfMemory(quint64 id) const; // -1: none
+
+    // --- Sequences: ordered steps, each recalling a memory (and carrying a text for the operator), played by
+    // GO / GO BACK. Several sequences; one is current. Saved with the project; the position is not.
+    struct SequenceStep {
+        quint64 memory = 0; // its id (0: none yet)
+        QString text;
+    };
+    struct Sequence {
+        QString name;
+        bool loop = false; // GO on the last step goes to the first
+        std::vector<SequenceStep> steps;
+    };
+    int sequenceCount() const;
+    Sequence sequence(int i) const;
+    void setSequence(int i, const Sequence &s);
+    int addSequence(const Sequence &s, int at = -1);
+    void removeSequence(int i);
+    int currentSequence() const;          // -1: none
+    void setCurrentSequence(int i);       // its position goes back to before the first step
+    int sequencePosition() const;         // step last played in the current sequence (-1: none yet)
+    void setSequencePosition(int step);   // without recalling (the interface recalls, undoable)
+    int sequenceNext() const;             // the step GO plays (-1: none — the end, without loop)
+    int sequencePrevious() const;         // the step GO BACK plays (-1: none)
+    // GO / GO BACK / a given step, recalling its memory (OSC; the interface recalls through its undo stack)
+    bool sequenceGo();
+    bool sequenceBack();
+    bool sequenceGoTo(int step);
     void recallMemory(int i); // with its fade
     bool isFading() const;
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
@@ -278,6 +305,8 @@ signals:
     void layersChanged();
     void compositionSizeChanged(QSize size);
     void memoriesChanged();
+    void sequencesChanged();        // their contents
+    void sequencePositionChanged(); // current sequence or step
     void memoryRecalled(int index);
     void frameRendered(); // emitted from the render thread, at most once per frame displayed by the UI
 
@@ -421,6 +450,10 @@ private:
     void retireTransition(std::unique_ptr<SourceTransition> t);           // sound now, OpenGL on the render thread
     double m_fadeElapsed = 0; // seconds since the last recall
     quint64 m_nextMemoryId = 1;
+    std::vector<Sequence> m_sequences;
+    int m_currentSequence = -1, m_sequencePosition = -1;
+    QJsonArray sequencesToJson() const;
+    void sequencesFromJson(const QJsonArray &a, int current);
     std::atomic<bool> m_fadesManual{false};
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
