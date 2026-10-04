@@ -81,4 +81,6 @@ inline void colorFromJson(ColorAdjust &col, const QJsonObject &o)
     col.tintOn = o.value("tintOn").toBool(true);
     col.addOn = o.value("addOn").toBool(true);
     col.removeOn = o.value("removeOn").toBool(true);
+    col.maskLayer = o.value("mask").toString().toULongLong(); // ids are strings: JSON numbers are doubles
+    col.maskInvert = o.value("maskInvert").toBool(false);
 }

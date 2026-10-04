@@ -835,6 +835,36 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
             }
         }
 
+        // Color: its mask, a layer by its name ("" for none), and whether it is inverted
+        L.method(P + "/color/mask", "s", 3, "Color Mask",
+                 [e](Layer &l) {
+                     const Layer *m = l.color.maskLayer ? e->layer(e->indexOfId(l.color.maskLayer)) : nullptr;
+                     return QVariantList{m ? m->name : QString()};
+                 },
+                 [e](int idx, const QVariantList &a) {
+                     const QString name = a.value(0).toString().trimmed();
+                     quint64 id = 0;
+                     bool invert = false;
+                     {
+                         Engine::Lock lk(&e->mutex());
+                         const Layer *l = e->layer(idx);
+                         if (!l) return false;
+                         invert = l->color.maskInvert;
+                         for (int k = 0; k < e->layerCount() && !name.isEmpty(); ++k)
+                             if (const Layer *o = e->layer(k); o && o->name == name && !o->isViewport) {
+                                 id = o->id;
+                                 break;
+                             }
+                     }
+                     if (!name.isEmpty() && !id) return false;
+                     return e->setColorMask(idx, id, invert);
+                 });
+        L.method(P + "/color/maskInvert", "T", 3, "Invert Color Mask", [](Layer &l) { return QVariantList{l.color.maskInvert}; },
+                 L.edit([](Layer &l, const QVariantList &a) {
+                     l.color.maskInvert = truth(a.value(0));
+                     return true;
+                 }));
+
         // Color: added and removed
         for (int which = 0; which < 2; ++which) {
             OscNode &n = L.method(P + (which ? "/color/remove" : "/color/add"), "fff", 3,

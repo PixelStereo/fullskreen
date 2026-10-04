@@ -920,6 +920,60 @@ int main(int argc, char **argv)
         CHECK(at(0.25).red() < 5 && at(0.75).red() < 5);
         e.removeLayer(e.indexOfId(lid));
     }
+    // 4f bis. The color section through a mask: red with all its red removed, only where the mask is white
+    {
+        const int mi = e.addLayer("ColorMaskSrc", V);
+        CHECK(e.setLayerImage(mi, tmp + "/mhalf.png", &err));
+        e.layer(mi)->visible = false;
+        const quint64 maskId = e.layerId(mi);
+        const int li = e.addLayer("Colored", V);
+        CHECK(e.setLayerImage(li, tmp + "/mred.png", &err));
+        e.layer(li)->mapping.resetCorners();
+        const quint64 lid = e.layerId(li);
+        e.layer(li)->color.remove[0] = 1.0f; // red filtered out: black
+        e.layer(li)->color.add[2] = 1.0f;    // blue light added
+        auto at = [&](double fx) {
+            e.renderFrame();
+            const QImage g = e.grabViewport(e.mainViewportId());
+            return g.pixelColor(int(g.width() * fx), g.height() / 2);
+        };
+        QColor l = at(0.25), r = at(0.75);
+        CHECK(l.red() < 5 && l.blue() > 250 && r.red() < 5 && r.blue() > 250); // no mask: everywhere
+        CHECK(e.setColorMask(e.indexOfId(lid), maskId, false, &err));
+        l = at(0.25), r = at(0.75);
+        CHECK(l.red() < 5 && l.blue() > 250 && r.red() > 250 && r.blue() < 5); // white: colored, black: as it was
+        CHECK(e.setColorMask(e.indexOfId(lid), maskId, true, &err));
+        l = at(0.25), r = at(0.75);
+        CHECK(l.red() > 250 && l.blue() < 5 && r.red() < 5 && r.blue() > 250); // inverted
+        // The section switched off: no color, mask or not
+        e.layer(e.indexOfId(lid))->color.enabled = false;
+        l = at(0.25), r = at(0.75);
+        CHECK(l.red() > 250 && r.red() > 250);
+        e.layer(e.indexOfId(lid))->color.enabled = true;
+        // Saved, read back, recalled by a memory
+        const QJsonObject json = e.layerJson(e.indexOfId(lid));
+        CHECK(json.value("color").toObject().value("mask").toString() == QString::number(maskId)
+              && json.value("color").toObject().value("maskInvert").toBool());
+        CHECK(e.setColorMask(e.indexOfId(lid), 0, false, &err));
+        e.replaceLayerJson(e.indexOfId(lid), json);
+        {
+            Engine::Lock lk(&e.mutex());
+            const Layer *x = e.layer(e.indexOfId(lid));
+            CHECK(x && x->color.maskLayer == maskId && x->color.maskInvert);
+        }
+        // Refused: itself, a viewport, a feedback; a mask counts as a dependency
+        CHECK(!e.setColorMask(e.indexOfId(lid), lid, false));
+        CHECK(!e.setColorMask(e.indexOfId(lid), e.mainViewportId(), false));
+        CHECK(e.layerDependsOn(lid, maskId));
+        CHECK(!e.setLayerSourceLayer(e.indexOfId(maskId), lid, LayerTap::PostFx, &err));
+        // The mask layer gone: the color applies everywhere again, the reference dropped on reading
+        e.removeLayer(e.indexOfId(maskId));
+        l = at(0.25), r = at(0.75);
+        CHECK(l.blue() > 250 && r.blue() > 250);
+        e.fixLayerReferences();
+        CHECK(e.layer(e.indexOfId(lid))->color.maskLayer == 0);
+        e.removeLayer(e.indexOfId(lid));
+    }
 
     // 4e. Viewports: windows onto one composition, routing, groups inside groups
     {

@@ -359,6 +359,19 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         const QJsonArray fx = o.value("effects").toArray();
         for (size_t k = 0; k < l->effects.size() && int(k) < fx.size(); ++k)
             l->effects[k]->readState(fx[int(k)].toObject()); // on, mask
+        // The color section's switches and mask: at once (only its numbers fade)
+        const QJsonObject colorState = o.value("color").toObject();
+        if (!colorState.isEmpty()) {
+            ColorAdjust c;
+            colorFromJson(c, colorState);
+            l->color.enabled = c.enabled;
+            l->color.tempOn = c.tempOn;
+            l->color.tintOn = c.tintOn;
+            l->color.addOn = c.addOn;
+            l->color.removeOn = c.removeOn;
+            l->color.maskLayer = c.maskLayer;
+            l->color.maskInvert = c.maskInvert;
+        }
 
         auto job = std::make_shared<FadeJob>();
         job->id = id;

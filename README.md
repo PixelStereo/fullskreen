@@ -46,7 +46,8 @@ does not take).
 **Color** works like DaVinci Resolve: balance (Temp −4000…4000, Tint −100…100, luminance kept), then a color
 removed (filter) and a color added (light) — `out = balance(in) × (1 − removed) + added` — edited in RGB, HSL,
 additive, subtractive or all together. Every color parameter has its own switch, plus one for the whole section:
-a switch off keeps its value and simply stops applying it, which makes a before / after easy.
+a switch off keeps its value and simply stops applying it, which makes a before / after easy. The whole section can
+go through a **mask**, chosen at its top like an effect's: another layer's picture says where the color applies.
 **Spatial** gives position (px) and scale (%, X and Y linked by default) of the mapped layer.
 
 **Mapping.** 4 corners with true perspective (homography) and a deformation mesh from 2×2 to 32×32 points with
@@ -227,6 +228,7 @@ bundles are supported. Names are made OSC-safe: spaces become `_`, a duplicate n
 | `…/source/params/<input>` | per ISF type | generator parameters |
 | `…/color/temp` · `tint` · `add` · `remove` | f · f · fff · fff | −4000..4000 · −100..100 |
 | `…/color/enabled` · `tempEnabled` · `tintEnabled` · `addEnabled` · `removeEnabled` | T | color switches |
+| `…/color/mask` · `…/color/maskInvert` | s · T | mask of the color: a layer's name ("" for none) |
 | `…/spatial/position` · `scale` · `corners/tl` `tr` `br` `bl` | ff | px · % · normalized |
 | `…/effects/enabled` · `effects/<effect>/enabled` · `effects/<effect>/<input>` | | effect chain |
 | `…/effects/<effect>/mask` · `maskInvert` | s · T | mask layer by name (`""`: none), inverted |
