@@ -10,11 +10,14 @@ class Engine;
 class QUndoStack;
 class QLabel;
 class QToolButton;
+class QDoubleSpinBox;
 
 // Preview of the whole composition + interactive mapping editing for the selected layer. The viewports are
 // drawn as frames over it, with their names; dragging a frame moves the viewport in the composition.
 // Zoom (wheel, pinch, −/+/Fit buttons) gives finer control when moving the layer or its points:
 // moves are computed in composition coordinates, so a higher zoom means smaller steps.
+// The selected points show their position in composition pixels; the last one clicked can be typed in
+// (bottom left), the other selected points following it.
 class MappingView : public QOpenGLWidget
 {
     Q_OBJECT
@@ -60,6 +63,9 @@ private:
     int hitViewportFrame(QPointF widgetPos) const;
     void paintScene();
     void paintViewportNames();
+    void paintCoordinates();     // labels of the selected points (composition pixels)
+    void refreshCoordinateBar(); // values of the point typed in, follows the selection and the mapping
+    void typeCoordinate();       // a value typed: the point (and the selection) moves there
     QPointF outOf(int layer, QPointF canvas) const;
     QPointF canvasOf(int layer, QPointF out) const;
     QRectF fitRect() const;  // composition fitted in the widget (zoom 1)
@@ -98,4 +104,7 @@ private:
     QPointF m_panLast;
     QWidget *m_zoomBar = nullptr;
     QLabel *m_zoomLabel = nullptr;
+    QWidget *m_coordBar = nullptr;
+    QLabel *m_coordName = nullptr;
+    QDoubleSpinBox *m_coordX = nullptr, *m_coordY = nullptr;
 };

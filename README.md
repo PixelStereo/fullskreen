@@ -52,7 +52,9 @@ go through a **mask**, chosen at its top like an effect's: another layer's pictu
 
 **Mapping.** 4 corners with true perspective (homography) and a deformation mesh from 2×2 to 32×32 points with
 Catmull-Rom interpolation; the two combine — align the corners first, refine with the mesh. Points are
-multi-selected and moved together. The preview zooms (wheel / − + Fit) for finer moves.
+multi-selected and moved together. The preview zooms (wheel / − + Fit) for finer moves. Selected points show
+their position in composition pixels, and the one clicked last can be typed in (bottom left of the preview; the
+other selected points follow it).
 
 **Effects.** An ISF chain per layer: any number of effects, reorderable, each one switchable, plus a master
 switch for the chain. Each effect can take a **mask**: the picture of another layer (hidden or not) says where it
