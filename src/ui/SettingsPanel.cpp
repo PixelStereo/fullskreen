@@ -118,7 +118,7 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
     form->addRow(note(QStringLiteral("When a memory gives a layer another source: the outgoing one keeps playing and "
                                      "this ISF transition takes it to the new one, over the memory's fade. "
                                      "A layer can choose its own (Source tab).")));
-    m_hardware = new QCheckBox(QStringLiteral("Hardware decoding"));
+    m_hardware = new FlagBox(QStringLiteral("Hardware decoding"));
     m_hardware->setChecked(hardwareDecoding());
     form->addRow(m_hardware);
     form->addRow(note(QStringLiteral("H.264, HEVC, ProRes… decoded by the graphics hardware when it can (VideoToolbox on "
@@ -153,7 +153,7 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
         m_depth = new QComboBox;
         for (int b : renderChoice::depths()) m_depth->addItem(renderChoice::depthName(b), b);
         m_depth->setCurrentIndex(std::max(0, m_depth->findData(d.depth)));
-        m_mipmaps = new QCheckBox(QStringLiteral("Smooth pictures drawn smaller (mipmaps)"));
+        m_mipmaps = new FlagBox(QStringLiteral("Smooth pictures drawn smaller (mipmaps)"));
         m_mipmaps->setChecked(d.mipmaps > 0);
         rf->addRow(new ResetLabel(QStringLiteral("Frame rate"), [this] { m_rate->setCurrentIndex(0); }), m_rate);
         rf->addRow(new ResetLabel(QStringLiteral("Antialiasing"), [this] { m_samples->setCurrentIndex(2); }), m_samples);
@@ -194,7 +194,7 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
     lookForm->addRow(note(QStringLiteral("Used for the selected layer, the bars, the buttons that are on and the "
                                          "links. A click on the name puts it back to the default light grey.")));
     // Magnetism: its state when Fulskrin starts (the button next to the zoom changes it meanwhile), its reach
-    auto *magnetOn = new QCheckBox(QStringLiteral("Magnetism on at start"));
+    auto *magnetOn = new FlagBox(QStringLiteral("Magnetism on at start"));
     magnetOn->setChecked(magnet::enabledAtStart());
     auto *reach = new IntBox;
     reach->setRange(2, 40);
@@ -211,7 +211,7 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
         magnet::setEnabled(on);
     });
     connect(reach, qOverload<int>(&QSpinBox::valueChanged), this, [](int px) { magnet::setDistance(px); });
-    auto *follow = new QCheckBox(QStringLiteral("Fields follow the values during memory fades"));
+    auto *follow = new FlagBox(QStringLiteral("Fields follow the values during memory fades"));
     follow->setChecked(followFades());
     lookForm->addRow(follow);
     lookForm->addRow(note(QStringLiteral("On: the inspector's sliders and fields (opacity, viewports, color, soft edge, "
@@ -250,7 +250,7 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
 
     auto *osc = new QGroupBox(QStringLiteral("OSC"));
     auto *of = new QFormLayout(osc);
-    m_osc = new QCheckBox(QStringLiteral("Control by OSC and publish the namespace (OSCQuery)"));
+    m_osc = new FlagBox(QStringLiteral("Control by OSC and publish the namespace (OSCQuery)"));
     m_osc->setChecked(oscEnabled());
     m_oscPort = new IntBox;
     m_queryPort = new IntBox;

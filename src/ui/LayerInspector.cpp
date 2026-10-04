@@ -391,7 +391,7 @@ void LayerInspector::rebuild()
     auto *name = new QLineEdit(s.name);
     name->setStyleSheet("font-weight:bold; font-size:14px;");
     name->setToolTip(kind + QStringLiteral(" name"));
-    auto *vis = new QCheckBox(QStringLiteral("Visible"));
+    auto *vis = new FlagBox(QStringLiteral("Visible"));
     vis->setChecked(s.visible);
     vis->setProperty("allowLocked", true);
     auto *lock = new QToolButton;
@@ -513,6 +513,27 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     default: desc = QStringLiteral("No source"); break;
     }
 
+    // Drop zone: the current media, replaced by whatever is dropped (Media Bin, Finder). × ejects it.
+    const bool loaded = s.type != SourceType::None;
+    auto *zoneRow = new QHBoxLayout;
+    auto *zone = new DropZone(loaded ? QStringLiteral("<b>%1</b><br><span style='font-size:11px'>Drop another media here to replace it</span>")
+                                           .arg(desc.toHtmlEscaped())
+                                     : QStringLiteral("Drop a video, image, sound or ISF generator here<br>"
+                                                      "<span style='font-size:11px'>from the Media Bin or the Finder</span>"));
+    zone->setTextFormat(Qt::RichText);
+    zone->setToolTip(s.sourcePath.isEmpty() ? QStringLiteral("Video, image, audio file or ISF generator") : s.sourcePath);
+    zone->onDrop = [this](const QString &f) { emit fileDropped(f); };
+    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Eject the media from the layer"));
+    bClear->setEnabled(loaded || s.error.size());
+    zoneRow->addWidget(zone, 1);
+    zoneRow->addWidget(bClear, 0, Qt::AlignTop);
+    v->addLayout(zoneRow);
+    connect(bClear, &QToolButton::clicked, this, [this] {
+        editSource(QStringLiteral("Eject Media"), [this] { m_engine->clearLayerSource(m_layer); });
+        emit layerChanged();
+        rebuild();
+    });
+
     // Text generator: the text typed here, and how it is set
     if (s.type == SourceType::Text) {
         // Edits apply at once; the undo step is pushed when the editing pauses
@@ -613,10 +634,8 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
                                   {"U", "Underline", s.textUnderline, &Layer::textUnderline},
                                   {"S", "Strikethrough", s.textStrike, &Layer::textStrike}};
         for (const Toggle &t : toggles) {
-            auto *b = new QToolButton;
-            b->setText(QString::fromLatin1(t.label));
+            auto *b = new ToggleButton(QString::fromLatin1(t.label));
             b->setToolTip(QString::fromLatin1(t.tip));
-            b->setCheckable(true);
             b->setChecked(t.on);
             b->setEnabled(!m_locked);
             QFont f = b->font();
@@ -687,7 +706,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         });
 
         // Shadow
-        auto *shadow = new QCheckBox(QStringLiteral("On"));
+        auto *shadow = new FlagBox(QStringLiteral("On"));
         shadow->setChecked(s.textShadow);
         shadow->setEnabled(!m_locked);
         auto *shadowRow = new QHBoxLayout;
@@ -710,39 +729,9 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         });
 
         v->addLayout(fmt);
-        auto *eject = new QPushButton(QStringLiteral("Eject Text"));
-        eject->setToolTip(QStringLiteral("Empty the layer (the text generator stays in the Media Bin)"));
-        eject->setEnabled(!m_locked);
-        v->addWidget(eject);
-        connect(eject, &QPushButton::clicked, this, [this] {
-            editSource(QStringLiteral("Eject Text"), [this] { m_engine->clearLayerSource(m_layer); });
-            emit layerChanged();
-            rebuild();
-        });
         v->addStretch();
         return g;
     }
-
-    // Drop zone: the current media, replaced by whatever is dropped (Media Bin, Finder). × ejects it.
-    const bool loaded = s.type != SourceType::None;
-    auto *zoneRow = new QHBoxLayout;
-    auto *zone = new DropZone(loaded ? QStringLiteral("<b>%1</b><br><span style='font-size:11px'>Drop another media here to replace it</span>")
-                                           .arg(desc.toHtmlEscaped())
-                                     : QStringLiteral("Drop a video, image, sound or ISF generator here<br>"
-                                                      "<span style='font-size:11px'>from the Media Bin or the Finder</span>"));
-    zone->setTextFormat(Qt::RichText);
-    zone->setToolTip(s.sourcePath.isEmpty() ? QStringLiteral("Video, image, audio file or ISF generator") : s.sourcePath);
-    zone->onDrop = [this](const QString &f) { emit fileDropped(f); };
-    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Eject the media from the layer"));
-    bClear->setEnabled(loaded || s.error.size());
-    zoneRow->addWidget(zone, 1);
-    zoneRow->addWidget(bClear, 0, Qt::AlignTop);
-    v->addLayout(zoneRow);
-    connect(bClear, &QToolButton::clicked, this, [this] {
-        editSource(QStringLiteral("Eject Media"), [this] { m_engine->clearLayerSource(m_layer); });
-        emit layerChanged();
-        rebuild();
-    });
 
     // Or the picture of another layer, tapped before or after its effect chain
     {
@@ -1071,7 +1060,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         auto *icon = new ResetLabel(QStringLiteral("Volume"), [vol] { vol->setValue(100); emit vol->valueEdited(100); });
         icon->setStyleSheet("color:#8a8a8e;");
         icon->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        auto *mute = new QCheckBox(QStringLiteral("Mute"));
+        auto *mute = new FlagBox(QStringLiteral("Mute"));
         mute->setChecked(s.muted);
         row->addWidget(icon);
         row->addWidget(vol, 1);
@@ -1212,7 +1201,7 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
     auto *outer = new QVBoxLayout(g);
     outer->setContentsMargins(0, 0, 0, 0);
     // Switch of the whole section: the values are kept, they are simply not applied
-    auto *master = new QCheckBox(QStringLiteral("Color"));
+    auto *master = new FlagBox(QStringLiteral("Color"));
     master->setChecked(s.color.enabled);
     master->setStyleSheet("font-weight:bold;");
     master->setToolTip(QStringLiteral("Apply the color of this layer.\nOff: every value is kept, the picture is left alone."));
@@ -1256,7 +1245,7 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
         pick->setToolTip(QStringLiteral("Where the color applies: fully where the chosen layer's picture is white, not at "
                                         "all where it is black or transparent, in proportion in between. That picture is "
                                         "stretched over this layer's, after its ROI. The layer can stay hidden."));
-        auto *inv = new QCheckBox(QStringLiteral("Invert"));
+        auto *inv = new FlagBox(QStringLiteral("Invert"));
         inv->setChecked(s.color.maskInvert);
         inv->setEnabled(s.color.maskLayer != 0);
         row->addWidget(label);
@@ -1307,7 +1296,7 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
             bar->setValue(d.value);
             *d.field = bar;
             const int prop = d.prop;
-            auto *on = new QCheckBox;
+            auto *on = new FlagBox;
             on->setChecked(d.on);
             on->setToolTip(QStringLiteral("Apply %1 (the value is kept either way)").arg(QString::fromUtf8(d.name)));
             const int onProp = d.onProp;
@@ -1736,7 +1725,7 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     auto *v = new QVBoxLayout(g);
 
     // General switch of the chain
-    auto *all = new QCheckBox(QStringLiteral("Effects enabled"));
+    auto *all = new FlagBox(QStringLiteral("Effects enabled"));
     all->setChecked(s.effectsEnabled);
     all->setToolTip(QStringLiteral("Turns the whole effect chain on or off (each effect keeps its own switch)"));
     all->setStyleSheet("QCheckBox { font-weight:bold; }");
@@ -1916,7 +1905,7 @@ void LayerInspector::showEffectParams()
         pick->setToolTip(QStringLiteral("Where this effect applies: fully where the chosen layer's picture is white, not at "
                                         "all where it is black or transparent, in proportion in between. That picture is "
                                         "stretched over this layer's, before the mapping. The layer can stay hidden."));
-        auto *inv = new QCheckBox(QStringLiteral("Invert"));
+        auto *inv = new FlagBox(QStringLiteral("Invert"));
         inv->setChecked(invert);
         inv->setEnabled(maskId != 0);
         row->addWidget(label);

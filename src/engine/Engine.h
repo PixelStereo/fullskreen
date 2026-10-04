@@ -252,6 +252,7 @@ public:
         double fraction() const { return total > 0 ? std::min(1.0, elapsed / total) : 1.0; }
     };
     RecallProgress recallProgress() const;
+    void stepTypewriters(double dt); // the texts memories gave are typed on (lock held)
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
     void setFadesManual(bool on) { m_fadesManual = on; } // tests: only advanceFades moves them, not the frames
     // Key under which a memory stores the time of a stored value (its path in the layer state), empty for a value

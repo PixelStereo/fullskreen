@@ -292,7 +292,7 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
     case SourceType::Text: {
         // Redrawn only when what is shown changes (typed characters, edits, style)
         const QString shown = l.shownText();
-        const QString key = QStringLiteral("%1\n%2|%3|%4|%5|%6|%7|%8x%9").arg(shown, l.textFont).arg(l.textSize)
+        const QString key = QStringLiteral("%1\n%2|%3|%4|%5|%6|%7|%8x%9|%10").arg(shown, l.textFont).arg(l.textSize)
                                 .arg(l.textColor.name(QColor::HexArgb)).arg(int(l.textAlign))
                                 .arg(l.textLineHeight).arg(l.textLetterSpacing).arg(l.textWidth).arg(l.textHeight)
                                 .arg(QStringLiteral("%1%2%3%4|%5%6|%7%8|%9").arg(l.textBold).arg(l.textItalic).arg(l.textUnderline)
@@ -743,6 +743,7 @@ void Engine::frame(double dt)
     if (!m_fadesManual) {
         stepFade(m_realDt);
         stepTransitions(m_realDt);
+        stepTypewriters(m_realDt);
     }
     markNeeded();
     for (auto &l : m_layers) updateSource(*l, dt);

@@ -163,7 +163,7 @@ QWidget *CompositionPanel::buildAudio()
     m_audioVolumeLabel = new QLabel(volumeText(100));
     m_audioVolumeLabel->setMinimumWidth(64);
     m_audioVolumeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_audioMute = new QCheckBox(QStringLiteral("Mute"));
+    m_audioMute = new FlagBox(QStringLiteral("Mute"));
     volRow->addWidget(m_audioVolume, 1);
     volRow->addWidget(m_audioVolumeLabel);
     volRow->addWidget(m_audioMute);

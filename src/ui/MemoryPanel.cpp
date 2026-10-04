@@ -618,7 +618,7 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
         break;
     }
     case MemField::Bool: {
-        auto *c = new QCheckBox(f.label);
+        auto *c = new FlagBox(f.label);
         c->setChecked(value.toBool());
         m_detailLayout->addWidget(c);
         connect(c, &QCheckBox::toggled, this, [this, f](bool on) { applyField(f, QJsonValue(on)); });

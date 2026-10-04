@@ -699,14 +699,19 @@ void Engine::stepFade(double dt)
 void Engine::advanceFades(double dt)
 {
     Lock lk(&m_mutex);
-    for (auto &lp : m_layers) { // typewriters: the text a memory gave goes on being typed
+    stepFade(dt);
+    stepTransitions(dt);
+    stepTypewriters(dt);
+}
+
+void Engine::stepTypewriters(double dt)
+{
+    for (auto &lp : m_layers) {
         Layer &l = *lp;
         if (l.textTypeDur <= 0) continue;
         l.textTypeElapsed += std::max(0.0, dt);
         if (l.textTypeElapsed >= l.textTypeDur) l.textTypeDur = 0;
     }
-    stepFade(dt);
-    stepTransitions(dt);
 }
 
 // ---------------------------------------------------------------------------

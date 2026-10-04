@@ -95,7 +95,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             break;
         }
         case IsfInput::Bool: {
-            auto *c = new QCheckBox;
+            auto *c = new FlagBox;
             c->setChecked(in.bValue);
             connect(c, &QCheckBox::toggled, this, [=](bool on) { setValue(idx, label, [on](IsfValue &x) { x.b = on; }); });
             m_followers.push_back({idx, [c = QPointer<QCheckBox>(c)](const IsfValue &x) {
