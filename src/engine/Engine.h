@@ -232,6 +232,14 @@ public:
     bool sequenceGoTo(int step);
     void recallMemory(int i); // with its fade
     bool isFading() const;
+    // The memory recalled last, and where its fade is (its longest time: values with times of their own included)
+    struct RecallProgress {
+        quint64 memory = 0;          // 0: none recalled since the project was opened
+        double elapsed = 0, total = 0;
+        bool running() const { return memory && total > 0 && elapsed < total; }
+        double fraction() const { return total > 0 ? std::min(1.0, elapsed / total) : 1.0; }
+    };
+    RecallProgress recallProgress() const;
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
     void setFadesManual(bool on) { m_fadesManual = on; } // tests: only advanceFades moves them, not the frames
     // Key under which a memory stores the time of a stored value (its path in the layer state), empty for a value
@@ -482,6 +490,8 @@ private:
     void renderTransition(Layer &l, SourceTransition &t, const IsfRenderContext &rc);
     void retireTransition(std::unique_ptr<SourceTransition> t);           // sound now, OpenGL on the render thread
     double m_fadeElapsed = 0; // seconds since the last recall
+    quint64 m_recalledMemory = 0;
+    double m_recallTotal = 0;
     quint64 m_nextMemoryId = 1;
     RenderSettings m_render, m_renderDefaults{0, 0, 0};
     double m_screenHz = 60;

@@ -269,6 +269,16 @@ QJsonArray Engine::captureLayers() const
     return a;
 }
 
+Engine::RecallProgress Engine::recallProgress() const
+{
+    Lock lk(&m_mutex);
+    RecallProgress r;
+    r.memory = m_recalledMemory;
+    r.total = m_recallTotal;
+    r.elapsed = m_fades.empty() ? m_recallTotal : m_fadeElapsed;
+    return r;
+}
+
 bool Engine::isFading() const
 {
     Lock lk(&m_mutex);
@@ -280,6 +290,14 @@ void Engine::recallMemory(int i)
     const Memory m = memory(i);
     if (m.layers.isEmpty()) return;
     applyLayers(m.layers, m.fade, true);
+    {
+        Lock lk(&m_mutex);
+        m_recalledMemory = m.id;
+        double total = 0;
+        for (const auto &job : m_fades) total = std::max(total, job->times.longest());
+        for (const auto &[id, t] : m_transitions) total = std::max(total, t->duration - t->elapsed);
+        m_recallTotal = total;
+    }
     emit memoryRecalled(i);
 }
 

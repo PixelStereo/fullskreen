@@ -20,6 +20,8 @@
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QStyledItemDelegate>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QUndoStack>
@@ -157,6 +159,38 @@ QToolButton *barButton(const QString &text, const QString &tip)
 }
 } // namespace
 
+// The list of the memories: the one recalled last is marked apart from the selection — a green stripe on its left
+// and ▶ before its number — and its fade fills the row's bottom while it runs.
+namespace {
+const QColor kLiveMemory(76, 217, 100);
+
+class MemoryRowDelegate : public QStyledItemDelegate
+{
+public:
+    MemoryRowDelegate(Engine *e, QObject *parent) : QStyledItemDelegate(parent), m_engine(e) {}
+    void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::paint(p, opt, index);
+        const Engine::RecallProgress r = m_engine->recallProgress();
+        if (!r.memory || index.siblingAtColumn(0).data(MemoryRole).toULongLong() != r.memory) return;
+        p->save();
+        if (index.column() == 0) p->fillRect(QRectF(opt.rect.left(), opt.rect.top(), 4, opt.rect.height()), kLiveMemory);
+        if (r.running()) { // the whole row's width is the memory's time
+            const QAbstractItemView *view = qobject_cast<const QAbstractItemView *>(opt.widget);
+            const int total = view ? view->viewport()->width() : opt.rect.width();
+            const double fill = r.fraction() * total;
+            const QRectF bar(opt.rect.left(), opt.rect.bottom() - 2, opt.rect.width(), 3);
+            const QRectF done = bar.intersected(QRectF(0, bar.top(), fill, bar.height()));
+            if (!done.isEmpty()) p->fillRect(done, kLiveMemory);
+        }
+        p->restore();
+    }
+
+private:
+    Engine *m_engine;
+};
+} // namespace
+
 MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     : QWidget(parent), m_engine(engine), m_undo(undo)
 {
@@ -195,9 +229,21 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     m_list->header()->setStretchLastSection(false);
     m_list->header()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_list->setColumnWidth(0, 34);
+    m_list->setColumnWidth(0, 44);
     m_list->setColumnWidth(2, 58);
-    m_list->setToolTip(QStringLiteral("Double-click or Enter: recall · drag onto a step of a sequence"));
+    m_list->setToolTip(QStringLiteral("Double-click or Enter: recall · drag onto a step of a sequence\n"
+                                      "Green stripe and ▶: the memory recalled last; the green line under it: its fade"));
+    m_list->setItemDelegate(new MemoryRowDelegate(m_engine, m_list));
+    { // the fade running moves the line under its memory
+        auto *t = new QTimer(this);
+        t->setInterval(33);
+        connect(t, &QTimer::timeout, this, [this] {
+            const Engine::RecallProgress r = m_engine->recallProgress();
+            if (r.running() || m_wasRunning) m_list->viewport()->update();
+            m_wasRunning = r.running();
+        });
+        t->start();
+    }
     lv->addWidget(m_list, 1);
     left->setMinimumWidth(220);
     split->addWidget(left);
@@ -370,12 +416,13 @@ void MemoryPanel::refresh()
         it->setTextAlignment(0, Qt::AlignRight | Qt::AlignVCenter);
         it->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
         it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
-        if (i == m_active) { // last recalled
+        if (i == m_active) { // last recalled: ▶, bold, green — not the accent, which is the selection's
+            it->setText(0, QStringLiteral("▶ %1").arg(i + 1));
             QFont f = it->font(1);
             f.setBold(true);
             for (int c = 0; c < 3; ++c) {
                 it->setFont(c, f);
-                it->setForeground(c, theme::accent());
+                it->setForeground(c, kLiveMemory);
             }
         }
     }
@@ -400,7 +447,7 @@ void MemoryPanel::showInspector(int i)
         return;
     }
     const Engine::Memory m = m_engine->memory(i);
-    m_title->setText(QStringLiteral("<b>Memory %1</b>%2").arg(i + 1).arg(i == m_active ? QStringLiteral(" — active") : QString()));
+    m_title->setText(QStringLiteral("<b>Memory %1</b>%2").arg(i + 1).arg(i == m_active ? QStringLiteral(" <span style='color:#4cd964'>▶ recalled last</span>") : QString()));
     m_thumb->setPixmap(thumbnail(m.thumbnail));
     m_name->setText(m.name);
     m_fade->setValue(m.fade);
