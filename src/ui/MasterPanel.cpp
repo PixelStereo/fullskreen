@@ -1,4 +1,5 @@
 #include "MasterPanel.h"
+#include "SettingsPanel.h"
 #include "Widgets.h"
 #include "Engine.h"
 
@@ -39,6 +40,7 @@ MasterPanel::MasterPanel(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     v->addWidget(buildMaster());
     v->addWidget(buildAudio());
     v->addWidget(buildComposition());
+    v->addWidget(buildRendering());
     v->addStretch();
     syncFromEngine();
     // Long screen or sound card names must not widen the panel beyond its column (they are elided).
@@ -254,6 +256,65 @@ void MasterPanel::refreshMeters()
 // Composition
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Rendering: frame rate and antialiasing of this project, or the machine's defaults (Settings)
+// ---------------------------------------------------------------------------
+
+QWidget *MasterPanel::buildRendering()
+{
+    auto *g = new QGroupBox(QStringLiteral("Rendering"));
+    auto *form = new QFormLayout(g);
+    m_rate = new QComboBox;
+    m_samples = new QComboBox;
+    m_mipmaps = new QComboBox;
+    form->addRow(QStringLiteral("Frame rate"), m_rate);
+    form->addRow(QStringLiteral("Antialiasing"), m_samples);
+    form->addRow(QStringLiteral("Mipmaps"), m_mipmaps);
+    auto *n = note(QStringLiteral("Saved with the project; Default: the machine's choice (Settings ▸ Rendering)."));
+    form->addRow(n);
+    refreshRenderDefaults();
+    auto apply = [this] {
+        if (m_syncing) return;
+        Engine::RenderSettings r;
+        r.frameRate = m_rate->currentData().toDouble();
+        r.samples = m_samples->currentData().toInt();
+        r.mipmaps = m_mipmaps->currentData().toInt();
+        m_engine->setRenderSettings(r);
+        emit compositionEdited();
+    };
+    for (QComboBox *c : {m_rate, m_samples, m_mipmaps}) connect(c, qOverload<int>(&QComboBox::activated), this, apply);
+    return g;
+}
+
+void MasterPanel::refreshRenderDefaults()
+{
+    const Engine::RenderSettings d = m_engine->renderDefaults();
+    m_syncing = true;
+    m_rate->clear();
+    m_rate->addItem(QStringLiteral("Default (%1)").arg(renderChoice::frameRateName(d.frameRate)), -1.0);
+    for (double r : renderChoice::frameRates()) m_rate->addItem(renderChoice::frameRateName(r), r);
+    m_samples->clear();
+    m_samples->addItem(QStringLiteral("Default (%1)").arg(renderChoice::samplesName(d.samples)), -1);
+    for (int s : renderChoice::samples()) m_samples->addItem(renderChoice::samplesName(s), s);
+    m_mipmaps->clear();
+    m_mipmaps->addItem(QStringLiteral("Default (%1)").arg(d.mipmaps > 0 ? QStringLiteral("On") : QStringLiteral("Off")), -1);
+    m_mipmaps->addItem(QStringLiteral("Off"), 0);
+    m_mipmaps->addItem(QStringLiteral("On"), 1);
+    m_syncing = false;
+    syncRendering();
+}
+
+void MasterPanel::syncRendering()
+{
+    if (!m_rate) return;
+    const Engine::RenderSettings r = m_engine->renderSettings();
+    m_syncing = true;
+    m_rate->setCurrentIndex(std::max(0, m_rate->findData(r.frameRate < 0 ? -1.0 : r.frameRate)));
+    m_samples->setCurrentIndex(std::max(0, m_samples->findData(r.samples < 0 ? -1 : r.samples)));
+    m_mipmaps->setCurrentIndex(std::max(0, m_mipmaps->findData(r.mipmaps < 0 ? -1 : r.mipmaps)));
+    m_syncing = false;
+}
+
 QWidget *MasterPanel::buildComposition()
 {
     auto *g = new QGroupBox(QStringLiteral("Composition"));
@@ -313,6 +374,7 @@ void MasterPanel::syncFromEngine()
     m_audioVolumeLabel->setText(volumeText(int(m_audioVolume->value())));
     m_audioMute->setChecked(m_engine->audioMuted());
     m_syncing = false;
+    syncRendering();
     refreshStatus();
 }
 

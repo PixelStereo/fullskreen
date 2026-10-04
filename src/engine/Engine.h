@@ -20,6 +20,7 @@
 #include "LayerTree.h"
 #include "Publish.h"
 
+#include <QColor>
 #include <QElapsedTimer>
 #include <QImage>
 #include <QJsonArray>
@@ -145,6 +146,21 @@ public:
     void setDefaultColorModels(int m) { m_defaultColorModels = m; }
     // Mode given to a video or a sound when it is loaded into a layer (preference)
     void setDefaultPlayMode(PlayMode m) { m_defaultPlayMode = m; }
+
+    // --- Rendering: frame rate and antialiasing. A project chooses them (Master), or takes the machine's
+    // defaults (Settings): -1 in a project means "the default".
+    struct RenderSettings {
+        double frameRate = -1; // frames per second; 0: the refresh rate of the screen
+        int samples = -1;      // multisampling of the mapped edges: 0 / 1 off, 2, 4, 8
+        int mipmaps = -1;      // smooth pictures drawn smaller than they are (mipmaps): 0 off, 1 on
+    };
+    void setRenderSettings(const RenderSettings &project); // saved with the project
+    RenderSettings renderSettings() const;
+    void setRenderDefaults(const RenderSettings &machine); // no -1 there
+    RenderSettings renderDefaults() const;
+    RenderSettings effectiveRender() const; // what is used: the project's, or the defaults
+    void setScreenRefreshRate(double hz);   // of the main screen (the pace without a window shown)
+    double screenRefreshRate() const;
     // Transition used when a memory gives a layer another source, for the layers that do not choose one
     // (ISF transition; empty: a crossfade)
     void setDefaultTransition(const QString &path);
@@ -334,8 +350,11 @@ private:
     void processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied, const IsfRenderContext &rc);
     void renderGroup(Layer &g, const std::vector<Layer *> &members, const IsfRenderContext &rc);
     // `view`: the part of the composition the target shows (normalized, origin top left)
+    // The target is cleared to `clear` first (through a multisampled buffer when antialiasing is on)
     void compositeLayers(const RenderTarget &target, const std::vector<Layer *> &topToBottom,
-                         const QRectF &view = QRectF(0, 0, 1, 1));
+                         const QRectF &view = QRectF(0, 0, 1, 1), QColor clear = QColor(0, 0, 0, 0));
+    std::map<std::pair<int, int>, MsaaBuffer> m_msaa; // by size (render thread)
+    int m_maxSamples = 0;
     void renderViewport(Layer &v, const std::vector<Layer *> &shown, const IsfRenderContext &rc);
     void composite();
     void readSourcePreview();
@@ -450,6 +469,8 @@ private:
     void retireTransition(std::unique_ptr<SourceTransition> t);           // sound now, OpenGL on the render thread
     double m_fadeElapsed = 0; // seconds since the last recall
     quint64 m_nextMemoryId = 1;
+    RenderSettings m_render, m_renderDefaults{0, 0, 0};
+    double m_screenHz = 60;
     std::vector<Sequence> m_sequences;
     int m_currentSequence = -1, m_sequencePosition = -1;
     QJsonArray sequencesToJson() const;

@@ -70,8 +70,10 @@ each one back how it was; ⌘⇧F does the same with windows. On macOS a fullscr
 and the Space is closed when it leaves fullscreen — the window is hidden only once macOS has finished the exit.
 With several windows, only the last one presented waits for the vertical refresh, so the frame rate does not drop.
 Rendering runs on a dedicated thread, so a slow or blocked interface never interrupts the projected image. The
-**Master** tab drives every viewport: level fader, Blackout with fade (⌘B, fades the sound too), audio output and
-composition size. Syphon and Spout are built in; NDI and OMT are loaded only when enabled, so Fulskrin runs
+**Master** tab drives every viewport: level fader, Blackout with fade (⌘B, fades the sound too), audio output,
+composition size and **rendering** — frame rate (the screen's refresh by default: the outputs' vertical sync, or
+the main screen's rate), **antialiasing** of the mapped edges (2× / 4× / 8× MSAA) and **mipmaps** for pictures
+drawn much smaller than they are — each one the project's own or the machine's default (Settings ▸ Rendering). Syphon and Spout are built in; NDI and OMT are loaded only when enabled, so Fulskrin runs
 without them.
 
 **Media Bin.** Every media used by the project, grouped by type and searchable, with resolution, duration, sound

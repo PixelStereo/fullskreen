@@ -93,6 +93,14 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_settings, &SettingsPanel::colorModelsChanged, this,
             [this] { m_engine->setDefaultColorModels(SettingsPanel::colorModels()); });
     m_engine->setDefaultColorModels(SettingsPanel::colorModels());
+    // Rendering: the machine's defaults, and the main screen's refresh rate (the pace without an output shown)
+    m_engine->setRenderDefaults(SettingsPanel::renderDefaults());
+    m_master->refreshRenderDefaults();
+    auto screenRate = [this] {
+        if (QScreen *sc = QGuiApplication::primaryScreen()) m_engine->setScreenRefreshRate(sc->refreshRate());
+    };
+    screenRate();
+    connect(qApp, &QGuiApplication::primaryScreenChanged, this, screenRate);
     connect(m_settings, &SettingsPanel::oscChanged, this, &MainWindow::startOsc);
     // Default transition of the sources changed by a memory
     m_engine->setDefaultTransition(SettingsPanel::defaultTransition(m_engine->library()));
@@ -235,6 +243,10 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         m_blackoutAction->setChecked(on);
     });
     connect(m_master, &MasterPanel::compositionEdited, this, &MainWindow::markDirty);
+    connect(m_settings, &SettingsPanel::renderDefaultsChanged, this, [this] {
+        m_engine->setRenderDefaults(SettingsPanel::renderDefaults());
+        m_master->refreshRenderDefaults();
+    });
     connect(m_master, &MasterPanel::audioEdited, this, &MainWindow::markDirty);
 
     // --- General sync
@@ -312,6 +324,14 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         // Platform without OpenGL rendering on a separate thread: rendering is clocked by the UI.
         m_renderTimer.setTimerType(Qt::PreciseTimer);
         m_renderTimer.setInterval(16);
+        // The rate chosen, or the screen's
+        auto *pace = new QTimer(this);
+        connect(pace, &QTimer::timeout, this, [this] {
+            const double r = m_engine->effectiveRender().frameRate;
+            const int ms = int(1000.0 / std::clamp(r > 0 ? r : m_engine->screenRefreshRate(), 1.0, 1000.0));
+            if (m_renderTimer.interval() != ms) m_renderTimer.setInterval(ms);
+        });
+        pace->start(500);
         connect(&m_renderTimer, &QTimer::timeout, m_engine, &Engine::renderFrame);
         m_renderTimer.start();
     }

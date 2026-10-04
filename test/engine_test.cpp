@@ -1101,6 +1101,87 @@ int main(int argc, char **argv)
         CHECK(e.viewports().size() == 1 && e.layerCount() == 1);
     }
 
+    // 4g. Antialiasing: multisampled edges, mipmaps for pictures drawn smaller; the project's choice or the default
+    {
+        e.newProject();
+        e.fadeMaster(1.0, 0);
+        e.setBlackout(false, 0);
+        e.setCompositionSize(QSize(64, 64));
+        e.setViewportSize(e.viewports().first(), QSize(64, 64));
+        QImage white(64, 64, QImage::Format_RGB32), checker(64, 64, QImage::Format_RGB32);
+        white.fill(Qt::white);
+        for (int y = 0; y < 64; ++y)
+            for (int x = 0; x < 64; ++x) checker.setPixel(x, y, (x + y) % 2 ? qRgb(255, 255, 255) : qRgb(0, 0, 0));
+        white.save(tmp + "/aawhite.png");
+        checker.save(tmp + "/aachecker.png");
+        const int li = e.addLayer("Edge");
+        CHECK(e.setLayerImage(li, tmp + "/aawhite.png", &err));
+        {
+            Engine::Lock lk(&e.mutex());
+            Mapping &m = e.layer(li)->mapping; // a slanted edge
+            m.setCorner(0, QPointF(0.1, 0.0)), m.setCorner(1, QPointF(0.6, 0.0)), m.setCorner(2, QPointF(0.9, 1.0)),
+                m.setCorner(3, QPointF(0.1, 1.0));
+        }
+        auto greys = [&] {
+            for (int k = 0; k < 2; ++k) e.renderFrame();
+            const QImage g = e.grabViewport(e.mainViewportId());
+            int n = 0;
+            for (int y = 0; y < g.height(); ++y)
+                for (int x = 0; x < g.width(); ++x) {
+                    const int v = qGray(g.pixel(x, y));
+                    n += v > 25 && v < 230;
+                }
+            return n;
+        };
+        Engine::RenderSettings rs;
+        rs.samples = 0;
+        e.setRenderSettings(rs);
+        const int hard = greys();
+        rs.samples = 4;
+        e.setRenderSettings(rs);
+        const int soft = greys();
+        std::printf("       edge pixels between black and white: %d without antialiasing, %d with 4x\n", hard, soft);
+        CHECK(soft > hard + 20);
+        // The project says "default": the machine's default applies
+        rs.samples = -1;
+        e.setRenderSettings(rs);
+        e.setRenderDefaults({0, 4, 0});
+        CHECK(e.effectiveRender().samples == 4 && greys() > hard + 20);
+        e.setRenderDefaults({0, 0, 0});
+        // Mipmaps: a fine checker drawn at an eighth of its size averages to grey instead of aliasing
+        CHECK(e.setLayerImage(li, tmp + "/aachecker.png", &err));
+        {
+            Engine::Lock lk(&e.mutex());
+            Mapping &m = e.layer(li)->mapping;
+            m.setCorner(0, QPointF(0, 0)), m.setCorner(1, QPointF(0.125, 0)), m.setCorner(2, QPointF(0.125, 0.125)),
+                m.setCorner(3, QPointF(0, 0.125));
+        }
+        auto spread = [&] {
+            for (int k = 0; k < 2; ++k) e.renderFrame();
+            const QImage g = e.grabViewport(e.mainViewportId());
+            int lo = 255, hi = 0;
+            for (int y = 1; y < 7; ++y)
+                for (int x = 1; x < 7; ++x) {
+                    lo = std::min(lo, qGray(g.pixel(x, y)));
+                    hi = std::max(hi, qGray(g.pixel(x, y)));
+                }
+            return std::pair<int, int>{lo, hi};
+        };
+        rs = Engine::RenderSettings{-1, 0, 1};
+        e.setRenderSettings(rs);
+        const auto [lo, hi] = spread();
+        CHECK(lo > 90 && hi < 165); // grey everywhere
+        // Saved with the project
+        rs = Engine::RenderSettings{30, 8, 1};
+        e.setRenderSettings(rs);
+        CHECK(e.saveProject(tmp + "/render.fulskrin", {}, &err));
+        e.newProject();
+        CHECK(e.renderSettings().frameRate < 0 && e.renderSettings().samples < 0); // a new project: the defaults
+        CHECK(e.loadProject(tmp + "/render.fulskrin", nullptr, &err));
+        CHECK(e.renderSettings().frameRate == 30 && e.renderSettings().samples == 8 && e.renderSettings().mipmaps == 1);
+        e.setRenderSettings({});
+    }
+
     // 5. Render thread
     auto waitFrames = [&](quint64 n) {
         const quint64 target = e.frameCount() + n;
@@ -1120,6 +1201,17 @@ int main(int argc, char **argv)
         std::printf("       %llu frames during 500 ms of main-thread blocking\n",
                     static_cast<unsigned long long>(e.frameCount() - before));
         CHECK(e.frameCount() - before >= 5); // still rendering (the rate itself depends on the machine: 2 CPUs give ~12)
+    }
+    // The frame rate chosen paces the render thread
+    {
+        e.setRenderSettings({4, -1, -1});
+        QThread::msleep(300);
+        const quint64 before = e.frameCount();
+        QThread::msleep(1000);
+        const quint64 n = e.frameCount() - before;
+        std::printf("       %llu frames in 1 s at 4 fps\n", static_cast<unsigned long long>(n));
+        CHECK(n >= 2 && n <= 6);
+        e.setRenderSettings({});
     }
     // The image changes over time (animated generator) in threaded mode
     {

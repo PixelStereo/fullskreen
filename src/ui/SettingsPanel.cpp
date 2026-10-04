@@ -20,6 +20,27 @@ static const char *kOscKey = "osc/enabled";
 static const char *kOscPortKey = "osc/udpPort";        // (osc/port, osc/queryPort: earlier defaults, ignored)
 static const char *kQueryPortKey = "osc/oscQueryPort";
 static const char *kTransitionKey = "memories/transition";
+static const char *kRateKey = "render/frameRate";
+static const char *kSamplesKey = "render/antialiasing";
+static const char *kMipmapsKey = "render/mipmaps";
+
+QList<double> renderChoice::frameRates() { return {0, 24, 25, 30, 50, 60, 120}; }
+QString renderChoice::frameRateName(double fps)
+{
+    return fps <= 0 ? QStringLiteral("Screen refresh") : QStringLiteral("%1 fps").arg(fps);
+}
+QList<int> renderChoice::samples() { return {0, 2, 4, 8}; }
+QString renderChoice::samplesName(int n) { return n <= 1 ? QStringLiteral("Off") : QStringLiteral("%1× MSAA").arg(n); }
+
+Engine::RenderSettings SettingsPanel::renderDefaults()
+{
+    QSettings s;
+    Engine::RenderSettings r;
+    r.frameRate = std::max(0.0, s.value(kRateKey, 0.0).toDouble());
+    r.samples = std::max(0, s.value(kSamplesKey, 4).toInt());
+    r.mipmaps = s.value(kMipmapsKey, true).toBool() ? 1 : 0;
+    return r;
+}
 static constexpr int kDefaultOscPort = 1234, kDefaultQueryPort = 5678;
 
 PlayMode SettingsPanel::defaultPlayMode()
@@ -94,6 +115,38 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
         QSettings().setValue(kPlayModeKey, playModeKey(PlayMode(m_playMode->currentData().toInt())));
         emit playModeChanged();
     });
+
+    // Rendering: the defaults of the projects that do not choose (Master)
+    {
+        auto *box = new QGroupBox(QStringLiteral("Rendering"));
+        auto *rf = new QFormLayout(box);
+        const Engine::RenderSettings d = renderDefaults();
+        m_rate = new QComboBox;
+        for (double r : renderChoice::frameRates()) m_rate->addItem(renderChoice::frameRateName(r), r);
+        m_rate->setCurrentIndex(std::max(0, m_rate->findData(d.frameRate)));
+        m_samples = new QComboBox;
+        for (int n : renderChoice::samples()) m_samples->addItem(renderChoice::samplesName(n), n);
+        m_samples->setCurrentIndex(std::max(0, m_samples->findData(d.samples)));
+        m_mipmaps = new QCheckBox(QStringLiteral("Smooth pictures drawn smaller (mipmaps)"));
+        m_mipmaps->setChecked(d.mipmaps > 0);
+        rf->addRow(new ResetLabel(QStringLiteral("Frame rate"), [this] { m_rate->setCurrentIndex(0); }), m_rate);
+        rf->addRow(new ResetLabel(QStringLiteral("Antialiasing"), [this] { m_samples->setCurrentIndex(2); }), m_samples);
+        rf->addRow(m_mipmaps);
+        rf->addRow(note(QStringLiteral("Defaults of the projects that keep them (Master ▸ Rendering). Screen refresh: "
+                                       "the outputs' vertical sync, or the main screen's rate. Antialiasing smooths the "
+                                       "edges of the mapped layers; mipmaps the pictures drawn much smaller than they are.")));
+        v->addWidget(box);
+        auto save = [this] {
+            QSettings s;
+            s.setValue(kRateKey, m_rate->currentData().toDouble());
+            s.setValue(kSamplesKey, m_samples->currentData().toInt());
+            s.setValue(kMipmapsKey, m_mipmaps->isChecked());
+            emit renderDefaultsChanged();
+        };
+        connect(m_rate, qOverload<int>(&QComboBox::activated), this, save);
+        connect(m_samples, qOverload<int>(&QComboBox::activated), this, save);
+        connect(m_mipmaps, &QCheckBox::toggled, this, save);
+    }
 
     // Accent color of the interface
     auto *look = new QGroupBox(QStringLiteral("Interface"));

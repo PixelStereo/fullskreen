@@ -30,6 +30,16 @@ struct RenderTarget {
     void destroy();
 };
 
+// Multisampled framebuffer (antialiasing): drawn into, then resolved into a RenderTarget of the same size.
+struct MsaaBuffer {
+    GLuint fbo = 0, rbo = 0;
+    int w = 0, h = 0, samples = 0;
+    bool used = false; // this frame (unused ones are released)
+    void ensure(int w, int h, int samples);
+    void resolveInto(const RenderTarget &target) const;
+    void destroy();
+};
+
 // Simple texture fed from the CPU (video, images).
 struct Texture2D {
     GLuint tex = 0;

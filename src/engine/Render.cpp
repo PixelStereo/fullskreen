@@ -307,7 +307,6 @@ void Engine::renderGroup(Layer &g, const std::vector<Layer *> &members, const Is
     g.finalTex = 0;
     g.rawTex = 0;
     g.groupTarget.ensure(m_compSize.width(), m_compSize.height());
-    g.groupTarget.clear(0, 0, 0, 0);
     compositeLayers(g.groupTarget, members);
     processLayer(g, g.groupTarget.tex, g.groupTarget.w, g.groupTarget.h, true, rc);
 }
@@ -320,17 +319,32 @@ void Engine::renderViewport(Layer &v, const std::vector<Layer *> &shown, const I
     if (!v.visible) return;
     const QSize size = v.viewportSize();
     v.groupTarget.ensure(size.width(), size.height());
-    v.groupTarget.clear(0, 0, 0, 0);
     compositeLayers(v.groupTarget, shown, v.mapping.bounds());
     processLayer(v, v.groupTarget.tex, v.groupTarget.w, v.groupTarget.h, true, rc);
 }
 
 // Draws the layers into the target; `view` is the part of the composition the target shows
 // (normalized, origin top left: the whole composition by default)
-void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer *> &layers, const QRectF &view)
+void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer *> &layers, const QRectF &view,
+                             QColor clear)
 {
     auto f = gl();
-    target.bind();
+    const RenderSettings rs = effectiveRender();
+    // Antialiasing: drawn into a multisampled buffer of the same size, resolved into the target at the end
+    if (!m_maxSamples) f->glGetIntegerv(GL_MAX_SAMPLES, &m_maxSamples);
+    const int samples = std::min(rs.samples, std::max(1, m_maxSamples));
+    MsaaBuffer *ms = nullptr;
+    if (samples > 1) {
+        ms = &m_msaa[{target.w, target.h}];
+        ms->ensure(target.w, target.h, samples);
+        ms->used = true;
+        f->glBindFramebuffer(GL_FRAMEBUFFER, ms->fbo);
+        f->glViewport(0, 0, target.w, target.h);
+    } else {
+        target.bind();
+    }
+    f->glClearColor(float(clear.redF()), float(clear.greenF()), float(clear.blueF()), float(clear.alphaF()));
+    f->glClear(GL_COLOR_BUFFER_BIT);
     f->glEnable(GL_BLEND);
     f->glUseProgram(m_compProgram);
     f->glUniform1i(m_compTexLoc, 0);
@@ -356,10 +370,24 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
         f->glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(m_meshScratch.size() * sizeof(float)), m_meshScratch.data());
         f->glUniform1f(m_compOpacityLoc, l.opacity);
         f->glBindTexture(GL_TEXTURE_2D, l.finalTex);
+        // Drawn smaller than it is: sampled from mipmaps (no shimmer, no moiré), made for this draw only
+        bool mip = false;
+        if (rs.mipmaps > 0 && l.finalW > 0 && l.finalH > 0) {
+            const QRectF b = l.mapping.bounds();
+            const double drawnW = b.width() / std::max(1e-6, view.width()) * target.w;
+            const double drawnH = b.height() / std::max(1e-6, view.height()) * target.h;
+            mip = drawnW < l.finalW * 0.9 || drawnH < l.finalH * 0.9;
+            if (mip) {
+                f->glGenerateMipmap(GL_TEXTURE_2D);
+                f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            }
+        }
         f->glDrawElements(GL_TRIANGLES, m_meshIndexCount, GL_UNSIGNED_INT, nullptr);
+        if (mip) f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); // others sample it plainly
     }
     f->glDisable(GL_BLEND);
     f->glBindVertexArray(0);
+    if (ms) ms->resolveInto(target);
 }
 
 // The whole composition, for the interface preview, then each viewport's output. The master level and the
@@ -384,11 +412,10 @@ void Engine::composite()
 
     RenderTarget &out = m_output[m_back];
     out.ensure(m_compSize.width(), m_compSize.height());
-    out.clear(0, 0, 0, 1);
     std::vector<Layer *> top;
     for (auto &l : m_layers)
         if (!l->parent && !l->isViewport) top.push_back(l.get());
-    compositeLayers(out, top);
+    compositeLayers(out, top, QRectF(0, 0, 1, 1), QColor(0, 0, 0, 255));
     out.bind();
     applyMaster();
 
@@ -493,6 +520,16 @@ void Engine::frame(double dt)
     for (auto &[id, t] : m_transitions) updateSource(*t->from, dt); // the outgoing sources play on
     renderPass(rc);
     composite();
+    // Multisampled buffers of sizes no longer drawn (antialiasing off, a size changed): released
+    for (auto it = m_msaa.begin(); it != m_msaa.end();) {
+        if (!it->second.used) {
+            it->second.destroy();
+            it = m_msaa.erase(it);
+        } else {
+            it->second.used = false;
+            ++it;
+        }
+    }
     readSourcePreview();
     // Publishing follows the viewports, however they changed (added, removed, undone, loaded, edited)
     bool publishChanged = m_publishDirty || m_tapDirty;
