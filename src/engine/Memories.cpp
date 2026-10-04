@@ -60,6 +60,12 @@ struct LayerNumbers {
     SoftEdge soft; // crop feathering (width and power per side)
     double speed = 1.0;
     double inPoint = 0, outPoint = -1;
+    // Text layer parameters
+    int textSize = 48;
+    QColor textColor = QColor(255, 255, 255);
+    Qt::Alignment textAlign = Qt::AlignCenter;
+    float textLineHeight = 1.2f;
+    float textLetterSpacing = 0.0f;
     double textAnimation = 0.0; // text layer animation parameter (0..1)
 };
 
@@ -71,6 +77,7 @@ struct LayerTimes {
     double viewportOpacity = 0; // viewport opacity per-viewport
     double softEdge = 0; // soft edge width and power
     double speed = 0, inPoint = 0, outPoint = 0; // playback parameters
+    double textSize = 0, textColor = 0, textAlign = 0, textLineHeight = 0, textLetterSpacing = 0; // text layer parameters
     double textAnimation = 0; // text animation parameter
     // Easing curves for each parameter (default: EaseInOut for all)
     EasingCurve opacityCurve = EasingCurve::EaseInOut, volumeCurve = EasingCurve::EaseInOut;
@@ -78,12 +85,14 @@ struct LayerTimes {
     EasingCurve mappingCurve = EasingCurve::EaseInOut, softEdgeCurve = EasingCurve::EaseInOut;
     EasingCurve viewportOpacityCurve = EasingCurve::EaseInOut;
     EasingCurve speedCurve = EasingCurve::EaseInOut, inOutCurve = EasingCurve::EaseInOut;
-    EasingCurve textAnimationCurve = EasingCurve::EaseInOut;
+    EasingCurve textSizeCurve = EasingCurve::EaseInOut, textColorCurve = EasingCurve::EaseInOut;
+    EasingCurve textAlignCurve = EasingCurve::EaseInOut, textLineHeightCurve = EasingCurve::EaseInOut;
+    EasingCurve textLetterSpacingCurve = EasingCurve::EaseInOut, textAnimationCurve = EasingCurve::EaseInOut;
     std::vector<std::vector<EasingCurve>> isfCurves; // per-parameter curves
 
     double longest() const
     {
-        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, viewportOpacity, softEdge, speed, inPoint, outPoint, textAnimation});
+        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, viewportOpacity, softEdge, speed, inPoint, outPoint, textSize, textColor, textAlign, textLineHeight, textLetterSpacing, textAnimation});
         for (const auto &v : isf)
             for (double d : v) m = std::max(m, d);
         return m;
@@ -111,6 +120,11 @@ static LayerNumbers numbersOf(const Layer &l)
     n.speed = l.speed;
     n.inPoint = l.inPoint;
     n.outPoint = l.outPoint;
+    n.textSize = l.textSize;
+    n.textColor = l.textColor;
+    n.textAlign = l.textAlign;
+    n.textLineHeight = l.textLineHeight;
+    n.textLetterSpacing = l.textLetterSpacing;
     n.textAnimation = l.textAnimation;
     auto values = [](const IsfInstance *inst) {
         std::vector<IsfValue> v;
@@ -137,6 +151,11 @@ static void setNumbers(Layer &l, const LayerNumbers &n)
     l.speed = n.speed;
     l.inPoint = n.inPoint;
     l.outPoint = n.outPoint;
+    l.textSize = n.textSize;
+    l.textColor = n.textColor;
+    l.textAlign = n.textAlign;
+    l.textLineHeight = n.textLineHeight;
+    l.textLetterSpacing = n.textLetterSpacing;
     l.textAnimation = n.textAnimation;
     auto apply = [](IsfInstance *inst, const std::vector<IsfValue> &v) {
         if (!inst) return;
@@ -208,8 +227,21 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, con
         n.inPoint = mixd(a.inPoint, b.inPoint, t(d.inPoint, d.inOutCurve));
         n.outPoint = mixd(a.outPoint, b.outPoint, t(d.outPoint, d.inOutCurve));
     }
-    // Text animation parameter
+    // Text layer parameters
     {
+        n.textSize = int(mixf(float(a.textSize), float(b.textSize), t(d.textSize, d.textSizeCurve)));
+        // Blend QColor RGB components
+        const double tc_col = t(d.textColor, d.textColorCurve);
+        n.textColor = QColor(
+            int(mixf(float(a.textColor.red()), float(b.textColor.red()), tc_col)),
+            int(mixf(float(a.textColor.green()), float(b.textColor.green()), tc_col)),
+            int(mixf(float(a.textColor.blue()), float(b.textColor.blue()), tc_col)),
+            int(mixf(float(a.textColor.alpha()), float(b.textColor.alpha()), tc_col))
+        );
+        // Text alignment is discrete (no interpolation); use target at progress > 0.5
+        n.textAlign = t(d.textAlign, d.textAlignCurve) >= 0.5 ? b.textAlign : a.textAlign;
+        n.textLineHeight = mixf(a.textLineHeight, b.textLineHeight, t(d.textLineHeight, d.textLineHeightCurve));
+        n.textLetterSpacing = mixf(a.textLetterSpacing, b.textLetterSpacing, t(d.textLetterSpacing, d.textLetterSpacingCurve));
         n.textAnimation = mixd(a.textAnimation, b.textAnimation, t(d.textAnimation, d.textAnimationCurve));
     }
     for (size_t i = 0; i < n.isf.size() && i < a.isf.size(); ++i)
@@ -250,6 +282,11 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.speed = time(QStringLiteral("speed"));
     d.inPoint = time(QStringLiteral("inPoint"));
     d.outPoint = time(QStringLiteral("outPoint"));
+    d.textSize = time(QStringLiteral("textSize"));
+    d.textColor = time(QStringLiteral("textColor"));
+    d.textAlign = time(QStringLiteral("textAlign"));
+    d.textLineHeight = time(QStringLiteral("textLineHeight"));
+    d.textLetterSpacing = time(QStringLiteral("textLetterSpacing"));
     d.textAnimation = time(QStringLiteral("textAnimation"));
     // Read easing curves for each parameter
     d.opacityCurve = curve(QStringLiteral("opacity"));
@@ -261,6 +298,11 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.viewportOpacityCurve = curve(QStringLiteral("viewportOpacity"));
     d.speedCurve = curve(QStringLiteral("speed"));
     d.inOutCurve = curve(QStringLiteral("inPoint")); // use inPoint for both inPoint and outPoint
+    d.textSizeCurve = curve(QStringLiteral("textSize"));
+    d.textColorCurve = curve(QStringLiteral("textColor"));
+    d.textAlignCurve = curve(QStringLiteral("textAlign"));
+    d.textLineHeightCurve = curve(QStringLiteral("textLineHeight"));
+    d.textLetterSpacingCurve = curve(QStringLiteral("textLetterSpacing"));
     d.textAnimationCurve = curve(QStringLiteral("textAnimation"));
     auto params = [&](const IsfInstance *inst, const QString &base) {
         std::vector<double> v;
@@ -279,7 +321,8 @@ QString Engine::timingKey(const QStringList &path)
     if (path.isEmpty()) return {};
     const QString &a = path[0];
     if (a == "opacity" || a == "volume" || a == "mapping" || a == "viewportOpacity" || a == "softEdge" ||
-        a == "speed" || a == "inPoint" || a == "outPoint" || a == "textAnimation")
+        a == "speed" || a == "inPoint" || a == "outPoint" || a == "textSize" || a == "textColor" ||
+        a == "textAlign" || a == "textLineHeight" || a == "textLetterSpacing" || a == "textAnimation")
         return a;
     if (a == "source" && path.size() >= 2 && path[1] == "roi") return QStringLiteral("roi");
     if (a == "source" && path.size() >= 3 && path[1] == "params") return QStringLiteral("source/params/") + path[2];
