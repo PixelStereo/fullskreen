@@ -327,6 +327,13 @@ void IsfInstance::setImageTexture(const QString &name, GLuint tex, int w, int h)
     }
 }
 
+void IsfInstance::readState(const QJsonObject &o)
+{
+    enabled = o.value("enabled").toBool(true);
+    maskLayer = o.value("mask").toString().toULongLong();
+    maskInvert = o.value("maskInvert").toBool(false);
+}
+
 IsfInstance::~IsfInstance()
 {
     // The engine calls releaseGl() with its context current before destruction.
@@ -754,6 +761,8 @@ QJsonObject IsfInstance::save(const QString &projectDir) const
     o["path"] = m_path;
     if (!projectDir.isEmpty()) o["relativePath"] = QDir(projectDir).relativeFilePath(m_path);
     o["enabled"] = enabled;
+    if (maskLayer) o["mask"] = QString::number(maskLayer); // ids are strings: JSON numbers are doubles
+    if (maskInvert) o["maskInvert"] = true;
     QJsonObject params;
     for (const IsfInput &in : m_inputs) {
         switch (in.type) {

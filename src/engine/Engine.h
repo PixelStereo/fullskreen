@@ -150,6 +150,9 @@ public:
     void setDefaultTransition(const QString &path);
     QString defaultTransition() const;
     bool isTransitioning(quint64 layer) const; // a source transition is running on it
+    // Mask of an effect: the picture of another layer (0: none) says where the effect applies. Refused for a
+    // viewport, the layer itself, or a layer that already depends on this one (err says why).
+    bool setEffectMask(int layer, int effect, quint64 maskLayer, bool invert, QString *err = nullptr);
     PlayMode defaultPlayMode() const { return m_defaultPlayMode; }
     void seekLayer(int i, double t);
     void setLayerVolume(int i, float volume);
@@ -181,6 +184,7 @@ public:
     void recallMemory(int i); // with its fade
     bool isFading() const;
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
+    void setFadesManual(bool on) { m_fadesManual = on; } // tests: only advanceFades moves them, not the frames
     // Key under which a memory stores the time of a stored value (its path in the layer state), empty for a value
     // that does not fade: "opacity", "roi", "color/temp", "mapping", "effects/0/params/radius"…
     static QString timingKey(const QStringList &path);
@@ -412,6 +416,7 @@ private:
     void renderTransition(Layer &l, SourceTransition &t, const IsfRenderContext &rc);
     void retireTransition(std::unique_ptr<SourceTransition> t);           // sound now, OpenGL on the render thread
     double m_fadeElapsed = 0; // seconds since the last recall
+    std::atomic<bool> m_fadesManual{false};
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};
     std::atomic<quint64> m_frameCount{0};
@@ -444,4 +449,6 @@ private:
     mutable std::mutex m_stateMutex;
     GLuint m_flipProgram = 0;
     GLint m_flipTexLoc = -1;
+    GLuint m_maskProgram = 0; // an effect's result over its input, through a mask
+    GLint m_maskInLoc = -1, m_maskFxLoc = -1, m_maskMaskLoc = -1, m_maskInvertLoc = -1;
 };

@@ -167,6 +167,23 @@ bool Engine::initialize(QString *err)
         if (err) *err = QStringLiteral("Internal shaders: ") + log;
         return false;
     }
+    // Mask of an effect: input and result mixed by the mask's luminance (times its alpha), the mask stretched
+    m_maskProgram = compileProgram(quadVs,
+                                   "#version 330 core\nuniform sampler2D u_in; uniform sampler2D u_fx; uniform sampler2D u_mask;\n"
+                                   "uniform int u_invert; in vec2 v_uv; out vec4 o;\n"
+                                   "void main(){ vec4 m = texture(u_mask, v_uv);\n"
+                                   "  float k = clamp(dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)) * m.a, 0.0, 1.0);\n"
+                                   "  if (u_invert != 0) k = 1.0 - k;\n"
+                                   "  o = mix(texture(u_in, v_uv), texture(u_fx, v_uv), k); }\n",
+                                   &log);
+    if (!m_maskProgram) {
+        if (err) *err = QStringLiteral("Internal shaders: ") + log;
+        return false;
+    }
+    m_maskInLoc = f->glGetUniformLocation(m_maskProgram, "u_in");
+    m_maskFxLoc = f->glGetUniformLocation(m_maskProgram, "u_fx");
+    m_maskMaskLoc = f->glGetUniformLocation(m_maskProgram, "u_mask");
+    m_maskInvertLoc = f->glGetUniformLocation(m_maskProgram, "u_invert");
     m_prepTexLoc = f->glGetUniformLocation(m_prepProgram, "u_tex");
     m_prepRoiLoc = f->glGetUniformLocation(m_prepProgram, "u_roi");
     m_prepAddLoc = f->glGetUniformLocation(m_prepProgram, "u_add");
@@ -337,7 +354,7 @@ void Engine::releaseAll()
     auto f = gl();
     for (RenderTarget &o : m_output) o.destroy();
     m_previewTarget.destroy();
-    for (GLuint p : {m_blitProgram, m_compProgram, m_presentProgram, m_flipProgram, m_prepProgram})
+    for (GLuint p : {m_blitProgram, m_compProgram, m_presentProgram, m_flipProgram, m_prepProgram, m_maskProgram})
         if (p) f->glDeleteProgram(p);
     GLuint bufs[] = {m_quadVbo, m_meshVbo, m_meshIbo};
     f->glDeleteBuffers(3, bufs);
@@ -345,7 +362,7 @@ void Engine::releaseAll()
     f->glDeleteVertexArrays(2, vaos);
     f->glDeleteTextures(1, &m_blackTex);
     m_quadVao = m_meshVao = 0;
-    m_blitProgram = m_compProgram = m_presentProgram = m_flipProgram = m_prepProgram = 0;
+    m_blitProgram = m_compProgram = m_presentProgram = m_flipProgram = m_prepProgram = m_maskProgram = 0;
 }
 
 // ---------------------------------------------------------------------------
