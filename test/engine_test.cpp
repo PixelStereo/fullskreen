@@ -683,6 +683,30 @@ int main(int argc, char **argv)
             CHECK(Engine::timingKey({"source", "roi", "2"}) == "roi" && Engine::timingKey({"color", "add", "1"}) == "color/add" &&
                   Engine::timingKey({"effects", "0", "params", "radius"}) == "effects/0/params/radius" &&
                   Engine::timingKey({"source", "speed"}).isEmpty());
+            // Soft edge (crop) and per-viewport opacity: stored, recalled, and faded
+            {
+                const quint64 vp = 4242;
+                L()->visible = true;
+                L()->mapping.soft.enabled = true;
+                L()->mapping.soft.width[0] = 0.4;
+                L()->viewportOpacity[vp] = 0.2f;
+                QJsonObject s2 = e.layerJson(e.indexOfId(tid));
+                s2.remove("timing");
+                L()->mapping.soft.enabled = false;
+                L()->mapping.soft.width[0] = 0.0;
+                L()->viewportOpacity.clear();
+                e.applyLayers(QJsonArray{s2}, 0.0); // a cut
+                CHECK(L()->mapping.soft.enabled && std::abs(L()->mapping.soft.width[0] - 0.4) < 1e-6);
+                CHECK(L()->viewportOpacity.count(vp) && std::abs(L()->viewportOpacity.at(vp) - 0.2f) < 1e-6);
+                L()->mapping.soft.width[0] = 0.0;
+                L()->viewportOpacity.clear();
+                e.applyLayers(QJsonArray{s2}, 1.0); // a fade
+                e.advanceFades(0.5);
+                CHECK(L()->mapping.soft.width[0] > 0.01 && L()->mapping.soft.width[0] < 0.39);
+                CHECK(L()->viewportOpacity.count(vp) && L()->viewportOpacity.at(vp) > 0.21f && L()->viewportOpacity.at(vp) < 0.99f);
+                e.advanceFades(0.6);
+                CHECK(std::abs(L()->mapping.soft.width[0] - 0.4) < 1e-6 && std::abs(L()->viewportOpacity.at(vp) - 0.2f) < 1e-6);
+            }
             e.removeLayer(e.indexOfId(tid));
         }
         // Another source by a memory: the outgoing one stays, invisible, and a transition mixes the two

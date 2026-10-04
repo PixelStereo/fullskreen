@@ -479,6 +479,8 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             job->from.volume = old.volume;
             job->from.roi = old.roi;
             job->from.color = old.color;
+            job->from.viewportOpacity = old.viewportOpacity;
+            job->from.soft = old.mapping.soft;
             if (old.mapping.cols == l->mapping.cols && old.mapping.rows == l->mapping.rows) job->from.mapping = old.mapping;
             job->times = timesOf(*l, o.value("timing").toObject(), std::max(0.0, fade));
             setNumbers(*l, mixNumbers(job->from, job->to, job->times, 0));
@@ -500,11 +502,12 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         l->blend = blendModeFromKey(o.value("blend").toString(blendModeKey(l->blend)));
         l->effectsEnabled = o.value("effectsEnabled").toBool(l->effectsEnabled);
         l->muted = o.value("muted").toBool(l->muted);
-        // Which viewports it is drawn in: a memory can send a layer to another projector
-        l->viewportOpacity.clear();
+        // Which viewports it is drawn in: a memory can send a layer to another projector. Read into the
+        // fade's target (not onto the layer) so it moves there from the current values
+        std::map<quint64, float> targetViewportOpacity;
         const QJsonObject vo = o.value("viewportOpacity").toObject();
         for (auto it = vo.begin(); it != vo.end(); ++it)
-            l->viewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
+            targetViewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
         const QJsonArray fx = o.value("effects").toArray();
         for (size_t k = 0; k < l->effects.size() && int(k) < fx.size(); ++k)
             l->effects[k]->readState(fx[int(k)].toObject()); // on, mask
@@ -542,10 +545,11 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
                 to.color.remove[c] = float(color.value("remove").toArray().at(c).toDouble(0));
             }
         }
-        if (o.contains("mapping")) to.mapping.fromJson(o.value("mapping").toObject());
-        // Viewport opacity and soft edge: must be explicitly copied to the fade job's target
-        to.viewportOpacity = l->viewportOpacity;
-        to.soft = l->mapping.soft;
+        if (o.contains("mapping")) {
+            to.mapping.fromJson(o.value("mapping").toObject());
+            to.soft = to.mapping.soft; // setNumbers applies `soft` over the mapping's: the memory's crop
+        }
+        to.viewportOpacity = targetViewportOpacity;
         if (!to.isf.empty()) readParams(l->generator.get(), src.value("params").toObject(), to.isf[0]);
         for (size_t k = 0; k < l->effects.size() && k + 1 < to.isf.size() && int(k) < fx.size(); ++k)
             readParams(l->effects[k].get(), fx[int(k)].toObject().value("params").toObject(), to.isf[k + 1]);
