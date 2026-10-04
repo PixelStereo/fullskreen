@@ -294,8 +294,30 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
             // fade unless it has its own), or at once for a cut
             const QJsonValue own = o.value("timing").toObject().value("source");
             const double t = own.isDouble() ? std::clamp(own.toDouble(), 0.0, 600.0) : std::max(0.0, fade);
-            if (t > 0) startSourceTransition(idx, o, t);
-            else replaceLayerJson(idx, o);
+            if (t <= 0) {
+                replaceLayerJson(idx, o);
+                continue;
+            }
+            startSourceTransition(idx, o, t);
+            // The layer now holds the memory's state; its numbers move there from the outgoing one's (ROI,
+            // color, mapping, opacity, volume) over their times, as they would with the same source
+            Lock lk(&m_mutex);
+            Layer *l = layer(indexOfId(id));
+            const auto tr = m_transitions.find(id);
+            if (!l || tr == m_transitions.end()) continue;
+            const Layer &old = *tr->second->from;
+            auto job = std::make_shared<FadeJob>();
+            job->id = id;
+            job->to = numbersOf(*l);
+            job->from = job->to;
+            job->from.opacity = old.visible ? old.opacity : 0.0f;
+            job->from.volume = old.volume;
+            job->from.roi = old.roi;
+            job->from.color = old.color;
+            if (old.mapping.cols == l->mapping.cols && old.mapping.rows == l->mapping.rows) job->from.mapping = old.mapping;
+            job->times = timesOf(*l, o.value("timing").toObject(), std::max(0.0, fade));
+            setNumbers(*l, mixNumbers(job->from, job->to, job->times, 0));
+            jobs.push_back(job);
             continue;
         }
         if (effectPaths(cur.value("effects").toArray()) != effectPaths(o.value("effects").toArray()))
