@@ -6,7 +6,7 @@ Video mapping for stage and installation work, on Mac / Windows / Linux.
 ## Features
 
 **Layers.** A stack of layers (the top one is drawn on top) with opacity and blend mode
-(Normal / Add / Screen / Multiply). Layers are created empty with **+**, then loaded by dropping a media onto
+(Normal / Add / Screen / Multiply / Subtract / Difference). Layers are created empty with **+**, then loaded by dropping a media onto
 them. One source per layer: video (anything FFmpeg reads, **with its sound**), still image, ISF generator, or
 audio file (an audio layer, same transport, no picture). Layers can be renamed, locked (padlock), multi-selected
 and grouped (⌘G), groups inside groups included; a group behaves as a layer without a source — ROI, color,
@@ -238,7 +238,7 @@ bundles are supported. Names are made OSC-safe: spaces become `_`, a duplicate n
 | `…/effects/enabled` · `effects/<effect>/enabled` · `effects/<effect>/<input>` | | effect chain |
 | `…/effects/<effect>/mask` · `maskInvert` | s · T | mask layer by name (`""`: none), inverted |
 | `/layers/<group>/layers/<name>/…` | | layers of a group (and so on, for groups inside groups) |
-| `/layers/<name>/viewports/<viewport>` | T | shown in that viewport (items at the top of the list) |
+| `/layers/<name>/viewports/<viewport>` | f | how much of the item that viewport shows, 0–1 (items at the top of the list) |
 | `/viewports/<name>/width` · `height` · `mode` | i | size in pixels; 0 hidden, 1 window, 2 fullscreen |
 | `/viewports/<name>/…` | | name, visible, opacity, ROI, color, spatial, effects, as for a group |
 | `/memories/recall` · `/memories/<n>/recall` · `/memories/count` | i · N · i | recall memory n (1 = first) |

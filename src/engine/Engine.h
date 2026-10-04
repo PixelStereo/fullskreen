@@ -95,7 +95,7 @@ public:
     void setViewportSize(int i, QSize size);
     void setViewportOutput(int i, const QString &screen, int mode); // mode: 0 hidden, 1 windowed, 2 fullscreen
     // An item at the top of the list can be left out of some viewports (shown everywhere by default)
-    void setShownIn(int i, quint64 viewport, bool shown);
+    void setOpacityIn(int i, quint64 viewport, float opacity); // how much of the item a viewport shows (0..1)
     void ensureViewport(); // there is always at least one
 
     // JSON snapshot of a layer, and re-creation (undo / redo, duplicate)
@@ -369,7 +369,8 @@ private:
     // `view`: the part of the composition the target shows (normalized, origin top left)
     // The target is cleared to `clear` first (through a multisampled buffer when antialiasing is on)
     void compositeLayers(const RenderTarget &target, const std::vector<Layer *> &topToBottom,
-                         const QRectF &view = QRectF(0, 0, 1, 1), QColor clear = QColor(0, 0, 0, 0));
+                         const QRectF &view = QRectF(0, 0, 1, 1), QColor clear = QColor(0, 0, 0, 0),
+                         quint64 viewport = 0); // viewport: the one drawn for (its share of each layer's opacity)
     std::map<std::pair<int, int>, MsaaBuffer> m_msaa; // by size (render thread)
     int m_maxSamples = 0;
     void renderViewport(Layer &v, const std::vector<Layer *> &shown, const IsfRenderContext &rc);
@@ -433,7 +434,9 @@ private:
     GLuint m_quadVao = 0, m_quadVbo = 0;
     GLuint m_meshVao = 0, m_meshVbo = 0, m_meshIbo = 0;
     GLsizei m_meshIndexCount = 0;
-    GLuint m_blitProgram = 0, m_compProgram = 0, m_presentProgram = 0, m_prepProgram = 0;
+    GLuint m_diffProgram = 0, m_blitProgram = 0, m_compProgram = 0, m_presentProgram = 0, m_prepProgram = 0;
+    GLint m_diffTexLoc = -1, m_diffDstLoc = -1, m_diffOpacityLoc = -1, m_diffViewLoc = -1;
+    RenderTarget m_dstCopy; // what is drawn so far, for Difference
     GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_compViewLoc = -1, m_presentTexLoc = -1;
     GLint m_prepTexLoc = -1, m_prepRoiLoc = -1, m_prepAddLoc = -1, m_prepRemoveLoc = -1, m_prepUnpremulLoc = -1, m_prepBalanceLoc = -1;
     GLint m_prepMaskLoc = -1, m_prepMaskModeLoc = -1;

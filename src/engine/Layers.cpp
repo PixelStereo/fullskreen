@@ -14,6 +14,8 @@ QString blendModeName(BlendMode m)
     case BlendMode::Add: return QStringLiteral("Add");
     case BlendMode::Screen: return QStringLiteral("Screen");
     case BlendMode::Multiply: return QStringLiteral("Multiply");
+    case BlendMode::Subtract: return QStringLiteral("Subtract");
+    case BlendMode::Difference: return QStringLiteral("Difference");
     default: return QStringLiteral("Normal");
     }
 }
@@ -24,6 +26,8 @@ QString blendModeKey(BlendMode m)
     case BlendMode::Add: return "add";
     case BlendMode::Screen: return "screen";
     case BlendMode::Multiply: return "multiply";
+    case BlendMode::Subtract: return "subtract";
+    case BlendMode::Difference: return "difference";
     default: return "normal";
     }
 }
@@ -66,6 +70,8 @@ BlendMode blendModeFromKey(const QString &k)
     if (k == "add") return BlendMode::Add;
     if (k == "screen") return BlendMode::Screen;
     if (k == "multiply") return BlendMode::Multiply;
+    if (k == "subtract") return BlendMode::Subtract;
+    if (k == "difference") return BlendMode::Difference;
     return BlendMode::Normal;
 }
 
@@ -211,16 +217,16 @@ void Engine::setViewportOutput(int i, const QString &screen, int mode)
 }
 
 // Only an item at the top of the list is routed; inside a group, the group decides
-void Engine::setShownIn(int i, quint64 viewport, bool shown)
+void Engine::setOpacityIn(int i, quint64 viewport, float opacity)
 {
     {
         Lock lk(&m_mutex);
         Layer *l = layer(i);
         if (!l || l->isViewport || l->parent) return;
-        auto it = std::find(l->hiddenIn.begin(), l->hiddenIn.end(), viewport);
-        if (shown && it != l->hiddenIn.end()) l->hiddenIn.erase(it);
-        else if (!shown && it == l->hiddenIn.end()) l->hiddenIn.push_back(viewport);
-        else return;
+        opacity = std::clamp(opacity, 0.0f, 1.0f);
+        if (l->opacityIn(viewport) == opacity) return;
+        if (opacity >= 1.0f) l->viewportOpacity.erase(viewport);
+        else l->viewportOpacity[viewport] = opacity;
     }
     emit layersChanged();
 }

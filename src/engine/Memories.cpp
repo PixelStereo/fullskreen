@@ -372,8 +372,10 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         l->effectsEnabled = o.value("effectsEnabled").toBool(l->effectsEnabled);
         l->muted = o.value("muted").toBool(l->muted);
         // Which viewports it is drawn in: a memory can send a layer to another projector
-        l->hiddenIn.clear();
-        for (const QJsonValue &v : o.value("hiddenIn").toArray()) l->hiddenIn.push_back(v.toString().toULongLong());
+        l->viewportOpacity.clear();
+        const QJsonObject vo = o.value("viewportOpacity").toObject();
+        for (auto it = vo.begin(); it != vo.end(); ++it)
+            l->viewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
         const QJsonArray fx = o.value("effects").toArray();
         for (size_t k = 0; k < l->effects.size() && int(k) < fx.size(); ++k)
             l->effects[k]->readState(fx[int(k)].toObject()); // on, mask

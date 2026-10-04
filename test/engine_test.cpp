@@ -975,6 +975,51 @@ int main(int argc, char **argv)
         e.removeLayer(e.indexOfId(lid));
     }
 
+    // 4d'. Blend modes that take away: Subtract and Difference (against what is drawn below)
+    {
+        e.newProject();
+        e.fadeMaster(1.0, 0);
+        e.setBlackout(false, 0);
+        e.setCompositionSize(QSize(16, 16));
+        QImage up(16, 16, QImage::Format_RGB32), down(16, 16, QImage::Format_RGB32);
+        up.fill(qRgb(50, 200, 20));
+        down.fill(qRgb(200, 120, 50));
+        up.save(tmp + "/bl_up.png");
+        down.save(tmp + "/bl_down.png");
+        const int low = e.addLayer("Bottom");
+        const quint64 bottomId = e.layerId(low);
+        const int high = e.addLayer("Top"); // new layers go to the top of the list
+        const quint64 topId = e.layerId(high);
+        CHECK(e.setLayerImage(e.indexOfId(topId), tmp + "/bl_up.png", &err));
+        CHECK(e.setLayerImage(e.indexOfId(bottomId), tmp + "/bl_down.png", &err));
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(topId))->mapping.resetCorners();
+            e.layer(e.indexOfId(bottomId))->mapping.resetCorners();
+        }
+        auto grab = [&](BlendMode m) {
+            {
+                Engine::Lock lk(&e.mutex());
+                e.layer(e.indexOfId(topId))->blend = m;
+            }
+            for (int k = 0; k < 2; ++k) e.renderFrame();
+            return e.grabOutput().pixelColor(8, 8);
+        };
+        auto near = [](const QColor &c, int r, int g, int b) {
+            return std::abs(c.red() - r) <= 3 && std::abs(c.green() - g) <= 3 && std::abs(c.blue() - b) <= 3;
+        };
+        CHECK(near(grab(BlendMode::Subtract), 150, 0, 30));   // below minus above, never under zero
+        CHECK(near(grab(BlendMode::Difference), 150, 80, 30)); // |below - above|
+        CHECK(near(grab(BlendMode::Normal), 50, 200, 20));
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(e.indexOfId(topId))->opacity = 0.5f;
+        }
+        CHECK(near(grab(BlendMode::Difference), 175, 20, 40)); // the layer at half strength (its color halfway to black)
+        CHECK(blendModeFromKey(blendModeKey(BlendMode::Subtract)) == BlendMode::Subtract &&
+              blendModeFromKey(blendModeKey(BlendMode::Difference)) == BlendMode::Difference);
+    }
+
     // 4e. Viewports: windows onto one composition, routing, groups inside groups
     {
         e.newProject();
@@ -1060,13 +1105,20 @@ int main(int argc, char **argv)
         e.renderFrame();
         CHECK(e.publishState(vp2, PublishKind::Syphon).level == PublishState::Off);
         // Left out of the second viewport: the first still shows it
-        e.setShownIn(li, vp2, false);
+        e.setOpacityIn(li, vp2, 0.0f);
         for (int k = 0; k < 2; ++k) e.renderFrame();
         a = e.grabViewport(vp1);
         b = e.grabViewport(vp2);
         CHECK(a.pixelColor(16, 8).red() > 250 && b.pixelColor(16, 8).blue() < 5 && b.pixelColor(16, 8).red() < 5);
-        CHECK(e.layerJson(li).value("hiddenIn").toArray().size() == 1);
-        e.setShownIn(li, vp2, true);
+        CHECK(e.layerJson(li).value("viewportOpacity").toObject().size() == 1);
+        // Half of it in the second viewport: the blue is halfway to black, the first viewport is unchanged
+        e.setOpacityIn(li, vp2, 0.5f);
+        for (int k = 0; k < 2; ++k) e.renderFrame();
+        a = e.grabViewport(vp1);
+        b = e.grabViewport(vp2);
+        CHECK(std::abs(b.pixelColor(16, 8).blue() - 128) < 4 && a.pixelColor(16, 8).red() > 250);
+        e.setOpacityIn(li, vp2, 1.0f);
+        CHECK(e.layerJson(li).value("viewportOpacity").toObject().isEmpty());
         // A viewport has its own color and opacity
         {
             Engine::Lock lk(&e.mutex());
@@ -1095,19 +1147,19 @@ int main(int argc, char **argv)
         a = e.grabViewport(vp1);
         CHECK(std::abs(a.pixelColor(16, 8).red() - 128) < 8); // through both groups, at the outer's opacity
         // Routing belongs to the top: a layer inside a group cannot be routed on its own
-        e.setShownIn(e.indexOfId(lid), vp1, false);
-        CHECK(e.layer(e.indexOfId(lid))->hiddenIn.empty());
+        e.setOpacityIn(e.indexOfId(lid), vp1, 0.0f);
+        CHECK(e.layer(e.indexOfId(lid))->viewportOpacity.empty());
         // Removing a group: its contents go up one level only
         e.removeLayer(e.indexOfId(inner));
         CHECK(e.layer(e.indexOfId(lid))->parent == outer);
         // Memories leave the viewports alone, but recall the routing of the layers
-        e.setShownIn(e.indexOfId(outer), vp2, false);
+        e.setOpacityIn(e.indexOfId(outer), vp2, 0.0f);
         Engine::Memory mem;
         mem.layers = e.captureLayers();
         bool hasViewport = false;
         for (const QJsonValue &v : mem.layers) hasViewport |= v.toObject().value("viewport").toBool();
         CHECK(!hasViewport);
-        e.setShownIn(e.indexOfId(outer), vp2, true);
+        e.setOpacityIn(e.indexOfId(outer), vp2, 1.0f);
         e.applyLayers(mem.layers, 0);
         CHECK(!e.layer(e.indexOfId(outer))->shownIn(vp2));
         // Saved and read back: sizes, places, screens, routing

@@ -146,7 +146,17 @@ bool Engine::initialize(QString *err)
         "#version 330 core\nuniform sampler2D u_tex; uniform float u_opacity; in vec2 v_uv; out vec4 o;\n"
         "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity; o = vec4(c.rgb*a, a); }\n",
         &log);
-    if (!m_blitProgram || !m_compProgram || !m_presentProgram) {
+    // Difference needs what is already drawn, which blending cannot give: the layer reads a copy of it
+    m_diffProgram = compileProgram(
+        "#version 330 core\nlayout(location=0) in vec2 a_pos; layout(location=1) in vec2 a_uv; out vec2 v_uv;\n"
+        "uniform vec4 u_view;\n"
+        "void main(){ v_uv = a_uv; gl_Position = vec4(a_pos*u_view.xy+u_view.zw,0.0,1.0); }\n",
+        "#version 330 core\nuniform sampler2D u_tex; uniform sampler2D u_dst; uniform float u_opacity; in vec2 v_uv; out vec4 o;\n"
+        "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity;\n"
+        "  vec4 d = texelFetch(u_dst, ivec2(gl_FragCoord.xy), 0);\n"
+        "  o = vec4(abs(d.rgb - c.rgb*a), d.a + a*(1.0-d.a)); }\n",
+        &log);
+    if (!m_blitProgram || !m_compProgram || !m_presentProgram || !m_diffProgram) {
         if (err) *err = QStringLiteral("Internal shaders: ") + log;
         return false;
     }
@@ -205,6 +215,10 @@ bool Engine::initialize(QString *err)
     m_prepMaskModeLoc = f->glGetUniformLocation(m_prepProgram, "u_maskMode");
     m_compTexLoc = f->glGetUniformLocation(m_compProgram, "u_tex");
     m_compOpacityLoc = f->glGetUniformLocation(m_compProgram, "u_opacity");
+    m_diffTexLoc = f->glGetUniformLocation(m_diffProgram, "u_tex");
+    m_diffDstLoc = f->glGetUniformLocation(m_diffProgram, "u_dst");
+    m_diffOpacityLoc = f->glGetUniformLocation(m_diffProgram, "u_opacity");
+    m_diffViewLoc = f->glGetUniformLocation(m_diffProgram, "u_view");
     m_compViewLoc = f->glGetUniformLocation(m_compProgram, "u_view");
 
     if (!m_videoConv.init(m_quadVao, &log)) {
@@ -361,6 +375,7 @@ void Engine::renderLoop()
 
 void Engine::releaseAll()
 {
+    m_dstCopy.destroy();
     for (auto &[size, ms] : m_msaa) ms.destroy();
     m_msaa.clear();
     // Output windows: their contexts (the windows themselves belong to the interface)
@@ -383,7 +398,7 @@ void Engine::releaseAll()
     for (RenderTarget &o : m_output) o.destroy();
     m_previewTarget.destroy();
     m_videoConv.release();
-    for (GLuint p : {m_blitProgram, m_compProgram, m_presentProgram, m_flipProgram, m_prepProgram, m_maskProgram})
+    for (GLuint p : {m_blitProgram, m_compProgram, m_diffProgram, m_presentProgram, m_flipProgram, m_prepProgram, m_maskProgram})
         if (p) f->glDeleteProgram(p);
     GLuint bufs[] = {m_quadVbo, m_meshVbo, m_meshIbo};
     f->glDeleteBuffers(3, bufs);
@@ -391,7 +406,7 @@ void Engine::releaseAll()
     f->glDeleteVertexArrays(2, vaos);
     f->glDeleteTextures(1, &m_blackTex);
     m_quadVao = m_meshVao = 0;
-    m_blitProgram = m_compProgram = m_presentProgram = m_flipProgram = m_prepProgram = m_maskProgram = 0;
+    m_blitProgram = m_compProgram = m_diffProgram = m_presentProgram = m_flipProgram = m_prepProgram = m_maskProgram = 0;
 }
 
 // ---------------------------------------------------------------------------

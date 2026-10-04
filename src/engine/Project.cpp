@@ -114,10 +114,10 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         o["outputMode"] = l.vpMode;
         o["publish"] = l.vpPublish.toJson();
     }
-    if (!l.hiddenIn.empty()) {
-        QJsonArray hidden;
-        for (quint64 v : l.hiddenIn) hidden.append(QString::number(v));
-        o["hiddenIn"] = hidden;
+    if (!l.viewportOpacity.empty()) {
+        QJsonObject vo;
+        for (const auto &[v, a] : l.viewportOpacity) vo[QString::number(v)] = double(a);
+        o["viewportOpacity"] = vo;
     }
     o["name"] = l.name;
     o["visible"] = l.visible;
@@ -225,8 +225,10 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             l->vpMode = std::clamp(o.value("outputMode").toInt(0), 0, 2);
             l->vpPublish = PublishSettings::fromJson(o.value("publish").toObject());
         }
-        l->hiddenIn.clear();
-        for (const QJsonValue &v : o.value("hiddenIn").toArray()) l->hiddenIn.push_back(v.toString().toULongLong());
+        l->viewportOpacity.clear();
+        const QJsonObject vo = o.value("viewportOpacity").toObject();
+        for (auto it = vo.begin(); it != vo.end(); ++it)
+            l->viewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
         l->effectsEnabled = o.value("effectsEnabled").toBool(true);
         {
             const QString t = o.value("source").toObject().value("transition").toString();

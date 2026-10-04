@@ -752,8 +752,9 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
     flag(parent, QStringLiteral("Visible"), {"visible"});
     flag(parent, QStringLiteral("Locked"), {"locked"});
     num(parent, QStringLiteral("Opacity"), {"opacity"}, 0, 1, 100, 0, QStringLiteral(" %"), 0.01);
-    choice(parent, QStringLiteral("Blend"), {"blend"}, {"normal", "add", "screen", "multiply"},
-           {QStringLiteral("Normal"), QStringLiteral("Add"), QStringLiteral("Screen"), QStringLiteral("Multiply")});
+    choice(parent, QStringLiteral("Blend"), {"blend"}, {"normal", "add", "screen", "multiply", "subtract", "difference"},
+           {QStringLiteral("Normal"), QStringLiteral("Add"), QStringLiteral("Screen"), QStringLiteral("Multiply"), QStringLiteral("Subtract"),
+            QStringLiteral("Difference")});
     if (hasSound) {
         num(parent, QStringLiteral("Volume"), {"volume"}, 0, 2, 100, 0, QStringLiteral(" %"), 0.01);
         flag(parent, QStringLiteral("Muted"), {"muted"});

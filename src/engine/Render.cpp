@@ -368,14 +368,14 @@ void Engine::renderViewport(Layer &v, const std::vector<Layer *> &shown, const I
     if (!v.visible) return;
     const QSize size = v.viewportSize();
     v.groupTarget.ensure(size.width(), size.height());
-    compositeLayers(v.groupTarget, shown, v.mapping.bounds());
+    compositeLayers(v.groupTarget, shown, v.mapping.bounds(), QColor(0, 0, 0, 0), v.id);
     processLayer(v, v.groupTarget.tex, v.groupTarget.w, v.groupTarget.h, true, rc);
 }
 
 // Draws the layers into the target; `view` is the part of the composition the target shows
 // (normalized, origin top left: the whole composition by default)
 void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer *> &layers, const QRectF &view,
-                             QColor clear)
+                             QColor clear, quint64 viewport)
 {
     auto f = gl();
     const RenderSettings rs = effectiveRender();
@@ -405,17 +405,51 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
     f->glBindVertexArray(m_meshVao);
 
     // The first layer is on top: draw from last to first.
+    bool inDiff = false;
     for (int i = int(layers.size()) - 1; i >= 0; --i) {
         Layer &l = *layers[size_t(i)];
-        if (!l.visible || !l.finalTex || l.opacity <= 0.0f) continue;
-        switch (l.blend) {
-        case BlendMode::Add: f->glBlendFunc(GL_ONE, GL_ONE); break;
-        case BlendMode::Screen: f->glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
-        case BlendMode::Multiply: f->glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break;
-        default: f->glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
+        const float opacity = viewport ? l.opacity * l.opacityIn(viewport) : l.opacity;
+        if (!l.visible || !l.finalTex || opacity <= 0.0f) continue;
+        const bool diff = l.blend == BlendMode::Difference;
+        if (diff) {
+            // Copy what is drawn so far (resolved if antialiased), then draw the layer against the copy
+            const GLuint drawFbo = ms ? ms->fbo : target.fbo;
+            m_dstCopy.ensure(target.w, target.h, target.isFloat);
+            f->glBindFramebuffer(GL_READ_FRAMEBUFFER, drawFbo);
+            f->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_dstCopy.fbo);
+            f->glBlitFramebuffer(0, 0, target.w, target.h, 0, 0, target.w, target.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            f->glBindFramebuffer(GL_FRAMEBUFFER, drawFbo);
+            f->glDisable(GL_BLEND);
+            f->glUseProgram(m_diffProgram);
+            f->glUniform1i(m_diffTexLoc, 0);
+            f->glUniform1i(m_diffDstLoc, 1);
+            f->glUniform4f(m_diffViewLoc, float(1.0 / rw), float(1.0 / rh), float((1.0 - 2.0 * view.left()) / rw - 1.0),
+                           float(1.0 - (1.0 - 2.0 * view.top()) / rh));
+            f->glUniform1f(m_diffOpacityLoc, opacity);
+            f->glActiveTexture(GL_TEXTURE1);
+            f->glBindTexture(GL_TEXTURE_2D, m_dstCopy.tex);
+            f->glActiveTexture(GL_TEXTURE0);
+            inDiff = true;
+        } else {
+            if (inDiff) {
+                f->glUseProgram(m_compProgram);
+                f->glEnable(GL_BLEND);
+                inDiff = false;
+            }
+            f->glBlendEquation(GL_FUNC_ADD);
+            switch (l.blend) {
+            case BlendMode::Add: f->glBlendFunc(GL_ONE, GL_ONE); break;
+            case BlendMode::Screen: f->glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
+            case BlendMode::Multiply: f->glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break;
+            case BlendMode::Subtract: // dst - src (the layer's premultiplied color), alpha kept
+                f->glBlendEquationSeparate(GL_FUNC_REVERSE_SUBTRACT, GL_FUNC_ADD);
+                f->glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ZERO, GL_ONE);
+                break;
+            default: f->glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
+            }
+            f->glUniform1f(m_compOpacityLoc, opacity);
         }
         bindMesh(l);
-        f->glUniform1f(m_compOpacityLoc, l.opacity);
         f->glBindTexture(GL_TEXTURE_2D, l.finalTex);
         // Drawn smaller than it is: sampled from mipmaps (no shimmer, no moiré), made for this draw only
         bool mip = false;
@@ -432,6 +466,7 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
         f->glDrawElements(GL_TRIANGLES, m_meshIndexCount, GL_UNSIGNED_INT, nullptr);
         if (mip) f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); // others sample it plainly
     }
+    f->glBlendEquation(GL_FUNC_ADD);
     f->glDisable(GL_BLEND);
     f->glBindVertexArray(0);
     if (ms) ms->resolveInto(target);
