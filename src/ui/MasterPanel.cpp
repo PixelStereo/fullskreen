@@ -32,12 +32,12 @@ static QLabel *note(const QString &t)
     return l;
 }
 
-MasterPanel::MasterPanel(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(engine)
+CompositionPanel::CompositionPanel(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(engine)
 {
     auto *v = new QVBoxLayout(this);
     v->setContentsMargins(8, 8, 8, 8);
     v->setSpacing(10);
-    v->addWidget(buildMaster());
+    v->addWidget(buildCompositionLevel());
     v->addWidget(buildAudio());
     v->addWidget(buildComposition());
     v->addWidget(buildRendering());
@@ -51,29 +51,29 @@ MasterPanel::MasterPanel(Engine *engine, QWidget *parent) : QWidget(parent), m_e
 }
 
 // ---------------------------------------------------------------------------
-// Master
+// Composition Level
 // ---------------------------------------------------------------------------
 
-QWidget *MasterPanel::buildMaster()
+QWidget *CompositionPanel::buildCompositionLevel()
 {
-    auto *g = new QGroupBox(QStringLiteral("Master"));
+    auto *g = new QGroupBox(QStringLiteral("Composition Level"));
     auto *v = new QVBoxLayout(g);
     auto *row = new QHBoxLayout;
-    m_master = new SliderField;
-    m_master->setRange(0, 100);
-    m_master->setDecimals(0);
-    m_master->setSuffix(QStringLiteral(" %"));
-    m_master->setSingleStep(1);
-    m_master->setTicks(10);
-    m_master->setSnaps({0, 100});
-    m_master->setValue(100);
-    m_master->setToolTip(QStringLiteral("Output master level"));
-    m_masterLabel = new QLabel(QStringLiteral("out 100%"));
-    m_masterLabel->setToolTip(QStringLiteral("What goes out now (the fader, and the blackout over it)"));
-    m_masterLabel->setMinimumWidth(64);
-    m_masterLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    row->addWidget(m_master, 1);
-    row->addWidget(m_masterLabel);
+    m_composition = new SliderField;
+    m_composition->setRange(0, 100);
+    m_composition->setDecimals(0);
+    m_composition->setSuffix(QStringLiteral(" %"));
+    m_composition->setSingleStep(1);
+    m_composition->setTicks(10);
+    m_composition->setSnaps({0, 100});
+    m_composition->setValue(100);
+    m_composition->setToolTip(QStringLiteral("Composition output level"));
+    m_compositionLabel = new QLabel(QStringLiteral("out 100%"));
+    m_compositionLabel->setToolTip(QStringLiteral("What goes out now (the fader, and the blackout over it)"));
+    m_compositionLabel->setMinimumWidth(64);
+    m_compositionLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    row->addWidget(m_composition, 1);
+    row->addWidget(m_compositionLabel);
     v->addLayout(row);
 
     auto *row2 = new QHBoxLayout;
@@ -87,7 +87,7 @@ QWidget *MasterPanel::buildMaster()
     m_fade->setSingleStep(0.5);
     m_fade->setDecimals(1);
     m_fade->setSuffix(QStringLiteral(" s"));
-    m_fade->setValue(QSettings().value("master/fade", 1.0).toDouble());
+    m_fade->setValue(QSettings().value("composition/fade", 1.0).toDouble());
     m_fade->setToolTip(QStringLiteral("Fade duration for blackout and fade back in"));
     row2->addWidget(m_blackout, 1);
     row2->addWidget(new QLabel(QStringLiteral("Fade")));
@@ -95,7 +95,7 @@ QWidget *MasterPanel::buildMaster()
     v->addLayout(row2);
 
     // The fader sets the picture's level; the blackout (picture and sound) is applied on top of it.
-    connect(m_master, &SliderField::valueEdited, this, [this](double val) {
+    connect(m_composition, &SliderField::valueEdited, this, [this](double val) {
         if (!m_syncing) m_engine->fadeMaster(val / 100.0, 0.05);
     });
     connect(m_blackout, &QPushButton::toggled, this, [this](bool on) {
@@ -104,13 +104,13 @@ QWidget *MasterPanel::buildMaster()
     });
     m_engine->setBlackoutFade(m_fade->value());
     connect(m_fade, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double val) {
-        QSettings().setValue("master/fade", val);
+        QSettings().setValue("composition/fade", val);
         m_engine->setBlackoutFade(val);
     });
     return g;
 }
 
-void MasterPanel::setBlackout(bool on)
+void CompositionPanel::setBlackout(bool on)
 {
     if (m_blackout->isChecked() == on) {
         // Replay the fade (e.g. after a recovery where the level was forced)
@@ -120,9 +120,9 @@ void MasterPanel::setBlackout(bool on)
     m_blackout->setChecked(on); // triggers the fade and blackoutChanged
 }
 
-bool MasterPanel::isBlackout() const { return m_blackout->isChecked(); }
-double MasterPanel::masterValue() const { return m_master->value() / 100.0; }
-double MasterPanel::fadeTime() const { return m_fade->value(); }
+bool CompositionPanel::isBlackout() const { return m_blackout->isChecked(); }
+double CompositionPanel::compositionValue() const { return m_composition->value() / 100.0; }
+double CompositionPanel::fadeTime() const { return m_fade->value(); }
 
 // ---------------------------------------------------------------------------
 // Audio
@@ -135,7 +135,7 @@ static QString volumeText(int pct)
     return QStringLiteral("%1%2 dB").arg(db > 0.05 ? "+" : "").arg(db, 0, 'f', 1);
 }
 
-QWidget *MasterPanel::buildAudio()
+QWidget *CompositionPanel::buildAudio()
 {
     auto *g = new QGroupBox(QStringLiteral("Audio Output"));
     auto *v = new QVBoxLayout(g);
@@ -201,12 +201,12 @@ QWidget *MasterPanel::buildAudio()
         emit audioEdited();
     });
     m_meterTimer.setInterval(33);
-    connect(&m_meterTimer, &QTimer::timeout, this, &MasterPanel::refreshMeters);
+    connect(&m_meterTimer, &QTimer::timeout, this, &CompositionPanel::refreshMeters);
     m_meterTimer.start();
     return g;
 }
 
-void MasterPanel::fillAudioDevices()
+void CompositionPanel::fillAudioDevices()
 {
     const QString saved = QSettings().value("audio/device").toString();
     QSignalBlocker b(m_audioDevice);
@@ -221,7 +221,7 @@ void MasterPanel::fillAudioDevices()
     m_audioDevice->setCurrentIndex(qMax(0, idx));
 }
 
-void MasterPanel::openAudioDevice(const QString &name)
+void CompositionPanel::openAudioDevice(const QString &name)
 {
     QString err;
     if (m_engine->startAudio(name, &err)) {
@@ -236,13 +236,13 @@ void MasterPanel::openAudioDevice(const QString &name)
     }
 }
 
-void MasterPanel::startAudio()
+void CompositionPanel::startAudio()
 {
     fillAudioDevices();
     openAudioDevice(QSettings().value("audio/device").toString());
 }
 
-void MasterPanel::refreshMeters()
+void CompositionPanel::refreshMeters()
 {
     if (!isVisible()) return;
     for (int c = 0; c < 2; ++c) {
@@ -260,7 +260,7 @@ void MasterPanel::refreshMeters()
 // Rendering: frame rate and antialiasing of this project, or the machine's defaults (Settings)
 // ---------------------------------------------------------------------------
 
-QWidget *MasterPanel::buildRendering()
+QWidget *CompositionPanel::buildRendering()
 {
     auto *g = new QGroupBox(QStringLiteral("Rendering"));
     auto *form = new QFormLayout(g);
@@ -291,7 +291,7 @@ QWidget *MasterPanel::buildRendering()
     return g;
 }
 
-void MasterPanel::refreshRenderDefaults()
+void CompositionPanel::refreshRenderDefaults()
 {
     const Engine::RenderSettings d = m_engine->renderDefaults();
     m_syncing = true;
@@ -312,7 +312,7 @@ void MasterPanel::refreshRenderDefaults()
     syncRendering();
 }
 
-void MasterPanel::syncRendering()
+void CompositionPanel::syncRendering()
 {
     if (!m_rate) return;
     const Engine::RenderSettings r = m_engine->renderSettings();
@@ -324,7 +324,7 @@ void MasterPanel::syncRendering()
     m_syncing = false;
 }
 
-QWidget *MasterPanel::buildComposition()
+QWidget *CompositionPanel::buildComposition()
 {
     auto *g = new QGroupBox(QStringLiteral("Composition"));
     auto *form = new QFormLayout(g);
@@ -363,7 +363,7 @@ QWidget *MasterPanel::buildComposition()
     return g;
 }
 
-void MasterPanel::applyComposition()
+void CompositionPanel::applyComposition()
 {
     if (m_syncing) return;
     const QSize s(m_width->value(), m_height->value());
@@ -372,7 +372,7 @@ void MasterPanel::applyComposition()
     emit compositionEdited();
 }
 
-void MasterPanel::syncFromEngine()
+void CompositionPanel::syncFromEngine()
 {
     m_syncing = true;
     const QSize c = m_engine->compositionSize();
@@ -387,12 +387,12 @@ void MasterPanel::syncFromEngine()
     refreshStatus();
 }
 
-void MasterPanel::refreshStatus()
+void CompositionPanel::refreshStatus()
 {
     // Fader, blackout, fade time and sound follow the changes made elsewhere (OSC)
     m_syncing = true;
     const int fader = int(std::lround(m_engine->masterTarget() * 100));
-    if (!m_master->isDragging() && fader != int(std::lround(m_master->value()))) m_master->setValue(fader);
+    if (!m_composition->isDragging() && fader != int(std::lround(m_composition->value()))) m_composition->setValue(fader);
     if (m_blackout->isChecked() != m_engine->blackout()) m_blackout->setChecked(m_engine->blackout());
     if (!m_fade->hasFocus() && std::abs(m_fade->value() - m_engine->blackoutFade()) > 1e-6) m_fade->setValue(m_engine->blackoutFade());
     const int vol = int(std::lround(m_engine->audioVolume() * 100));
@@ -404,8 +404,8 @@ void MasterPanel::refreshStatus()
     m_syncing = false;
 
     const int pct = int(std::lround(m_engine->outputLevel() * 100));
-    m_masterLabel->setText(QStringLiteral("out %1%").arg(pct)); // the fader, and the blackout over it
-    m_masterLabel->setStyleSheet(pct == 0 ? "color:#ff5a4f; font-weight:bold;" : "");
+    m_compositionLabel->setText(QStringLiteral("out %1%").arg(pct)); // the fader, and the blackout over it
+    m_compositionLabel->setStyleSheet(pct == 0 ? "color:#ff5a4f; font-weight:bold;" : "");
 
     const QSize c = m_engine->compositionSize();
     if (!m_width->hasFocus() && !m_height->hasFocus() && (c.width() != m_width->value() || c.height() != m_height->value())) {

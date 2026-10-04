@@ -9,7 +9,7 @@ class MappingView;
 class LayerInspector;
 class LayerTable;
 class MediaBin;
-class MasterPanel;
+class CompositionPanel;
 class SettingsPanel;
 class MemoryPanel;
 class SequenceBar;
@@ -107,7 +107,7 @@ private:
     LayerInspector *m_inspector = nullptr;
     LayerTable *m_layerTable = nullptr;
     MediaBin *m_bin = nullptr;
-    MasterPanel *m_master = nullptr;
+    CompositionPanel *m_master = nullptr;
     SettingsPanel *m_settings = nullptr;
     MemoryPanel *m_memories = nullptr;
     SequenceBar *m_seqBar = nullptr;

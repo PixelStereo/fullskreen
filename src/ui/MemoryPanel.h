@@ -64,6 +64,7 @@ private:
     QTreeWidgetItem *addField(QTreeWidgetItem *parent, const MemField &f, const QJsonValue &value);
     void applyField(const MemField &f, const QJsonValue &value); // writes it into the selected memory
     void applyTime(int row, const QString &key, double seconds); // < 0: FOLLOW (the memory's fade)
+    void applyEasingCurve(int row, const QString &paramKey, const QString &curveKey); // easing curve of a parameter
     void setInclusion(int i, quint64 layerId, bool included);
     void refreshRows(); // value and time texts of the tree, after an edit (no rebuild)
     int selected() const;

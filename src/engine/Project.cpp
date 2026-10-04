@@ -156,6 +156,19 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         src["width"] = l.genWidth;
         src["height"] = l.genHeight;
         break;
+    case SourceType::Text: {
+        src["type"] = "text";
+        src["content"] = l.textContent;
+        src["font"] = l.textFont;
+        src["size"] = l.textSize;
+        src["color"] = l.textColor.name();
+        src["align"] = int(l.textAlign);
+        src["lineHeight"] = l.textLineHeight;
+        src["letterSpacing"] = l.textLetterSpacing;
+        src["width"] = l.textWidth;
+        src["height"] = l.textHeight;
+        break;
+    }
     default:
         // Missing file: keep what was intended, so nothing is lost on save.
         if (l.missingType == SourceType::Video || l.missingType == SourceType::Audio) {
@@ -297,6 +310,19 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         }
         const QJsonObject params = src.value("params").toObject();
         if (gen) runGl([gen, params, projectDir] { gen->restoreParams(params, projectDir); });
+    } else if (type == "text") {
+        Lock lk(&m_mutex);
+        Layer *l = layer(index);
+        l->type = SourceType::Text;
+        l->textContent = src.value("content").toString();
+        l->textFont = src.value("font").toString("Arial");
+        l->textSize = src.value("size").toInt(48);
+        l->textColor = QColor(src.value("color").toString("#ffffff"));
+        l->textAlign = Qt::Alignment(src.value("align").toInt(int(Qt::AlignCenter)));
+        l->textLineHeight = float(src.value("lineHeight").toDouble(1.2));
+        l->textLetterSpacing = float(src.value("letterSpacing").toDouble(0.0));
+        l->textWidth = src.value("width").toInt(1920);
+        l->textHeight = src.value("height").toInt(1080);
     }
 
     for (const QJsonValue &v : o.value("effects").toArray()) {

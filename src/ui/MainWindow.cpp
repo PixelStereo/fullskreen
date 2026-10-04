@@ -4,7 +4,7 @@
 #include "LayerInspector.h"
 #include "LayerTable.h"
 #include "MappingView.h"
-#include "MasterPanel.h"
+#include "MasterPanel.h" // CompositionPanel
 #include "MediaBin.h"
 #include "MemoryPanel.h"
 #include "SequencePanel.h"
@@ -75,13 +75,13 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_engine->library().setUserFolders(s.value("isf/folders").toStringList());
     m_engine->library().scan();
 
-    // --- Top: media bin | preview and mapping | Layer / Master tabs
+    // --- Top: media bin | preview and mapping | Layer / Composition tabs
     m_bin = new MediaBin(m_engine);
     m_bin->setMinimumWidth(260);
     m_view = new MappingView(m_engine);
     m_view->setUndoStack(m_undo);
     m_inspector = new LayerInspector(m_engine, m_undo);
-    m_master = new MasterPanel(m_engine);
+    m_master = new CompositionPanel(m_engine);
     m_tabs = new QTabWidget;
     m_tabs->addTab(scrolled(m_inspector), QStringLiteral("Layer"));
     m_tabs->addTab(scrolled(m_master), QStringLiteral("Master"));
@@ -241,16 +241,16 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(&m_inspectorTimer, &QTimer::timeout, m_inspector, &LayerInspector::rebuild);
 
     // --- Master
-    connect(m_master, &MasterPanel::blackoutChanged, this, [this](bool on) {
+    connect(m_master, &CompositionPanel::blackoutChanged, this, [this](bool on) {
         QSignalBlocker b(m_blackoutAction);
         m_blackoutAction->setChecked(on);
     });
-    connect(m_master, &MasterPanel::compositionEdited, this, &MainWindow::markDirty);
+    connect(m_master, &CompositionPanel::compositionEdited, this, &MainWindow::markDirty);
     connect(m_settings, &SettingsPanel::renderDefaultsChanged, this, [this] {
         m_engine->setRenderDefaults(SettingsPanel::renderDefaults());
         m_master->refreshRenderDefaults();
     });
-    connect(m_master, &MasterPanel::audioEdited, this, &MainWindow::markDirty);
+    connect(m_master, &CompositionPanel::audioEdited, this, &MainWindow::markDirty);
 
     // --- General sync
     connect(m_view, &MappingView::layerPicked, this, &MainWindow::selectLayer);
@@ -506,7 +506,7 @@ void MainWindow::buildMenus()
     seq->addAction(QStringLiteral("Sequences…"), this, &MainWindow::openSequences);
 
     QMenu *comp = menuBar()->addMenu(QStringLiteral("C&omposition"));
-    comp->addAction(QStringLiteral("Composition Size (Master tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
+    comp->addAction(QStringLiteral("Composition Size (Composition tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
     comp->addAction(QStringLiteral("New Viewport"), this, &MainWindow::addViewport);
     comp->addSeparator();
     QAction *outlines = comp->addAction(QStringLiteral("Show Outlines of Other Layers"));

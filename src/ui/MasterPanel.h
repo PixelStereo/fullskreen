@@ -15,17 +15,17 @@ class QCheckBox;
 class QLineEdit;
 class QProgressBar;
 
-// "Master" tab, the project as a whole: master level and blackout (all the viewports at once), audio output,
-// and the composition — the pixel space the layers live in and the viewports are placed on.
-class MasterPanel : public QWidget
+// "Composition" tab, the project as a whole: composition-level output, blackout (all viewports at once),
+// audio output, and composition settings — the pixel space the layers live in and the viewports are placed on.
+class CompositionPanel : public QWidget
 {
     Q_OBJECT
 public:
-    explicit MasterPanel(Engine *engine, QWidget *parent = nullptr);
+    explicit CompositionPanel(Engine *engine, QWidget *parent = nullptr);
 
     void setBlackout(bool on);
     bool isBlackout() const;
-    double masterValue() const; // level set on the fader (0..1)
+    double compositionValue() const; // level set on the fader (0..1)
     double fadeTime() const;
 
     void syncFromEngine();        // composition, sound (after opening a project)
@@ -36,10 +36,10 @@ public:
 signals:
     void blackoutChanged(bool on);
     void compositionEdited();
-    void audioEdited(); // master volume / mute (saved in the project)
+    void audioEdited(); // composition volume / mute (saved in the project)
 
 private:
-    QWidget *buildMaster();
+    QWidget *buildCompositionLevel();
     QWidget *buildComposition();
     QWidget *buildRendering();
     void syncRendering();
@@ -50,8 +50,8 @@ private:
     void applyComposition();
 
     Engine *m_engine;
-    SliderField *m_master = nullptr;
-    QLabel *m_masterLabel = nullptr;
+    SliderField *m_composition = nullptr;
+    QLabel *m_compositionLabel = nullptr;
     QPushButton *m_blackout = nullptr;
     QDoubleSpinBox *m_fade = nullptr;
     QComboBox *m_preset = nullptr;

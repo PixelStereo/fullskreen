@@ -20,7 +20,8 @@
 
 // What feeds a layer's picture. `Layer`: the picture of another layer of the composition, tapped either
 // before or after its effect chain (see LayerTap) — the same picture can be mapped and treated twice.
-enum class SourceType { None, Video, Image, Isf, Audio, Layer };
+// `Text`: rendered text layer with system fonts, word wrapping, and animation.
+enum class SourceType { None, Video, Image, Isf, Audio, Layer, Text };
 // Where the picture of a layer used as a source is taken
 enum class LayerTap {
     PreFx = 0,  // after its ROI and color, before its effect chain
@@ -170,6 +171,19 @@ struct Layer {
     QImage pendingImage; // image to upload to the GPU on the next frame
     int srcWidth = 0, srcHeight = 0;
 
+    // Text layer: rendered text with system fonts
+    QString textContent;                        // the text to render
+    QString textFont = "Arial";                 // system font family
+    int textSize = 48;                          // font size in pixels
+    QColor textColor = QColor(255, 255, 255);  // text color (default white)
+    Qt::Alignment textAlign = Qt::AlignCenter; // text alignment (left/center/right, top/middle/bottom)
+    float textLineHeight = 1.2f;                // line height as multiple of font size
+    float textLetterSpacing = 0.0f;             // extra spacing between characters (in pixels)
+    double textAnimation = 0.0;                 // animation parameter (0..1), separate from playback
+    int textWidth = 1920, textHeight = 1080;   // text layer dimension for rendering
+    QImage textPendingImage;                    // text render to upload to the GPU
+    Texture2D textSourceTex;                    // rendered text texture
+
     // ISF generator
     std::unique_ptr<IsfInstance> generator;
     int genWidth = 1920, genHeight = 1080;
@@ -223,9 +237,10 @@ struct Layer {
     }
     double position() const { return timeline().position(clock); }
     bool atEnd() const { return timeline().ended(clock); } // One-shot / Stop: played to the end
-    int sourceWidth() const { return type == SourceType::Isf ? genWidth : srcWidth; }
-    int sourceHeight() const { return type == SourceType::Isf ? genHeight : srcHeight; }
+    int sourceWidth() const { return type == SourceType::Isf ? genWidth : type == SourceType::Text ? textWidth : srcWidth; }
+    int sourceHeight() const { return type == SourceType::Isf ? genHeight : type == SourceType::Text ? textHeight : srcHeight; }
     bool hasPicture() const { return isGroup || isViewport || (type != SourceType::Audio && !(type == SourceType::None && missingType == SourceType::Audio)); }
+    bool isText() const { return type == SourceType::Text; }
     QSize viewportSize() const { return QSize(std::max(1, vpWidth), std::max(1, vpHeight)); }
     float opacityIn(quint64 viewport) const
     {

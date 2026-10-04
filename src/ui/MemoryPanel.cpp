@@ -55,6 +55,19 @@ static QString valueText(const MemField &f, const QJsonValue &value)
     }
 }
 
+// Easing curve names for UI (these match the engine's curve types)
+static QStringList easingCurveLabels()
+{
+    return {QStringLiteral("Linear"), QStringLiteral("Ease In"), QStringLiteral("Ease Out"),
+            QStringLiteral("Ease In-Out"), QStringLiteral("Ease In Cubic"), QStringLiteral("Ease Out Cubic")};
+}
+
+static QStringList easingCurveKeys()
+{
+    return {QStringLiteral("linear"), QStringLiteral("easeIn"), QStringLiteral("easeOut"),
+            QStringLiteral("easeInOut"), QStringLiteral("easeInCubic"), QStringLiteral("easeOutCubic")};
+}
+
 // Value at `path` inside a JSON tree; a numeric component addresses an array.
 static QJsonValue jsonAt(const QJsonValue &root, const QStringList &path, int from = 0)
 {
@@ -680,6 +693,29 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
         });
         connect(secs, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [this, row0, key](double v) { applyTime(row0, key, v); });
+
+        // Easing curve selector for the parameter
+        auto *curveBox = new QWidget;
+        auto *curveLay = new QHBoxLayout(curveBox);
+        curveLay->setContentsMargins(0, 0, 0, 0);
+        curveLay->addWidget(new QLabel(QStringLiteral("Easing:")));
+        auto *curveCombo = new QComboBox;
+        const auto curves = easingCurveKeys();
+        const auto labels = easingCurveLabels();
+        for (int k = 0; k < curves.size(); ++k) curveCombo->addItem(labels[k], curves[k]);
+
+        // Read current curve from JSON
+        const QString curveKey = f.timeKey + "/curve";
+        const QString currentCurve = o.value("timing").toObject().value(curveKey).toString();
+        curveCombo->setCurrentIndex(std::max(0, int(curves.indexOf(currentCurve))));
+
+        curveLay->addWidget(curveCombo);
+        curveLay->addStretch();
+        bv->addWidget(curveBox);
+
+        connect(curveCombo, qOverload<int>(&QComboBox::activated), this, [this, row0, key, curveCombo]() {
+            applyEasingCurve(row0, key, curveCombo->currentData().toString());
+        });
     }
     m_detailLayout->addStretch();
 }
@@ -759,6 +795,9 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         num(parent, QStringLiteral("Volume"), {"volume"}, 0, 2, 100, 0, QStringLiteral(" %"), 0.01);
         flag(parent, QStringLiteral("Muted"), {"muted"});
     }
+    if (type == "text") {
+        num(parent, QStringLiteral("Text Animation"), {"textAnimation"}, 0, 1, 100, 0, QStringLiteral(" %"), 0.01);
+    }
 
     // Parameters of a shader (generator or effect), from the values the memory holds
     auto isfParams = [&](QTreeWidgetItem *p, const QStringList &base, int slot) {
@@ -830,6 +869,20 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
             num(sec, QStringLiteral("Width"), {"source", "width"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
             num(sec, QStringLiteral("Height"), {"source", "height"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
             isfParams(sec, {"source", "params"}, -1);
+        }
+        if (type == "text") {
+            info(sec, QStringLiteral("Content"), jsonAt(o, {"source", "content"}).toString());
+            info(sec, QStringLiteral("Font"), jsonAt(o, {"source", "font"}).toString());
+            num(sec, QStringLiteral("Size"), {"source", "size"}, 8, 512, 1, 0, QStringLiteral(" px"), 1);
+            info(sec, QStringLiteral("Color"), jsonAt(o, {"source", "color"}).toString());
+            choice(sec, QStringLiteral("Alignment"), {"source", "align"}, {"1", "4", "2", "32", "8", "16", "33", "36", "34"},
+                   {QStringLiteral("Left Top"), QStringLiteral("Center Top"), QStringLiteral("Right Top"),
+                    QStringLiteral("Left Center"), QStringLiteral("Center"), QStringLiteral("Right Center"),
+                    QStringLiteral("Left Bottom"), QStringLiteral("Center Bottom"), QStringLiteral("Right Bottom")});
+            num(sec, QStringLiteral("Line Height"), {"source", "lineHeight"}, 0.5, 3, 1, 2, QStringLiteral(" ×"), 0.05);
+            num(sec, QStringLiteral("Letter Spacing"), {"source", "letterSpacing"}, -20, 20, 1, 1, QStringLiteral(" px"), 0.5);
+            num(sec, QStringLiteral("Width"), {"source", "width"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
+            num(sec, QStringLiteral("Height"), {"source", "height"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
         }
         expand(sec);
     }
@@ -933,6 +986,26 @@ void MemoryPanel::applyTime(int row, const QString &key, double seconds)
     else timing[key] = seconds;
     if (timing.isEmpty()) o.remove("timing");
     else o["timing"] = timing;
+    m.layers[row] = o;
+    m_applying = true;
+    m_engine->setMemory(i, m);
+    m_applying = false;
+    emit edited();
+    refreshRows();
+}
+
+// The easing curve of a parameter in the selected memory's timing
+void MemoryPanel::applyEasingCurve(int row, const QString &paramKey, const QString &curveKey)
+{
+    const int i = selected();
+    if (i < 0 || paramKey.isEmpty() || curveKey.isEmpty()) return;
+    Engine::Memory m = m_engine->memory(i);
+    if (row < 0 || row >= m.layers.size()) return;
+    QJsonObject o = m.layers[row].toObject();
+    QJsonObject timing = o.value("timing").toObject();
+    const QString key = paramKey + "/curve";
+    timing[key] = curveKey;
+    o["timing"] = timing;
     m.layers[row] = o;
     m_applying = true;
     m_engine->setMemory(i, m);

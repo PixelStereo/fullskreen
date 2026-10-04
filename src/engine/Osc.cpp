@@ -289,6 +289,7 @@ static QString sourceTypeKey(const Layer &l)
     case SourceType::Isf: return QStringLiteral("isf");
     case SourceType::Audio: return QStringLiteral("audio");
     case SourceType::Layer: return QStringLiteral("layer");
+    case SourceType::Text: return QStringLiteral("text");
     default: return QStringLiteral("none");
     }
 }
