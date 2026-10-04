@@ -310,6 +310,9 @@ public:
     quint64 frameCount() const { return m_frameCount.load(); }
     // Video frames a layer has shown so far (uploaded to the GPU): its playback rate, measured
     quint64 videoFramesShown(int index) const;
+    // Compressed texture formats the GPU samples (HAP): DXT, and BC7 / BC6 (not on macOS)
+    bool gpuSamplesDxt() const { return m_videoConv.s3tc(); }
+    bool gpuSamplesBptc() const { return m_videoConv.bptc(); }
 
     // --- Project
     void newProject();   // empty, with one viewport

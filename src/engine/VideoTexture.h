@@ -1,9 +1,9 @@
 #pragma once
 // A video layer's picture on the GPU (render thread).
-// The decoder's frames arrive as they were decoded — YUV planes, RGB, grey — in upload buffers (pixel buffer
-// objects) the decoder wrote them into on its own thread. Their planes become textures, and one draw turns them
-// into the RGBA picture the layer samples: YUV matrix and range, bit depth, chroma siting, alpha, and the
-// vertical flip (frames are stored top row first).
+// The decoder's frames arrive as they were decoded — YUV planes, RGB, grey, or HAP's compressed textures —
+// in upload buffers (pixel buffer objects) the decoder wrote them into on its own thread. Their planes become
+// textures, and one draw turns them into the RGBA picture the layer samples: YUV matrix and range, bit depth,
+// chroma siting, scaled YCoCg, alpha, and the vertical flip (frames are stored top row first).
 
 #include "Gl.h"
 #include "VideoFrame.h"
@@ -13,18 +13,21 @@
 
 class VideoDecoder;
 
-// The conversion program, shared by every video layer
+// The conversion program, shared by every video layer, and what the GPU can sample
 class VideoConverter
 {
 public:
     bool init(GLuint quadVao, QString *err); // context current
     void release();
+    bool s3tc() const { return m_s3tc; } // DXT1 / DXT5
+    bool bptc() const { return m_bptc; } // BC7 / BC6H
 
 private:
     friend class VideoTexture;
     GLuint m_program = 0, m_quadVao = 0;
     GLint m_tex[4] = {-1, -1, -1, -1}, m_sel[4] = {-1, -1, -1, -1}, m_off[4] = {-1, -1, -1, -1};
-    GLint m_scale = -1, m_mode = -1, m_alpha = -1, m_matrix = -1, m_range = -1;
+    GLint m_scale = -1, m_mode = -1, m_alpha = -1, m_matrix = -1, m_range = -1, m_crop = -1, m_clamp = -1;
+    bool m_s3tc = false, m_bptc = false;
 };
 
 class VideoTexture

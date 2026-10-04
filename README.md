@@ -35,9 +35,12 @@ subsampling), NV12 / P010, RGB, grey, with or without alpha — and the GPU conv
 range, chroma siting): the processor only decodes. Each decoder copies its frames straight into upload buffers of
 the GPU on its own thread; the render thread only hands them over. **Hardware decoding** (VideoToolbox on macOS,
 Direct3D 11 / DXVA2 on Windows, VA-API on Linux) is used when the codec allows it (Settings ▸ Playback, on by
-default). A hidden layer keeps playing and sounding, but is neither uploaded nor rendered. The Source tab says how
-the frames travel (*Picture*: `yuv420p · BT.709`, or *converted on the CPU* for the rare layouts the GPU does not
-take).
+default). **HAP**, every variant — Hap, Hap Alpha, Hap Q, Hap Q Alpha, Hap Alpha-Only, Hap R, Hap HDR — goes to the
+GPU still compressed (DXT, RGTC, BPTC): only its Snappy stage is undone, its chunks side by side. macOS's OpenGL has
+no BPTC, so Hap R and Hap HDR are decoded by the processor there (HDR values above 1 are clipped). A hidden layer
+keeps playing and sounding, but is neither uploaded nor rendered. The Source tab says how the frames travel
+(*Picture*: `yuv420p · BT.709`, `Hap Q · YCoCg DXT5`, or *converted on the CPU* for the rare layouts the GPU
+does not take).
 
 **Picture.** The **ROI** chooses the part of the source picture used (drag the sides of the rectangle).
 **Color** works like DaVinci Resolve: balance (Temp −4000…4000, Tint −100…100, luminance kept), then a color
@@ -250,7 +253,9 @@ src/engine/   engine, with no widget dependency (QtCore/QtGui/OpenGL + FFmpeg)
   Isf           ISF parser and renderer (GLSL 330 core translation, passes, buffers)
   VideoDecoder  FFmpeg decoding on a thread (hardware when it can), frame queue, seamless loop, seeking;
                 frames kept as decoded and copied into the GPU's upload buffers
-  VideoTexture  a video layer's frames on the GPU: planes converted to RGBA by one draw
+  VideoTexture  a video layer's frames on the GPU: planes or compressed textures, converted to RGBA by one draw
+  Hap, Snappy   HAP frames (sections, chunks, Snappy), blocks decoded on the CPU when the GPU cannot sample them
+  WorkerPool    threads shared by the decoders (chunks of a frame side by side)
   AudioStream   FFmpeg audio decoding + resampling on a thread, synced to the layer playhead
   AudioOutput   sound card (miniaudio), mix of all layers, master volume, meters
   Mapping       4-corner homography + Catmull-Rom mesh
