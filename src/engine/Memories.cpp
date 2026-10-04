@@ -543,6 +543,9 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             }
         }
         if (o.contains("mapping")) to.mapping.fromJson(o.value("mapping").toObject());
+        // Viewport opacity and soft edge: must be explicitly copied to the fade job's target
+        to.viewportOpacity = l->viewportOpacity;
+        to.soft = l->mapping.soft;
         if (!to.isf.empty()) readParams(l->generator.get(), src.value("params").toObject(), to.isf[0]);
         for (size_t k = 0; k < l->effects.size() && k + 1 < to.isf.size() && int(k) < fx.size(); ++k)
             readParams(l->effects[k].get(), fx[int(k)].toObject().value("params").toObject(), to.isf[k + 1]);
