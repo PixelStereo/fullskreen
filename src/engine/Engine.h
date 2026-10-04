@@ -178,6 +178,7 @@ public:
     void setLayerMuted(int i, bool muted);
 
     // Text layer properties
+    void setLayerSourceText(int i);  // Make layer a text layer
     void setLayerTextContent(int i, const QString &text);
     void setLayerTextFont(int i, const QString &font);
     void setLayerTextSize(int i, int size);

@@ -1031,6 +1031,19 @@ void Engine::setLayerMuted(int i, bool muted)
     if (Layer *l = layer(i)) l->muted = muted;
 }
 
+void Engine::setLayerSourceText(int i)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) {
+        l->type = SourceType::Text;
+        l->sourcePath.clear();
+        l->srcWidth = 960;
+        l->srcHeight = 540;
+        l->textWidth = 960;
+        l->textHeight = 540;
+    }
+}
+
 void Engine::setLayerTextContent(int i, const QString &text)
 {
     Lock lk(&m_mutex);

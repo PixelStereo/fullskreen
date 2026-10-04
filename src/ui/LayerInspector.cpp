@@ -621,6 +621,19 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         rebuild();
     });
 
+    // Or create a text layer
+    {
+        auto *textBtn = new QPushButton(QStringLiteral("Create Text Layer"));
+        textBtn->setToolTip(QStringLiteral("Make this layer a text layer for typing and animation"));
+        textBtn->setEnabled(!loaded);
+        v->addWidget(textBtn);
+        connect(textBtn, &QPushButton::clicked, this, [this] {
+            editSource(QStringLiteral("Create Text Layer"), [this] { m_engine->setLayerSourceText(m_layer); });
+            emit layerChanged();
+            rebuild();
+        });
+    }
+
     // Or the picture of another layer, tapped before or after its effect chain
     {
         auto *row = new QHBoxLayout;
