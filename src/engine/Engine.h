@@ -153,6 +153,7 @@ public:
         double frameRate = -1; // frames per second; 0: the refresh rate of the screen
         int samples = -1;      // multisampling of the mapped edges: 0 / 1 off, 2, 4, 8
         int mipmaps = -1;      // smooth pictures drawn smaller than they are (mipmaps): 0 off, 1 on
+        int depth = -1;        // bits per channel of the render: 8 or 10 (kept in 16 bits)
     };
     void setRenderSettings(const RenderSettings &project); // saved with the project
     RenderSettings renderSettings() const;

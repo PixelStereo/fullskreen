@@ -654,6 +654,7 @@ Engine::RenderSettings Engine::effectiveRender() const
     e.frameRate = m_render.frameRate >= 0 ? m_render.frameRate : std::max(0.0, m_renderDefaults.frameRate);
     e.samples = m_render.samples >= 0 ? m_render.samples : std::max(0, m_renderDefaults.samples);
     e.mipmaps = m_render.mipmaps >= 0 ? m_render.mipmaps : std::max(0, m_renderDefaults.mipmaps);
+    e.depth = m_render.depth > 0 ? m_render.depth : (m_renderDefaults.depth > 0 ? m_renderDefaults.depth : 8);
     return e;
 }
 

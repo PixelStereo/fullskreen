@@ -330,7 +330,7 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         root["formatVersion"] = 1;
         root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()}};
         root["render"] = QJsonObject{{"frameRate", m_render.frameRate}, {"antialiasing", m_render.samples},
-                                     {"mipmaps", m_render.mipmaps}};
+                                     {"mipmaps", m_render.mipmaps}, {"depth", m_render.depth}};
         QJsonArray layers;
         for (const auto &l : m_layers) layers.append(layerToJson(*l, dir));
         root["layers"] = layers;
@@ -383,6 +383,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         rs.frameRate = std::clamp(r.value("frameRate").toDouble(-1), -1.0, 1000.0);
         rs.samples = std::clamp(r.value("antialiasing").toInt(-1), -1, 16);
         rs.mipmaps = std::clamp(r.value("mipmaps").toInt(-1), -1, 1);
+        rs.depth = r.value("depth").toInt(-1) == 10 ? 10 : (r.value("depth").toInt(-1) == 8 ? 8 : -1);
         setRenderSettings(rs);
     }
     const QString dir = QFileInfo(path).absolutePath();

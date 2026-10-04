@@ -63,5 +63,5 @@ private:
     QProgressBar *m_meter[2] = {};
     QTimer m_meterTimer;
     bool m_syncing = false;
-    QComboBox *m_rate = nullptr, *m_samples = nullptr, *m_mipmaps = nullptr;
+    QComboBox *m_rate = nullptr, *m_samples = nullptr, *m_mipmaps = nullptr, *m_depth = nullptr;
 };

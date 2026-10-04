@@ -90,7 +90,7 @@ With several windows, only the last one presented waits for the vertical refresh
 Rendering runs on a dedicated thread, so a slow or blocked interface never interrupts the projected image. The
 **Master** tab drives every viewport: level fader, Blackout with fade (⌘B, fades the sound too), audio output,
 composition size and **rendering** — frame rate (the screen's refresh by default: the outputs' vertical sync, or
-the main screen's rate), **antialiasing** of the mapped edges (2× / 4× / 8× MSAA) and **mipmaps** for pictures
+the main screen's rate), **antialiasing** of the mapped edges (2× / 4× / 8× MSAA) **color depth** (8 or 10 bits: the picture is mixed in 16-bit targets, which avoids banding after color and effects; the outputs stay 8 bits) and **mipmaps** for pictures
 drawn much smaller than they are — each one the project's own or the machine's default (Settings ▸ Rendering). Syphon and Spout are built in; NDI and OMT are loaded only when enabled, so Fulskrin runs
 without them.
 

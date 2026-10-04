@@ -1,3 +1,4 @@
+#include <atomic>
 #include "Gl.h"
 #include <QByteArray>
 #include <QDebug>
@@ -56,19 +57,24 @@ GLuint compileProgram(const QString &vs, const QString &fs, QString *log)
     return p;
 }
 
+static std::atomic<int> g_renderBits{8};
+void setRenderBits(int bits) { g_renderBits = bits > 8 ? 16 : 8; }
+int renderBits() { return g_renderBits; }
+
 bool RenderTarget::ensure(int nw, int nh, bool flt)
 {
+    const int wantBits = flt ? 32 : g_renderBits.load();
     nw = qMax(1, nw);
     nh = qMax(1, nh);
-    if (fbo && nw == w && nh == h && flt == isFloat)
+    if (fbo && nw == w && nh == h && flt == isFloat && wantBits == bits)
         return false;
     destroy();
     auto f = gl();
-    w = nw; h = nh; isFloat = flt;
+    w = nw; h = nh; isFloat = flt; bits = wantBits;
     f->glGenTextures(1, &tex);
     f->glBindTexture(GL_TEXTURE_2D, tex);
-    f->glTexImage2D(GL_TEXTURE_2D, 0, flt ? GL_RGBA32F : GL_RGBA8, w, h, 0, GL_RGBA,
-                    flt ? GL_FLOAT : GL_UNSIGNED_BYTE, nullptr);
+    f->glTexImage2D(GL_TEXTURE_2D, 0, flt ? GL_RGBA32F : wantBits > 8 ? GL_RGBA16 : GL_RGBA8, w, h, 0, GL_RGBA,
+                    flt ? GL_FLOAT : wantBits > 8 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE, nullptr);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -109,15 +115,17 @@ void RenderTarget::destroy()
 
 void MsaaBuffer::ensure(int nw, int nh, int s)
 {
-    if (fbo && nw == w && nh == h && s == samples) return;
+    const int wantBits = g_renderBits.load();
+    if (fbo && nw == w && nh == h && s == samples && wantBits == bits) return;
     destroy();
     auto f = gl();
     w = nw;
     h = nh;
     samples = s;
+    bits = wantBits;
     f->glGenRenderbuffers(1, &rbo);
     f->glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-    f->glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_RGBA8, w, h);
+    f->glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, bits > 8 ? GL_RGBA16 : GL_RGBA8, w, h);
     f->glGenFramebuffers(1, &fbo);
     f->glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     f->glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rbo);

@@ -584,6 +584,7 @@ void Engine::frame(double dt)
     } else {
         m_mutex.lock();
     }
+    setRenderBits(effectiveRender().depth);
 
     // Master
     double lvl = m_masterLevel.load();

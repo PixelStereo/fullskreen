@@ -267,9 +267,13 @@ QWidget *MasterPanel::buildRendering()
     m_rate = new QComboBox;
     m_samples = new QComboBox;
     m_mipmaps = new QComboBox;
+    m_depth = new QComboBox;
     form->addRow(QStringLiteral("Frame rate"), m_rate);
     form->addRow(QStringLiteral("Antialiasing"), m_samples);
     form->addRow(QStringLiteral("Mipmaps"), m_mipmaps);
+    form->addRow(QStringLiteral("Color depth"), m_depth);
+    m_depth->setToolTip(QStringLiteral("Precision of the picture while it is mixed: 10 bits avoids banding in gradients and "
+                                       "after color and effects, and costs more memory and GPU time. The outputs stay 8 bits."));
     auto *n = note(QStringLiteral("Saved with the project; Default: the machine's choice (Settings ▸ Rendering)."));
     form->addRow(n);
     refreshRenderDefaults();
@@ -279,10 +283,11 @@ QWidget *MasterPanel::buildRendering()
         r.frameRate = m_rate->currentData().toDouble();
         r.samples = m_samples->currentData().toInt();
         r.mipmaps = m_mipmaps->currentData().toInt();
+        r.depth = m_depth->currentData().toInt();
         m_engine->setRenderSettings(r);
         emit compositionEdited();
     };
-    for (QComboBox *c : {m_rate, m_samples, m_mipmaps}) connect(c, qOverload<int>(&QComboBox::activated), this, apply);
+    for (QComboBox *c : {m_rate, m_samples, m_mipmaps, m_depth}) connect(c, qOverload<int>(&QComboBox::activated), this, apply);
     return g;
 }
 
@@ -300,6 +305,9 @@ void MasterPanel::refreshRenderDefaults()
     m_mipmaps->addItem(QStringLiteral("Default (%1)").arg(d.mipmaps > 0 ? QStringLiteral("On") : QStringLiteral("Off")), -1);
     m_mipmaps->addItem(QStringLiteral("Off"), 0);
     m_mipmaps->addItem(QStringLiteral("On"), 1);
+    m_depth->clear();
+    m_depth->addItem(QStringLiteral("Default (%1)").arg(renderChoice::depthName(d.depth)), -1);
+    for (int b : renderChoice::depths()) m_depth->addItem(renderChoice::depthName(b), b);
     m_syncing = false;
     syncRendering();
 }
@@ -312,6 +320,7 @@ void MasterPanel::syncRendering()
     m_rate->setCurrentIndex(std::max(0, m_rate->findData(r.frameRate < 0 ? -1.0 : r.frameRate)));
     m_samples->setCurrentIndex(std::max(0, m_samples->findData(r.samples < 0 ? -1 : r.samples)));
     m_mipmaps->setCurrentIndex(std::max(0, m_mipmaps->findData(r.mipmaps < 0 ? -1 : r.mipmaps)));
+    m_depth->setCurrentIndex(std::max(0, m_depth->findData(r.depth < 0 ? -1 : r.depth)));
     m_syncing = false;
 }
 
