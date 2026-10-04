@@ -129,9 +129,11 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     m_videos = new QTreeWidgetItem(m_tree, {QStringLiteral("Videos")});
     m_images = new QTreeWidgetItem(m_tree, {QStringLiteral("Images")});
     m_audios = new QTreeWidgetItem(m_tree, {QStringLiteral("Audio")});
+    m_inputs = new QTreeWidgetItem(m_tree, m_audios);
+    m_inputs->setText(0, QStringLiteral("Inputs"));
     m_isf = new QTreeWidgetItem(m_tree, {QStringLiteral("ISF")});
     m_isfGenerators = new QTreeWidgetItem(m_isf, {QStringLiteral("Generators")});
-    for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios, m_isf, m_isfGenerators}) {
+    for (QTreeWidgetItem *cat : {m_videos, m_images, m_audios, m_inputs, m_isf, m_isfGenerators}) {
         QFont f = cat->font(0);
         f.setBold(true);
         cat->setFont(0, f);
@@ -239,6 +241,7 @@ void MediaBin::refresh()
                                                 "select them, then \"Replace…\"</span>").arg(missing)
                                : QStringLiteral("%1 file(s)").arg(nv + ni + na));
     refreshIsf();
+    refreshInputs();
     if (!selected.isEmpty())
         for (QTreeWidgetItemIterator it(m_tree); *it; ++it) // ISF items are one level deeper (category)
             if ((*it)->data(0, PathRole).toString() == selected) {
@@ -289,14 +292,6 @@ void MediaBin::refreshIsf()
             g.users << l->name;
         }
     }
-    // The built-in Text generator, always there
-    gens[kTextGeneratorPath] = {QStringLiteral("Text"), QStringLiteral("Text"),
-                                QStringLiteral("Type a text; a memory that holds another text types it (typewriter)"), {}, true};
-    {
-        Engine::Lock lk(&m_engine->mutex());
-        for (int i = 0; i < m_engine->layerCount(); ++i)
-            if (m_engine->layer(i)->type == SourceType::Text) gens[kTextGeneratorPath].users << m_engine->layer(i)->name;
-    }
     // Existing items (kept: selection, expanded categories), by path and by category
     QHash<QString, QTreeWidgetItem *> existing, categories;
     for (int c = 0; c < m_isfGenerators->childCount(); ++c) {
@@ -331,11 +326,11 @@ void MediaBin::refreshIsf()
             it->setData(0, IsfRole, true);
             it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
         }
-        const bool missing = !isTextGeneratorPath(g.key()) && !QFileInfo::exists(g.key());
+        const bool missing = !QFileInfo::exists(g.key());
         it->setData(0, MissingRole, missing);
         it->setData(0, UsedRole, true); // library shaders are not removed from the Media Bin
         it->setText(0, g->name);
-        it->setText(1, missing ? QStringLiteral("missing") : (g->inLibrary || isTextGeneratorPath(g.key())) ? QString() : QStringLiteral("outside library"));
+        it->setText(1, missing ? QStringLiteral("missing") : g->inLibrary ? QString() : QStringLiteral("outside library"));
         it->setText(2, g->users.isEmpty() ? QStringLiteral("—") : QString::number(g->users.size()));
         it->setTextAlignment(2, Qt::AlignCenter);
         const QString usedBy = g->users.isEmpty() ? QStringLiteral("Not used by any layer")
@@ -366,6 +361,34 @@ void MediaBin::refreshIsf()
     }
     m_isfGenerators->sortChildren(0, Qt::AscendingOrder);
     m_isfGenerators->setText(0, QStringLiteral("Generators (%1)").arg(total));
+}
+
+// Inputs: what is not a file nor a shader. The Text generator is built in, always there.
+void MediaBin::refreshInputs()
+{
+    QStringList users;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        for (int i = 0; i < m_engine->layerCount(); ++i)
+            if (m_engine->layer(i)->type == SourceType::Text) users << m_engine->layer(i)->name;
+    }
+    QTreeWidgetItem *it = m_inputs->childCount() ? m_inputs->child(0) : nullptr;
+    if (!it) {
+        it = new QTreeWidgetItem(m_inputs);
+        it->setData(0, PathRole, kTextGeneratorPath);
+        it->setData(0, IsfRole, true); // no file: not relinked
+        it->setData(0, MissingRole, false);
+        it->setData(0, UsedRole, true); // not removable
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
+        it->setText(0, QStringLiteral("Text"));
+        it->setTextAlignment(2, Qt::AlignCenter);
+        m_inputs->setExpanded(true);
+    }
+    it->setText(2, users.isEmpty() ? QStringLiteral("—") : QString::number(users.size()));
+    const QString usedBy = users.isEmpty() ? QStringLiteral("Not used by any layer") : QStringLiteral("Used by:\n") + users.join('\n');
+    it->setToolTip(0, QStringLiteral("Text generator: type a text; a memory that holds another text types it (typewriter)\n\n") + usedBy);
+    it->setToolTip(2, usedBy);
+    m_inputs->setText(0, QStringLiteral("Inputs (%1)").arg(m_inputs->childCount()));
 }
 
 void MediaBin::probe(const QString &path)
