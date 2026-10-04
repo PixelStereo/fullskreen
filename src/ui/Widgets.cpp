@@ -1,4 +1,6 @@
 #include "Widgets.h"
+#include <QSpinBox>
+#include <QPointer>
 
 #include <QCheckBox>
 
@@ -545,6 +547,92 @@ QIcon padlockIcon(bool locked, bool inherited)
         p.drawRoundedRect(QRectF(7 - grow, 15 - grow, 18 + 2 * grow, 13 + 2 * grow), 3, 3);
     }
     return QIcon(pm);
+}
+
+namespace {
+class NumberScrubber : public QObject
+{
+public:
+    using QObject::QObject;
+
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override
+    {
+        const QEvent::Type t = e->type();
+        if (t != QEvent::MouseButtonPress && t != QEvent::MouseMove && t != QEvent::MouseButtonRelease) return false;
+        auto *edit = qobject_cast<QLineEdit *>(o);
+        auto *spin = edit ? qobject_cast<QAbstractSpinBox *>(edit->parentWidget()) : nullptr;
+        if (!spin || !spin->isEnabled() || spin->isReadOnly()) return false;
+        auto *me = static_cast<QMouseEvent *>(e);
+        const QPointF pos = me->globalPosition();
+        if (t == QEvent::MouseButtonPress) {
+            if (me->button() != Qt::LeftButton) return false;
+            m_spin = spin;
+            m_start = pos;
+            m_last = pos.x();
+            m_scrubbing = false;
+            return false; // a click: the text field gets it as usual
+        }
+        if (spin != m_spin) return false;
+        if (t == QEvent::MouseMove) {
+            if (!(me->buttons() & Qt::LeftButton)) return false;
+            if (!m_scrubbing) {
+                if (std::abs(pos.x() - m_start.x()) < 4 || std::abs(pos.x() - m_start.x()) < std::abs(pos.y() - m_start.y()))
+                    return false;
+                m_scrubbing = true;
+                m_last = pos.x();
+                spin->setCursor(Qt::SizeHorCursor);
+                edit->deselect();
+            }
+            const double dx = pos.x() - m_last;
+            m_last = pos.x();
+            double factor = 1.0;
+            if (me->modifiers() & Qt::ShiftModifier) factor = 0.1;
+            if (me->modifiers() & Qt::ControlModifier) factor = 10.0;
+            if (auto *d = qobject_cast<QDoubleSpinBox *>(spin)) {
+                m_carry += dx * d->singleStep() * factor;
+                const double unit = std::pow(10.0, -d->decimals());
+                const double move = std::trunc(m_carry / unit) * unit; // whole units of what is shown
+                if (move != 0) {
+                    m_carry -= move;
+                    d->setValue(d->value() + move);
+                }
+            } else if (auto *i = qobject_cast<QSpinBox *>(spin)) {
+                m_carry += dx * i->singleStep() * factor;
+                const int move = int(std::trunc(m_carry));
+                if (move != 0) {
+                    m_carry -= move;
+                    i->setValue(i->value() + move);
+                }
+            }
+            return true;
+        }
+        // Release: after a drag, nothing else (no text selection, no cursor placed)
+        const bool was = m_scrubbing;
+        if (was) {
+            spin->unsetCursor();
+            edit->deselect();
+        }
+        m_scrubbing = false;
+        m_spin = nullptr;
+        m_carry = 0;
+        return was;
+    }
+
+private:
+    QPointer<QAbstractSpinBox> m_spin;
+    QPointF m_start;
+    double m_last = 0, m_carry = 0;
+    bool m_scrubbing = false;
+};
+} // namespace
+
+void installNumberScrubbing(QApplication &app)
+{
+    static NumberScrubber *scrubber = nullptr;
+    if (scrubber) return;
+    scrubber = new NumberScrubber(&app);
+    app.installEventFilter(scrubber);
 }
 
 void lockInputs(QWidget *root, bool locked)

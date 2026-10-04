@@ -27,6 +27,7 @@ int main(int argc, char *argv[])
     QApplication::setOrganizationName("Fulskrin");
     QApplication::setApplicationVersion("0.1.0");
     theme::applyToApplication(app);
+    installNumberScrubbing(app); // every number field can be dragged
 
     QCommandLineParser cli;
     cli.setApplicationDescription("Fulskrin — multi-layer video mapping, FFmpeg playback, ISF shaders");

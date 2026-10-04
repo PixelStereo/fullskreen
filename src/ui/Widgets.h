@@ -248,3 +248,7 @@ private:
 
 // Disables every input widget below `root` (locked layer), except those with the "allowLocked" property.
 void lockInputs(QWidget *root, bool locked);
+
+// Every number field of the application (spin boxes) can be dragged: press in it and slide left or right to change
+// the value (one step per pixel; Shift: a tenth; Ctrl / ⌘: ten). A click without moving edits the text as usual.
+void installNumberScrubbing(class QApplication &app);
