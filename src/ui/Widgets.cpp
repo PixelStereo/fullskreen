@@ -625,6 +625,10 @@ public:
         edit->installEventFilter(this);
         spin->installEventFilter(this); // its focus (the text field's is given by it, past the filters)
         edit->setCursor(Qt::SizeHorCursor); // an I-beam only once editing
+        // A press must not give the focus by itself (Qt does it before any filter sees the press): the release
+        // decides, a click edits the text, a drag does not. Tab still reaches the field.
+        spin->setFocusPolicy(Qt::TabFocus);
+        edit->setFocusPolicy(Qt::TabFocus);
     }
 
 protected:
