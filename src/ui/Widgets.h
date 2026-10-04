@@ -3,6 +3,8 @@
 
 #include <QBrush>
 #include <QColor>
+#include <QDoubleSpinBox>
+#include <QSpinBox>
 #include <QObject>
 #include <QIcon>
 #include <QImage>
@@ -270,6 +272,16 @@ private:
 // Disables every input widget below `root` (locked layer), except those with the "allowLocked" property.
 void lockInputs(QWidget *root, bool locked);
 
-// Every number field of the application (spin boxes) can be dragged: press in it and slide left or right to change
-// the value (one step per pixel; Shift: a tenth; Ctrl / ⌘: ten). A click without moving edits the text as usual.
-void installNumberScrubbing(class QApplication &app);
+// The number fields of the application. Press and slide left or right to change the value (one step per pixel;
+// Shift: a tenth; Ctrl / ⌘: ten): no focus, no text cursor, no selection. A click without moving edits the text, all
+// of it selected; once editing, the mouse places the cursor and selects as in any text field.
+class NumberBox : public QDoubleSpinBox
+{
+public:
+    explicit NumberBox(QWidget *parent = nullptr);
+};
+class IntBox : public QSpinBox
+{
+public:
+    explicit IntBox(QWidget *parent = nullptr);
+};

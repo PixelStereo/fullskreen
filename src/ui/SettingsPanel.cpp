@@ -196,7 +196,7 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
     // Magnetism: its state when Fulskrin starts (the button next to the zoom changes it meanwhile), its reach
     auto *magnetOn = new QCheckBox(QStringLiteral("Magnetism on at start"));
     magnetOn->setChecked(magnet::enabledAtStart());
-    auto *reach = new QSpinBox;
+    auto *reach = new IntBox;
     reach->setRange(2, 40);
     reach->setSuffix(QStringLiteral(" px"));
     reach->setValue(magnet::distance());
@@ -252,8 +252,8 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
     auto *of = new QFormLayout(osc);
     m_osc = new QCheckBox(QStringLiteral("Control by OSC and publish the namespace (OSCQuery)"));
     m_osc->setChecked(oscEnabled());
-    m_oscPort = new QSpinBox;
-    m_queryPort = new QSpinBox;
+    m_oscPort = new IntBox;
+    m_queryPort = new IntBox;
     for (QSpinBox *sb : {m_oscPort, m_queryPort}) {
         sb->setRange(1024, 65535);
         sb->setKeyboardTracking(false);

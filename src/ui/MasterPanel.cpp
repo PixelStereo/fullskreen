@@ -82,7 +82,7 @@ QWidget *CompositionPanel::buildCompositionLevel()
     m_blackout->setMinimumHeight(34);
     m_blackout->setToolTip(QStringLiteral("Fade the picture and the sound out / back in (Ctrl+B, ⌘B on Mac)"));
     m_blackout->setStyleSheet("QPushButton { font-weight:bold; } QPushButton:checked { background:#b3261e; color:white; }");
-    m_fade = new QDoubleSpinBox;
+    m_fade = new NumberBox;
     m_fade->setRange(0.0, 30.0);
     m_fade->setSingleStep(0.5);
     m_fade->setDecimals(1);
@@ -333,8 +333,8 @@ QWidget *CompositionPanel::buildComposition()
     const QList<QSize> sizes = {{1920, 1080}, {1280, 720}, {3840, 2160}, {4096, 2160}, {1920, 1200}, {2560, 1600},
                                 {1400, 1050}, {1024, 768}, {3840, 1080}, {5760, 1080}};
     for (const QSize &s : sizes) m_preset->addItem(QStringLiteral("%1 × %2").arg(s.width()).arg(s.height()), s);
-    m_width = new QSpinBox;
-    m_height = new QSpinBox;
+    m_width = new IntBox;
+    m_height = new IntBox;
     for (auto *sb : {m_width, m_height}) {
         sb->setRange(16, 16384);
         sb->setKeyboardTracking(false);

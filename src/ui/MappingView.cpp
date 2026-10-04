@@ -89,7 +89,7 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     c->addWidget(m_coordName);
     for (QDoubleSpinBox **box : {&m_coordX, &m_coordY}) {
         auto *label = new QLabel(box == &m_coordX ? QStringLiteral("X") : QStringLiteral("Y"));
-        auto *b = new QDoubleSpinBox;
+        auto *b = new NumberBox;
         b->setRange(-100000, 100000);
         b->setDecimals(1);
         b->setSuffix(QStringLiteral(" px"));

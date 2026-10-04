@@ -56,8 +56,8 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
     const QList<QSize> sizes = {{1920, 1080}, {1280, 720}, {3840, 2160}, {4096, 2160}, {1920, 1200},
                                 {2560, 1600}, {1400, 1050}, {1024, 768}};
     for (const QSize &s : sizes) m_preset->addItem(QStringLiteral("%1 × %2").arg(s.width()).arg(s.height()), s);
-    m_width = new QSpinBox;
-    m_height = new QSpinBox;
+    m_width = new IntBox;
+    m_height = new IntBox;
     for (QSpinBox *sb : {m_width, m_height}) {
         sb->setRange(1, 16384);
         sb->setKeyboardTracking(false);

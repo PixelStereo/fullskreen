@@ -273,7 +273,7 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_title = new QLabel;
     m_name = new QLineEdit;
     m_name->setPlaceholderText(QStringLiteral("Name"));
-    m_fade = new QDoubleSpinBox;
+    m_fade = new NumberBox;
     m_fade->setRange(0, 600);
     m_fade->setDecimals(1);
     m_fade->setSingleStep(0.5);
@@ -604,7 +604,7 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
             connect(s, &SliderField::editingFinished, this,
                     [this, f](double v) { applyField(f, QJsonValue(v / (f.scale != 0 ? f.scale : 1))); });
         } else {
-            auto *b = new QDoubleSpinBox;
+            auto *b = new NumberBox;
             b->setRange(f.min * f.scale, f.max * f.scale);
             b->setDecimals(f.decimals);
             b->setSingleStep(f.step * f.scale);
@@ -665,7 +665,7 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
             group->addButton(b, k);
             row->addWidget(b);
         }
-        auto *secs = new QDoubleSpinBox;
+        auto *secs = new NumberBox;
         secs->setRange(0.1, 600);
         secs->setDecimals(1);
         secs->setSingleStep(0.5);

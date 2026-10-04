@@ -138,7 +138,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             auto *w = new QWidget;
             auto *h = new QHBoxLayout(w);
             h->setContentsMargins(0, 0, 0, 0);
-            auto *x = new QDoubleSpinBox, *y = new QDoubleSpinBox;
+            auto *x = new NumberBox, *y = new NumberBox;
             const QPointF mn = in.hasPointRange ? in.pMin : QPointF(-100000, -100000);
             const QPointF mx = in.hasPointRange ? in.pMax : QPointF(100000, 100000);
             x->setRange(mn.x(), mx.x());

@@ -616,90 +616,100 @@ QIcon padlockIcon(bool locked, bool inherited)
 }
 
 namespace {
-class NumberScrubber : public QObject
+// Slides the value of a number field, on its text field
+class NumberDrag : public QObject
 {
 public:
-    using QObject::QObject;
+    NumberDrag(QAbstractSpinBox *spin, QLineEdit *edit) : QObject(spin), m_spin(spin), m_edit(edit)
+    {
+        edit->installEventFilter(this);
+        spin->installEventFilter(this); // its focus (the text field's is given by it, past the filters)
+        edit->setCursor(Qt::SizeHorCursor); // an I-beam only once editing
+    }
 
 protected:
     bool eventFilter(QObject *o, QEvent *e) override
     {
-        const QEvent::Type t = e->type();
-        if (t != QEvent::MouseButtonPress && t != QEvent::MouseMove && t != QEvent::MouseButtonRelease) return false;
-        auto *edit = qobject_cast<QLineEdit *>(o);
-        auto *spin = edit ? qobject_cast<QAbstractSpinBox *>(edit->parentWidget()) : nullptr;
-        if (!spin || !spin->isEnabled() || spin->isReadOnly()) return false;
+        if (o == m_spin) {
+            if (e->type() == QEvent::FocusIn) m_edit->setCursor(Qt::IBeamCursor);
+            else if (e->type() == QEvent::FocusOut) m_edit->setCursor(Qt::SizeHorCursor);
+            return false;
+        }
+        switch (e->type()) {
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonDblClick:
+        case QEvent::MouseMove:
+        case QEvent::MouseButtonRelease: break;
+        default: return false;
+        }
         auto *me = static_cast<QMouseEvent *>(e);
+        // Editing the text: the mouse places the cursor and selects, as usual
+        if (!m_pressed && (m_spin->hasFocus() || !m_spin->isEnabled() || m_spin->isReadOnly())) return false;
         const QPointF pos = me->globalPosition();
-        if (t == QEvent::MouseButtonPress) {
+        if (e->type() == QEvent::MouseButtonPress || e->type() == QEvent::MouseButtonDblClick) {
             if (me->button() != Qt::LeftButton) return false;
-            m_spin = spin;
+            m_pressed = true;
+            m_dragging = false;
             m_start = pos;
             m_last = pos.x();
-            m_scrubbing = false;
-            return false; // a click: the text field gets it as usual
+            m_carry = 0;
+            return true; // neither focus nor text cursor yet
         }
-        if (spin != m_spin) return false;
-        if (t == QEvent::MouseMove) {
-            if (!(me->buttons() & Qt::LeftButton)) return false;
-            if (!m_scrubbing) {
-                if (std::abs(pos.x() - m_start.x()) < 4 || std::abs(pos.x() - m_start.x()) < std::abs(pos.y() - m_start.y()))
-                    return false;
-                m_scrubbing = true;
+        if (!m_pressed) return false;
+        if (e->type() == QEvent::MouseMove) {
+            if (!m_dragging) {
+                if (std::abs(pos.x() - m_start.x()) < 3) return true;
+                m_dragging = true;
                 m_last = pos.x();
-                spin->setCursor(Qt::SizeHorCursor);
-                edit->deselect();
             }
-            const double dx = pos.x() - m_last;
+            slide(pos.x() - m_last, me->modifiers());
             m_last = pos.x();
-            double factor = 1.0;
-            if (me->modifiers() & Qt::ShiftModifier) factor = 0.1;
-            if (me->modifiers() & Qt::ControlModifier) factor = 10.0;
-            if (auto *d = qobject_cast<QDoubleSpinBox *>(spin)) {
-                m_carry += dx * d->singleStep() * factor;
-                const double unit = std::pow(10.0, -d->decimals());
-                const double move = std::trunc(m_carry / unit) * unit; // whole units of what is shown
-                if (move != 0) {
-                    m_carry -= move;
-                    d->setValue(d->value() + move);
-                }
-            } else if (auto *i = qobject_cast<QSpinBox *>(spin)) {
-                m_carry += dx * i->singleStep() * factor;
-                const int move = int(std::trunc(m_carry));
-                if (move != 0) {
-                    m_carry -= move;
-                    i->setValue(i->value() + move);
-                }
-            }
             return true;
         }
-        // Release: after a drag, nothing else (no text selection, no cursor placed)
-        const bool was = m_scrubbing;
-        if (was) {
-            spin->unsetCursor();
-            edit->deselect();
+        // Release: a click without moving edits the text, all of it selected; a drag leaves the field as it was
+        m_pressed = false;
+        if (!m_dragging) {
+            m_spin->setFocus(Qt::MouseFocusReason);
+            m_spin->selectAll();
         }
-        m_scrubbing = false;
-        m_spin = nullptr;
-        m_carry = 0;
-        return was;
+        m_dragging = false;
+        return true;
     }
 
 private:
-    QPointer<QAbstractSpinBox> m_spin;
+    void slide(double dx, Qt::KeyboardModifiers mods)
+    {
+        double factor = 1.0;
+        if (mods & Qt::ShiftModifier) factor = 0.1;
+        if (mods & Qt::ControlModifier) factor = 10.0;
+        if (auto *d = qobject_cast<QDoubleSpinBox *>(m_spin)) {
+            m_carry += dx * d->singleStep() * factor;
+            const double unit = std::pow(10.0, -d->decimals());
+            const double move = std::trunc(m_carry / unit) * unit; // whole units of what is shown
+            if (move != 0) {
+                m_carry -= move;
+                d->setValue(d->value() + move);
+            }
+        } else if (auto *i = qobject_cast<QSpinBox *>(m_spin)) {
+            m_carry += dx * i->singleStep() * factor;
+            const int move = int(std::trunc(m_carry));
+            if (move != 0) {
+                m_carry -= move;
+                i->setValue(i->value() + move);
+            }
+        }
+    }
+
+    QAbstractSpinBox *m_spin;
+    QLineEdit *m_edit;
     QPointF m_start;
     double m_last = 0, m_carry = 0;
-    bool m_scrubbing = false;
+    bool m_pressed = false, m_dragging = false;
 };
 } // namespace
 
-void installNumberScrubbing(QApplication &app)
-{
-    static NumberScrubber *scrubber = nullptr;
-    if (scrubber) return;
-    scrubber = new NumberScrubber(&app);
-    app.installEventFilter(scrubber);
-}
+NumberBox::NumberBox(QWidget *parent) : QDoubleSpinBox(parent) { new NumberDrag(this, lineEdit()); }
+IntBox::IntBox(QWidget *parent) : QSpinBox(parent) { new NumberDrag(this, lineEdit()); }
 
 void lockInputs(QWidget *root, bool locked)
 {
@@ -835,7 +845,7 @@ const QColor kTick(255, 255, 255, 38), kBorder(0, 0, 0, 90);
 // Flat field at the end of a bar: the value, typed, with its unit and no spin buttons.
 QDoubleSpinBox *valueField(QWidget *parent, Qt::Alignment align = Qt::AlignRight)
 {
-    auto *s = new QDoubleSpinBox(parent);
+    auto *s = new NumberBox(parent);
     s->setButtonSymbols(QAbstractSpinBox::NoButtons);
     s->setAlignment(align | Qt::AlignVCenter);
     s->setKeyboardTracking(false);

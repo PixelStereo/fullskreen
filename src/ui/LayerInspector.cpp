@@ -845,7 +845,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
 
     if (s.type == SourceType::Isf && s.hasGenerator) {
         auto *res = new QHBoxLayout;
-        auto *w = new QSpinBox, *h = new QSpinBox;
+        auto *w = new IntBox, *h = new IntBox;
         for (auto *sb : {w, h}) {
             sb->setRange(1, 16384);
             sb->setKeyboardTracking(false);
@@ -1212,7 +1212,7 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
         auto *grid = new QGridLayout;
         grid->setHorizontalSpacing(6);
         auto spin = [](double lo, double hi, const QString &suffix, int decimals) {
-            auto *b = new QDoubleSpinBox;
+            auto *b = new NumberBox;
             b->setRange(lo, hi);
             b->setDecimals(decimals);
             b->setSuffix(suffix);
@@ -1343,7 +1343,7 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     auto *modes = new QButtonGroup(g);
     modes->addButton(corners, 0);
     modes->addButton(mesh, 1);
-    auto *cols = new QSpinBox, *rows = new QSpinBox;
+    auto *cols = new IntBox, *rows = new IntBox;
     cols->setRange(2, 32);
     rows->setRange(2, 32);
     cols->setValue(s.cols);
