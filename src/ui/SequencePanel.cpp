@@ -13,6 +13,8 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMimeData>
+#include <QPainter>
+#include <QTimer>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QTableWidget>
@@ -26,6 +28,45 @@ static QString memoryName(Engine *e, quint64 id)
     if (i < 0) return QStringLiteral("(memory gone)");
     const Engine::Memory m = e->memory(i);
     return QStringLiteral("%1  %2").arg(i + 1).arg(m.name);
+}
+
+static const char *kChanged = "#ffb347"; // something changed since the step was played
+static const QColor kLive(76, 217, 100);  // a memory running
+
+// ---------------------------------------------------------------------------
+// RecallProgressBar
+// ---------------------------------------------------------------------------
+RecallProgressBar::RecallProgressBar(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(engine)
+{
+    setFixedHeight(5);
+    auto *t = new QTimer(this);
+    t->setInterval(33);
+    connect(t, &QTimer::timeout, this, &RecallProgressBar::poll);
+    t->start();
+}
+
+void RecallProgressBar::poll()
+{
+    const Engine::RecallProgress r = m_engine->recallProgress();
+    const double f = r.memory ? r.fraction() : 0.0;
+    const bool running = r.running();
+    if (std::abs(f - m_fraction) < 1e-4 && running == m_running) return;
+    m_fraction = f;
+    m_running = running;
+    const int mi = m_engine->indexOfMemory(r.memory);
+    setToolTip(mi < 0 ? QString()
+                      : QStringLiteral("%1. %2 — %3 / %4 s").arg(mi + 1).arg(m_engine->memory(mi).name)
+                            .arg(std::min(r.elapsed, r.total), 0, 'f', 1).arg(r.total, 0, 'f', 1));
+    update();
+}
+
+void RecallProgressBar::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.fillRect(rect(), QColor(40, 40, 44));
+    if (m_fraction <= 0) return;
+    QColor c = m_running ? kLive : QColor(kLive.red(), kLive.green(), kLive.blue(), 90); // done: dimmed
+    p.fillRect(QRectF(0, 0, width() * m_fraction, height()), c);
 }
 
 // ---------------------------------------------------------------------------
@@ -54,30 +95,47 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     m_prev = new QLabel;
     m_current = new QLabel;
     m_next = new QLabel;
+    m_prevText = new QLabel;
+    m_currentText = new QLabel;
+    m_nextText = new QLabel;
     m_prev->setStyleSheet("color:#8a8a90;");
     m_next->setStyleSheet("color:#8a8a90;");
-    for (QLabel *l : {m_prev, m_current, m_next}) {
+    for (QLabel *l : {m_prev, m_current, m_next, m_prevText, m_currentText, m_nextText}) {
         l->setMinimumWidth(40);
         l->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred); // long names give way, not the buttons
         l->setTextFormat(Qt::RichText);
     }
+    for (QLabel *l : {m_prevText, m_nextText}) {
+        l->setWordWrap(true);
+        l->setStyleSheet("color:#7a7a80; font-style:italic; font-size:11px;");
+    }
+    m_currentText->setWordWrap(true);
+    m_currentText->setStyleSheet("color:#e4e4e8; font-style:italic;");
     m_open = new QPushButton(QStringLiteral("Sequences…"));
     m_open->setToolTip(QStringLiteral("All the sequences and their steps, in a window that stays in front"));
     row->addWidget(m_sequence);
     row->addWidget(m_back);
     row->addWidget(m_go);
     row->addSpacing(6);
-    row->addWidget(m_prev, 2);
-    row->addWidget(new QLabel(QStringLiteral("›")));
-    row->addWidget(m_current, 3);
-    row->addWidget(new QLabel(QStringLiteral("›")));
-    row->addWidget(m_next, 2);
-    row->addWidget(m_open);
+    // Previous, current and next steps, each with its text under it
+    auto column = [](QLabel *name, QLabel *text) {
+        auto *c = new QVBoxLayout;
+        c->setSpacing(0);
+        c->addWidget(name);
+        c->addWidget(text);
+        c->addStretch();
+        return c;
+    };
+    row->addLayout(column(m_prev, m_prevText), 2);
+    row->addWidget(new QLabel(QStringLiteral("›")), 0, Qt::AlignTop);
+    row->addLayout(column(m_current, m_currentText), 3);
+    row->addWidget(new QLabel(QStringLiteral("›")), 0, Qt::AlignTop);
+    row->addLayout(column(m_next, m_nextText), 2);
+    row->addWidget(m_open, 0, Qt::AlignTop);
     v->addLayout(row);
-    m_text = new QLabel;
-    m_text->setWordWrap(true);
-    m_text->setStyleSheet("color:#d8d8dc; font-style:italic;");
-    v->addWidget(m_text);
+    auto *progress = new RecallProgressBar(m_engine);
+    progress->setToolTip(QStringLiteral("The memory running, and where it is in its time"));
+    v->addWidget(progress);
 
     connect(m_go, &QPushButton::clicked, this, &SequenceBar::goRequested);
     connect(m_back, &QPushButton::clicked, this, &SequenceBar::backRequested);
@@ -118,22 +176,28 @@ void SequenceBar::refresh()
         const QString name = !id ? QStringLiteral("—") : mi < 0 ? QStringLiteral("(memory gone)") : m_engine->memory(mi).name;
         return QStringLiteral("%1. %2").arg(k + 1).arg(name.toHtmlEscaped());
     };
+    auto stepText = [&](int k) {
+        return k >= 0 && k < int(s.steps.size()) ? s.steps[size_t(k)].text.toHtmlEscaped() : QString();
+    };
     m_prev->setText(prev >= 0 ? stepName(prev) : QStringLiteral("—"));
     m_next->setText(next >= 0 ? stepName(next) : (s.steps.empty() ? QStringLiteral("—") : QStringLiteral("end")));
+    m_prevText->setText(stepText(prev));
+    m_nextText->setText(stepText(next));
     if (pos >= 0) {
         // The step played; in another color once something was changed since
-        const QString color = m_modified ? QStringLiteral("#ffb347") : theme::accent().name();
+        const QString color = m_modified ? QString::fromLatin1(kChanged) : kLive.name();
         m_current->setText(QStringLiteral("<span style='font-size:15px; font-weight:bold; color:%1'>%2</span>%3")
                                .arg(color, stepName(pos),
-                                    m_modified ? QStringLiteral(" <span style='color:#ffb347'>(changed)</span>") : QString()));
-        m_text->setText(s.steps[size_t(pos)].text.toHtmlEscaped());
+                                    m_modified ? QStringLiteral(" <span style='color:%1'>(changed)</span>").arg(QLatin1String(kChanged))
+                                               : QString()));
+        m_currentText->setText(stepText(pos));
     } else {
         m_current->setText(QStringLiteral("<span style='color:#8a8a90'>%1</span>")
                                .arg(s.steps.empty() ? QStringLiteral("no step — add them in Sequences…")
                                                     : QStringLiteral("ready: GO plays the first step")));
-        m_text->setText(next >= 0 ? s.steps[size_t(next)].text.toHtmlEscaped() : QString());
+        m_currentText->clear();
     }
-    m_text->setVisible(!m_text->text().isEmpty());
+    for (QLabel *l : {m_prevText, m_currentText, m_nextText}) l->setVisible(!l->text().isEmpty());
     m_go->setEnabled(next >= 0);
     m_back->setEnabled(prev >= 0);
 }
@@ -172,6 +236,10 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     // Steps
     auto *right = new QVBoxLayout;
     right->addWidget(new QLabel(QStringLiteral("<b>Steps</b> — drag a memory onto a step (or below the last one to add one)")));
+    m_status = new QLabel;
+    m_status->setTextFormat(Qt::RichText);
+    right->addWidget(m_status);
+    right->addWidget(new RecallProgressBar(m_engine));
     m_steps = new QTableWidget(0, 3);
     m_steps->setHorizontalHeaderLabels({QStringLiteral("#"), QStringLiteral("Memory"), QStringLiteral("Text")});
     m_steps->verticalHeader()->setVisible(false);
@@ -277,6 +345,13 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     refresh();
 }
 
+void SequenceWindow::setModified(bool on)
+{
+    if (on == m_modified) return;
+    m_modified = on;
+    refresh();
+}
+
 void SequenceWindow::refresh()
 {
     m_filling = true;
@@ -306,15 +381,28 @@ void SequenceWindow::refresh()
         m_steps->setItem(k, ColNum, num);
         m_steps->setItem(k, ColMemory, mem);
         m_steps->setItem(k, ColText, text);
-        if (k == pos) // the step played
+        if (k == pos) { // the step played: green, orange once something changed since
+            const QColor c = m_modified ? QColor(QString::fromLatin1(kChanged)) : kLive;
+            num->setText(QStringLiteral("▶ %1").arg(k + 1));
             for (QTableWidgetItem *it : {num, mem, text}) {
                 QFont f = it->font();
                 f.setBold(true);
                 it->setFont(f);
-                it->setForeground(theme::accent());
+                it->setForeground(c);
             }
+        }
     }
     if (keep >= 0 && keep < m_steps->rowCount()) m_steps->setCurrentCell(keep, ColMemory);
+    if (pos >= 0 && pos < int(s.steps.size()))
+        m_status->setText(QStringLiteral("Played: <b style='color:%1'>%2. %3</b>%4")
+                              .arg((m_modified ? QColor(QString::fromLatin1(kChanged)) : kLive).name())
+                              .arg(pos + 1)
+                              .arg(memoryName(m_engine, s.steps[size_t(pos)].memory).section(QLatin1Char(' '), 2).toHtmlEscaped())
+                              .arg(m_modified ? QStringLiteral(" <span style='color:%1'>— changed since it was played</span>")
+                                                    .arg(QLatin1String(kChanged))
+                                              : QString()));
+    else
+        m_status->setText(QStringLiteral("<span style='color:#8a8a90'>No step played yet</span>"));
     m_filling = false;
 }
 

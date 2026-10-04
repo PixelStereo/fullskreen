@@ -71,6 +71,7 @@ private:
     Engine *m_engine;
     QUndoStack *m_undo;
     QTreeWidget *m_list;
+    bool m_wasRunning = false;
     QLabel *m_thumb, *m_title;
     QLineEdit *m_name;
     QDoubleSpinBox *m_fade;

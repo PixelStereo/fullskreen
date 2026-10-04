@@ -302,9 +302,13 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_engine, &Engine::sequencePositionChanged, this, [this] {
         m_cueUndoIndex = m_undo->index();
         m_seqBar->setModified(false);
+        m_seqWindow->setModified(false);
     });
     connect(m_undo, &QUndoStack::indexChanged, this, [this](int i) {
-        if (m_engine->sequencePosition() >= 0 && i != m_cueUndoIndex) m_seqBar->setModified(true);
+        if (m_engine->sequencePosition() >= 0 && i != m_cueUndoIndex) {
+            m_seqBar->setModified(true);
+            m_seqWindow->setModified(true);
+        }
     });
 
     // A screen plugged in or out: the outputs go back to their screens (or to another one meanwhile),
@@ -1263,6 +1267,7 @@ void MainWindow::sequenceGoTo(int step)
     m_engine->setSequencePosition(step);
     m_cueUndoIndex = m_undo->index();
     m_seqBar->setModified(false);
+    m_seqWindow->setModified(false);
 }
 
 void MainWindow::openSequences()

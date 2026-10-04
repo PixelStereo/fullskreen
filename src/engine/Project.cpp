@@ -58,6 +58,8 @@ void Engine::clearProject()
         m_sequences.clear();
         m_currentSequence = m_sequencePosition = -1;
         m_fades.clear();
+        m_recalledMemory = 0;
+        m_recallTotal = 0;
         for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
         m_transitions.clear();
         m_audio->setMasterVolume(1.0f);
