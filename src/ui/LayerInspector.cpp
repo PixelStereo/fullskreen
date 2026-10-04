@@ -391,7 +391,15 @@ void LayerInspector::rebuild()
     // Sub-tabs; the current one is kept from one layer to the next
     auto *tabs = new QTabWidget;
     tabs->setDocumentMode(true);
-    tabs->setStyleSheet(QStringLiteral("QTabBar::tab { padding: 4px 7px; }")); // six tabs for a viewport
+    // Tabs that read as tabs (as the ones above): the current one lighter, underlined with the accent
+    tabs->setStyleSheet(QStringLiteral("QTabBar::tab { background:#26262a; color:#a8a8ae; padding:5px 7px; margin-right:1px;"
+                                       " border:1px solid #3a3a40; border-bottom:none;"
+                                       " border-top-left-radius:4px; border-top-right-radius:4px; }"
+                                       "QTabBar::tab:selected { background:#45454c; color:#f4f4f6; border-color:#55555c;"
+                                       " border-bottom:2px solid %1; }"
+                                       "QTabBar::tab:hover:!selected { background:#313136; color:#d8d8dc; }"
+                                       "QTabBar::tab:disabled { color:#55555a; }")
+                            .arg(theme::css()));
     tabs->addTab(page(buildSource(s)), QStringLiteral("Source"));
     tabs->addTab(page(buildColor(s)), QStringLiteral("Color"));
     tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));

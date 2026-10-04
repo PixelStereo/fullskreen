@@ -1,4 +1,5 @@
 #include "MasterPanel.h"
+#include "Widgets.h"
 #include "Engine.h"
 
 #include <QCheckBox>
@@ -56,12 +57,18 @@ QWidget *MasterPanel::buildMaster()
     auto *g = new QGroupBox(QStringLiteral("Master"));
     auto *v = new QVBoxLayout(g);
     auto *row = new QHBoxLayout;
-    m_master = new QSlider(Qt::Horizontal);
+    m_master = new SliderField;
     m_master->setRange(0, 100);
+    m_master->setDecimals(0);
+    m_master->setSuffix(QStringLiteral(" %"));
+    m_master->setSingleStep(1);
+    m_master->setTicks(10);
+    m_master->setSnaps({0, 100});
     m_master->setValue(100);
     m_master->setToolTip(QStringLiteral("Output master level"));
-    m_masterLabel = new QLabel(QStringLiteral("100%"));
-    m_masterLabel->setMinimumWidth(48);
+    m_masterLabel = new QLabel(QStringLiteral("out 100%"));
+    m_masterLabel->setToolTip(QStringLiteral("What goes out now (the fader, and the blackout over it)"));
+    m_masterLabel->setMinimumWidth(64);
     m_masterLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     row->addWidget(m_master, 1);
     row->addWidget(m_masterLabel);
@@ -86,7 +93,7 @@ QWidget *MasterPanel::buildMaster()
     v->addLayout(row2);
 
     // The fader sets the picture's level; the blackout (picture and sound) is applied on top of it.
-    connect(m_master, &QSlider::valueChanged, this, [this](int val) {
+    connect(m_master, &SliderField::valueEdited, this, [this](double val) {
         if (!m_syncing) m_engine->fadeMaster(val / 100.0, 0.05);
     });
     connect(m_blackout, &QPushButton::toggled, this, [this](bool on) {
@@ -142,8 +149,13 @@ QWidget *MasterPanel::buildAudio()
     v->addLayout(devRow);
 
     auto *volRow = new QHBoxLayout;
-    m_audioVolume = new QSlider(Qt::Horizontal);
+    m_audioVolume = new SliderField;
     m_audioVolume->setRange(0, 200);
+    m_audioVolume->setDecimals(0);
+    m_audioVolume->setSuffix(QStringLiteral(" %"));
+    m_audioVolume->setSingleStep(1);
+    m_audioVolume->setTicks(8);
+    m_audioVolume->setSnaps({0, 100});
     m_audioVolume->setValue(100);
     m_audioVolume->setToolTip(QStringLiteral("Master volume (100% = unity gain)"));
     m_audioVolumeLabel = new QLabel(volumeText(100));
@@ -174,7 +186,8 @@ QWidget *MasterPanel::buildAudio()
         QSettings().setValue("audio/device", name);
         openAudioDevice(name);
     });
-    connect(m_audioVolume, &QSlider::valueChanged, this, [this](int pct) {
+    connect(m_audioVolume, &SliderField::valueEdited, this, [this](double v) {
+        const int pct = int(std::lround(v));
         m_audioVolumeLabel->setText(volumeText(pct));
         if (m_syncing) return;
         m_engine->setAudioVolume(pct / 100.0f);
@@ -296,8 +309,8 @@ void MasterPanel::syncFromEngine()
     m_width->setValue(c.width());
     m_height->setValue(c.height());
     m_preset->setCurrentIndex(qMax(0, m_preset->findData(c)));
-    m_audioVolume->setValue(int(std::lround(m_engine->audioVolume() * 100)));
-    m_audioVolumeLabel->setText(volumeText(m_audioVolume->value()));
+    m_audioVolume->setValue(std::lround(m_engine->audioVolume() * 100));
+    m_audioVolumeLabel->setText(volumeText(int(m_audioVolume->value())));
     m_audioMute->setChecked(m_engine->audioMuted());
     m_syncing = false;
     refreshStatus();
@@ -308,16 +321,19 @@ void MasterPanel::refreshStatus()
     // Fader, blackout, fade time and sound follow the changes made elsewhere (OSC)
     m_syncing = true;
     const int fader = int(std::lround(m_engine->masterTarget() * 100));
-    if (!m_master->isSliderDown() && fader != m_master->value()) m_master->setValue(fader);
+    if (!m_master->isDragging() && fader != int(std::lround(m_master->value()))) m_master->setValue(fader);
     if (m_blackout->isChecked() != m_engine->blackout()) m_blackout->setChecked(m_engine->blackout());
     if (!m_fade->hasFocus() && std::abs(m_fade->value() - m_engine->blackoutFade()) > 1e-6) m_fade->setValue(m_engine->blackoutFade());
     const int vol = int(std::lround(m_engine->audioVolume() * 100));
-    if (!m_audioVolume->isSliderDown() && vol != m_audioVolume->value()) m_audioVolume->setValue(vol);
+    if (!m_audioVolume->isDragging() && vol != int(std::lround(m_audioVolume->value()))) {
+        m_audioVolume->setValue(vol);
+        m_audioVolumeLabel->setText(volumeText(vol));
+    }
     if (m_audioMute->isChecked() != m_engine->audioMuted()) m_audioMute->setChecked(m_engine->audioMuted());
     m_syncing = false;
 
     const int pct = int(std::lround(m_engine->outputLevel() * 100));
-    m_masterLabel->setText(QStringLiteral("%1%").arg(pct));
+    m_masterLabel->setText(QStringLiteral("out %1%").arg(pct)); // the fader, and the blackout over it
     m_masterLabel->setStyleSheet(pct == 0 ? "color:#ff5a4f; font-weight:bold;" : "");
 
     const QSize c = m_engine->compositionSize();

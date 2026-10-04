@@ -4,6 +4,7 @@
 #include <QWidget>
 
 class Engine;
+class SliderField;
 class QSlider;
 class QPushButton;
 class QDoubleSpinBox;
@@ -46,14 +47,14 @@ private:
     void applyComposition();
 
     Engine *m_engine;
-    QSlider *m_master = nullptr;
+    SliderField *m_master = nullptr;
     QLabel *m_masterLabel = nullptr;
     QPushButton *m_blackout = nullptr;
     QDoubleSpinBox *m_fade = nullptr;
     QComboBox *m_preset = nullptr;
     QSpinBox *m_width = nullptr, *m_height = nullptr;
     QComboBox *m_audioDevice = nullptr;
-    QSlider *m_audioVolume = nullptr;
+    SliderField *m_audioVolume = nullptr;
     QLabel *m_audioVolumeLabel = nullptr, *m_audioState = nullptr;
     QCheckBox *m_audioMute = nullptr;
     QProgressBar *m_meter[2] = {};

@@ -692,7 +692,9 @@ int main(int argc, char **argv)
             const quint64 tid = e.layerId(ti);
             CHECK(e.setLayerImage(ti, tmp + "/red.png", &err));
             e.layer(ti)->mapping.resetCorners();
+            e.layer(ti)->roi = QRectF(0, 0, 0.5, 1); // the memory's ROI: the incoming source gets there over the time
             QJsonObject red = e.layerJson(ti);
+            e.layer(ti)->roi = QRectF(0, 0, 1, 1);
             red["included"] = true;
             CHECK(e.setLayerImage(ti, tmp + "/blue.png", &err));
             const quint64 vp = e.mainViewportId();
@@ -707,11 +709,13 @@ int main(int argc, char **argv)
             CHECK(e.isTransitioning(tid) && e.layerJson(e.indexOfId(tid)).value("source").toObject().value("path").toString().endsWith("red.png"));
             e.advanceFades(0.5);
             CHECK(std::abs(e.layer(e.indexOfId(tid))->transitionGain - 0.5f) < 0.01f); // the sound crosses too
+            CHECK(e.layer(e.indexOfId(tid))->roi.width() > 0.6 && e.layer(e.indexOfId(tid))->roi.width() < 0.9); // no cut
             QColor c = center();
             CHECK(c.red() > 90 && c.red() < 170 && c.blue() > 90 && c.blue() < 170); // halfway: both
             e.advanceFades(0.6);
             c = center();
             CHECK(!e.isTransitioning(tid) && c.red() > 250 && c.blue() < 5 && e.layer(e.indexOfId(tid))->transitionGain == 1.0f);
+            CHECK(std::abs(e.layer(e.indexOfId(tid))->roi.width() - 0.5) < 1e-6);
             // An ISF transition chosen for the layer: fade out, fade in — halfway, only what is beneath shows
             e.layer(e.indexOfId(tid))->visible = false;
             const QColor under = center();
