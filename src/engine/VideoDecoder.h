@@ -1,6 +1,7 @@
 #pragma once
 // Video decoding on a dedicated thread.
-// Frames are kept as the decoder gives them (YUV planes, RGB, grey): the GPU converts them (VideoTexture). They are queued, stamped with the clock of the layer's Timeline
+// Frames are kept as the decoder gives them (YUV planes, RGB, grey) or, for HAP, as their compressed textures:
+// the GPU converts them (VideoTexture). They are queued, stamped with the clock of the layer's Timeline
 // (monotonic whatever the direction or the play mode).
 // Backward legs (negative speed, ping-pong) are produced in short windows: seek to the keyframe, decode
 // forward, deliver the frames in reverse order — bounded memory whatever the GOP length.
@@ -56,8 +57,9 @@ public:
     int height() const { return m_height; }
     double duration() const { return m_duration; }
     double fps() const { return m_fps; }
-    // "h264", "prores"…, followed by the hardware decoder once it delivers frames
+    // "h264", "prores", "Hap Q"…, followed by the hardware decoder once it delivers frames
     QString codecName() const;
+    bool isHap() const { return m_hapTag != 0; }
     bool hardwareActive() const { return m_hwActive.load(); }
 
     // Timeline followed by the next seek (mode, origin, direction). Its duration is set by the decoder.
@@ -85,6 +87,8 @@ public:
     // --- Settings, for the decoders opened afterwards
     static void setHardwareDecoding(bool on);
     static bool hardwareDecoding();
+    // Compressed texture formats the GPU samples (HAP): DXT (S3TC) and BPTC (BC7, BC6). RGTC is always there.
+    static void setGpuFormats(bool s3tc, bool bptc);
 
     // A frame as RGBA 8 bits on the CPU (not one held in an upload buffer). False if it cannot be read.
     static bool toRgba(const VideoFrame &f, std::vector<uint8_t> &out, bool bottomUp);
@@ -95,6 +99,7 @@ private:
     void run();
     void doSeek(double t);
     int decodeNext(VideoFrame &f, double skipBefore = -1e9); // 1 = frame, 2 = skipped, 0 = end, -1 = error
+    int decodeHap(VideoFrame &f, double skipBefore);
     bool deliver(AVFrame *src, VideoFrame &f, bool mapped); // decoded picture -> f (upload buffer, or kept)
     void produceBackwardWindow(); // decode thread, backward leg
     void startLeg(const Timeline::Leg &leg, double position); // decode thread
@@ -103,6 +108,7 @@ private:
     void recycleLocked(VideoFrame &&f); // lock held
     bool takeStaging(size_t size, int *id, uint8_t **ptr);
     std::shared_ptr<const VideoLayout> layoutFor(const AVFrame *f);
+    std::shared_ptr<const VideoLayout> hapLayout(int count, int f0, int f1);
     bool setupHardware(const struct AVCodec *dec);
     friend struct HwFormat;
 
@@ -121,6 +127,8 @@ private:
     int m_width = 0, m_height = 0;
     double m_duration = 0, m_fps = 25;
     QString m_codecName;
+    uint32_t m_hapTag = 0;
+    std::vector<uint8_t> m_hapScratch; // HAP textures decoded on the CPU: their blocks, decompressed
 
     // Layouts already made (decode thread)
     struct LayoutKey {

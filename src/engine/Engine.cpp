@@ -202,6 +202,10 @@ bool Engine::initialize(QString *err)
         if (err) *err = log;
         return false;
     }
+    // HAP: what the decoders leave compressed for the GPU, and what they decode themselves
+    VideoDecoder::setGpuFormats(m_videoConv.s3tc(), m_videoConv.bptc());
+    qInfo().noquote() << "Compressed textures: DXT" << (m_videoConv.s3tc() ? "yes" : "no") << "- BPTC"
+                      << (m_videoConv.bptc() ? "yes" : "no (Hap R and Hap HDR decoded on the CPU)");
 
     const unsigned char black[4] = {0, 0, 0, 0};
     f->glGenTextures(1, &m_blackTex);

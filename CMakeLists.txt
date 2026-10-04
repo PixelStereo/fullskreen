@@ -44,6 +44,9 @@ add_library(fulskrin_engine STATIC
   src/engine/Mapping.cpp
   src/engine/VideoDecoder.cpp
   src/engine/VideoTexture.cpp
+  src/engine/Hap.cpp
+  src/engine/Snappy.cpp
+  src/engine/WorkerPool.cpp
   src/engine/Engine.cpp
   src/engine/Layers.cpp
   src/engine/Render.cpp
@@ -89,6 +92,17 @@ elseif(UNIX)
   find_package(Threads REQUIRED)
   target_link_libraries(fulskrin_engine PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
 endif()
+
+# ---------------------------------------------------------------------------
+# HAP: texture blocks decoded on the CPU when the GPU cannot sample them (BC7 and BC6 on macOS).
+# bcdec: single header, MIT or Unlicense, downloaded at configure time.
+# ---------------------------------------------------------------------------
+FetchContent_Declare(bcdec
+  GIT_REPOSITORY https://github.com/iOrange/bcdec.git
+  GIT_TAG 80859ed3b7afb1c527a2a99d70c61457bea72d0c # 0.985
+  SOURCE_SUBDIR no-cmake) # download only: compiled in src/engine/Hap.cpp
+FetchContent_MakeAvailable(bcdec)
+target_include_directories(fulskrin_engine PRIVATE "${bcdec_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------
 # Output publishing

@@ -25,4 +25,9 @@ for f in nv12 yuv444p gbrp10le gray gray16le bgr0 rgb48le yuyv422 rgb565le; do
   ffmpeg -loglevel error -y -f lavfi -i "$G" -frames:v 2 -pix_fmt $f -c:v rawvideo fmt_$f.nut
 done
 ffmpeg -loglevel error -y -f lavfi -i "$GA" -frames:v 2 -pix_fmt rgba -c:v png fmt_rgba.mov
+# HAP as FFmpeg encodes it (sizes multiple of 4): Snappy, chunks, no second stage
+ffmpeg -loglevel error -y -f lavfi -i "$G" -frames:v 2 -vf scale=248:140 -c:v hap -format hap hap1.mov
+ffmpeg -loglevel error -y -f lavfi -i "$GA" -frames:v 2 -vf scale=248:140 -c:v hap -format hap_alpha -chunks 3 hap5.mov
+ffmpeg -loglevel error -y -f lavfi -i "$G" -frames:v 2 -vf scale=248:140 -c:v hap -format hap_q -chunks 4 hapy.mov
+ffmpeg -loglevel error -y -f lavfi -i "$G" -frames:v 2 -vf scale=248:140 -c:v hap -format hap_q -compressor none hapy_raw.mov
 echo "media created in $(pwd)"

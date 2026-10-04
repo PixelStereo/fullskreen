@@ -1,4 +1,5 @@
 #include "VideoDecoder.h"
+#include "Hap.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -19,10 +20,15 @@ static constexpr size_t kMaxQueue = 6;
 static constexpr size_t kStagingBudget = size_t(128) << 20; // upload buffers of one stream, at most
 static constexpr size_t kBytePool = 8;
 
-static std::atomic<bool> s_hardware{true};
+static std::atomic<bool> s_hardware{true}, s_s3tc{true}, s_bptc{false};
 
 void VideoDecoder::setHardwareDecoding(bool on) { s_hardware = on; }
 bool VideoDecoder::hardwareDecoding() { return s_hardware; }
+void VideoDecoder::setGpuFormats(bool s3tc, bool bptc)
+{
+    s_s3tc = s3tc;
+    s_bptc = bptc;
+}
 
 // ---------------------------------------------------------------------------
 // VideoFrame
@@ -149,28 +155,41 @@ bool VideoDecoder::open(const QString &path, QString *err)
     AVStream *st = m_fmt->streams[m_stream];
     const AVCodecParameters *par = st->codecpar;
 
-    const AVCodec *dec = avcodec_find_decoder(par->codec_id);
-    if (!dec) {
-        const AVCodecDescriptor *d = avcodec_descriptor_get(par->codec_id);
-        if (err) *err = QStringLiteral("No decoder for this video (%1).").arg(d ? QString::fromUtf8(d->name) : QStringLiteral("unknown codec"));
-        close();
-        return false;
+    if (hap::isHapTag(par->codec_tag) || par->codec_id == AV_CODEC_ID_HAP) {
+        // HAP: the packets are read here, the GPU samples their textures
+        m_hapTag = hap::isHapTag(par->codec_tag) ? par->codec_tag : MKTAG('H', 'a', 'p', '1');
+        m_codecName = hap::variantName(m_hapTag);
+        m_width = par->width;
+        m_height = par->height;
+        if (m_width <= 0 || m_height <= 0) {
+            if (err) *err = QStringLiteral("HAP video without a size.");
+            close();
+            return false;
+        }
+    } else {
+        const AVCodec *dec = avcodec_find_decoder(par->codec_id);
+        if (!dec) {
+            const AVCodecDescriptor *d = avcodec_descriptor_get(par->codec_id);
+            if (err) *err = QStringLiteral("No decoder for this video (%1).").arg(d ? QString::fromUtf8(d->name) : QStringLiteral("unknown codec"));
+            close();
+            return false;
+        }
+        m_codec = avcodec_alloc_context3(dec);
+        avcodec_parameters_to_context(m_codec, par);
+        m_codec->pkt_timebase = st->time_base;
+        const bool hw = s_hardware && setupHardware(dec);
+        m_codec->thread_count = hw ? 4 : 0; // 0: as many as the machine has
+        m_codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        r = avcodec_open2(m_codec, dec, nullptr);
+        if (r < 0) {
+            if (err) *err = QStringLiteral("Decoder unavailable: ") + avErr(r);
+            close();
+            return false;
+        }
+        m_codecName = QString::fromUtf8(dec->name);
+        m_width = m_codec->width;
+        m_height = m_codec->height;
     }
-    m_codec = avcodec_alloc_context3(dec);
-    avcodec_parameters_to_context(m_codec, par);
-    m_codec->pkt_timebase = st->time_base;
-    const bool hw = s_hardware && setupHardware(dec);
-    m_codec->thread_count = hw ? 4 : 0; // 0: as many as the machine has
-    m_codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-    r = avcodec_open2(m_codec, dec, nullptr);
-    if (r < 0) {
-        if (err) *err = QStringLiteral("Decoder unavailable: ") + avErr(r);
-        close();
-        return false;
-    }
-    m_codecName = QString::fromUtf8(dec->name);
-    m_width = m_codec->width;
-    m_height = m_codec->height;
 
     m_timeBase = av_q2d(st->time_base);
     m_startTime = st->start_time != AV_NOPTS_VALUE ? st->start_time * m_timeBase : 0.0;
@@ -220,7 +239,8 @@ bool VideoDecoder::probe(const QString &path, Info *info, QString *err)
         info->width = st->codecpar->width;
         info->height = st->codecpar->height;
         const AVCodecDescriptor *d = avcodec_descriptor_get(st->codecpar->codec_id);
-        info->codec = d ? QString::fromUtf8(d->name) : QString();
+        info->codec = hap::isHapTag(st->codecpar->codec_tag) ? hap::variantName(st->codecpar->codec_tag)
+                      : d ? QString::fromUtf8(d->name) : QString();
         AVRational fr = av_guess_frame_rate(fmt, st, nullptr);
         info->fps = (fr.num > 0 && fr.den > 0) ? av_q2d(fr) : 0.0;
         if (fmt->duration > 0) info->duration = double(fmt->duration) / AV_TIME_BASE;
@@ -249,6 +269,7 @@ void VideoDecoder::close()
     m_stagingSize = 0;
     m_layouts.clear();
     m_rgbaLayout.reset();
+    m_hapScratch = {};
     if (m_sws) sws_freeContext(m_sws);
     m_sws = nullptr;
     if (m_frame) av_frame_free(&m_frame);
@@ -260,6 +281,7 @@ void VideoDecoder::close()
     m_hwPixFmt = -1;
     m_hwName.clear();
     m_hwActive = false;
+    m_hapTag = 0;
     m_stream = -1;
     m_width = m_height = 0;
 }
@@ -526,6 +548,62 @@ std::shared_ptr<const VideoLayout> VideoDecoder::layoutOf(const AVFrame *fr)
     return L;
 }
 
+std::shared_ptr<const VideoLayout> VideoDecoder::hapLayout(int count, int f0, int f1)
+{
+    const LayoutKey key{-1, m_width, m_height, count, f0, f1};
+    const auto found = m_layouts.find(key);
+    if (found != m_layouts.end()) return found->second;
+
+    auto L = std::make_shared<VideoLayout>();
+    L->width = m_width;
+    L->height = m_height;
+    L->planeCount = count;
+    const int w4 = (m_width + 3) & ~3, h4 = (m_height + 3) & ~3;
+    bool cpu = false;
+    size_t offset = 0;
+    for (int i = 0; i < count; ++i) {
+        const hap::Format f = hap::Format(i == 0 ? f0 : f1);
+        VideoLayout::Plane &p = L->plane[i];
+        p.width = w4;
+        p.height = h4;
+        bool gpu = true;
+        switch (f) {
+        case hap::Format::RgbDxt1: p.texels = VideoLayout::Texels::Dxt1, gpu = s_s3tc; break;
+        case hap::Format::RgbaDxt5:
+        case hap::Format::YCoCgDxt5: p.texels = VideoLayout::Texels::Dxt5, gpu = s_s3tc; break;
+        case hap::Format::AlphaRgtc1: p.texels = VideoLayout::Texels::Rgtc1; break; // OpenGL 3.0
+        case hap::Format::RgbaBc7: p.texels = VideoLayout::Texels::Bc7, gpu = s_bptc; break;
+        case hap::Format::RgbBc6u: p.texels = VideoLayout::Texels::Bc6u, gpu = s_bptc; break;
+        case hap::Format::RgbBc6s: p.texels = VideoLayout::Texels::Bc6s, gpu = s_bptc; break;
+        default: m_layouts[key] = nullptr; return nullptr;
+        }
+        if (gpu) {
+            p.channels = f == hap::Format::AlphaRgtc1 ? 1 : 4;
+            p.size = hap::textureBytes(f, m_width, m_height);
+        } else { // decoded on the CPU into plain texels
+            cpu = true;
+            p.texels = VideoLayout::Texels::U8;
+            p.channels = hap::decodedChannels(f);
+            p.rowBytes = size_t(w4) * size_t(p.channels);
+            p.size = p.rowBytes * size_t(h4);
+        }
+        p.offset = offset;
+        offset += (p.size + 63) & ~size_t(63);
+    }
+    L->totalBytes = offset;
+    const hap::Format first = hap::Format(f0);
+    if (first == hap::Format::YCoCgDxt5) L->mode = count > 1 ? VideoLayout::Mode::HapYCoCgAlpha : VideoLayout::Mode::HapYCoCg;
+    else if (first == hap::Format::AlphaRgtc1) L->mode = VideoLayout::Mode::HapAlphaOnly;
+    else L->mode = VideoLayout::Mode::HapRgb;
+    L->alpha = L->mode == VideoLayout::Mode::HapYCoCgAlpha || first == hap::Format::RgbaDxt5 || first == hap::Format::RgbaBc7;
+    QStringList fmts;
+    for (int i = 0; i < count; ++i) fmts << hap::formatName(hap::Format(i == 0 ? f0 : f1));
+    L->description = hap::variantName(m_hapTag) + QStringLiteral(" · ") + fmts.join(QStringLiteral(" + "))
+                     + (cpu ? QStringLiteral(" · decoded on the CPU") : QString());
+    m_layouts[key] = L;
+    return L;
+}
+
 // ---------------------------------------------------------------------------
 // Decoding
 // ---------------------------------------------------------------------------
@@ -647,8 +725,74 @@ bool VideoDecoder::deliver(AVFrame *src, VideoFrame &f, bool mapped)
     return true;
 }
 
+int VideoDecoder::decodeHap(VideoFrame &f, double skipBefore)
+{
+    for (;;) {
+        const int r = av_read_frame(m_fmt, m_packet);
+        if (r < 0) return 0;
+        if (m_packet->stream_index != m_stream) {
+            av_packet_unref(m_packet);
+            continue;
+        }
+        int64_t ts = m_packet->pts != AV_NOPTS_VALUE ? m_packet->pts : m_packet->dts;
+        const double local = ts != AV_NOPTS_VALUE ? ts * m_timeBase - m_startTime : m_lastPts + 1.0 / m_fps;
+        m_lastPts = local;
+        f.pts = local;
+        if (local < skipBefore - 0.25 / m_fps) { // not needed: not even decompressed
+            av_packet_unref(m_packet);
+            return 2;
+        }
+        hap::Frame hf;
+        QString err;
+        bool ok = hap::parse(m_packet->data, size_t(m_packet->size), &hf, &err);
+        std::shared_ptr<const VideoLayout> L;
+        if (ok) L = hapLayout(hf.count, int(hf.tex[0].format), hf.count > 1 ? int(hf.tex[1].format) : 0);
+        if (ok && L)
+            for (int i = 0; i < hf.count; ++i)
+                if (hf.tex[i].outSize != hap::textureBytes(hf.tex[i].format, m_width, m_height)) ok = false;
+        if (!ok || !L) {
+            av_packet_unref(m_packet);
+            return 2; // a damaged frame: skipped
+        }
+        m_stagingSize = L->totalBytes;
+        f.layout = L;
+        int id;
+        uint8_t *dst = nullptr;
+        if (takeStaging(L->totalBytes, &id, &dst)) {
+            f.staging = id;
+        } else {
+            {
+                std::lock_guard<std::mutex> lk(m_mutex);
+                if (!m_bytePool.empty()) {
+                    f.bytes = std::move(m_bytePool.back());
+                    m_bytePool.pop_back();
+                }
+            }
+            f.bytes.resize(L->totalBytes);
+            dst = f.bytes.data();
+        }
+        for (int i = 0; i < hf.count && ok; ++i) {
+            const VideoLayout::Plane &p = L->plane[i];
+            if (p.texels != VideoLayout::Texels::U8) {
+                ok = hap::decompress(hf.tex[i], dst + p.offset, p.size);
+            } else { // the GPU does not sample this format: its blocks decoded here
+                m_hapScratch.resize(hf.tex[i].outSize);
+                ok = hap::decompress(hf.tex[i], m_hapScratch.data(), m_hapScratch.size());
+                if (ok) hap::decodeBlocks(hf.tex[i].format, m_hapScratch.data(), m_width, m_height, dst + p.offset, p.rowBytes);
+            }
+        }
+        av_packet_unref(m_packet);
+        if (!ok) {
+            recycle(std::move(f));
+            return 2;
+        }
+        return 1;
+    }
+}
+
 int VideoDecoder::decodeNext(VideoFrame &f, double skipBefore)
 {
+    if (m_hapTag) return decodeHap(f, skipBefore);
     for (;;) {
         int r = avcodec_receive_frame(m_codec, m_frame);
         if (r == 0) {
@@ -854,17 +998,33 @@ bool VideoDecoder::toRgba(const VideoFrame &f, std::vector<uint8_t> &out, bool b
             stride[p] = L.plane[p].rowBytes;
         }
     }
+    // Compressed textures: their blocks decoded on the CPU first
+    std::vector<uint8_t> decoded[4];
     int channels[4] = {};
     bool wide[4] = {};
     for (int p = 0; p < L.planeCount; ++p) {
-        channels[p] = L.plane[p].channels;
-        wide[p] = L.plane[p].texels == VideoLayout::Texels::U16;
+        const VideoLayout::Plane &pl = L.plane[p];
+        channels[p] = pl.channels;
+        wide[p] = pl.texels == VideoLayout::Texels::U16;
+        if (pl.texels == VideoLayout::Texels::U8 || pl.texels == VideoLayout::Texels::U16) continue;
+        const hap::Format hf = pl.texels == VideoLayout::Texels::Dxt1    ? hap::Format::RgbDxt1
+                               : pl.texels == VideoLayout::Texels::Dxt5  ? hap::Format::RgbaDxt5
+                               : pl.texels == VideoLayout::Texels::Rgtc1 ? hap::Format::AlphaRgtc1
+                               : pl.texels == VideoLayout::Texels::Bc7   ? hap::Format::RgbaBc7
+                               : pl.texels == VideoLayout::Texels::Bc6u  ? hap::Format::RgbBc6u
+                                                                         : hap::Format::RgbBc6s;
+        channels[p] = hap::decodedChannels(hf);
+        decoded[p].resize(size_t(pl.width) * pl.height * channels[p]);
+        hap::decodeBlocks(hf, base[p], W, H, decoded[p].data(), size_t(pl.width) * channels[p]);
+        base[p] = decoded[p].data();
+        stride[p] = size_t(pl.width) * channels[p];
     }
     // A texel of a plane at picture pixel (x, y): nearest (subsampled planes stretched)
     auto texel = [&](int p, int x, int y, int ch) -> float {
         const VideoLayout::Plane &pl = L.plane[p];
-        const int px = std::min(pl.width - 1, int(int64_t(x) * pl.width / W));
-        const int py = std::min(pl.height - 1, int(int64_t(y) * pl.height / H));
+        const bool hapPlane = L.mode >= VideoLayout::Mode::HapRgb; // padded, not stretched
+        const int px = hapPlane ? x : std::min(pl.width - 1, int(int64_t(x) * pl.width / W));
+        const int py = hapPlane ? y : std::min(pl.height - 1, int(int64_t(y) * pl.height / H));
         if (wide[p]) {
             uint16_t v;
             std::memcpy(&v, base[p] + size_t(py) * stride[p] + (size_t(px) * channels[p] + ch) * 2, 2);
@@ -895,6 +1055,20 @@ bool VideoDecoder::toRgba(const VideoFrame &f, std::vector<uint8_t> &out, bool b
                 r = g = b = chan(0);
                 if (L.alpha) a = chan(3);
                 break;
+            case VideoLayout::Mode::HapRgb:
+                r = texel(0, x, y, 0), g = texel(0, x, y, 1), b = texel(0, x, y, 2);
+                if (L.alpha) a = texel(0, x, y, 3);
+                break;
+            case VideoLayout::Mode::HapYCoCg:
+            case VideoLayout::Mode::HapYCoCgAlpha: {
+                const float k = 128.0f / 255.0f;
+                const float s = texel(0, x, y, 2) * (255.0f / 8.0f) + 1.0f;
+                const float co = (texel(0, x, y, 0) - k) / s, cg = (texel(0, x, y, 1) - k) / s, Y = texel(0, x, y, 3);
+                r = Y + co - cg, g = Y + cg, b = Y - co - cg;
+                if (L.mode == VideoLayout::Mode::HapYCoCgAlpha) a = texel(1, x, y, 0);
+                break;
+            }
+            case VideoLayout::Mode::HapAlphaOnly: r = g = b = texel(0, x, y, 0); break;
             }
             uint8_t *o = row + size_t(x) * 4;
             o[0] = uint8_t(clamp01(r) * 255.0f + 0.5f);
