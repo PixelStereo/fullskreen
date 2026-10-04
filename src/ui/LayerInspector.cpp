@@ -558,7 +558,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             return b;
         };
         auto spin = [this](double v, double lo, double hi, double step, int dec, const QString &suffix) {
-            auto *x = new QDoubleSpinBox;
+            auto *x = new NumberBox;
             x->setRange(lo, hi);
             x->setSingleStep(step);
             x->setDecimals(dec);
@@ -591,7 +591,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             style(QStringLiteral("Text Font"), [family](Layer &l) { l.textFont = family; });
         });
 
-        auto *size = new QSpinBox;
+        auto *size = new IntBox;
         size->setRange(1, 1000);
         size->setSuffix(QStringLiteral(" px"));
         size->setValue(s.textSize);
