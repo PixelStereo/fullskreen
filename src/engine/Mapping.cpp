@@ -200,6 +200,39 @@ void Mapping::fitAspect(double srcAspect, double compAspect)
     ++revision;
 }
 
+QJsonObject SoftEdge::toJson() const
+{
+    QJsonObject o;
+    o["enabled"] = enabled;
+    QJsonArray w, p;
+    for (int i = 0; i < 4; ++i) {
+        w.append(width[i]);
+        p.append(power[i]);
+    }
+    o["width"] = w;
+    o["power"] = p;
+    return o;
+}
+
+void SoftEdge::fromJson(const QJsonObject &o)
+{
+    *this = SoftEdge();
+    enabled = o.value("enabled").toBool(false);
+    const QJsonArray w = o.value("width").toArray(), p = o.value("power").toArray();
+    for (int i = 0; i < 4; ++i) {
+        if (i < w.size()) width[i] = std::clamp(w[i].toDouble(), 0.0, 0.5);
+        if (i < p.size()) power[i] = std::clamp(p[i].toDouble(), 0.1, 8.0);
+    }
+}
+
+bool SoftEdge::operator==(const SoftEdge &o) const
+{
+    if (enabled != o.enabled) return false;
+    for (int i = 0; i < 4; ++i)
+        if (width[i] != o.width[i] || power[i] != o.power[i]) return false;
+    return true;
+}
+
 QJsonObject Mapping::toJson() const
 {
     QJsonObject o;
@@ -212,6 +245,7 @@ QJsonObject Mapping::toJson() const
     for (const QPointF &p : offsets) off.append(QJsonArray{p.x(), p.y()});
     o["offsets"] = off;
     o["meshMode"] = meshMode;
+    if (soft.enabled || !(soft == SoftEdge())) o["soft"] = soft.toJson();
     return o;
 }
 
@@ -229,5 +263,6 @@ void Mapping::fromJson(const QJsonObject &o)
         offsets[size_t(i)] = QPointF(p[0].toDouble(), p[1].toDouble());
     }
     meshMode = o.value("meshMode").toBool(false);
+    soft.fromJson(o.value("soft").toObject());
     ++revision;
 }

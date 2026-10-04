@@ -236,6 +236,7 @@ bundles are supported. Names are made OSC-safe: spaces become `_`, a duplicate n
 | `…/effects/<effect>/mask` · `maskInvert` | s · T | mask layer by name (`""`: none), inverted |
 | `/layers/<group>/layers/<name>/…` | | layers of a group (and so on, for groups inside groups) |
 | `/layers/<name>/viewports/<viewport>` | f | how much of the item that viewport shows, 0–1 (items at the top of the list) |
+| `/layers/<name>/spatial/softedge/enabled` · `…/<left\|right\|top\|bottom>/width` · `power` | T · f | soft edge: fade towards each side (width 0–0.5 of the layer, power 0.1–8) |
 | `/viewports/<name>/width` · `height` · `mode` | i | size in pixels; 0 hidden, 1 window, 2 fullscreen |
 | `/viewports/<name>/…` | | name, visible, opacity, ROI, color, spatial, effects, as for a group |
 | `/memories/recall` · `/memories/<n>/recall` · `/memories/count` | i · N · i | recall memory n (1 = first) |

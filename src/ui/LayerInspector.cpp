@@ -1412,6 +1412,62 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     connect(resetMesh, &QPushButton::clicked, this, [this] {
         editMapping(QStringLiteral("Flatten Mesh"), [](Mapping &m) { m.resetMesh(m.cols, m.rows); });
     });
+
+    // Soft edge: the picture fades out towards each side (to blend overlapping projections)
+    {
+        const SoftEdge se = cmd::SetMapping::read(m_engine, m_layer).soft;
+        auto *box = new QGroupBox(QStringLiteral("Soft edge"));
+        box->setCheckable(true);
+        box->setChecked(se.enabled);
+        box->setToolTip(QStringLiteral("Fades the picture to transparent towards each side. Width: how far the fade "
+                                       "reaches, in % of the layer. Power: shape of the fade (1 linear, above 1 "
+                                       "stays dark longer, below 1 brightens sooner)."));
+        auto *grid = new QGridLayout(box);
+        grid->setColumnStretch(1, 1);
+        grid->setColumnStretch(3, 1);
+        grid->addWidget(new QLabel(QStringLiteral("Width")), 0, 1);
+        grid->addWidget(new QLabel(QStringLiteral("Power")), 0, 3);
+        static const char *names[4] = {"Left", "Right", "Top", "Bottom"};
+        for (int side = 0; side < 4; ++side) {
+            auto *width = new SliderField;
+            width->setRange(0, 50);
+            width->setDecimals(1);
+            width->setSuffix(QStringLiteral(" %"));
+            width->setSingleStep(0.5);
+            width->setSnaps({0});
+            width->setValue(se.width[side] * 100.0);
+            auto *power = new SliderField;
+            power->setRange(0.1, 4);
+            power->setTypedRange(0.1, 8);
+            power->setDecimals(2);
+            power->setSuffix(QStringLiteral(" ×"));
+            power->setSingleStep(0.05);
+            power->setSnaps({1});
+            power->setValue(se.power[side]);
+            grid->addWidget(new ResetLabel(QString::fromLatin1(names[side]), [width, power] {
+                                width->setValue(10.0);
+                                power->setValue(1.0);
+                                emit width->valueEdited(10.0);
+                                emit power->valueEdited(1.0);
+                            }),
+                            side + 1, 0);
+            grid->addWidget(width, side + 1, 1);
+            grid->addWidget(power, side + 1, 3);
+            connect(width, &SliderField::valueEdited, this, [this, side](double v) {
+                editMapping(QStringLiteral("Soft Edge Width"), [&](Mapping &m) { m.soft.width[side] = std::clamp(v / 100.0, 0.0, 0.5); },
+                            true);
+            });
+            connect(power, &SliderField::valueEdited, this, [this, side](double v) {
+                editMapping(QStringLiteral("Soft Edge Power"), [&](Mapping &m) { m.soft.power[side] = std::clamp(v, 0.1, 8.0); },
+                            true);
+            });
+        }
+        connect(box, &QGroupBox::toggled, this, [this](bool on) {
+            editMapping(on ? QStringLiteral("Soft Edge On") : QStringLiteral("Soft Edge Off"),
+                        [on](Mapping &m) { m.soft.enabled = on; });
+        });
+        v->addWidget(box);
+    }
     return g;
 }
 

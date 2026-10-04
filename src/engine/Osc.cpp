@@ -925,6 +925,35 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                          return true;
                      }));
 
+        // Soft edge: the picture fades out towards each side (width: 0..1 of the layer, 0.5 at most)
+        L.method(P + "/spatial/softedge/enabled", "T", 3, "Soft Edge",
+                 [](Layer &l) { return QVariantList{l.mapping.soft.enabled}; },
+                 L.edit([](Layer &l, const QVariantList &a) {
+                     l.mapping.soft.enabled = truth(a.value(0));
+                     return true;
+                 }));
+        static const char *kSoftSides[] = {"left", "right", "top", "bottom"};
+        for (int k = 0; k < 4; ++k) {
+            OscNode &w = L.method(P + "/spatial/softedge/" + kSoftSides[k] + "/width", "f", 3, QString("Soft Edge Width, %1").arg(kSoftSides[k]),
+                                  [k](Layer &l) { return QVariantList{l.mapping.soft.width[k]}; },
+                                  L.edit([k](Layer &l, const QVariantList &a) {
+                                      if (a.isEmpty()) return false;
+                                      l.mapping.soft.width[k] = std::clamp(num(a[0]), 0.0, 0.5);
+                                      return true;
+                                  }));
+            w.range = {minMax(0, 0.5)};
+            w.clip = "both";
+            OscNode &p = L.method(P + "/spatial/softedge/" + kSoftSides[k] + "/power", "f", 3, QString("Soft Edge Power, %1").arg(kSoftSides[k]),
+                                  [k](Layer &l) { return QVariantList{l.mapping.soft.power[k]}; },
+                                  L.edit([k](Layer &l, const QVariantList &a) {
+                                      if (a.isEmpty()) return false;
+                                      l.mapping.soft.power[k] = std::clamp(num(a[0]), 0.1, 8.0);
+                                      return true;
+                                  }));
+            p.range = {minMax(0.1, 8)};
+            p.clip = "both";
+        }
+
         // Effects
         L.method(P + "/effects/enabled", "T", 3, "Enabled",
                  [](Layer &l) { return QVariantList{l.effectsEnabled}; }, L.edit([](Layer &l, const QVariantList &a) {
