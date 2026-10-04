@@ -2,6 +2,7 @@
 #include "Commands.h"
 #include "Engine.h"
 #include "ParamPanel.h"
+#include "SettingsPanel.h"
 #include "ViewportOutput.h"
 #include "Widgets.h"
 
@@ -815,6 +816,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         vol->setTicks(8);
         vol->setSnaps({100});
         vol->setValue(s.volume * 100);
+        m_volume = vol;
         vol->setToolTip(QStringLiteral("Layer volume (100% = original level). Hiding the layer also silences it."));
         auto *icon = new ResetLabel(QStringLiteral("Volume"), [vol] { vol->setValue(100); emit vol->valueEdited(100); });
         icon->setStyleSheet("color:#8a8a8e;");
@@ -878,6 +880,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             rebuild();
         });
         auto *params = new ParamPanel(m_engine, m_undo, m_layer, -1);
+        m_generatorParams = params;
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
     }
@@ -1688,6 +1691,7 @@ void LayerInspector::showEffectParams()
     }
     if (valid) {
         auto *params = new ParamPanel(m_engine, m_undo, m_layer, m_selectedEffect);
+        m_effectParams = params;
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         lay->addWidget(params);
     }
@@ -1718,7 +1722,9 @@ void LayerInspector::refreshSpatial()
 
 void LayerInspector::refreshDynamic()
 {
-    refreshSpatial();
+    // The fields show the values as they move (a memory's fade), unless Settings keeps them still until it is over
+    const bool follow = SettingsPanel::followFades() || !m_engine->isFading();
+    if (follow) refreshSpatial();
     if (m_output) m_output->refreshStatus(); // mode set by ⌘F or a closed window, publishing states
     // ROI preview: the source picture, read back by the render thread while the editor is shown
     const bool wantPreview = m_roi && m_roi->isVisible();
@@ -1731,8 +1737,8 @@ void LayerInspector::refreshDynamic()
         m_engine->requestSourcePreview(0);
     }
     m_previewing = wantPreview;
-    // Values changed elsewhere (OSC, undo) follow in the color and roi editors
-    {
+    // Values changed elsewhere (OSC, undo, a memory) follow in the fields
+    if (follow) {
         QRectF roi;
         QColor add, remove;
         double temp = 0, tint = 0;
@@ -1752,10 +1758,9 @@ void LayerInspector::refreshDynamic()
         if (m_colorAdd) m_colorAdd->setColor(add);
         if (m_colorRemove) m_colorRemove->setColor(remove);
     }
-    // Soft edge and opacity per viewport: they move too when a memory fades them
-    {
+    if (follow) {
         SoftEdge soft;
-        float opacity = 1;
+        float opacity = 1, volume = 1;
         std::vector<float> routes;
         {
             Engine::Lock lk(&m_engine->mutex());
@@ -1763,25 +1768,29 @@ void LayerInspector::refreshDynamic()
             if (!l) return;
             soft = l->mapping.soft;
             opacity = l->opacity;
+            volume = l->volume;
             for (const RouteField &r : m_routeFields) routes.push_back(l->opacityIn(r.viewport));
         }
         if (m_softBox && m_softBox->isChecked() != soft.enabled) {
             QSignalBlocker blk(m_softBox);
             m_softBox->setChecked(soft.enabled);
         }
-        auto follow = [](SliderField *f, double value) {
+        auto show = [](SliderField *f, double value) {
             if (f && !f->isDragging() && std::abs(f->value() - value) > 1e-3) f->setValue(value);
         };
-        follow(m_opacity, opacity * 100.0);
+        show(m_opacity, opacity * 100.0);
+        show(m_volume, volume * 100.0);
+        if (m_generatorParams) m_generatorParams->refresh();
+        if (m_effectParams) m_effectParams->refresh();
         for (int side = 0; side < 4; ++side) {
-            follow(m_softWidth[side], soft.width[side] * 100.0);
-            follow(m_softPower[side], soft.power[side]);
+            show(m_softWidth[side], soft.width[side] * 100.0);
+            show(m_softPower[side], soft.power[side]);
         }
         for (size_t k = 0; k < m_routeFields.size(); ++k) {
             const RouteField &r = m_routeFields[k];
             if (!r.field || r.field->isDragging()) continue;
             *r.current = routes[k];
-            follow(r.field, routes[k] * 100.0);
+            show(r.field, routes[k] * 100.0);
         }
     }
     bool playing;
@@ -1817,6 +1826,7 @@ void LayerInspector::refreshDynamic()
         m_position->setRange(0, std::max(0.01, d));
         m_position->setValue(p);
     }
+    if (!follow) return;
     if (m_speed && !m_speed->isDragging() && std::abs(m_speed->value() - speed * 100) > 0.5)
         m_speed->setValue(speed * 100);
     if (m_loop && !m_loop->isDragging()) {

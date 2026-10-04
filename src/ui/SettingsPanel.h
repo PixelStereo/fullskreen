@@ -38,6 +38,10 @@ public:
     static int oscPort();      // UDP, OSC messages
     static int oscQueryPort(); // TCP, OSCQuery (HTTP + WebSocket)
 
+    // The inspector's fields move with the values while a memory fades them (on unless changed); off, they
+    // stay still and show the memory's values once the fade is over
+    static bool followFades();
+
     void setOscStatus(const QString &s);
     // Transition used when a memory gives a layer another source, for the layers that do not choose one:
     // the path saved on this machine (Crossfade by default), found again by its file name in the library

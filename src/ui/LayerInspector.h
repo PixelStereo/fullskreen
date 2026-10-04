@@ -24,6 +24,7 @@ class RoiEditor;
 class ColorEditor;
 class QComboBox;
 class QGroupBox;
+class ParamPanel;
 class ViewportOutputPanel;
 
 // Inspector for the selected layer, group or viewport, in sub-tabs: Source (drop zone, transport, sound, generator
@@ -82,7 +83,8 @@ private:
     QPointer<ColorEditor> m_colorAdd, m_colorRemove;
     QPointer<SliderField> m_temp, m_tint;
     // Followed while a memory fades them (as temp / tint)
-    QPointer<SliderField> m_opacity;
+    QPointer<SliderField> m_opacity, m_volume;
+    QPointer<ParamPanel> m_generatorParams, m_effectParams;
     QPointer<QGroupBox> m_softBox;
     QPointer<SliderField> m_softWidth[4], m_softPower[4];
     struct RouteField {

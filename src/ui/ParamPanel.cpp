@@ -16,6 +16,8 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QAbstractItemView>
+#include <QPointer>
 #include <QUndoStack>
 #include <cmath>
 
@@ -86,6 +88,9 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             bar->setValue(in.fValue);
             connect(bar, &SliderField::valueEdited, this,
                     [=](double v) { setValue(idx, label, [v](IsfValue &x) { x.f = v; }); });
+            m_followers.push_back({idx, [bar = QPointer<SliderField>(bar)](const IsfValue &x) {
+                                       if (bar && !bar->isDragging() && std::abs(bar->value() - x.f) > 1e-6) bar->setValue(x.f);
+                                   }});
             field = bar;
             break;
         }
@@ -93,6 +98,11 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             auto *c = new QCheckBox;
             c->setChecked(in.bValue);
             connect(c, &QCheckBox::toggled, this, [=](bool on) { setValue(idx, label, [on](IsfValue &x) { x.b = on; }); });
+            m_followers.push_back({idx, [c = QPointer<QCheckBox>(c)](const IsfValue &x) {
+                                       if (!c || c->isChecked() == x.b) return;
+                                       QSignalBlocker blk(c);
+                                       c->setChecked(x.b);
+                                   }});
             field = c;
             break;
         }
@@ -114,6 +124,13 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
                 const int v = c->itemData(k).toInt();
                 setValue(idx, label, [v](IsfValue &x) { x.l = v; });
             });
+            m_followers.push_back({idx, [c = QPointer<QComboBox>(c)](const IsfValue &x) {
+                                       if (!c || c->view()->isVisible()) return; // its list is open
+                                       const int k = c->findData(x.l);
+                                       if (k < 0 || k == c->currentIndex()) return;
+                                       QSignalBlocker blk(c);
+                                       c->setCurrentIndex(k);
+                                   }});
             field = c;
             break;
         }
@@ -141,6 +158,13 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
                     [=](double v) { setValue(idx, label, [v](IsfValue &p) { p.p.setX(v); }); });
             connect(y, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                     [=](double v) { setValue(idx, label, [v](IsfValue &p) { p.p.setY(v); }); });
+            m_followers.push_back({idx, [x = QPointer<QDoubleSpinBox>(x), y = QPointer<QDoubleSpinBox>(y)](const IsfValue &v) {
+                                       for (auto [box, value] : {std::pair{x.data(), v.p.x()}, std::pair{y.data(), v.p.y()}}) {
+                                           if (!box || box->hasFocus() || std::abs(box->value() - value) < 1e-6) continue;
+                                           QSignalBlocker blk(box);
+                                           box->setValue(value);
+                                       }
+                                   }});
             field = w;
             break;
         }
@@ -169,6 +193,11 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
                 connect(dlg, &QColorDialog::rejected, b, [=] { apply(start); });
                 dlg->open();
             });
+            m_followers.push_back({idx, [b = QPointer<QPushButton>(b)](const IsfValue &x) {
+                                       if (!b) return;
+                                       const QColor col = QColor::fromRgbF(x.c[0], x.c[1], x.c[2], x.c[3]);
+                                       if (b->text() != col.name(QColor::HexArgb).toUpper()) setSwatch(b, x.c);
+                                   }});
             field = b;
             break;
         }
@@ -265,4 +294,18 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
         emit rebuildRequested();
     });
     form->addRow(reset);
+}
+
+void ParamPanel::refresh()
+{
+    if (m_followers.empty()) return;
+    std::vector<IsfValue> values;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
+        if (!inst) return;
+        for (const IsfInput &in : inst->inputs()) values.push_back(in.value());
+    }
+    for (const auto &[input, show] : m_followers)
+        if (input < int(values.size())) show(values[size_t(input)]);
 }

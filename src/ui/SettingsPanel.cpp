@@ -17,6 +17,7 @@
 static const char *kPlayModeKey = "playback/defaultMode";
 static const char *kHardwareKey = "playback/hardwareDecoding";
 static const char *kColorKey = "ui/colorModel";
+static const char *kFollowKey = "ui/followFades";
 static const char *kOscKey = "osc/enabled";
 static const char *kOscPortKey = "osc/udpPort";        // (osc/port, osc/queryPort: earlier defaults, ignored)
 static const char *kQueryPortKey = "osc/oscQueryPort";
@@ -53,6 +54,12 @@ PlayMode SettingsPanel::defaultPlayMode()
     return playModeFromKey(QSettings().value(kPlayModeKey).toString(), PlayMode::Loop);
 }
 bool SettingsPanel::hardwareDecoding() { return QSettings().value(kHardwareKey, true).toBool(); }
+static int s_followFades = -1; // read once, then kept up to date by the check box (asked 10 times a second)
+bool SettingsPanel::followFades()
+{
+    if (s_followFades < 0) s_followFades = QSettings().value(kFollowKey, true).toBool() ? 1 : 0;
+    return s_followFades == 1;
+}
 int SettingsPanel::colorModels() { return QSettings().value(kColorKey, int(ColorEditor::Rgb)).toInt(); }
 bool SettingsPanel::oscEnabled() { return QSettings().value(kOscKey, true).toBool(); }
 int SettingsPanel::oscPort() { return QSettings().value(kOscPortKey, kDefaultOscPort).toInt(); }
@@ -204,6 +211,17 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
         magnet::setEnabled(on);
     });
     connect(reach, qOverload<int>(&QSpinBox::valueChanged), this, [](int px) { magnet::setDistance(px); });
+    auto *follow = new QCheckBox(QStringLiteral("Fields follow the values during memory fades"));
+    follow->setChecked(followFades());
+    lookForm->addRow(follow);
+    lookForm->addRow(note(QStringLiteral("On: the inspector's sliders and fields (opacity, viewports, color, soft edge, "
+                                         "position, volume, speed, ISF parameters…) move with the values while a memory "
+                                         "fades them. Off: they stay still and show the memory's values once the fade is "
+                                         "over. A field being edited is never moved.")));
+    connect(follow, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(kFollowKey, on);
+        s_followFades = on ? 1 : 0;
+    });
     connect(swatch, &QPushButton::clicked, this, [this, paintSwatch] {
         const QColor c = QColorDialog::getColor(theme::accent(), this, QStringLiteral("Accent color"));
         if (!c.isValid()) return;
