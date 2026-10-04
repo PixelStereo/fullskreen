@@ -162,10 +162,17 @@ bool Engine::initialize(QString *err)
     // Layer preparation: roi (part of the source used), color (added / removed), unpremultiplied alpha (groups)
     m_prepProgram = compileProgram(quadVs,
                                    "#version 330 core\nuniform sampler2D u_tex; uniform vec4 u_roi; uniform vec3 u_add;\n"
-                                   "uniform vec3 u_remove; uniform vec3 u_balance; uniform int u_unpremul; in vec2 v_uv; out vec4 o;\n"
+                                   "uniform vec3 u_remove; uniform vec3 u_balance; uniform int u_unpremul;\n"
+                                   "uniform sampler2D u_mask; uniform int u_maskMode; in vec2 v_uv; out vec4 o;\n"
                                    "void main(){ vec4 c = texture(u_tex, mix(u_roi.xy, u_roi.zw, v_uv));\n"
                                    "  if (u_unpremul != 0 && c.a > 0.0) c.rgb /= c.a;\n"
-                                   "  o = vec4(clamp(c.rgb * u_balance * (1.0 - u_remove) + u_add, 0.0, 1.0), c.a); }\n",
+                                   "  vec3 col = clamp(c.rgb * u_balance * (1.0 - u_remove) + u_add, 0.0, 1.0);\n"
+                                   // Color through a mask: 1 as it is, 2 inverted (luminance times alpha)
+                                   "  if (u_maskMode != 0) { vec4 m = texture(u_mask, v_uv);\n"
+                                   "    float k = clamp(dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)) * m.a, 0.0, 1.0);\n"
+                                   "    if (u_maskMode == 2) k = 1.0 - k;\n"
+                                   "    col = mix(clamp(c.rgb, 0.0, 1.0), col, k); }\n"
+                                   "  o = vec4(col, c.a); }\n",
                                    &log);
     if (!m_prepProgram) {
         if (err) *err = QStringLiteral("Internal shaders: ") + log;
@@ -194,6 +201,8 @@ bool Engine::initialize(QString *err)
     m_prepRemoveLoc = f->glGetUniformLocation(m_prepProgram, "u_remove");
     m_prepUnpremulLoc = f->glGetUniformLocation(m_prepProgram, "u_unpremul");
     m_prepBalanceLoc = f->glGetUniformLocation(m_prepProgram, "u_balance");
+    m_prepMaskLoc = f->glGetUniformLocation(m_prepProgram, "u_mask");
+    m_prepMaskModeLoc = f->glGetUniformLocation(m_prepProgram, "u_maskMode");
     m_compTexLoc = f->glGetUniformLocation(m_compProgram, "u_tex");
     m_compOpacityLoc = f->glGetUniformLocation(m_compProgram, "u_opacity");
     m_compViewLoc = f->glGetUniformLocation(m_compProgram, "u_view");

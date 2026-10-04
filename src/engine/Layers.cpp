@@ -655,6 +655,7 @@ bool Engine::layerDependsOn(quint64 id, quint64 onId) const
             if (l->type == SourceType::Layer && l->sourceLayer && visit(l->sourceLayer)) return true;
             for (const auto &fx : l->effects) // the masks of its effects
                 if (fx->maskLayer && visit(fx->maskLayer)) return true;
+            if (l->color.maskLayer && visit(l->color.maskLayer)) return true; // the mask of its color
             if (l->isGroup)
                 for (const auto &m : m_layers)
                     if (m->parent == cur && visit(m->id)) return true;
@@ -693,6 +694,43 @@ void Engine::fixLayerReferences(QStringList *warnings)
                                          : QStringLiteral(": its mask would feed back on the layer, mask dropped."));
             fx->maskLayer = 0;
         }
+    // Mask of the color section: the same rules
+    for (auto &l : m_layers) {
+        if (!l->color.maskLayer) continue;
+        const int mi = indexOfId(l->color.maskLayer);
+        const bool bad = mi < 0 || m_layers[size_t(mi)]->isViewport || l->color.maskLayer == l->id;
+        if (!bad && !layerDependsOn(l->color.maskLayer, l->id)) continue;
+        if (warnings)
+            *warnings << l->name + (mi < 0 ? QStringLiteral(": the mask of its color is gone, mask dropped.")
+                                           : QStringLiteral(": the mask of its color would feed back on it, mask dropped."));
+        l->color.maskLayer = 0;
+    }
+}
+
+bool Engine::setColorMask(int layerIndex, quint64 maskId, bool invert, QString *err)
+{
+    auto fail = [err](const QString &m) {
+        if (err) *err = m;
+        return false;
+    };
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(layerIndex);
+        if (!l) return false;
+        if (maskId) {
+            const int mi = indexOfId(maskId);
+            if (mi < 0) return fail(QStringLiteral("That layer no longer exists."));
+            if (m_layers[size_t(mi)]->isViewport) return fail(QStringLiteral("A viewport cannot be a mask."));
+            if (maskId == l->id) return fail(QStringLiteral("A layer cannot mask its own color."));
+            if (layerDependsOn(maskId, l->id))
+                return fail(QStringLiteral("\"%1\" already uses this layer: the picture would feed back on itself.")
+                                .arg(m_layers[size_t(mi)]->name));
+        }
+        l->color.maskLayer = maskId;
+        l->color.maskInvert = invert;
+    }
+    emit layersChanged();
+    return true;
 }
 
 bool Engine::setEffectMask(int layerIndex, int effect, quint64 maskId, bool invert, QString *err)

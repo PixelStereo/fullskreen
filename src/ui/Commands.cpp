@@ -114,6 +114,8 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
     case Temp: return double(l->color.temp);
     case Tint: return double(l->color.tint);
     case Transition: return l->transition;
+    case ColorMask: return QVariant(qulonglong(l->color.maskLayer));
+    case ColorMaskInvert: return l->color.maskInvert;
     }
     return {};
 }
@@ -139,6 +141,17 @@ void SetLayerProp::apply(const QVariant &v)
     }
     if (m_prop == Mode) {
         m_e->setLayerPlayMode(m_layer, PlayMode(v.toInt()));
+        return;
+    }
+    if (m_prop == ColorMask) { // checked against feedback by the engine
+        bool invert;
+        {
+            Engine::Lock lk(&m_e->mutex());
+            Layer *l = m_e->layer(m_layer);
+            if (!l) return;
+            invert = l->color.maskInvert;
+        }
+        m_e->setColorMask(m_layer, v.toULongLong(), invert);
         return;
     }
     Engine::Lock lk(&m_e->mutex());
@@ -171,6 +184,7 @@ void SetLayerProp::apply(const QVariant &v)
     case Temp: l->color.temp = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTempRange), double(ColorAdjust::kTempRange))); break;
     case Tint: l->color.tint = float(std::clamp(v.toDouble(), -double(ColorAdjust::kTintRange), double(ColorAdjust::kTintRange))); break;
     case Transition: l->transition = v.toString(); break;
+    case ColorMaskInvert: l->color.maskInvert = v.toBool(); break;
     case Roi: {
         const QRectF r = v.toRectF().normalized() & Layer::fullRoi();
         l->roi = r.isEmpty() ? Layer::fullRoi() : r;

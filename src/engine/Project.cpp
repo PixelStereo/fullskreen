@@ -184,6 +184,12 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
                              {"enabled", l.color.enabled}, {"tempOn", l.color.tempOn},
                              {"tintOn", l.color.tintOn},   {"addOn", l.color.addOn},
                              {"removeOn", l.color.removeOn}};
+    if (l.color.maskLayer) {
+        QJsonObject col = o["color"].toObject();
+        col["mask"] = QString::number(l.color.maskLayer);
+        if (l.color.maskInvert) col["maskInvert"] = true;
+        o["color"] = col;
+    }
     QJsonArray fx;
     for (const auto &e : l.effects) fx.append(e->save(projectDir));
     o["effects"] = fx;

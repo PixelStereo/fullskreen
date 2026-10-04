@@ -87,6 +87,10 @@ void Engine::markNeeded()
                 const int mi = indexOfId(fx->maskLayer);
                 if (mi >= 0) m_layers[size_t(mi)]->referenced = true;
             }
+        if (l->color.enabled && l->color.maskLayer) {
+            const int mi = indexOfId(l->color.maskLayer);
+            if (mi >= 0) m_layers[size_t(mi)]->referenced = true;
+        }
     }
     // A group comes before its members: its verdict is known when they are reached
     std::map<quint64, bool> groupNeeded;
@@ -125,6 +129,10 @@ void Engine::renderPass(const IsfRenderContext &rc)
                 const int mi = indexOfId(fx->maskLayer);
                 if (mi >= 0 && !m_layers[size_t(mi)]->isViewport) render(size_t(mi));
             }
+        if (l.color.enabled && l.color.maskLayer) { // the mask of its color, before it
+            const int mi = indexOfId(l.color.maskLayer);
+            if (mi >= 0 && !m_layers[size_t(mi)]->isViewport) render(size_t(mi));
+        }
         if (l.isViewport) {
             // What it sees: the items at the top of the list it shows, all rendered by now
             std::vector<Layer *> shown;
@@ -281,6 +289,17 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
         col.balanceGains(gains);
         f->glUniform3f(m_prepBalanceLoc, gains[0], gains[1], gains[2]);
         f->glUniform1i(m_prepUnpremulLoc, premultiplied ? 1 : 0);
+        // The color through its mask (another layer's picture, stretched over this one)
+        const Layer *mask = col.maskLayer && !col.isIdentity() ? layer(indexOfId(col.maskLayer)) : nullptr;
+        if (mask && mask->finalTex && mask != &l) {
+            f->glActiveTexture(GL_TEXTURE1);
+            f->glBindTexture(GL_TEXTURE_2D, mask->finalTex);
+            f->glUniform1i(m_prepMaskLoc, 1);
+            f->glUniform1i(m_prepMaskModeLoc, col.maskInvert ? 2 : 1);
+            f->glActiveTexture(GL_TEXTURE0);
+        } else {
+            f->glUniform1i(m_prepMaskModeLoc, 0);
+        }
         drawQuad();
         tex = l.prepTarget.tex;
         w = cw;
@@ -655,6 +674,7 @@ void Engine::readSourcePreview()
         f->glUniform3f(m_prepRemoveLoc, 0, 0, 0);
         f->glUniform3f(m_prepBalanceLoc, 1, 1, 1);
         f->glUniform1i(m_prepUnpremulLoc, l->isGroup || l->isViewport ? 1 : 0);
+        f->glUniform1i(m_prepMaskModeLoc, 0);
         drawQuad();
         img = QImage(w, h, QImage::Format_RGBA8888);
         f->glPixelStorei(GL_PACK_ALIGNMENT, 1);

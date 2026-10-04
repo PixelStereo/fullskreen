@@ -974,6 +974,56 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
         setProp(cmd::SetLayerProp::ColorOn, on);
     });
 
+    // Mask: where the whole section applies, from another layer's picture stretched over this one
+    {
+        std::vector<std::pair<quint64, QString>> masks; // layers that can mask it (no viewport, no feedback)
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            const Layer *self = m_engine->layer(m_layer);
+            for (int k = 0; self && k < m_engine->layerCount(); ++k) {
+                const Layer *o = m_engine->layer(k);
+                if (!o || o->isViewport || o->id == self->id || m_engine->layerDependsOn(o->id, self->id)) continue;
+                masks.push_back({o->id, o->isGroup ? o->name + QStringLiteral(" (group)") : o->name});
+            }
+        }
+        auto *row = new QHBoxLayout;
+        auto *label = new ResetLabel(QStringLiteral("Mask"), [this] { setProp(cmd::SetLayerProp::ColorMask, QVariant(qulonglong(0))); });
+        auto *pick = new QComboBox;
+        pick->addItem(QStringLiteral("None — everywhere"), QVariant(qulonglong(0)));
+        int current = 0;
+        for (const auto &[id, n] : masks) {
+            pick->addItem(n, QVariant(qulonglong(id)));
+            if (id == s.color.maskLayer) current = pick->count() - 1;
+        }
+        if (s.color.maskLayer && current == 0) { // a mask that cannot be chosen any more (gone): shown, not chosen
+            pick->addItem(QStringLiteral("(gone)"), QVariant(qulonglong(s.color.maskLayer)));
+            current = pick->count() - 1;
+        }
+        pick->setCurrentIndex(current);
+        pick->setToolTip(QStringLiteral("Where the color applies: fully where the chosen layer's picture is white, not at "
+                                        "all where it is black or transparent, in proportion in between. That picture is "
+                                        "stretched over this layer's, after its ROI. The layer can stay hidden."));
+        auto *inv = new QCheckBox(QStringLiteral("Invert"));
+        inv->setChecked(s.color.maskInvert);
+        inv->setEnabled(s.color.maskLayer != 0);
+        row->addWidget(label);
+        row->addWidget(pick, 1);
+        row->addWidget(inv);
+        v->addLayout(row);
+        connect(pick, &QComboBox::activated, this, [this, pick, inv](int i) {
+            const quint64 id = pick->itemData(i).toULongLong();
+            QString err;
+            const QVariant before = cmd::SetLayerProp::read(m_engine, m_layer, cmd::SetLayerProp::ColorMask);
+            if (!m_engine->setColorMask(m_layer, id, inv->isChecked(), &err)) { // refused: feedback
+                if (!err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Mask"), err);
+            } else if (before.toULongLong() != id) {
+                m_undo->push(new cmd::SetLayerProp(m_engine, m_layer, cmd::SetLayerProp::ColorMask, before, QVariant(qulonglong(id))));
+            }
+            QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+        });
+        connect(inv, &QCheckBox::toggled, this, [this](bool on) { setProp(cmd::SetLayerProp::ColorMaskInvert, on); });
+    }
+
     // Balance first, as in DaVinci Resolve: temperature (blue / yellow) and tint (green / magenta)
     {
         auto *box = new QGroupBox;

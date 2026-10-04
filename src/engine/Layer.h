@@ -50,6 +50,10 @@ struct ColorAdjust {
     // Switches: the whole color section, then one per parameter. A parameter switched off keeps its value
     // (it comes back as it was) but is not applied.
     bool enabled = true, tempOn = true, tintOn = true, addOn = true, removeOn = true;
+    // Where the section applies: another layer's picture stretched over this one, fully on white, not at all on
+    // black or transparent (0: everywhere). As the mask of an effect, but once for the whole section.
+    quint64 maskLayer = 0;
+    bool maskInvert = false;
     static constexpr float kTempRange = 4000, kTintRange = 100;
 
     // What the rendering applies: a parameter that is off is neutral
@@ -85,7 +89,7 @@ struct ColorAdjust {
     {
         if (temp != o.temp || tint != o.tint) return false;
         if (enabled != o.enabled || tempOn != o.tempOn || tintOn != o.tintOn || addOn != o.addOn ||
-            removeOn != o.removeOn)
+            removeOn != o.removeOn || maskLayer != o.maskLayer || maskInvert != o.maskInvert)
             return false;
         for (int c = 0; c < 3; ++c)
             if (add[c] != o.add[c] || remove[c] != o.remove[c]) return false;

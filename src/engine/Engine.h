@@ -169,6 +169,8 @@ public:
     // Mask of an effect: the picture of another layer (0: none) says where the effect applies. Refused for a
     // viewport, the layer itself, or a layer that already depends on this one (err says why).
     bool setEffectMask(int layer, int effect, quint64 maskLayer, bool invert, QString *err = nullptr);
+    // Where the color section applies: another layer's picture (0: everywhere). Same rules as an effect's mask.
+    bool setColorMask(int layer, quint64 maskLayer, bool invert, QString *err = nullptr);
     PlayMode defaultPlayMode() const { return m_defaultPlayMode; }
     void seekLayer(int i, double t);
     void setLayerVolume(int i, float volume);
@@ -426,6 +428,7 @@ private:
     GLuint m_blitProgram = 0, m_compProgram = 0, m_presentProgram = 0, m_prepProgram = 0;
     GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_compViewLoc = -1, m_presentTexLoc = -1;
     GLint m_prepTexLoc = -1, m_prepRoiLoc = -1, m_prepAddLoc = -1, m_prepRemoveLoc = -1, m_prepUnpremulLoc = -1, m_prepBalanceLoc = -1;
+    GLint m_prepMaskLoc = -1, m_prepMaskModeLoc = -1;
     GLuint m_blackTex = 0;
     VideoConverter m_videoConv; // video frames to RGBA (render thread)
     RenderTarget m_output[2];
