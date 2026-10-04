@@ -315,9 +315,13 @@ void Engine::renderLoop()
         const bool presented = presentViewports();
         if (!m_framePending.exchange(true)) emit frameRendered();
 
-        // No visible output (or vsync does not block): about 60 fps.
+        // Pace: the frame rate chosen, or the screen's — the vertical sync of the windows when one is shown
+        // (it then blocks), the main screen's refresh rate otherwise
+        const double rate = effectiveRender().frameRate;
+        const double hz = rate > 0 ? rate : screenRefreshRate();
+        const qint64 periodUs = qint64(1e6 / std::clamp(hz, 1.0, 1000.0));
         const qint64 us = pace.nsecsElapsed() / 1000;
-        if (!presented || us < 4000) QThread::usleep(static_cast<unsigned long>(std::max<qint64>(0, 16667 - us)));
+        if (rate > 0 || !presented || us < 4000) QThread::usleep(static_cast<unsigned long>(std::max<qint64>(0, periodUs - us)));
     }
     runPendingTasks();
     releaseAll();
@@ -335,6 +339,8 @@ void Engine::renderLoop()
 
 void Engine::releaseAll()
 {
+    for (auto &[size, ms] : m_msaa) ms.destroy();
+    m_msaa.clear();
     // Output windows: their contexts (the windows themselves belong to the interface)
     for (auto &[id, o] : m_outWindows) releaseOutputSurface(o);
     // Source transitions in progress (render thread: released here at once)
@@ -574,4 +580,53 @@ QImage Engine::sourcePreview(quint64 *layerId) const
     std::lock_guard<std::mutex> lk(m_previewMutex);
     if (layerId) *layerId = m_previewImageId;
     return m_previewImage;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering settings
+// ---------------------------------------------------------------------------
+void Engine::setRenderSettings(const RenderSettings &r)
+{
+    Lock lk(&m_mutex);
+    m_render = r;
+}
+
+Engine::RenderSettings Engine::renderSettings() const
+{
+    Lock lk(&m_mutex);
+    return m_render;
+}
+
+void Engine::setRenderDefaults(const RenderSettings &r)
+{
+    Lock lk(&m_mutex);
+    m_renderDefaults = r;
+}
+
+Engine::RenderSettings Engine::renderDefaults() const
+{
+    Lock lk(&m_mutex);
+    return m_renderDefaults;
+}
+
+Engine::RenderSettings Engine::effectiveRender() const
+{
+    Lock lk(&m_mutex);
+    RenderSettings e;
+    e.frameRate = m_render.frameRate >= 0 ? m_render.frameRate : std::max(0.0, m_renderDefaults.frameRate);
+    e.samples = m_render.samples >= 0 ? m_render.samples : std::max(0, m_renderDefaults.samples);
+    e.mipmaps = m_render.mipmaps >= 0 ? m_render.mipmaps : std::max(0, m_renderDefaults.mipmaps);
+    return e;
+}
+
+void Engine::setScreenRefreshRate(double hz)
+{
+    Lock lk(&m_mutex);
+    m_screenHz = hz > 1 ? hz : 60.0;
+}
+
+double Engine::screenRefreshRate() const
+{
+    Lock lk(&m_mutex);
+    return m_screenHz;
 }

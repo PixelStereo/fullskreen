@@ -107,6 +107,42 @@ void RenderTarget::destroy()
     w = h = 0;
 }
 
+void MsaaBuffer::ensure(int nw, int nh, int s)
+{
+    if (fbo && nw == w && nh == h && s == samples) return;
+    destroy();
+    auto f = gl();
+    w = nw;
+    h = nh;
+    samples = s;
+    f->glGenRenderbuffers(1, &rbo);
+    f->glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+    f->glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_RGBA8, w, h);
+    f->glGenFramebuffers(1, &fbo);
+    f->glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    f->glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rbo);
+    const GLenum st = f->glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (st != GL_FRAMEBUFFER_COMPLETE) qWarning() << "Incomplete multisampled framebuffer" << Qt::hex << st << w << h << samples;
+}
+
+void MsaaBuffer::resolveInto(const RenderTarget &target) const
+{
+    auto f = gl();
+    f->glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    f->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target.fbo);
+    f->glBlitFramebuffer(0, 0, w, h, 0, 0, target.w, target.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    f->glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+}
+
+void MsaaBuffer::destroy()
+{
+    auto f = gl();
+    if (fbo) f->glDeleteFramebuffers(1, &fbo);
+    if (rbo) f->glDeleteRenderbuffers(1, &rbo);
+    fbo = rbo = 0;
+    w = h = samples = 0;
+}
+
 void Texture2D::upload(const void *rgba, int nw, int nh)
 {
     auto f = gl();

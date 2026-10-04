@@ -1,9 +1,18 @@
 #pragma once
+#include "Engine.h"
 #include "IsfLibrary.h"
 #include "Layer.h"
 #include <QWidget>
 
 class QCheckBox;
+
+// Choices of the rendering settings, shared by Settings (the machine's defaults) and Master (the project's)
+namespace renderChoice {
+QList<double> frameRates(); // 0: the screen's refresh rate
+QString frameRateName(double fps);
+QList<int> samples();       // 0: off
+QString samplesName(int n);
+} // namespace renderChoice
 class QComboBox;
 class QLabel;
 class QSpinBox;
@@ -30,15 +39,20 @@ public:
     // the path saved on this machine (Crossfade by default), found again by its file name in the library
     static QString defaultTransition(const IsfLibrary &library);
     void setTransitions(const QVector<IsfEntry> &transitions, const QString &current); // the library's
+    // Frame rate, antialiasing and mipmaps of the projects that keep the default (Master)
+    static Engine::RenderSettings renderDefaults();
 
 signals:
     void playModeChanged();
     void colorModelsChanged();
     void oscChanged();
     void transitionChanged(const QString &path);
+    void renderDefaultsChanged();
 
 private:
-    QComboBox *m_playMode = nullptr, *m_colorModels = nullptr, *m_transition = nullptr;
+    QComboBox *m_playMode = nullptr, *m_colorModels = nullptr, *m_transition = nullptr, *m_rate = nullptr,
+              *m_samples = nullptr;
+    QCheckBox *m_mipmaps = nullptr;
     QCheckBox *m_osc = nullptr;
     QSpinBox *m_oscPort = nullptr, *m_queryPort = nullptr;
     QLabel *m_oscStatus = nullptr;

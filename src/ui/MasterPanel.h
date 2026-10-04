@@ -31,6 +31,7 @@ public:
     void syncFromEngine();        // composition, sound (after opening a project)
     void refreshStatus();         // level, composition (called periodically)
     void startAudio();            // opens the audio device saved in the settings (at launch)
+    void refreshRenderDefaults(); // the "Default (…)" entries follow the Settings
 
 signals:
     void blackoutChanged(bool on);
@@ -40,6 +41,8 @@ signals:
 private:
     QWidget *buildMaster();
     QWidget *buildComposition();
+    QWidget *buildRendering();
+    void syncRendering();
     QWidget *buildAudio();
     void fillAudioDevices();
     void openAudioDevice(const QString &name);
@@ -60,4 +63,5 @@ private:
     QProgressBar *m_meter[2] = {};
     QTimer m_meterTimer;
     bool m_syncing = false;
+    QComboBox *m_rate = nullptr, *m_samples = nullptr, *m_mipmaps = nullptr;
 };

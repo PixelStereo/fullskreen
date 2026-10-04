@@ -54,6 +54,7 @@ void Engine::clearProject()
         m_binItems.clear();
         m_memories.clear();
         m_nextMemoryId = 1;
+        m_render = RenderSettings(); // the machine's defaults
         m_sequences.clear();
         m_currentSequence = m_sequencePosition = -1;
         m_fades.clear();
@@ -318,6 +319,8 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         root["app"] = "Fulskrin";
         root["formatVersion"] = 1;
         root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()}};
+        root["render"] = QJsonObject{{"frameRate", m_render.frameRate}, {"antialiasing", m_render.samples},
+                                     {"mipmaps", m_render.mipmaps}};
         QJsonArray layers;
         for (const auto &l : m_layers) layers.append(layerToJson(*l, dir));
         root["layers"] = layers;
@@ -364,6 +367,14 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     clearProject();
     const QJsonObject comp = root.value("composition").toObject();
     setCompositionSize(QSize(comp.value("width").toInt(1920), comp.value("height").toInt(1080)));
+    {
+        const QJsonObject r = root.value("render").toObject();
+        RenderSettings rs;
+        rs.frameRate = std::clamp(r.value("frameRate").toDouble(-1), -1.0, 1000.0);
+        rs.samples = std::clamp(r.value("antialiasing").toInt(-1), -1, 16);
+        rs.mipmaps = std::clamp(r.value("mipmaps").toInt(-1), -1, 1);
+        setRenderSettings(rs);
+    }
     const QString dir = QFileInfo(path).absolutePath();
     QStringList warnings;
     const QJsonArray layers = root.value("layers").toArray();
