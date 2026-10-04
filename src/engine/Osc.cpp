@@ -892,6 +892,41 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                          l.effects[size_t(slot)]->enabled = truth(a.value(0));
                          return true;
                      }));
+            // Mask: a layer by its name ("" for none), and whether it is inverted
+            L.method(P + "/effects/" + seg + "/mask", "s", 3, "Mask",
+                     [e, slot](Layer &l) {
+                         const Layer *m = slot < int(l.effects.size()) && l.effects[size_t(slot)]->maskLayer
+                                              ? e->layer(e->indexOfId(l.effects[size_t(slot)]->maskLayer))
+                                              : nullptr;
+                         return QVariantList{m ? m->name : QString()};
+                     },
+                     [e, slot](int idx, const QVariantList &a) {
+                         const QString name = a.value(0).toString().trimmed();
+                         quint64 id = 0;
+                         bool invert = false;
+                         {
+                             Engine::Lock lk(&e->mutex());
+                             const Layer *l = e->layer(idx);
+                             if (!l || slot >= int(l->effects.size())) return false;
+                             invert = l->effects[size_t(slot)]->maskInvert;
+                             for (int k = 0; k < e->layerCount() && !name.isEmpty(); ++k)
+                                 if (const Layer *o = e->layer(k); o && o->name == name && !o->isViewport) {
+                                     id = o->id;
+                                     break;
+                                 }
+                         }
+                         if (!name.isEmpty() && !id) return false;
+                         return e->setEffectMask(idx, slot, id, invert);
+                     });
+            L.method(P + "/effects/" + seg + "/maskInvert", "T", 3, "Invert Mask",
+                     [slot](Layer &l) {
+                         return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->maskInvert} : QVariantList();
+                     },
+                     L.edit([slot](Layer &l, const QVariantList &a) {
+                         if (slot >= int(l.effects.size())) return false;
+                         l.effects[size_t(slot)]->maskInvert = truth(a.value(0));
+                         return true;
+                     }));
         }
     }
 

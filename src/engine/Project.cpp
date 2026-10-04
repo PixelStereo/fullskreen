@@ -295,7 +295,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         }
         if (!inst->isValid() && warnings) *warnings << name + " / " + QFileInfo(p).fileName() + ": " + inst->error();
         runGl([inst, e, projectDir] {
-            inst->enabled = e.value("enabled").toBool(true);
+            inst->readState(e);
             inst->restoreParams(e.value("params").toObject(), projectDir);
         });
     }

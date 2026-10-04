@@ -187,6 +187,8 @@ struct Layer {
     QString transition;
     float transitionGain = 1.0f; // sound during such a transition: the incoming source rises, the outgoing one falls
 
+    RenderTarget maskTarget[2]; // an effect's result through its mask
+
     // Frame render result
     GLuint finalTex = 0;
     int finalW = 0, finalH = 0;

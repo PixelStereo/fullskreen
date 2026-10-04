@@ -318,7 +318,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
         for (const QJsonValue &v : o.value("hiddenIn").toArray()) l->hiddenIn.push_back(v.toString().toULongLong());
         const QJsonArray fx = o.value("effects").toArray();
         for (size_t k = 0; k < l->effects.size() && int(k) < fx.size(); ++k)
-            l->effects[k]->enabled = fx[int(k)].toObject().value("enabled").toBool(true);
+            l->effects[k]->readState(fx[int(k)].toObject()); // on, mask
 
         auto job = std::make_shared<FadeJob>();
         job->id = id;

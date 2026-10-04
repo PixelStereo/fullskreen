@@ -132,6 +132,12 @@ public:
     bool isValid() const { return m_program != 0; }
     bool isFilter() const { return m_isFilter; }
     bool enabled = true;
+    // Effect in a chain: where it applies, from the picture of another layer — fully on white, not at all on
+    // black (or transparent), in proportion in between; the layer's picture is stretched over this one's.
+    quint64 maskLayer = 0; // 0: everywhere
+    bool maskInvert = false;
+    // enabled, mask and invert, from a saved effect (its params are restored by restoreParams)
+    void readState(const QJsonObject &o);
 
     std::vector<IsfInput> &inputs() { return m_inputs; }
     const std::vector<IsfInput> &inputs() const { return m_inputs; }
