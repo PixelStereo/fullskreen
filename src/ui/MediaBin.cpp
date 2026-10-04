@@ -289,6 +289,14 @@ void MediaBin::refreshIsf()
             g.users << l->name;
         }
     }
+    // The built-in Text generator, always there
+    gens[kTextGeneratorPath] = {QStringLiteral("Text"), QStringLiteral("Text"),
+                                QStringLiteral("Type a text; a memory that holds another text types it (typewriter)"), {}, true};
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        for (int i = 0; i < m_engine->layerCount(); ++i)
+            if (m_engine->layer(i)->type == SourceType::Text) gens[kTextGeneratorPath].users << m_engine->layer(i)->name;
+    }
     // Existing items (kept: selection, expanded categories), by path and by category
     QHash<QString, QTreeWidgetItem *> existing, categories;
     for (int c = 0; c < m_isfGenerators->childCount(); ++c) {
@@ -323,11 +331,11 @@ void MediaBin::refreshIsf()
             it->setData(0, IsfRole, true);
             it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
         }
-        const bool missing = !QFileInfo::exists(g.key());
+        const bool missing = !isTextGeneratorPath(g.key()) && !QFileInfo::exists(g.key());
         it->setData(0, MissingRole, missing);
         it->setData(0, UsedRole, true); // library shaders are not removed from the Media Bin
         it->setText(0, g->name);
-        it->setText(1, missing ? QStringLiteral("missing") : g->inLibrary ? QString() : QStringLiteral("outside library"));
+        it->setText(1, missing ? QStringLiteral("missing") : (g->inLibrary || isTextGeneratorPath(g.key())) ? QString() : QStringLiteral("outside library"));
         it->setText(2, g->users.isEmpty() ? QStringLiteral("—") : QString::number(g->users.size()));
         it->setTextAlignment(2, Qt::AlignCenter);
         const QString usedBy = g->users.isEmpty() ? QStringLiteral("Not used by any layer")

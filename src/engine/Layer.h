@@ -22,6 +22,11 @@
 // before or after its effect chain (see LayerTap) — the same picture can be mapped and treated twice.
 // `Text`: rendered text layer with system fonts, word wrapping, and animation.
 enum class SourceType { None, Video, Image, Isf, Audio, Layer, Text };
+
+// The Text generator is built in: the Media Bin lists it under Generators with this (virtual) path, so that it is
+// dragged onto a layer like any media.
+inline const QString kTextGeneratorPath = QStringLiteral("/Fulskrin/Generators/Text");
+inline bool isTextGeneratorPath(const QString &p) { return QString(p).replace('\\', '/').endsWith(kTextGeneratorPath); }
 // Where the picture of a layer used as a source is taken
 enum class LayerTap {
     PreFx = 0,  // after its ROI and color, before its effect chain
@@ -179,10 +184,29 @@ struct Layer {
     Qt::Alignment textAlign = Qt::AlignCenter; // text alignment (left/center/right, top/middle/bottom)
     float textLineHeight = 1.2f;                // line height as multiple of font size
     float textLetterSpacing = 0.0f;             // extra spacing between characters (in pixels)
-    double textAnimation = 0.0;                 // animation parameter (0..1), separate from playback
+    bool textBold = false, textItalic = false, textUnderline = false, textStrike = false;
+    float textOutline = 0.0f;                   // outline width in pixels (0: none)
+    QColor textOutlineColor = QColor(0, 0, 0);
+    bool textShadow = false;                    // drop shadow, offset in pixels
+    QColor textShadowColor = QColor(0, 0, 0, 160);
+    float textShadowX = 4.0f, textShadowY = 4.0f;
     int textWidth = 1920, textHeight = 1080;   // text layer dimension for rendering
-    QImage textPendingImage;                    // text render to upload to the GPU
-    Texture2D textSourceTex;                    // rendered text texture
+    Texture2D textSourceTex;                    // rendered text texture (render thread)
+    QString textKey;                            // what textSourceTex shows (text and style): redrawn only when it changes
+    // Typewriter: a memory that gives the layer another text types it over its time. The text goes from
+    // `textFrom` to `textContent` (erasing back to what they share, then typing); 0 duration: not typing.
+    QString textFrom;
+    double textTypeElapsed = 0, textTypeDur = 0;
+    QString shownText() const
+    {
+        if (textTypeDur <= 0 || textTypeElapsed >= textTypeDur) return textContent;
+        const QString &a = textFrom, &b = textContent;
+        int c = 0;
+        while (c < a.size() && c < b.size() && a[c] == b[c]) ++c;
+        const int del = int(a.size()) - c, total = del + int(b.size()) - c;
+        const int steps = int(textTypeElapsed / textTypeDur * total);
+        return steps <= del ? a.left(int(a.size()) - steps) : b.left(c + steps - del);
+    }
 
     // ISF generator
     std::unique_ptr<IsfInstance> generator;

@@ -178,12 +178,15 @@ public:
     void setLayerMuted(int i, bool muted);
 
     // Text layer properties
-    void setLayerSourceText(int i);  // Make layer a text layer
+    bool setLayerText(int i); // the layer's source becomes the Text generator
     void setLayerTextContent(int i, const QString &text);
     void setLayerTextFont(int i, const QString &font);
     void setLayerTextSize(int i, int size);
     void setLayerTextColor(int i, const QColor &color);
-    void setLayerTextAlign(int i, Qt::Alignment align);
+    void setLayerTextAlign(int i, Qt::Alignment align); // horizontal (left, center, right, justify) | vertical
+    void setLayerTextLineHeight(int i, float lineHeight); // multiple of the font's line spacing
+    void setLayerTextLetterSpacing(int i, float pixels);
+    void editLayerText(int i, const std::function<void(Layer &)> &edit); // style (bold, outline, shadow…), under the lock
 
     int addEffect(int layerIndex, const QString &path, QString *err = nullptr);
     void removeEffect(int layerIndex, int fx);

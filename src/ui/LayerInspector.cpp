@@ -12,6 +12,7 @@
 #include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFontComboBox>
 #include <QFontDatabase>
 #include <QMimeData>
 #include <QPlainTextEdit>
@@ -36,10 +37,12 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
+#include <QTimer>
 #include <QToolButton>
 #include <QUndoStack>
 #include <QVBoxLayout>
 #include <cmath>
+#include <memory>
 
 // Copy of a layer's state taken under the lock: widgets are built afterwards without blocking rendering.
 struct LayerSnapshot {
@@ -97,7 +100,12 @@ struct LayerSnapshot {
     Qt::Alignment textAlign = Qt::AlignCenter;
     float textLineHeight = 1.2f;
     float textLetterSpacing = 0.0f;
-    double textAnimation = 0.0;
+    bool textBold = false, textItalic = false, textUnderline = false, textStrike = false;
+    float textOutline = 0.0f;
+    QColor textOutlineColor = QColor(0, 0, 0);
+    bool textShadow = false;
+    QColor textShadowColor = QColor(0, 0, 0, 160);
+    float textShadowX = 4.0f, textShadowY = 4.0f;
 
     static LayerSnapshot take(Engine *e, int index)
     {
@@ -174,7 +182,16 @@ struct LayerSnapshot {
         s.textAlign = l->textAlign;
         s.textLineHeight = l->textLineHeight;
         s.textLetterSpacing = l->textLetterSpacing;
-        s.textAnimation = l->textAnimation;
+        s.textBold = l->textBold;
+        s.textItalic = l->textItalic;
+        s.textUnderline = l->textUnderline;
+        s.textStrike = l->textStrike;
+        s.textOutline = l->textOutline;
+        s.textOutlineColor = l->textOutlineColor;
+        s.textShadow = l->textShadow;
+        s.textShadowColor = l->textShadowColor;
+        s.textShadowX = l->textShadowX;
+        s.textShadowY = l->textShadowY;
         if (!l->isViewport) {
             const Layer *top = l;
             while (top->parent) {
@@ -496,106 +513,212 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     default: desc = QStringLiteral("No source"); break;
     }
 
-    // Text layer: show text editor instead of drop zone
+    // Text generator: the text typed here, and how it is set
     if (s.type == SourceType::Text) {
-        // Text content editor
-        auto *contentLabel = new QLabel(QStringLiteral("Text"));
+        // Edits apply at once; the undo step is pushed when the editing pauses
+        struct Pending { QJsonObject before; QString label; bool has = false; };
+        auto pend = std::make_shared<Pending>();
+        auto *commit = new QTimer(g);
+        commit->setSingleShot(true);
+        commit->setInterval(700);
+        connect(commit, &QTimer::timeout, this, [this, pend] {
+            if (!pend->has) return;
+            pend->has = false;
+            m_undo->push(new cmd::ReplaceLayer(m_engine, m_layer, pend->before, pend->label));
+        });
+        auto live = [this, pend, commit](const QString &label, const std::function<void()> &op) {
+            if (m_engine->isLocked(m_layer)) return;
+            if (!pend->has) {
+                pend->has = true;
+                pend->before = m_engine->layerJson(m_layer);
+            }
+            pend->label = label;
+            op();
+            commit->start();
+        };
+        auto style = [this, live](const QString &label, std::function<void(Layer &)> fn) {
+            live(label, [this, fn] { m_engine->editLayerText(m_layer, fn); });
+        };
+        auto colorButton = [this, style](const QColor &c, const QString &label, std::function<void(Layer &, const QColor &)> set) {
+            auto *b = new QPushButton;
+            b->setFixedWidth(48);
+            b->setEnabled(!m_locked);
+            auto paint = [b](const QColor &x) {
+                b->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #666; border-radius: 2px;").arg(x.name()));
+            };
+            paint(c);
+            connect(b, &QPushButton::clicked, this, [this, b, c, label, set, style, paint] {
+                const QColor cur = b->property("color").value<QColor>().isValid() ? b->property("color").value<QColor>() : c;
+                const QColor picked = QColorDialog::getColor(cur, this, label, QColorDialog::ShowAlphaChannel);
+                if (!picked.isValid()) return;
+                b->setProperty("color", picked);
+                paint(picked);
+                style(label, [set, picked](Layer &l) { set(l, picked); });
+            });
+            return b;
+        };
+        auto spin = [this](double v, double lo, double hi, double step, int dec, const QString &suffix) {
+            auto *x = new QDoubleSpinBox;
+            x->setRange(lo, hi);
+            x->setSingleStep(step);
+            x->setDecimals(dec);
+            x->setSuffix(suffix);
+            x->setValue(v);
+            x->setEnabled(!m_locked);
+            return x;
+        };
+
         auto *editor = new QPlainTextEdit;
         editor->setPlainText(s.textContent);
-        editor->setMinimumHeight(80);
-        editor->setToolTip(QStringLiteral("Type your text here. Different text in different cues will typewrite when recalling between them."));
+        editor->setMinimumHeight(90);
+        editor->setPlaceholderText(QStringLiteral("Type the text here"));
+        editor->setToolTip(QStringLiteral("The text of this layer. A memory that holds another text types it (typewriter) over its fade."));
         editor->setReadOnly(m_locked);
-        auto *editorRow = new QHBoxLayout;
-        editorRow->addWidget(contentLabel, 0);
-        editorRow->addWidget(editor, 1);
-        v->addLayout(editorRow);
-        connect(editor, &QPlainTextEdit::textChanged, this, [this, editor] {
-            if (!m_locked) {
-                editSource(QStringLiteral("Edit Text Content"), [this, editor] {
-                    m_engine->setLayerTextContent(m_layer, editor->toPlainText());
-                });
-            }
+        v->addWidget(editor);
+        connect(editor, &QPlainTextEdit::textChanged, this, [this, editor, live] {
+            live(QStringLiteral("Edit Text"), [this, editor] { m_engine->setLayerTextContent(m_layer, editor->toPlainText()); });
         });
 
-        v->addWidget(separator());
-
-        // Font and formatting controls
         auto *fmt = new QFormLayout;
-        fmt->setContentsMargins(0, 2, 0, 2);
-        fmt->setHorizontalSpacing(10);
-        fmt->setVerticalSpacing(2);
         fmt->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-        // Font family selector
-        auto *fontCombo = new QComboBox;
-        const QStringList families = QFontDatabase::families();
-        int fontIdx = families.indexOf(s.textFont);
-        fontCombo->addItems(families);
-        if (fontIdx >= 0) fontCombo->setCurrentIndex(fontIdx);
-        fontCombo->setEditable(true);
-        fontCombo->setEnabled(!m_locked);
-        fmt->addRow(QStringLiteral("Font"), fontCombo);
-        connect(fontCombo, static_cast<void(QComboBox::*)(const QString &)>(&QComboBox::currentTextChanged), this, [this, fontCombo] {
-            if (!m_locked) {
-                editSource(QStringLiteral("Change Font"), [this, fontCombo] {
-                    m_engine->setLayerTextFont(m_layer, fontCombo->currentText());
-                });
-            }
+        auto *fontBox = new QFontComboBox;
+        fontBox->setCurrentFont(QFont(s.textFont));
+        fontBox->setEnabled(!m_locked);
+        fmt->addRow(QStringLiteral("Font"), fontBox);
+        connect(fontBox, &QFontComboBox::currentFontChanged, this, [style](const QFont &f) {
+            const QString family = f.family();
+            style(QStringLiteral("Text Font"), [family](Layer &l) { l.textFont = family; });
         });
 
-        // Size
-        auto *sizeSpinBox = new QSpinBox;
-        sizeSpinBox->setRange(8, 256);
-        sizeSpinBox->setValue(s.textSize);
-        sizeSpinBox->setReadOnly(m_locked);
-        fmt->addRow(QStringLiteral("Size"), sizeSpinBox);
-        connect(sizeSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, sizeSpinBox] {
-            if (!m_locked) {
-                editSource(QStringLiteral("Change Text Size"), [this, sizeSpinBox] {
-                    m_engine->setLayerTextSize(m_layer, sizeSpinBox->value());
-                });
-            }
+        auto *size = new QSpinBox;
+        size->setRange(1, 1000);
+        size->setSuffix(QStringLiteral(" px"));
+        size->setValue(s.textSize);
+        size->setEnabled(!m_locked);
+        auto *colorRow = new QHBoxLayout;
+        colorRow->addWidget(size);
+        colorRow->addWidget(colorButton(s.textColor, QStringLiteral("Text Color"), [](Layer &l, const QColor &c) { l.textColor = c; }));
+        colorRow->addStretch();
+        fmt->addRow(QStringLiteral("Size / color"), colorRow);
+        connect(size, QOverload<int>::of(&QSpinBox::valueChanged), this, [style](int px) {
+            style(QStringLiteral("Text Size"), [px](Layer &l) { l.textSize = px; });
         });
 
-        // Color
-        auto *colorBtn = new QPushButton;
-        colorBtn->setToolTip(QStringLiteral("Click to choose text color"));
-        colorBtn->setEnabled(!m_locked);
-        auto updateColorBtn = [colorBtn](const QColor &c) {
-            colorBtn->setStyleSheet(QStringLiteral("background-color: %1; border-radius: 2px;").arg(c.name()));
+        // Bold, italic, underline, strikethrough
+        auto *styleRow = new QHBoxLayout;
+        struct Toggle { const char *label, *tip; bool on; bool Layer::*field; };
+        const Toggle toggles[] = {{"B", "Bold", s.textBold, &Layer::textBold},
+                                  {"I", "Italic", s.textItalic, &Layer::textItalic},
+                                  {"U", "Underline", s.textUnderline, &Layer::textUnderline},
+                                  {"S", "Strikethrough", s.textStrike, &Layer::textStrike}};
+        for (const Toggle &t : toggles) {
+            auto *b = new QToolButton;
+            b->setText(QString::fromLatin1(t.label));
+            b->setToolTip(QString::fromLatin1(t.tip));
+            b->setCheckable(true);
+            b->setChecked(t.on);
+            b->setEnabled(!m_locked);
+            QFont f = b->font();
+            f.setBold(t.label[0] == 'B');
+            f.setItalic(t.label[0] == 'I');
+            f.setUnderline(t.label[0] == 'U');
+            f.setStrikeOut(t.label[0] == 'S');
+            b->setFont(f);
+            styleRow->addWidget(b);
+            auto field = t.field;
+            connect(b, &QToolButton::toggled, this, [style, field, tip = QString::fromLatin1(t.tip)](bool on) {
+                style(tip, [field, on](Layer &l) { l.*field = on; });
+            });
+        }
+        styleRow->addStretch();
+        fmt->addRow(QStringLiteral("Style"), styleRow);
+
+        // Alignment: left, center, right, justified; top, middle, bottom
+        auto *hAlign = new QComboBox;
+        hAlign->addItem(QStringLiteral("Left"), int(Qt::AlignLeft));
+        hAlign->addItem(QStringLiteral("Center"), int(Qt::AlignHCenter));
+        hAlign->addItem(QStringLiteral("Right"), int(Qt::AlignRight));
+        hAlign->addItem(QStringLiteral("Justified"), int(Qt::AlignJustify));
+        auto *vAlign = new QComboBox;
+        vAlign->addItem(QStringLiteral("Top"), int(Qt::AlignTop));
+        vAlign->addItem(QStringLiteral("Middle"), int(Qt::AlignVCenter));
+        vAlign->addItem(QStringLiteral("Bottom"), int(Qt::AlignBottom));
+        const int h0 = hAlign->findData(int(s.textAlign & Qt::AlignHorizontal_Mask));
+        const int v0 = vAlign->findData(int(s.textAlign & Qt::AlignVertical_Mask));
+        hAlign->setCurrentIndex(h0 >= 0 ? h0 : 0);
+        vAlign->setCurrentIndex(v0 >= 0 ? v0 : 0);
+        hAlign->setEnabled(!m_locked);
+        vAlign->setEnabled(!m_locked);
+        auto *alignRow = new QHBoxLayout;
+        alignRow->addWidget(hAlign);
+        alignRow->addWidget(vAlign);
+        fmt->addRow(QStringLiteral("Align"), alignRow);
+        auto setAlign = [style, hAlign, vAlign] {
+            const int a = hAlign->currentData().toInt() | vAlign->currentData().toInt();
+            style(QStringLiteral("Text Alignment"), [a](Layer &l) { l.textAlign = Qt::Alignment(a); });
         };
-        updateColorBtn(s.textColor);
-        fmt->addRow(QStringLiteral("Color"), colorBtn);
-        connect(colorBtn, &QPushButton::clicked, this, [this, colorBtn, updateColorBtn, s] {
-            const QColor picked = QColorDialog::getColor(s.textColor, this, QStringLiteral("Text Color"));
-            if (picked.isValid()) {
-                editSource(QStringLiteral("Change Text Color"), [this, picked] {
-                    m_engine->setLayerTextColor(m_layer, picked);
-                });
-                updateColorBtn(picked);
-            }
+        connect(hAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
+        connect(vAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
+
+        auto *lineSp = spin(s.textLineHeight, 0.2, 5.0, 0.05, 2, QStringLiteral(" ×"));
+        lineSp->setToolTip(QStringLiteral("Space between the lines (1 = the font's own)"));
+        fmt->addRow(QStringLiteral("Line spacing"), lineSp);
+        connect(lineSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Line Spacing"), [x](Layer &l) { l.textLineHeight = float(x); });
+        });
+        auto *letterSp = spin(s.textLetterSpacing, -50, 200, 0.5, 1, QStringLiteral(" px"));
+        letterSp->setToolTip(QStringLiteral("Space added between the letters"));
+        fmt->addRow(QStringLiteral("Letter spacing"), letterSp);
+        connect(letterSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Letter Spacing"), [x](Layer &l) { l.textLetterSpacing = float(x); });
         });
 
-        // Alignment
-        auto *alignCombo = new QComboBox;
-        alignCombo->addItem(QStringLiteral("Left"), int(Qt::AlignLeft));
-        alignCombo->addItem(QStringLiteral("Center"), int(Qt::AlignHCenter));
-        alignCombo->addItem(QStringLiteral("Right"), int(Qt::AlignRight));
-        int alignIdx = 1; // default center
-        if ((s.textAlign & Qt::AlignLeft) == Qt::AlignLeft) alignIdx = 0;
-        else if ((s.textAlign & Qt::AlignRight) == Qt::AlignRight) alignIdx = 2;
-        alignCombo->setCurrentIndex(alignIdx);
-        alignCombo->setEnabled(!m_locked);
-        fmt->addRow(QStringLiteral("Align"), alignCombo);
-        connect(alignCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, alignCombo] {
-            if (!m_locked) {
-                editSource(QStringLiteral("Change Text Alignment"), [this, alignCombo] {
-                    m_engine->setLayerTextAlign(m_layer, Qt::Alignment(alignCombo->currentData().toInt()));
-                });
-            }
+        // Outline
+        auto *outline = spin(s.textOutline, 0, 100, 0.5, 1, QStringLiteral(" px"));
+        auto *outlineRow = new QHBoxLayout;
+        outlineRow->addWidget(outline);
+        outlineRow->addWidget(colorButton(s.textOutlineColor, QStringLiteral("Outline Color"),
+                                          [](Layer &l, const QColor &c) { l.textOutlineColor = c; }));
+        outlineRow->addStretch();
+        fmt->addRow(QStringLiteral("Outline"), outlineRow);
+        connect(outline, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Text Outline"), [x](Layer &l) { l.textOutline = float(x); });
+        });
+
+        // Shadow
+        auto *shadow = new QCheckBox(QStringLiteral("On"));
+        shadow->setChecked(s.textShadow);
+        shadow->setEnabled(!m_locked);
+        auto *shadowRow = new QHBoxLayout;
+        shadowRow->addWidget(shadow);
+        shadowRow->addWidget(colorButton(s.textShadowColor, QStringLiteral("Shadow Color"),
+                                         [](Layer &l, const QColor &c) { l.textShadowColor = c; }));
+        auto *sx = spin(s.textShadowX, -200, 200, 1, 0, QStringLiteral(" x"));
+        auto *sy = spin(s.textShadowY, -200, 200, 1, 0, QStringLiteral(" y"));
+        shadowRow->addWidget(sx);
+        shadowRow->addWidget(sy);
+        fmt->addRow(QStringLiteral("Shadow"), shadowRow);
+        connect(shadow, &QCheckBox::toggled, this, [style](bool on) {
+            style(QStringLiteral("Text Shadow"), [on](Layer &l) { l.textShadow = on; });
+        });
+        connect(sx, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.textShadowX = float(x); });
+        });
+        connect(sy, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.textShadowY = float(x); });
         });
 
         v->addLayout(fmt);
+        auto *eject = new QPushButton(QStringLiteral("Eject Text"));
+        eject->setToolTip(QStringLiteral("Empty the layer (the text generator stays in the Media Bin)"));
+        eject->setEnabled(!m_locked);
+        v->addWidget(eject);
+        connect(eject, &QPushButton::clicked, this, [this] {
+            editSource(QStringLiteral("Eject Text"), [this] { m_engine->clearLayerSource(m_layer); });
+            emit layerChanged();
+            rebuild();
+        });
         v->addStretch();
         return g;
     }
@@ -620,19 +743,6 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         emit layerChanged();
         rebuild();
     });
-
-    // Or create a text layer
-    {
-        auto *textBtn = new QPushButton(QStringLiteral("Create Text Layer"));
-        textBtn->setToolTip(QStringLiteral("Make this layer a text layer for typing and animation"));
-        textBtn->setEnabled(!loaded);
-        v->addWidget(textBtn);
-        connect(textBtn, &QPushButton::clicked, this, [this] {
-            editSource(QStringLiteral("Create Text Layer"), [this] { m_engine->setLayerSourceText(m_layer); });
-            emit layerChanged();
-            rebuild();
-        });
-    }
 
     // Or the picture of another layer, tapped before or after its effect chain
     {
@@ -1024,7 +1134,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
     }
-    if (s.type == SourceType::Video || s.type == SourceType::Image || s.type == SourceType::Isf) v->addWidget(buildRoi(s));
+    if (s.type == SourceType::Video || s.type == SourceType::Image || s.type == SourceType::Isf || s.type == SourceType::Text) v->addWidget(buildRoi(s));
     return g;
 }
 

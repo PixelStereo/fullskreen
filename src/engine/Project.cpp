@@ -160,10 +160,20 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         src["content"] = l.textContent;
         src["font"] = l.textFont;
         src["size"] = l.textSize;
-        src["color"] = l.textColor.name();
+        src["color"] = l.textColor.name(QColor::HexArgb);
         src["align"] = int(l.textAlign);
         src["lineHeight"] = l.textLineHeight;
         src["letterSpacing"] = l.textLetterSpacing;
+        src["bold"] = l.textBold;
+        src["italic"] = l.textItalic;
+        src["underline"] = l.textUnderline;
+        src["strike"] = l.textStrike;
+        src["outline"] = l.textOutline;
+        src["outlineColor"] = l.textOutlineColor.name(QColor::HexArgb);
+        src["shadow"] = l.textShadow;
+        src["shadowColor"] = l.textShadowColor.name(QColor::HexArgb);
+        src["shadowX"] = l.textShadowX;
+        src["shadowY"] = l.textShadowY;
         src["width"] = l.textWidth;
         src["height"] = l.textHeight;
         break;
@@ -320,6 +330,16 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         l->textAlign = Qt::Alignment(src.value("align").toInt(int(Qt::AlignCenter)));
         l->textLineHeight = float(src.value("lineHeight").toDouble(1.2));
         l->textLetterSpacing = float(src.value("letterSpacing").toDouble(0.0));
+        l->textBold = src.value("bold").toBool();
+        l->textItalic = src.value("italic").toBool();
+        l->textUnderline = src.value("underline").toBool();
+        l->textStrike = src.value("strike").toBool();
+        l->textOutline = float(src.value("outline").toDouble(0));
+        l->textOutlineColor = QColor(src.value("outlineColor").toString("#ff000000"));
+        l->textShadow = src.value("shadow").toBool();
+        l->textShadowColor = QColor(src.value("shadowColor").toString("#a0000000"));
+        l->textShadowX = float(src.value("shadowX").toDouble(4));
+        l->textShadowY = float(src.value("shadowY").toDouble(4));
         l->textWidth = src.value("width").toInt(1920);
         l->textHeight = src.value("height").toInt(1080);
     }

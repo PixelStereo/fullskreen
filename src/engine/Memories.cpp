@@ -66,7 +66,6 @@ struct LayerNumbers {
     Qt::Alignment textAlign = Qt::AlignCenter;
     float textLineHeight = 1.2f;
     float textLetterSpacing = 0.0f;
-    double textAnimation = 0.0; // text layer animation parameter (0..1)
 };
 
 // How long each of those numbers takes to reach the memory's value (seconds; 0: a cut). By default the
@@ -78,7 +77,7 @@ struct LayerTimes {
     double softEdge = 0; // soft edge width and power
     double speed = 0, inPoint = 0, outPoint = 0; // playback parameters
     double textSize = 0, textColor = 0, textAlign = 0, textLineHeight = 0, textLetterSpacing = 0; // text layer parameters
-    double textAnimation = 0; // text animation parameter
+    double textContent = 0; // typewriter: time the layer takes to type the memory's text
     // Easing curves for each parameter (default: EaseInOut for all)
     EasingCurve opacityCurve = EasingCurve::EaseInOut, volumeCurve = EasingCurve::EaseInOut;
     EasingCurve roiCurve = EasingCurve::EaseInOut, colorCurve = EasingCurve::EaseInOut;
@@ -87,12 +86,12 @@ struct LayerTimes {
     EasingCurve speedCurve = EasingCurve::EaseInOut, inOutCurve = EasingCurve::EaseInOut;
     EasingCurve textSizeCurve = EasingCurve::EaseInOut, textColorCurve = EasingCurve::EaseInOut;
     EasingCurve textAlignCurve = EasingCurve::EaseInOut, textLineHeightCurve = EasingCurve::EaseInOut;
-    EasingCurve textLetterSpacingCurve = EasingCurve::EaseInOut, textAnimationCurve = EasingCurve::EaseInOut;
+    EasingCurve textLetterSpacingCurve = EasingCurve::EaseInOut;
     std::vector<std::vector<EasingCurve>> isfCurves; // per-parameter curves
 
     double longest() const
     {
-        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, viewportOpacity, softEdge, speed, inPoint, outPoint, textSize, textColor, textAlign, textLineHeight, textLetterSpacing, textAnimation});
+        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, viewportOpacity, softEdge, speed, inPoint, outPoint, textSize, textColor, textAlign, textLineHeight, textLetterSpacing, textContent});
         for (const auto &v : isf)
             for (double d : v) m = std::max(m, d);
         return m;
@@ -125,7 +124,6 @@ static LayerNumbers numbersOf(const Layer &l)
     n.textAlign = l.textAlign;
     n.textLineHeight = l.textLineHeight;
     n.textLetterSpacing = l.textLetterSpacing;
-    n.textAnimation = l.textAnimation;
     auto values = [](const IsfInstance *inst) {
         std::vector<IsfValue> v;
         if (inst)
@@ -156,7 +154,6 @@ static void setNumbers(Layer &l, const LayerNumbers &n)
     l.textAlign = n.textAlign;
     l.textLineHeight = n.textLineHeight;
     l.textLetterSpacing = n.textLetterSpacing;
-    l.textAnimation = n.textAnimation;
     auto apply = [](IsfInstance *inst, const std::vector<IsfValue> &v) {
         if (!inst) return;
         for (size_t k = 0; k < v.size() && k < inst->inputs().size(); ++k) inst->inputs()[k].setValue(v[k]);
@@ -242,7 +239,6 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, con
         n.textAlign = t(d.textAlign, d.textAlignCurve) >= 0.5 ? b.textAlign : a.textAlign;
         n.textLineHeight = mixf(a.textLineHeight, b.textLineHeight, t(d.textLineHeight, d.textLineHeightCurve));
         n.textLetterSpacing = mixf(a.textLetterSpacing, b.textLetterSpacing, t(d.textLetterSpacing, d.textLetterSpacingCurve));
-        n.textAnimation = mixd(a.textAnimation, b.textAnimation, t(d.textAnimation, d.textAnimationCurve));
     }
     for (size_t i = 0; i < n.isf.size() && i < a.isf.size(); ++i)
         for (size_t k = 0; k < n.isf[i].size() && k < a.isf[i].size(); ++k) {
@@ -287,7 +283,7 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.textAlign = time(QStringLiteral("textAlign"));
     d.textLineHeight = time(QStringLiteral("textLineHeight"));
     d.textLetterSpacing = time(QStringLiteral("textLetterSpacing"));
-    d.textAnimation = time(QStringLiteral("textAnimation"));
+    d.textContent = time(QStringLiteral("textContent"));
     // Read easing curves for each parameter
     d.opacityCurve = curve(QStringLiteral("opacity"));
     d.volumeCurve = curve(QStringLiteral("volume"));
@@ -303,7 +299,6 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.textAlignCurve = curve(QStringLiteral("textAlign"));
     d.textLineHeightCurve = curve(QStringLiteral("textLineHeight"));
     d.textLetterSpacingCurve = curve(QStringLiteral("textLetterSpacing"));
-    d.textAnimationCurve = curve(QStringLiteral("textAnimation"));
     auto params = [&](const IsfInstance *inst, const QString &base) {
         std::vector<double> v;
         if (inst)
@@ -322,7 +317,7 @@ QString Engine::timingKey(const QStringList &path)
     const QString &a = path[0];
     if (a == "opacity" || a == "volume" || a == "mapping" || a == "viewportOpacity" || a == "softEdge" ||
         a == "speed" || a == "inPoint" || a == "outPoint" || a == "textSize" || a == "textColor" ||
-        a == "textAlign" || a == "textLineHeight" || a == "textLetterSpacing" || a == "textAnimation")
+        a == "textAlign" || a == "textLineHeight" || a == "textLetterSpacing" || a == "textContent")
         return a;
     if (a == "source" && path.size() >= 2 && path[1] == "roi") return QStringLiteral("roi");
     if (a == "source" && path.size() >= 3 && path[1] == "params") return QStringLiteral("source/params/") + path[2];
@@ -593,6 +588,34 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             to.soft = to.mapping.soft; // setNumbers applies `soft` over the mapping's: the memory's crop
         }
         to.viewportOpacity = targetViewportOpacity;
+        if (l->type == SourceType::Text && src.value("type").toString() == "text") {
+            // Text generator: the style moves to the memory's, the text is typed over its time
+            to.textSize = std::clamp(src.value("size").toInt(to.textSize), 1, 1000);
+            const QColor c(src.value("color").toString());
+            if (c.isValid()) to.textColor = c;
+            to.textAlign = Qt::Alignment(src.value("align").toInt(int(to.textAlign)));
+            to.textLineHeight = float(src.value("lineHeight").toDouble(to.textLineHeight));
+            to.textLetterSpacing = float(src.value("letterSpacing").toDouble(to.textLetterSpacing));
+            l->textFont = src.value("font").toString(l->textFont);
+            l->textBold = src.value("bold").toBool(l->textBold);
+            l->textItalic = src.value("italic").toBool(l->textItalic);
+            l->textUnderline = src.value("underline").toBool(l->textUnderline);
+            l->textStrike = src.value("strike").toBool(l->textStrike);
+            l->textOutline = float(src.value("outline").toDouble(l->textOutline));
+            if (QColor oc(src.value("outlineColor").toString()); oc.isValid()) l->textOutlineColor = oc;
+            l->textShadow = src.value("shadow").toBool(l->textShadow);
+            if (QColor sc(src.value("shadowColor").toString()); sc.isValid()) l->textShadowColor = sc;
+            l->textShadowX = float(src.value("shadowX").toDouble(l->textShadowX));
+            l->textShadowY = float(src.value("shadowY").toDouble(l->textShadowY));
+            const QString content = src.value("content").toString();
+            if (content != l->textContent) {
+                const double dur = job->times.textContent;
+                l->textFrom = l->shownText(); // from what is on screen now (a recall may interrupt another)
+                l->textContent = content;
+                l->textTypeElapsed = 0;
+                l->textTypeDur = dur;
+            }
+        }
         if (!to.isf.empty()) readParams(l->generator.get(), src.value("params").toObject(), to.isf[0]);
         for (size_t k = 0; k < l->effects.size() && k + 1 < to.isf.size() && int(k) < fx.size(); ++k)
             readParams(l->effects[k].get(), fx[int(k)].toObject().value("params").toObject(), to.isf[k + 1]);
@@ -676,6 +699,12 @@ void Engine::stepFade(double dt)
 void Engine::advanceFades(double dt)
 {
     Lock lk(&m_mutex);
+    for (auto &lp : m_layers) { // typewriters: the text a memory gave goes on being typed
+        Layer &l = *lp;
+        if (l.textTypeDur <= 0) continue;
+        l.textTypeElapsed += std::max(0.0, dt);
+        if (l.textTypeElapsed >= l.textTypeDur) l.textTypeDur = 0;
+    }
     stepFade(dt);
     stepTransitions(dt);
 }

@@ -702,6 +702,7 @@ static QString layerTag(SourceType t)
     case SourceType::Video: return QStringLiteral("▶");
     case SourceType::Image: return QStringLiteral("▣");
     case SourceType::Isf: return QStringLiteral("◆");
+    case SourceType::Text: return QStringLiteral("T");
     case SourceType::Audio: return QStringLiteral("♪");
     case SourceType::Layer: return QStringLiteral("⧉");
     default: return QStringLiteral("○");
@@ -762,6 +763,7 @@ void MainWindow::refreshLayerList()
                                       : QFileInfo(l->sourcePath).fileName();
                 break;
             case SourceType::Isf: r.source = QStringLiteral("generator ") + QFileInfo(l->sourcePath).completeBaseName(); break;
+            case SourceType::Text: r.source = QStringLiteral("text ") + l->textContent.left(40).replace('\n', ' '); break;
             case SourceType::Layer: {
                 const Layer *src = m_engine->layer(m_engine->indexOfId(l->sourceLayer));
                 r.source = QStringLiteral("layer %1 · %2")
@@ -787,7 +789,7 @@ void MainWindow::refreshLayerList()
                 r.playback = QStringLiteral("%1 %2 / %3  %4")
                                  .arg(l->ended ? QStringLiteral("■") : !l->playing ? QStringLiteral("❚❚") : l->speed < 0 ? QStringLiteral("◀") : QStringLiteral("▶"),
                                       fmtClock(l->position()), fmtClock(l->duration()), kModeSymbol[int(l->mode)]);
-            } else if (l->type == SourceType::Isf) {
+            } else if (l->type == SourceType::Isf || l->type == SourceType::Text) {
                 r.playback = QStringLiteral("real time");
             }
             rows.push_back(r);
@@ -839,6 +841,28 @@ bool MainWindow::loadIntoLayer(int i, const QString &path)
         return false;
     }
     if (refuseLocked(i)) return false;
+    if (isTextGeneratorPath(path)) { // the built-in Text generator, dragged from the Media Bin
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(i);
+            if (l && (l->isGroup || l->isViewport)) {
+                lk.unlock();
+                statusBar()->showMessage(QStringLiteral("A group or a viewport has no source: drop the text onto a layer."), 6000);
+                return false;
+            }
+        }
+        const QJsonObject before = m_engine->layerJson(i);
+        if (!m_engine->setLayerText(i)) return false;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(i);
+            if (l && l->name.startsWith(QStringLiteral("Layer "))) l->name = QStringLiteral("Text");
+        }
+        m_undo->push(new cmd::ReplaceLayer(m_engine, i, before, QStringLiteral("Load Text Generator")));
+        selectLayer(i);
+        refreshAll();
+        return true;
+    }
     const QFileInfo fi(path);
     const QString ext = fi.suffix().toLower();
     auto fail = [&](const QString &err) {
@@ -898,7 +922,9 @@ void MainWindow::loadDropped(int layer, const QStringList &paths)
     for (const QString &p : paths) {
         const QString ext = QFileInfo(p).suffix().toLower();
         const bool effect = kIsfExt.contains(ext) && IsfInstance::readHeader(p).isFilter;
-        if (effect) {
+        if (isTextGeneratorPath(p)) { // built in: never imported into the Media Bin
+            if (!sourceLoaded) sourceLoaded = loadIntoLayer(layer, p);
+        } else if (effect) {
             loadIntoLayer(layer, p);
         } else if (!sourceLoaded) {
             sourceLoaded = loadIntoLayer(layer, p);

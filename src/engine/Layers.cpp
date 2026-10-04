@@ -382,6 +382,7 @@ void Engine::releaseLayer(Layer &l)
     l.videoTex.reset();
     releaseAudio(*m_audio, l.audio);
     l.sourceTex.destroy();
+    l.textSourceTex.destroy();
     if (l.generator) l.generator->releaseGl();
     l.generator.reset();
     l.generatorTarget.destroy();
@@ -605,6 +606,11 @@ std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
     g->audio = std::move(l.audio);
     g->tex = l.sourceTex;
     l.sourceTex = Texture2D{};
+    g->textTex = l.textSourceTex;
+    l.textSourceTex = Texture2D{};
+    l.textKey.clear();
+    l.textFrom.clear();
+    l.textTypeDur = l.textTypeElapsed = 0;
     g->generator = std::move(l.generator);
     g->generatorTarget = l.generatorTarget;
     l.generatorTarget = RenderTarget{};
@@ -627,6 +633,7 @@ void Engine::releaseGarbage(const std::shared_ptr<Garbage> &g)
     releaseAudio(*m_audio, g->audio);
     runGl([g] {
         g->tex.destroy();
+        g->textTex.destroy();
         if (g->videoTex) g->videoTex->destroy();
         if (g->generator) g->generator->releaseGl();
         g->generatorTarget.destroy();
@@ -1031,23 +1038,29 @@ void Engine::setLayerMuted(int i, bool muted)
     if (Layer *l = layer(i)) l->muted = muted;
 }
 
-void Engine::setLayerSourceText(int i)
+bool Engine::setLayerText(int i)
 {
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) {
+    std::shared_ptr<Garbage> g;
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(i);
+        if (!l || l->isGroup || l->isViewport) return false;
+        g = detachSource(*l);
         l->type = SourceType::Text;
-        l->sourcePath.clear();
-        l->srcWidth = 960;
-        l->srcHeight = 540;
-        l->textWidth = 960;
-        l->textHeight = 540;
+        l->srcWidth = l->textWidth;
+        l->srcHeight = l->textHeight;
     }
+    releaseGarbage(g);
+    return true;
 }
 
 void Engine::setLayerTextContent(int i, const QString &text)
 {
     Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->textContent = text;
+    if (Layer *l = layer(i)) {
+        l->textContent = text;
+        l->textTypeDur = 0; // typed by hand: no typewriter in progress
+    }
 }
 
 void Engine::setLayerTextFont(int i, const QString &font)
@@ -1066,6 +1079,24 @@ void Engine::setLayerTextColor(int i, const QColor &color)
 {
     Lock lk(&m_mutex);
     if (Layer *l = layer(i)) l->textColor = color;
+}
+
+void Engine::editLayerText(int i, const std::function<void(Layer &)> &edit)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) edit(*l);
+}
+
+void Engine::setLayerTextLineHeight(int i, float lineHeight)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->textLineHeight = std::clamp(lineHeight, 0.2f, 5.0f);
+}
+
+void Engine::setLayerTextLetterSpacing(int i, float pixels)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->textLetterSpacing = std::clamp(pixels, -50.0f, 200.0f);
 }
 
 void Engine::setLayerTextAlign(int i, Qt::Alignment align)

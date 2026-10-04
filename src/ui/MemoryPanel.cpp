@@ -795,9 +795,6 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         num(parent, QStringLiteral("Volume"), {"volume"}, 0, 2, 100, 0, QStringLiteral(" %"), 0.01);
         flag(parent, QStringLiteral("Muted"), {"muted"});
     }
-    if (type == "text") {
-        num(parent, QStringLiteral("Text Animation"), {"textAnimation"}, 0, 1, 100, 0, QStringLiteral(" %"), 0.01);
-    }
 
     // Parameters of a shader (generator or effect), from the values the memory holds
     auto isfParams = [&](QTreeWidgetItem *p, const QStringList &base, int slot) {
