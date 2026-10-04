@@ -14,6 +14,7 @@ inline constexpr int kMeshSubdiv = 40;
 // Resources removed from the composition (under lock), then released in the render thread.
 struct Engine::Garbage {
     std::unique_ptr<VideoDecoder> video;
+    std::unique_ptr<VideoTexture> videoTex;
     std::shared_ptr<AudioStream> audio;
     Texture2D tex;
     std::unique_ptr<IsfInstance> generator;

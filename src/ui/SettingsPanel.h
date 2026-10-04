@@ -27,6 +27,8 @@ public:
 
     // Mode given to a video or a sound when it is loaded into a layer (Loop unless changed)
     static PlayMode defaultPlayMode();
+    // Videos decoded by the graphics hardware when it can (on unless changed)
+    static bool hardwareDecoding();
     // Color models shown by the Color tab of the layers (ColorEditor::Model bits, RGB by default)
     static int colorModels();
     // OSC control and OSCQuery publication (defaults of libossia / score: OSC 1234, OSCQuery 5678)
@@ -44,6 +46,7 @@ public:
 
 signals:
     void playModeChanged();
+    void hardwareDecodingChanged();
     void colorModelsChanged();
     void oscChanged();
     void transitionChanged(const QString &path);
@@ -52,7 +55,7 @@ signals:
 private:
     QComboBox *m_playMode = nullptr, *m_colorModels = nullptr, *m_transition = nullptr, *m_rate = nullptr,
               *m_samples = nullptr;
-    QCheckBox *m_mipmaps = nullptr;
+    QCheckBox *m_mipmaps = nullptr, *m_hardware = nullptr;
     QCheckBox *m_osc = nullptr;
     QSpinBox *m_oscPort = nullptr, *m_queryPort = nullptr;
     QLabel *m_oscStatus = nullptr;

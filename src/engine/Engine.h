@@ -306,7 +306,10 @@ public:
     double fps() const { return m_fps.load(); }
     QImage grabOutput();                 // the whole composition (interface preview)
     QImage grabViewport(quint64 viewport);
+    QImage grabLayerSource(int index); // a layer's source picture, full size, before its ROI (tests, tools)
     quint64 frameCount() const { return m_frameCount.load(); }
+    // Video frames a layer has shown so far (uploaded to the GPU): its playback rate, measured
+    quint64 videoFramesShown(int index) const;
 
     // --- Project
     void newProject();   // empty, with one viewport
@@ -345,6 +348,7 @@ private:
     std::shared_ptr<Garbage> detachSource(Layer &l);
     void releaseGarbage(const std::shared_ptr<Garbage> &g);
     void updateSource(Layer &l, double dt);
+    void markNeeded(); // which layers are drawn this frame (shown, or used by another one)
     void renderPass(const IsfRenderContext &rc); // every layer, in dependency order
     void renderLayer(Layer &l, const IsfRenderContext &rc);
     void processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied, const IsfRenderContext &rc);
@@ -367,6 +371,8 @@ private:
     int viewportCountLocked() const;
     void drawQuad();
     void blit(GLuint tex, const RenderTarget &target);
+    void bindMesh(Layer &l);         // its mapped mesh (render thread, mesh vertex array bound)
+    void bindMeshBuffer(GLuint vbo); // any mesh vertex buffer
     QString resolvePath(const QJsonObject &o, const QString &projectDir) const;
     QJsonObject layerToJson(const Layer &l, const QString &projectDir) const;
     void layerFromJson(int index, const QJsonObject &o, const QString &projectDir, QStringList *warnings);
@@ -374,7 +380,8 @@ private:
     struct Publication;
     void applyPublishing();               // render thread: every viewport's publishers follow its settings
     void applyPublication(Publication &pub, const PublishSettings &s, bool withTap);
-    void publishFrame(Publication &pub, const RenderTarget &out);
+    void publishReadback(Publication &pub, const RenderTarget &out); // NDI, OMT: before the frame's wait
+    void publishShared(Publication &pub, const RenderTarget &out);   // Syphon, Spout: after it
     void releasePublication(Publication &pub); // render thread
     void setPublishState(Publication &pub, PublishKind k, PublishState st);
 
@@ -417,6 +424,7 @@ private:
     GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_compViewLoc = -1, m_presentTexLoc = -1;
     GLint m_prepTexLoc = -1, m_prepRoiLoc = -1, m_prepAddLoc = -1, m_prepRemoveLoc = -1, m_prepUnpremulLoc = -1, m_prepBalanceLoc = -1;
     GLuint m_blackTex = 0;
+    VideoConverter m_videoConv; // video frames to RGBA (render thread)
     RenderTarget m_output[2];
     std::atomic<int> m_published{0};
     int m_back = 1;

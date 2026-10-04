@@ -226,7 +226,7 @@ struct ExprParser {
 
 double IsfInstance::evalSize(const QString &e, int w, int h, int fallback) const
 {
-    if (e.trimmed().isEmpty()) return fallback;
+    if (e.isEmpty() || e.trimmed().isEmpty()) return fallback;
     QMap<QString, double> vars;
     vars["WIDTH"] = w;
     vars["HEIGHT"] = h;
@@ -699,8 +699,8 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
     for (IsfImported &im : m_imported) bindSampler(im.loc, im.sizeLoc, im.rectLoc, im.tex.tex, im.tex.w, im.tex.h);
     const int targetUnitBase = unit;
 
-    std::vector<IsfPass> passes = m_passes;
-    if (passes.empty()) passes.push_back(IsfPass{});
+    static const std::vector<IsfPass> kSinglePass{IsfPass{}};
+    const std::vector<IsfPass> &passes = m_passes.empty() ? kSinglePass : m_passes; // no copy per frame
 
     for (size_t i = 0; i < passes.size(); ++i) {
         const IsfPass &pass = passes[i];

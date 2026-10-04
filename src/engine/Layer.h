@@ -5,6 +5,7 @@
 #include "Mapping.h"
 #include "Publish.h"
 #include "VideoDecoder.h"
+#include "VideoTexture.h"
 
 #include <QImage>
 #include <QRectF>
@@ -134,12 +135,15 @@ struct Layer {
     quint64 sourceLayer = 0;
     LayerTap sourceTap = LayerTap::PostFx;
     bool referenced = false; // used as a source by another layer: rendered even when hidden (every frame)
+    bool needed = true;      // its picture is drawn this frame (shown, or referenced): uploaded and rendered
     // File missing on load: path and type are kept (save, media bin, relink)
     SourceType missingType = SourceType::None;
 
     // Video and audio: transport shared by the picture and the sound
     std::unique_ptr<VideoDecoder> video;
-    std::vector<uint8_t> frameBuffer;
+    VideoFrame frame;                       // the last one fetched from the decoder
+    bool frameUploaded = true;              // and already on the GPU
+    std::unique_ptr<VideoTexture> videoTex; // its picture (created in the render thread)
     bool playing = true;
     PlayMode mode = PlayMode::Loop;
     bool ended = false; // Stop mode: the end was reached, the layer shows nothing
@@ -181,6 +185,8 @@ struct Layer {
     int rawW = 0, rawH = 0;
 
     Mapping mapping;
+    GLuint meshVbo = 0;  // its mesh's vertices (render thread)
+    Mapping meshShape;   // the mapping they were built from
 
     // Transition used when a memory gives this layer another source (ISF with startImage, endImage, progress;
     // empty: the default one, chosen in the settings)

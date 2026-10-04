@@ -593,6 +593,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             auto *val = new QLabel(value);
             val->setTextInteractionFlags(Qt::TextSelectableByMouse);
             facts->addRow(k, val);
+            return val;
         };
         fact(QStringLiteral("Name"), QFileInfo(s.sourcePath).fileName());
         if (s.type == SourceType::Video) {
@@ -600,7 +601,16 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             fact(QStringLiteral("FPS"), QString::number(s.fps, 'f', 2));
         }
         fact(QStringLiteral("Duration"), fmtTime(s.duration));
-        fact(QStringLiteral("Codec"), s.type == SourceType::Video ? s.codec : s.audio.codec);
+        m_codecFact = fact(QStringLiteral("Codec"), s.type == SourceType::Video ? s.codec : s.audio.codec);
+        if (s.type == SourceType::Video) {
+            // How the frames reach the GPU: their layout, or HAP's textures, or a conversion on the CPU
+            m_pictureFact = fact(QStringLiteral("Picture"), QStringLiteral("…"));
+            m_pictureFact->setToolTip(QStringLiteral("How the decoded frames reach the GPU. A pixel layout (yuv420p, nv12, "
+                                                     "p010…) or HAP textures are converted by the GPU; \"converted on "
+                                                     "the CPU\" or \"decoded on the CPU\" costs processor time."));
+        } else {
+            m_codecFact = nullptr;
+        }
         fact(QStringLiteral("Sound"), s.hasAudio ? audioText(s.audio) : QStringLiteral("none"));
         v->addLayout(facts);
         v->addWidget(separator());
@@ -1631,6 +1641,12 @@ void LayerInspector::refreshDynamic()
         speed = l->speed;
         d = l->duration();
         p = l->position();
+        if (l->video && m_codecFact) {
+            const QString codec = l->video->codecName();
+            if (m_codecFact->text() != codec) m_codecFact->setText(codec);
+        }
+        if (l->video && m_pictureFact && l->frame.layout && m_pictureFact->text() != l->frame.layout->description)
+            m_pictureFact->setText(l->frame.layout->description);
     }
     // The transport follows what the engine does (play from a key, OSC, the end of a one-shot)
     if (m_playButtons) {

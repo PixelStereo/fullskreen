@@ -32,6 +32,7 @@
 #include <cstring>
 
 static int failures = 0;
+int runVideoTests(Engine &e, const QString &root, const QString &tmp); // video_test.cpp
 #define CHECK(cond)                                                                 \
     do {                                                                            \
         if (!(cond)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++failures; } \
@@ -96,6 +97,9 @@ int main(int argc, char **argv)
         return ok == total ? 0 : 1;
     }
 
+    // 0. Video pipeline: pixel formats, HAP, upload buffers (video_test.cpp). Leaves a new project.
+    failures += runVideoTests(e, root, tmp);
+
     // 1. JSON round trip (project built here: generator + warped mesh, video + effects)
     const QString isf = root + "/../isf";
     int gen = e.addLayer("Test Pattern");
@@ -153,10 +157,10 @@ int main(int argc, char **argv)
         do {
             e.renderFrame();
             QThread::msleep(10);
-        } while ((e.layer(v)->playing || e.layer(v)->sourceTex.w != 1280) && t.elapsed() < 5000);
+        } while ((e.layer(v)->playing || !e.layer(v)->videoTex || e.layer(v)->videoTex->width() != 1280) && t.elapsed() < 5000);
     }
     CHECK(!e.layer(v)->playing);           // stops at end of media
-    CHECK(e.layer(v)->sourceTex.w == 1280); // a frame was indeed uploaded to the GPU
+    CHECK(e.layer(v)->videoTex && e.layer(v)->videoTex->width() == 1280); // a frame was indeed uploaded to the GPU
     e.setLayerPlaying(v, true);             // restarts from the beginning
     CHECK(e.layer(v)->position() < 0.01);
 
@@ -1265,7 +1269,7 @@ int main(int argc, char **argv)
         CHECK(e.setLayerVideo(v2, root + "/media/h264.mp4", &err));
         CHECK(waitFrames(20));
         Engine::Lock lk(&e.mutex());
-        CHECK(e.layer(v2)->sourceTex.w == 1280);
+        CHECK(e.layer(v2)->videoTex && e.layer(v2)->videoTex->width() == 1280);
     }
     // Master: full blackout
     {
@@ -1643,7 +1647,7 @@ int main(int argc, char **argv)
                 QElapsedTimer tm;
                 tm.start();
                 bool got = false;
-                while (!(got = d.fetch(t, buf, &w, &h)) && tm.elapsed() < 3000) QThread::msleep(1);
+                while (!(got = d.fetchRgba(t, buf, &w, &h)) && tm.elapsed() < 3000) QThread::msleep(1);
                 if (!got) {
                     ++missing;
                     continue;
@@ -1706,7 +1710,7 @@ int main(int argc, char **argv)
                 QElapsedTimer tm;
                 tm.start();
                 bool got = false;
-                while (!(got = d.fetch(c, buf, &w, &h)) && tm.elapsed() < 3000) QThread::msleep(1);
+                while (!(got = d.fetchRgba(c, buf, &w, &h)) && tm.elapsed() < 3000) QThread::msleep(1);
                 if (!got) {
                     ++missing;
                     continue;
@@ -1806,7 +1810,7 @@ int main(int argc, char **argv)
                 QElapsedTimer tm;
                 tm.start();
                 bool got = false;
-                while (!(got = d.fetch(c, buf, &w, &h)) && tm.elapsed() < 3000) QThread::msleep(1);
+                while (!(got = d.fetchRgba(c, buf, &w, &h)) && tm.elapsed() < 3000) QThread::msleep(1);
                 if (!got) {
                     ++missing;
                     continue;

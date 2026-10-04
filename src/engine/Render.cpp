@@ -62,21 +62,22 @@ void Engine::updateSource(Layer &l, double dt)
     if (l.audio)
         l.audio->setTransport(l.clock, l.playing, std::abs(l.speed), l.timeline(), l.timelineId, l.audioGain(), m_frameStampNs);
     if (!l.video) return;
-    int w = 0, h = 0;
-    if (l.video->fetch(l.clock, l.frameBuffer, &w, &h) && w > 0 && h > 0)
-        l.sourceTex.upload(l.frameBuffer.data(), w, h);
+    if (!l.videoTex) l.videoTex = std::make_unique<VideoTexture>();
+    l.videoTex->feed(*l.video); // upload buffers the decoder writes its next frames into
+    if (l.video->fetch(l.clock, l.frame)) l.frameUploaded = false;
+    // Only a picture that is drawn goes to the GPU; a hidden layer's last frame waits to be shown
+    if (!l.frameUploaded && l.needed) {
+        l.videoTex->upload(l.frame, *l.video, m_videoConv);
+        l.frameUploaded = true;
+    }
 }
 
-// One frame of every layer, in dependency order: a layer whose source is another layer is rendered after it,
-// and a group after its members. A layer used as a source is rendered even when it is hidden.
-// A reference cycle (A on B, B on A) is not broken by an error: the layer reached a second time keeps the
-// texture of the previous frame, which gives a one-frame feedback loop.
-void Engine::renderPass(const IsfRenderContext &rc)
+// Which layers are drawn this frame: shown (in a shown group), used as a source or as a mask by another,
+// previewed in the inspector, viewports. The others are neither uploaded nor rendered (their sound plays on).
+void Engine::markNeeded()
 {
-    const size_t n = m_layers.size();
     for (auto &l : m_layers) l->referenced = false;
     for (auto &l : m_layers) {
-        // Used as a source, or as a mask: rendered even when hidden
         if (l->type == SourceType::Layer && l->sourceLayer) {
             const int si = indexOfId(l->sourceLayer);
             if (si >= 0) m_layers[size_t(si)]->referenced = true;
@@ -87,6 +88,28 @@ void Engine::renderPass(const IsfRenderContext &rc)
                 if (mi >= 0) m_layers[size_t(mi)]->referenced = true;
             }
     }
+    // A group comes before its members: its verdict is known when they are reached
+    std::map<quint64, bool> groupNeeded;
+    for (auto &lp : m_layers) {
+        Layer &l = *lp;
+        bool inShown = true;
+        if (l.parent) {
+            const auto g = groupNeeded.find(l.parent);
+            inShown = g != groupNeeded.end() && g->second;
+        }
+        l.needed = l.isViewport || l.referenced || l.id == m_previewId || (l.visible && inShown);
+        if (l.isGroup) groupNeeded[l.id] = l.needed;
+    }
+    for (auto &[id, t] : m_transitions) t->from->needed = true;
+}
+
+// One frame of every layer, in dependency order: a layer whose source is another layer is rendered after it,
+// and a group after its members. A layer used as a source is rendered even when it is hidden.
+// A reference cycle (A on B, B on A) is not broken by an error: the layer reached a second time keeps the
+// texture of the previous frame, which gives a one-frame feedback loop.
+void Engine::renderPass(const IsfRenderContext &rc)
+{
+    const size_t n = m_layers.size();
     enum { Todo = 0, Doing = 1, Done = 2 };
     m_renderMark.assign(n, Todo);
     std::function<void(size_t)> render = [&](size_t i) {
@@ -120,7 +143,7 @@ void Engine::renderPass(const IsfRenderContext &rc)
                     render(k);
                     members.push_back(m_layers[k].get());
                 }
-            if (l.visible || l.referenced) renderGroup(l, members, rc);
+            if (l.needed) renderGroup(l, members, rc);
             else l.finalTex = l.rawTex = l.preFxTex = 0;
         } else {
             renderLayer(l, rc);
@@ -139,6 +162,7 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
     l.preFxTex = 0;
     if (l.isGroup) return;  // rendered from its members (renderGroup)
     if (l.ended) return; // Stop mode, after the end: nothing
+    if (!l.needed) return; // hidden, and used by no other layer
     GLuint tex = 0;
     int w = 0, h = 0;
     switch (l.type) {
@@ -153,6 +177,12 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
         }
         break;
     case SourceType::Video:
+        if (l.videoTex) {
+            tex = l.videoTex->texture();
+            w = l.videoTex->width();
+            h = l.videoTex->height();
+        }
+        break;
     case SourceType::Image:
         tex = l.sourceTex.tex;
         w = l.sourceTex.w;
@@ -354,7 +384,6 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
                    float(1.0 - (1.0 - 2.0 * view.top()) / rh));
     f->glActiveTexture(GL_TEXTURE0);
     f->glBindVertexArray(m_meshVao);
-    f->glBindBuffer(GL_ARRAY_BUFFER, m_meshVbo);
 
     // The first layer is on top: draw from last to first.
     for (int i = int(layers.size()) - 1; i >= 0; --i) {
@@ -366,8 +395,7 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
         case BlendMode::Multiply: f->glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break;
         default: f->glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
         }
-        l.mapping.buildVertices(kMeshSubdiv, m_meshScratch);
-        f->glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(m_meshScratch.size() * sizeof(float)), m_meshScratch.data());
+        bindMesh(l);
         f->glUniform1f(m_compOpacityLoc, l.opacity);
         f->glBindTexture(GL_TEXTURE_2D, l.finalTex);
         // Drawn smaller than it is: sampled from mipmaps (no shimmer, no moiré), made for this draw only
@@ -388,6 +416,33 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
     f->glDisable(GL_BLEND);
     f->glBindVertexArray(0);
     if (ms) ms->resolveInto(target);
+}
+
+// Mesh vertices (position, uv) of the buffer bound, for the mesh vertex array (its index buffer stays)
+void Engine::bindMeshBuffer(GLuint vbo)
+{
+    auto f = gl();
+    f->glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    f->glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
+    f->glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), reinterpret_cast<void *>(2 * sizeof(float)));
+}
+
+// A layer's mapped mesh lives in a vertex buffer of its own, rebuilt only when its mapping changes: no vertices
+// computed or sent every frame, and no draw waits for a shared buffer to be rewritten.
+void Engine::bindMesh(Layer &l)
+{
+    auto f = gl();
+    const Mapping &m = l.mapping, &was = l.meshShape;
+    bool same = l.meshVbo && was.cols == m.cols && was.rows == m.rows && was.offsets == m.offsets;
+    for (int i = 0; same && i < 4; ++i) same = was.corners[i] == m.corners[i];
+    if (!l.meshVbo) f->glGenBuffers(1, &l.meshVbo);
+    if (!same) {
+        m.buildVertices(kMeshSubdiv, m_meshScratch);
+        f->glBindBuffer(GL_ARRAY_BUFFER, l.meshVbo);
+        f->glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(m_meshScratch.size() * sizeof(float)), m_meshScratch.data(), GL_DYNAMIC_DRAW);
+        l.meshShape = m;
+    }
+    bindMeshBuffer(l.meshVbo);
 }
 
 // The whole composition, for the interface preview, then each viewport's output. The master level and the
@@ -419,7 +474,6 @@ void Engine::composite()
     out.bind();
     applyMaster();
 
-    static const Mapping kFull;
     for (auto &lp : m_layers) {
         Layer &v = *lp;
         if (!v.isViewport) continue;
@@ -438,9 +492,7 @@ void Engine::composite()
             f->glUniform1f(m_compOpacityLoc, v.opacity);
             f->glActiveTexture(GL_TEXTURE0);
             f->glBindVertexArray(m_meshVao);
-            f->glBindBuffer(GL_ARRAY_BUFFER, m_meshVbo);
-            kFull.buildVertices(kMeshSubdiv, m_meshScratch);
-            f->glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(m_meshScratch.size() * sizeof(float)), m_meshScratch.data());
+            bindMeshBuffer(m_meshVbo); // the whole frame, built once
             f->glBindTexture(GL_TEXTURE_2D, v.finalTex);
             f->glDrawElements(GL_TRIANGLES, m_meshIndexCount, GL_UNSIGNED_INT, nullptr);
             f->glDisable(GL_BLEND);
@@ -516,6 +568,7 @@ void Engine::frame(double dt)
         stepFade(m_realDt);
         stepTransitions(m_realDt);
     }
+    markNeeded();
     for (auto &l : m_layers) updateSource(*l, dt);
     for (auto &[id, t] : m_transitions) updateSource(*t->from, dt); // the outgoing sources play on
     renderPass(rc);
@@ -545,29 +598,27 @@ void Engine::frame(double dt)
     }
     m_mutex.unlock();
 
-    // Syphon (and Spout) copy each viewport's picture from OpenGL contexts of their own. Another context only
-    // sees a texture whole once the commands that drew it are complete (OpenGL spec; glFlush is enough on
-    // macOS, not everywhere). Without it the last viewport's picture, last in the queue, was copied before it
-    // was drawn: Syphon sent black, or the frame before, depending on how full the queue was.
-    gl()->glFinish();
     if (publishChanged) applyPublishing();
+    std::vector<std::pair<Publication *, const RenderTarget *>> outs;
     {
-        std::vector<std::pair<Publication *, const RenderTarget *>> outs;
-        {
-            Lock lk(&m_mutex);
-            for (auto &l : m_layers) {
-                if (!l->isViewport) continue;
-                auto it = m_pubs.find(l->id);
-                if (it != m_pubs.end()) outs.push_back({it->second.get(), &l->vpOut[l->vpBack]});
-            }
+        Lock lk(&m_mutex);
+        for (auto &l : m_layers) {
+            if (!l->isViewport) continue;
+            auto it = m_pubs.find(l->id);
+            if (it != m_pubs.end()) outs.push_back({it->second.get(), &l->vpOut[l->vpBack]});
         }
-        for (auto &[pub, out] : outs) publishFrame(*pub, *out);
     }
+    // NDI, OMT: read back in this context, before the wait below
+    for (auto &[pub, out] : outs) publishReadback(*pub, *out);
 
     auto f = gl();
     f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    // The preview reads the image from another context: wait for rendering to finish before publishing it.
+    // One wait per frame. Other contexts read these pictures: the interface preview, the output windows, Syphon
+    // and Spout. Another context only sees a texture whole once the commands that drew it are complete (OpenGL
+    // spec; glFlush is enough on macOS, not everywhere). Without it the last viewport's picture, last in the queue,
+    // was copied before it was drawn: Syphon sent black, or the frame before, depending on how full the queue was.
     f->glFinish();
+    for (auto &[pub, out] : outs) publishShared(*pub, *out);
     m_published = m_back;
     m_back = 1 - m_back;
     {
@@ -660,6 +711,33 @@ QImage Engine::grabOutput()
         f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
     });
     return img.mirrored(false, true);
+}
+
+QImage Engine::grabLayerSource(int index)
+{
+    QImage img;
+    runGl([this, index, &img] {
+        Lock lk(&m_mutex);
+        const Layer *l = layer(index);
+        if (!l || !l->rawTex || l->rawW <= 0 || l->rawH <= 0) return;
+        RenderTarget t;
+        t.ensure(l->rawW, l->rawH);
+        blit(l->rawTex, t);
+        img = QImage(t.w, t.h, QImage::Format_RGBA8888);
+        auto f = gl();
+        f->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        f->glReadPixels(0, 0, t.w, t.h, GL_RGBA, GL_UNSIGNED_BYTE, img.bits());
+        f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        t.destroy();
+    });
+    return img.mirrored(false, true);
+}
+
+quint64 Engine::videoFramesShown(int index) const
+{
+    Lock lk(&m_mutex);
+    const Layer *l = index >= 0 && index < int(m_layers.size()) ? m_layers[size_t(index)].get() : nullptr;
+    return l && l->videoTex ? l->videoTex->uploads() : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -843,11 +921,16 @@ static int standardRate(double fps)
     return best;
 }
 
-void Engine::publishFrame(Publication &pub, const RenderTarget &out)
+// Syphon, Spout: their contexts copy the finished picture
+void Engine::publishShared(Publication &pub, const RenderTarget &out)
 {
     for (int ki : {int(PublishKind::Syphon), int(PublishKind::Spout)})
         if (pub.gpu[ki]) pub.gpu[ki]->publish(out.tex, out.w, out.h);
+}
 
+// NDI, OMT (and the tests' tap): the picture read back asynchronously, sent by a thread of their own
+void Engine::publishReadback(Publication &pub, const RenderTarget &out)
+{
     // Receiver count, about twice per second
     if ((m_frameCount.load() % 30) == 0) {
         std::lock_guard<std::mutex> lk(m_stateMutex);

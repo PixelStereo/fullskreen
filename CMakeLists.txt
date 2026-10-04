@@ -43,6 +43,7 @@ add_library(fulskrin_engine STATIC
   src/engine/IsfLibrary.cpp
   src/engine/Mapping.cpp
   src/engine/VideoDecoder.cpp
+  src/engine/VideoTexture.cpp
   src/engine/Engine.cpp
   src/engine/Layers.cpp
   src/engine/Render.cpp
@@ -210,8 +211,11 @@ install(TARGETS Fulskrin BUNDLE DESTINATION . RUNTIME DESTINATION bin)
 # ---------------------------------------------------------------------------
 option(FULSKRIN_TESTS "Build the engine tests" ON)
 if(FULSKRIN_TESTS)
-  add_executable(fulskrin_tests EXCLUDE_FROM_ALL test/engine_test.cpp src/ui/Commands.cpp)
+  add_executable(fulskrin_tests EXCLUDE_FROM_ALL test/engine_test.cpp test/video_test.cpp src/ui/Commands.cpp)
   target_include_directories(fulskrin_tests PRIVATE src/ui)
   target_link_libraries(fulskrin_tests PRIVATE fulskrin_engine)
   target_compile_definitions(fulskrin_tests PRIVATE TEST_DIR="${CMAKE_SOURCE_DIR}/test")
+  # Several videos played together: cmake --build build --target fulskrin_bench
+  add_executable(fulskrin_bench EXCLUDE_FROM_ALL test/bench.cpp)
+  target_link_libraries(fulskrin_bench PRIVATE fulskrin_engine)
 endif()

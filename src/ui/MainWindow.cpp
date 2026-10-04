@@ -89,6 +89,9 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_tabs->addTab(scrolled(m_settings), QStringLiteral("Settings"));
     connect(m_settings, &SettingsPanel::playModeChanged, this,
             [this] { m_engine->setDefaultPlayMode(SettingsPanel::defaultPlayMode()); });
+    VideoDecoder::setHardwareDecoding(SettingsPanel::hardwareDecoding());
+    connect(m_settings, &SettingsPanel::hardwareDecodingChanged, this,
+            [] { VideoDecoder::setHardwareDecoding(SettingsPanel::hardwareDecoding()); });
     // For the layers created from now on; each layer keeps its own choice
     connect(m_settings, &SettingsPanel::colorModelsChanged, this,
             [this] { m_engine->setDefaultColorModels(SettingsPanel::colorModels()); });
