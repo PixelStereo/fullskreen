@@ -7,6 +7,17 @@
 #include <QRectF>
 #include <vector>
 
+// Soft edge (feathering) per side: (0) left, (1) right, (2) top, (3) bottom
+struct SoftEdge {
+    bool enabled = false;
+    float width[4] = {0.1f, 0.1f, 0.1f, 0.1f};  // fade width per side (0..0.5)
+    float power[4] = {1.0f, 1.0f, 1.0f, 1.0f};  // falloff curve per side (0.1..8)
+
+    bool isIdentity() const {
+        return !enabled;
+    }
+};
+
 struct Homography {
     double a = 1, b = 0, c = 0, d = 0, e = 1, f = 0, g = 0, h = 0;
     static Homography squareToQuad(const QPointF q[4]); // q: TL, TR, BR, BL

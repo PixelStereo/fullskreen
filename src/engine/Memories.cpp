@@ -13,6 +13,8 @@ struct LayerNumbers {
     ColorAdjust color;
     Mapping mapping;
     std::vector<std::vector<IsfValue>> isf; // [0] generator, [1 + k] effect k
+    std::map<quint64, float> viewportOpacity; // per-viewport opacity (0..1)
+    SoftEdge soft; // crop feathering (width and power per side)
 };
 
 // How long each of those numbers takes to reach the memory's value (seconds; 0: a cut). By default the
@@ -20,10 +22,12 @@ struct LayerNumbers {
 struct LayerTimes {
     double opacity = 0, volume = 0, roi = 0, temp = 0, tint = 0, add = 0, remove = 0, mapping = 0;
     std::vector<std::vector<double>> isf; // as LayerNumbers::isf
+    double viewportOpacity = 0; // viewport opacity per-viewport
+    double softEdge = 0; // soft edge width and power
 
     double longest() const
     {
-        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping});
+        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, viewportOpacity, softEdge});
         for (const auto &v : isf)
             for (double d : v) m = std::max(m, d);
         return m;
@@ -46,6 +50,8 @@ static LayerNumbers numbersOf(const Layer &l)
     n.roi = l.roi;
     n.color = l.color;
     n.mapping = l.mapping;
+    n.viewportOpacity = l.viewportOpacity;
+    n.soft = l.mapping.soft;
     auto values = [](const IsfInstance *inst) {
         std::vector<IsfValue> v;
         if (inst)
@@ -65,7 +71,9 @@ static void setNumbers(Layer &l, const LayerNumbers &n)
     l.color = n.color;
     const unsigned rev = l.mapping.revision;
     l.mapping = n.mapping;
+    l.mapping.soft = n.soft;
     l.mapping.revision = rev + 1;
+    l.viewportOpacity = n.viewportOpacity;
     auto apply = [](IsfInstance *inst, const std::vector<IsfValue> &v) {
         if (!inst) return;
         for (size_t k = 0; k < v.size() && k < inst->inputs().size(); ++k) inst->inputs()[k].setValue(v[k]);
@@ -106,6 +114,27 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, con
         for (size_t k = 0; k < n.mapping.offsets.size() && k < a.mapping.offsets.size(); ++k)
             n.mapping.offsets[k] = mixp(a.mapping.offsets[k], b.mapping.offsets[k], tm);
     }
+    // Soft edge: interpolate width and power per side
+    {
+        const double ts = t(d.softEdge);
+        for (int side = 0; side < 4; ++side) {
+            n.soft.width[side] = mixf(a.soft.width[side], b.soft.width[side], ts);
+            n.soft.power[side] = mixf(a.soft.power[side], b.soft.power[side], ts);
+        }
+    }
+    // Viewport opacity: interpolate all viewports from both source and target
+    {
+        const double tv = t(d.viewportOpacity);
+        n.viewportOpacity.clear();
+        QSet<quint64> allViewports;
+        for (const auto &[vp, op] : a.viewportOpacity) allViewports.insert(vp);
+        for (const auto &[vp, op] : b.viewportOpacity) allViewports.insert(vp);
+        for (quint64 vp : allViewports) {
+            const float opA = a.viewportOpacity.count(vp) ? a.viewportOpacity.at(vp) : 1.0f;
+            const float opB = b.viewportOpacity.count(vp) ? b.viewportOpacity.at(vp) : 1.0f;
+            n.viewportOpacity[vp] = mixf(opA, opB, tv);
+        }
+    }
     for (size_t i = 0; i < n.isf.size() && i < a.isf.size(); ++i)
         for (size_t k = 0; k < n.isf[i].size() && k < a.isf[i].size(); ++k) {
             const double tk = i < d.isf.size() && k < d.isf[i].size() ? t(d.isf[i][k]) : 1.0;
@@ -135,6 +164,8 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.add = time(QStringLiteral("color/add"));
     d.remove = time(QStringLiteral("color/remove"));
     d.mapping = time(QStringLiteral("mapping"));
+    d.viewportOpacity = time(QStringLiteral("viewportOpacity"));
+    d.softEdge = time(QStringLiteral("softEdge"));
     auto params = [&](const IsfInstance *inst, const QString &base) {
         std::vector<double> v;
         if (inst)
@@ -151,7 +182,7 @@ QString Engine::timingKey(const QStringList &path)
 {
     if (path.isEmpty()) return {};
     const QString &a = path[0];
-    if (a == "opacity" || a == "volume" || a == "mapping") return a;
+    if (a == "opacity" || a == "volume" || a == "mapping" || a == "viewportOpacity" || a == "softEdge") return a;
     if (a == "source" && path.size() >= 2 && path[1] == "roi") return QStringLiteral("roi");
     if (a == "source" && path.size() >= 3 && path[1] == "params") return QStringLiteral("source/params/") + path[2];
     if (a == "color" && path.size() >= 2 && (path[1] == "temp" || path[1] == "tint" || path[1] == "add" || path[1] == "remove"))
