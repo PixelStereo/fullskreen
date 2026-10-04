@@ -4,8 +4,12 @@
 
 #include <map>
 
+#include <QFont>
+#include <QFontMetrics>
 #include <QImage>
 #include <QOffscreenSurface>
+#include <QPainter>
+#include <QTextLayout>
 #include <QWindow>
 #include <cmath>
 #include <cstring>
@@ -22,6 +26,94 @@
 #ifndef GL_MAP_READ_BIT
 #define GL_MAP_READ_BIT 0x0001
 #endif
+
+// Render text layer to QImage with word wrapping, line breaking, and animation support
+static QImage renderTextLayer(const Layer &l)
+{
+    const int w = std::max(1, l.textWidth), h = std::max(1, l.textHeight);
+    QImage img(w, h, QImage::Format_RGBA8888);
+    img.fill(Qt::transparent);
+
+    if (l.textContent.isEmpty()) return img;
+
+    QPainter painter(&img);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    // Set up font
+    QFont font(l.textFont);
+    font.setPixelSize(l.textSize);
+    painter.setFont(font);
+
+    // Apply text animation as opacity if it's a numeric fade (0..1)
+    QColor textColor = l.textColor;
+    if (l.textAnimation >= 0.0 && l.textAnimation <= 1.0) {
+        textColor.setAlphaF(l.textColor.alphaF() * l.textAnimation);
+    }
+    painter.setPen(textColor);
+
+    // Use QTextLayout for word wrapping and line breaking
+    QTextLayout layout(l.textContent, font);
+    QTextOption option;
+    option.setWrapMode(QTextOption::WordWrap);
+    option.setAlignment(Qt::Alignment(l.textAlign));
+    layout.setTextOption(option);
+
+    // Calculate line spacing
+    QFontMetrics fm(font);
+    const int lineHeight = int(fm.lineSpacing() * l.textLineHeight);
+
+    // Layout the text with wrapping
+    layout.beginLayout();
+    QVector<QTextLine> lines;
+    int y = 0;
+    while (y + lineHeight <= h) {
+        QTextLine line = layout.createLine();
+        if (!line.isValid()) break;
+        line.setLineWidth(w);
+        line.setPosition(QPointF(0, y));
+        lines.append(line);
+        y += lineHeight;
+    }
+    layout.endLayout();
+
+    if (lines.isEmpty()) {
+        painter.end();
+        return img;
+    }
+
+    // Calculate total height for vertical alignment
+    const int totalHeight = lineHeight * lines.size();
+    int yOffset = 0;
+    if (l.textAlign & Qt::AlignBottom) {
+        yOffset = h - totalHeight;
+    } else if (l.textAlign & Qt::AlignVCenter) {
+        yOffset = (h - totalHeight) / 2;
+    }
+
+    // Draw all lines
+    for (int i = 0; i < lines.size(); ++i) {
+        const QTextLine &line = lines[i];
+        const int lineY = yOffset + i * lineHeight;
+
+        // Apply letter spacing if needed
+        if (std::abs(l.textLetterSpacing) > 1e-6f) {
+            // For custom letter spacing, draw character by character
+            const QString lineText = l.textContent.mid(line.textStart(), line.textLength());
+            float charX = 0;
+            for (int j = 0; j < lineText.length(); ++j) {
+                painter.drawText(QPointF(charX, lineY + fm.ascent()), lineText.mid(j, 1));
+                charX += fm.horizontalAdvance(lineText[j]) + l.textLetterSpacing;
+            }
+        } else {
+            // Standard text drawing without custom letter spacing
+            painter.drawText(QPointF(0, lineY + fm.ascent()), l.textContent.mid(line.textStart(), line.textLength()));
+        }
+    }
+
+    painter.end();
+    return img;
+}
 
 void Engine::drawQuad()
 {
@@ -204,6 +296,17 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
             h = l.generatorTarget.h;
         }
         break;
+    case SourceType::Text: {
+        // Render text layer to image and upload to GPU
+        const QImage textImg = renderTextLayer(l);
+        if (!textImg.isNull()) {
+            l.textSourceTex.upload(textImg.constBits(), textImg.width(), textImg.height());
+            tex = l.textSourceTex.tex;
+            w = l.textSourceTex.w;
+            h = l.textSourceTex.h;
+        }
+        break;
+    }
     default: break;
     }
     if (!tex) return;

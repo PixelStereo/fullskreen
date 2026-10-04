@@ -6,6 +6,49 @@
 #include <QJsonArray>
 #include <QSet>
 
+// Easing curve types for parameter interpolation
+enum class EasingCurve { Linear, EaseIn, EaseOut, EaseInOut, EaseInCubic, EaseOutCubic };
+
+QString easingCurveKey(EasingCurve c)
+{
+    switch (c) {
+    case EasingCurve::Linear: return QStringLiteral("linear");
+    case EasingCurve::EaseIn: return QStringLiteral("easeIn");
+    case EasingCurve::EaseOut: return QStringLiteral("easeOut");
+    case EasingCurve::EaseInOut: return QStringLiteral("easeInOut");
+    case EasingCurve::EaseInCubic: return QStringLiteral("easeInCubic");
+    case EasingCurve::EaseOutCubic: return QStringLiteral("easeOutCubic");
+    }
+    return QStringLiteral("easeInOut");
+}
+
+EasingCurve easingCurveFromKey(const QString &k)
+{
+    if (k == "linear") return EasingCurve::Linear;
+    if (k == "easeIn") return EasingCurve::EaseIn;
+    if (k == "easeOut") return EasingCurve::EaseOut;
+    if (k == "easeInOut") return EasingCurve::EaseInOut;
+    if (k == "easeInCubic") return EasingCurve::EaseInCubic;
+    if (k == "easeOutCubic") return EasingCurve::EaseOutCubic;
+    return EasingCurve::EaseInOut; // default
+}
+
+// Easing function: applies curve type to normalized time [0..1]
+static double applyEasing(double t, EasingCurve curve)
+{
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    switch (curve) {
+    case EasingCurve::Linear: return t;
+    case EasingCurve::EaseIn: return t * t; // quadratic
+    case EasingCurve::EaseOut: return t * (2 - t);
+    case EasingCurve::EaseInOut: return t * t * (3 - 2 * t); // smoothstep
+    case EasingCurve::EaseInCubic: return t * t * t;
+    case EasingCurve::EaseOutCubic: return 1 - (1 - t) * (1 - t) * (1 - t);
+    }
+    return t;
+}
+
 // Numbers of a layer that fade from one memory to the next
 struct LayerNumbers {
     float opacity = 1, volume = 1;
@@ -15,6 +58,9 @@ struct LayerNumbers {
     std::vector<std::vector<IsfValue>> isf; // [0] generator, [1 + k] effect k
     std::map<quint64, float> viewportOpacity; // per-viewport opacity (0..1)
     SoftEdge soft; // crop feathering (width and power per side)
+    double speed = 1.0;
+    double inPoint = 0, outPoint = -1;
+    double textAnimation = 0.0; // text layer animation parameter (0..1)
 };
 
 // How long each of those numbers takes to reach the memory's value (seconds; 0: a cut). By default the
@@ -24,10 +70,20 @@ struct LayerTimes {
     std::vector<std::vector<double>> isf; // as LayerNumbers::isf
     double viewportOpacity = 0; // viewport opacity per-viewport
     double softEdge = 0; // soft edge width and power
+    double speed = 0, inPoint = 0, outPoint = 0; // playback parameters
+    double textAnimation = 0; // text animation parameter
+    // Easing curves for each parameter (default: EaseInOut for all)
+    EasingCurve opacityCurve = EasingCurve::EaseInOut, volumeCurve = EasingCurve::EaseInOut;
+    EasingCurve roiCurve = EasingCurve::EaseInOut, colorCurve = EasingCurve::EaseInOut;
+    EasingCurve mappingCurve = EasingCurve::EaseInOut, softEdgeCurve = EasingCurve::EaseInOut;
+    EasingCurve viewportOpacityCurve = EasingCurve::EaseInOut;
+    EasingCurve speedCurve = EasingCurve::EaseInOut, inOutCurve = EasingCurve::EaseInOut;
+    EasingCurve textAnimationCurve = EasingCurve::EaseInOut;
+    std::vector<std::vector<EasingCurve>> isfCurves; // per-parameter curves
 
     double longest() const
     {
-        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, viewportOpacity, softEdge});
+        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, viewportOpacity, softEdge, speed, inPoint, outPoint, textAnimation});
         for (const auto &v : isf)
             for (double d : v) m = std::max(m, d);
         return m;
@@ -52,6 +108,10 @@ static LayerNumbers numbersOf(const Layer &l)
     n.mapping = l.mapping;
     n.viewportOpacity = l.viewportOpacity;
     n.soft = l.mapping.soft;
+    n.speed = l.speed;
+    n.inPoint = l.inPoint;
+    n.outPoint = l.outPoint;
+    n.textAnimation = l.textAnimation;
     auto values = [](const IsfInstance *inst) {
         std::vector<IsfValue> v;
         if (inst)
@@ -74,6 +134,10 @@ static void setNumbers(Layer &l, const LayerNumbers &n)
     l.mapping.soft = n.soft;
     l.mapping.revision = rev + 1;
     l.viewportOpacity = n.viewportOpacity;
+    l.speed = n.speed;
+    l.inPoint = n.inPoint;
+    l.outPoint = n.outPoint;
+    l.textAnimation = n.textAnimation;
     auto apply = [](IsfInstance *inst, const std::vector<IsfValue> &v) {
         if (!inst) return;
         for (size_t k = 0; k < v.size() && k < inst->inputs().size(); ++k) inst->inputs()[k].setValue(v[k]);
@@ -86,37 +150,40 @@ static double mixd(double a, double b, double t) { return a + (b - a) * t; }
 static float mixf(float a, float b, double t) { return float(a + (b - a) * t); }
 static QPointF mixp(QPointF a, QPointF b, double t) { return a + (b - a) * t; }
 
-// Progress of a number `elapsed` seconds into its own time: 1 for a cut, eased at both ends otherwise
-static double progress(double elapsed, double duration)
+// Progress of a number `elapsed` seconds into its own time: 1 for a cut, eased with given curve otherwise
+static double progress(double elapsed, double duration, EasingCurve curve = EasingCurve::EaseInOut)
 {
     if (duration <= 0) return 1.0;
     const double t = std::min(1.0, elapsed / duration);
-    return t * t * (3 - 2 * t);
+    return applyEasing(t, curve);
 }
 
 static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, const LayerTimes &d, double elapsed)
 {
-    auto t = [elapsed](double duration) { return progress(elapsed, duration); };
+    auto t = [elapsed](double duration, EasingCurve curve = EasingCurve::EaseInOut) {
+        return progress(elapsed, duration, curve);
+    };
     LayerNumbers n = b;
-    n.opacity = mixf(a.opacity, b.opacity, t(d.opacity));
-    n.volume = mixf(a.volume, b.volume, t(d.volume));
-    const double tr = t(d.roi);
+    n.opacity = mixf(a.opacity, b.opacity, t(d.opacity, d.opacityCurve));
+    n.volume = mixf(a.volume, b.volume, t(d.volume, d.volumeCurve));
+    const double tr = t(d.roi, d.roiCurve);
     n.roi = QRectF(mixp(a.roi.topLeft(), b.roi.topLeft(), tr), mixp(a.roi.bottomRight(), b.roi.bottomRight(), tr));
-    n.color.temp = mixf(a.color.temp, b.color.temp, t(d.temp));
-    n.color.tint = mixf(a.color.tint, b.color.tint, t(d.tint));
+    const double tc = t(d.temp, d.colorCurve);
+    n.color.temp = mixf(a.color.temp, b.color.temp, tc);
+    n.color.tint = mixf(a.color.tint, b.color.tint, tc);
     for (int c = 0; c < 3; ++c) {
-        n.color.add[c] = mixf(a.color.add[c], b.color.add[c], t(d.add));
-        n.color.remove[c] = mixf(a.color.remove[c], b.color.remove[c], t(d.remove));
+        n.color.add[c] = mixf(a.color.add[c], b.color.add[c], tc);
+        n.color.remove[c] = mixf(a.color.remove[c], b.color.remove[c], tc);
     }
     if (a.mapping.cols == b.mapping.cols && a.mapping.rows == b.mapping.rows) {
-        const double tm = t(d.mapping);
+        const double tm = t(d.mapping, d.mappingCurve);
         for (int k = 0; k < 4; ++k) n.mapping.corners[k] = mixp(a.mapping.corners[k], b.mapping.corners[k], tm);
         for (size_t k = 0; k < n.mapping.offsets.size() && k < a.mapping.offsets.size(); ++k)
             n.mapping.offsets[k] = mixp(a.mapping.offsets[k], b.mapping.offsets[k], tm);
     }
     // Soft edge: interpolate width and power per side
     {
-        const double ts = t(d.softEdge);
+        const double ts = t(d.softEdge, d.softEdgeCurve);
         for (int side = 0; side < 4; ++side) {
             n.soft.width[side] = mixf(a.soft.width[side], b.soft.width[side], ts);
             n.soft.power[side] = mixf(a.soft.power[side], b.soft.power[side], ts);
@@ -124,7 +191,7 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, con
     }
     // Viewport opacity: interpolate all viewports from both source and target
     {
-        const double tv = t(d.viewportOpacity);
+        const double tv = t(d.viewportOpacity, d.viewportOpacityCurve);
         n.viewportOpacity.clear();
         QSet<quint64> allViewports;
         for (const auto &[vp, op] : a.viewportOpacity) allViewports.insert(vp);
@@ -134,6 +201,16 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, con
             const float opB = b.viewportOpacity.count(vp) ? b.viewportOpacity.at(vp) : 1.0f;
             n.viewportOpacity[vp] = mixf(opA, opB, tv);
         }
+    }
+    // Playback speed and play range
+    {
+        n.speed = mixd(a.speed, b.speed, t(d.speed, d.speedCurve));
+        n.inPoint = mixd(a.inPoint, b.inPoint, t(d.inPoint, d.inOutCurve));
+        n.outPoint = mixd(a.outPoint, b.outPoint, t(d.outPoint, d.inOutCurve));
+    }
+    // Text animation parameter
+    {
+        n.textAnimation = mixd(a.textAnimation, b.textAnimation, t(d.textAnimation, d.textAnimationCurve));
     }
     for (size_t i = 0; i < n.isf.size() && i < a.isf.size(); ++i)
         for (size_t k = 0; k < n.isf[i].size() && k < a.isf[i].size(); ++k) {
@@ -155,6 +232,10 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
         const QJsonValue v = timing.value(key);
         return v.isDouble() ? std::clamp(v.toDouble(), 0.0, 600.0) : fade;
     };
+    auto curve = [&](const QString &key) {
+        const QJsonValue v = timing.value(key + "/curve");
+        return easingCurveFromKey(v.toString());
+    };
     LayerTimes d;
     d.opacity = time(QStringLiteral("opacity"));
     d.volume = time(QStringLiteral("volume"));
@@ -166,6 +247,21 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.mapping = time(QStringLiteral("mapping"));
     d.viewportOpacity = time(QStringLiteral("viewportOpacity"));
     d.softEdge = time(QStringLiteral("softEdge"));
+    d.speed = time(QStringLiteral("speed"));
+    d.inPoint = time(QStringLiteral("inPoint"));
+    d.outPoint = time(QStringLiteral("outPoint"));
+    d.textAnimation = time(QStringLiteral("textAnimation"));
+    // Read easing curves for each parameter
+    d.opacityCurve = curve(QStringLiteral("opacity"));
+    d.volumeCurve = curve(QStringLiteral("volume"));
+    d.roiCurve = curve(QStringLiteral("roi"));
+    d.colorCurve = curve(QStringLiteral("color/temp")); // use temp for all color parameters
+    d.mappingCurve = curve(QStringLiteral("mapping"));
+    d.softEdgeCurve = curve(QStringLiteral("softEdge"));
+    d.viewportOpacityCurve = curve(QStringLiteral("viewportOpacity"));
+    d.speedCurve = curve(QStringLiteral("speed"));
+    d.inOutCurve = curve(QStringLiteral("inPoint")); // use inPoint for both inPoint and outPoint
+    d.textAnimationCurve = curve(QStringLiteral("textAnimation"));
     auto params = [&](const IsfInstance *inst, const QString &base) {
         std::vector<double> v;
         if (inst)
@@ -182,7 +278,9 @@ QString Engine::timingKey(const QStringList &path)
 {
     if (path.isEmpty()) return {};
     const QString &a = path[0];
-    if (a == "opacity" || a == "volume" || a == "mapping" || a == "viewportOpacity" || a == "softEdge") return a;
+    if (a == "opacity" || a == "volume" || a == "mapping" || a == "viewportOpacity" || a == "softEdge" ||
+        a == "speed" || a == "inPoint" || a == "outPoint" || a == "textAnimation")
+        return a;
     if (a == "source" && path.size() >= 2 && path[1] == "roi") return QStringLiteral("roi");
     if (a == "source" && path.size() >= 3 && path[1] == "params") return QStringLiteral("source/params/") + path[2];
     if (a == "color" && path.size() >= 2 && (path[1] == "temp" || path[1] == "tint" || path[1] == "add" || path[1] == "remove"))
