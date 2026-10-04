@@ -1134,6 +1134,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
     opacity->setTicks(10);
     opacity->setSnaps({100});
     opacity->setValue(s.opacity * 100);
+    m_opacity = opacity;
     form->addRow(new ResetLabel(QStringLiteral("Opacity"), [this, opacity] {
                      opacity->setValue(100);
                      setProp(cmd::SetLayerProp::Opacity, 1.0);
@@ -1162,6 +1163,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
         note->setWordWrap(true);
         rv->addWidget(note);
     }
+    m_routeFields.clear();
     for (const auto &r : s.routes) {
         auto *row = new QWidget;
         auto *rl = new QHBoxLayout(row);
@@ -1183,6 +1185,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
         rv->addWidget(row);
         const quint64 vp = r.id;
         auto current = std::make_shared<float>(r.opacity);
+        m_routeFields.push_back({r.id, sl, current});
         connect(sl, &SliderField::valueEdited, this, [this, vp, current, vname = r.name](double v) {
             if (m_engine->isLocked(m_layer)) return;
             const float after = float(v / 100.0);
@@ -1419,6 +1422,7 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
         auto *box = new QGroupBox(QStringLiteral("Soft edge"));
         box->setCheckable(true);
         box->setChecked(se.enabled);
+        m_softBox = box;
         box->setToolTip(QStringLiteral("Fades the picture to transparent towards each side. Width: how far the fade "
                                        "reaches, in % of the layer. Power: shape of the fade (1 linear, above 1 "
                                        "stays dark longer, below 1 brightens sooner)."));
@@ -1444,6 +1448,8 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
             power->setSingleStep(0.05);
             power->setSnaps({1});
             power->setValue(se.power[side]);
+            m_softWidth[side] = width;
+            m_softPower[side] = power;
             grid->addWidget(new ResetLabel(QString::fromLatin1(names[side]), [width, power] {
                                 width->setValue(10.0);
                                 power->setValue(1.0);
@@ -1745,6 +1751,38 @@ void LayerInspector::refreshDynamic()
         if (m_roi) m_roi->setRoi(roi);
         if (m_colorAdd) m_colorAdd->setColor(add);
         if (m_colorRemove) m_colorRemove->setColor(remove);
+    }
+    // Soft edge and opacity per viewport: they move too when a memory fades them
+    {
+        SoftEdge soft;
+        float opacity = 1;
+        std::vector<float> routes;
+        {
+            Engine::Lock lk(&m_engine->mutex());
+            Layer *l = m_engine->layer(m_layer);
+            if (!l) return;
+            soft = l->mapping.soft;
+            opacity = l->opacity;
+            for (const RouteField &r : m_routeFields) routes.push_back(l->opacityIn(r.viewport));
+        }
+        if (m_softBox && m_softBox->isChecked() != soft.enabled) {
+            QSignalBlocker blk(m_softBox);
+            m_softBox->setChecked(soft.enabled);
+        }
+        auto follow = [](SliderField *f, double value) {
+            if (f && !f->isDragging() && std::abs(f->value() - value) > 1e-3) f->setValue(value);
+        };
+        follow(m_opacity, opacity * 100.0);
+        for (int side = 0; side < 4; ++side) {
+            follow(m_softWidth[side], soft.width[side] * 100.0);
+            follow(m_softPower[side], soft.power[side]);
+        }
+        for (size_t k = 0; k < m_routeFields.size(); ++k) {
+            const RouteField &r = m_routeFields[k];
+            if (!r.field || r.field->isDragging()) continue;
+            *r.current = routes[k];
+            follow(r.field, routes[k] * 100.0);
+        }
     }
     bool playing;
     double d, p, in, out, speed;

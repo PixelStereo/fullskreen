@@ -3,6 +3,8 @@
 #include <QVariant>
 #include <QWidget>
 #include <functional>
+#include <memory>
+#include <vector>
 
 class Engine;
 class Mapping;
@@ -21,6 +23,7 @@ class QButtonGroup;
 class RoiEditor;
 class ColorEditor;
 class QComboBox;
+class QGroupBox;
 class ViewportOutputPanel;
 
 // Inspector for the selected layer, group or viewport, in sub-tabs: Source (drop zone, transport, sound, generator
@@ -78,6 +81,16 @@ private:
     QPointer<RoiEditor> m_roi;
     QPointer<ColorEditor> m_colorAdd, m_colorRemove;
     QPointer<SliderField> m_temp, m_tint;
+    // Followed while a memory fades them (as temp / tint)
+    QPointer<SliderField> m_opacity;
+    QPointer<QGroupBox> m_softBox;
+    QPointer<SliderField> m_softWidth[4], m_softPower[4];
+    struct RouteField {
+        quint64 viewport;
+        QPointer<SliderField> field;
+        std::shared_ptr<float> current; // the value an edit starts from (undo)
+    };
+    std::vector<RouteField> m_routeFields;
     bool m_previewing = false;
     QPointer<QProgressBar> m_meter;
     QPointer<QLabel> m_codecFact, m_pictureFact; // known once frames are decoded: kept up to date
