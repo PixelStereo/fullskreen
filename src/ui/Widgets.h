@@ -35,6 +35,27 @@ QColor onAccent();               // text and icons drawn on the accent: dark or 
 QString css(int alpha = 255);    // "#rrggbb", or "rgba(r, g, b, a)" when alpha < 255
 } // namespace theme
 
+// Magnetism: points and frames dragged in the preview are caught by the edges, centers and corners around
+// them, and the bars by their notable values. On or off for the session (button next to the zoom); the state
+// at start and the catching distance are settings.
+namespace magnet {
+class Notifier : public QObject
+{
+    Q_OBJECT
+public:
+signals:
+    void changed();
+};
+Notifier *notifier();
+bool enabled();
+void setEnabled(bool on);
+bool enabledAtStart(); // Settings (on unless changed)
+void setEnabledAtStart(bool on);
+int distance();        // screen pixels within which something is caught (Settings, 8 by default)
+void setDistance(int px);
+QIcon icon();          // a horseshoe magnet
+} // namespace magnet
+
 // Parameter name: a click puts the parameter back to its default value.
 class ResetLabel : public QLabel
 {

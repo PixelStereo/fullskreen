@@ -54,7 +54,10 @@ go through a **mask**, chosen at its top like an effect's: another layer's pictu
 Catmull-Rom interpolation; the two combine — align the corners first, refine with the mesh. Points are
 multi-selected and moved together. The preview zooms (wheel / − + Fit) for finer moves. Selected points show
 their position in composition pixels, and the one clicked last can be typed in (bottom left of the preview; the
-other selected points follow it).
+other selected points follow it). **Magnetism** (magnet button next to the zoom, on by default — Settings): a
+dragged point is caught by the corners, edges and centers of the composition, the viewports, the other layers and
+the layer's own still points; a dragged layer or viewport by its edges or its center; the bars by their notable
+values. Guides show what caught it; ⌘ held while dragging moves freely.
 
 **Effects.** An ISF chain per layer: any number of effects, reorderable, each one switchable, plus a master
 switch for the chain. Each effect can take a **mask**: the picture of another layer (hidden or not) says where it
@@ -196,7 +199,7 @@ Ctrl on Windows and Linux, ⌘ on Mac.
 | Save · discard on quit | ⌘S · ⌘D |
 | Zoom · pan the preview | wheel or pinch, − + Fit · middle button or ⌥+drag |
 | Select mapping points | ⌘+click, ⌘+drag a rectangle, ⌘A |
-| Move points / layer | drag (⇧: fine), or arrow keys (⇧: 10 px) |
+| Move points / layer | drag (⇧: fine, ⌘: without magnetism), or arrow keys (⇧: 10 px) |
 | Next / previous handle or field | Tab / ⇧Tab |
 | Recall a memory | double-click, Enter or GO |
 

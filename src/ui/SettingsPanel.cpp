@@ -176,6 +176,24 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
                      swatch);
     lookForm->addRow(note(QStringLiteral("Used for the selected layer, the bars, the buttons that are on and the "
                                          "links. A click on the name puts it back to the default light grey.")));
+    // Magnetism: its state when Fulskrin starts (the button next to the zoom changes it meanwhile), its reach
+    auto *magnetOn = new QCheckBox(QStringLiteral("Magnetism on at start"));
+    magnetOn->setChecked(magnet::enabledAtStart());
+    auto *reach = new QSpinBox;
+    reach->setRange(2, 40);
+    reach->setSuffix(QStringLiteral(" px"));
+    reach->setValue(magnet::distance());
+    lookForm->addRow(magnetOn);
+    lookForm->addRow(new ResetLabel(QStringLiteral("Magnet distance"), [reach] { reach->setValue(8); }), reach);
+    lookForm->addRow(note(QStringLiteral("Dragged points, layers and viewports are caught by the edges, centers and corners "
+                                         "within this distance on screen, and the bars by their notable values. The "
+                                         "magnet button next to the zoom turns it on or off; Ctrl / ⌘ held while dragging "
+                                         "moves freely.")));
+    connect(magnetOn, &QCheckBox::toggled, this, [](bool on) {
+        magnet::setEnabledAtStart(on);
+        magnet::setEnabled(on);
+    });
+    connect(reach, qOverload<int>(&QSpinBox::valueChanged), this, [](int px) { magnet::setDistance(px); });
     connect(swatch, &QPushButton::clicked, this, [this, paintSwatch] {
         const QColor c = QColorDialog::getColor(theme::accent(), this, QStringLiteral("Accent color"));
         if (!c.isValid()) return;

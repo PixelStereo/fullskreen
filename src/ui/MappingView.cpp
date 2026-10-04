@@ -3,6 +3,7 @@
 #include <algorithm>
 #include "Commands.h"
 #include "Engine.h"
+#include "Widgets.h"
 
 #include <QUndoStack>
 
@@ -25,6 +26,7 @@ static const QColor kOutline(255, 150, 40, 220);
 static const QColor kOutlineOther(255, 255, 255, 70);
 static const QColor kGrid(255, 255, 255, 110);
 static const QColor kViewport(120, 190, 255, 230);
+static const QColor kGuide(255, 70, 200, 230);
 
 MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent), m_engine(engine)
 {
@@ -36,7 +38,8 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     m_zoomBar = new QWidget(this);
     m_zoomBar->setStyleSheet("QWidget { background:rgba(20,20,22,200); border-radius:4px; }"
                              "QToolButton { color:#ddd; min-width:24px; padding:2px 6px; }"
-                             "QToolButton:hover { background:#3a3a3e; } QLabel { color:#aaa; padding:0 4px; }");
+                             "QToolButton:hover { background:#3a3a3e; } QToolButton:checked { background:#2f2f33; }"
+                             "QLabel { color:#aaa; padding:0 4px; }");
     auto *h = new QHBoxLayout(m_zoomBar);
     h->setContentsMargins(3, 2, 3, 2);
     h->setSpacing(1);
@@ -57,6 +60,18 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     QToolButton *in = button(QStringLiteral("+"), QStringLiteral("Zoom in (mouse wheel)"));
     QToolButton *fit = button(QStringLiteral("Fit"), QStringLiteral("Whole composition in view\n"
                                                                      "Pan: middle button, Alt/⌥ + drag, or two fingers on a trackpad"));
+    m_magnetButton = button(QString(), QStringLiteral("Magnetism: dragged points, layers and viewports are caught by the "
+                                                      "edges, centers and corners around them.\nHold Ctrl / ⌘ while "
+                                                      "dragging to move freely. On or off at start: Settings."));
+    m_magnetButton->setIcon(magnet::icon());
+    m_magnetButton->setCheckable(true);
+    m_magnetButton->setChecked(magnet::enabled());
+    connect(m_magnetButton, &QToolButton::toggled, this, [](bool on) { magnet::setEnabled(on); });
+    connect(magnet::notifier(), &magnet::Notifier::changed, this, [this] {
+        QSignalBlocker b(m_magnetButton);
+        m_magnetButton->setChecked(magnet::enabled());
+    });
+    connect(theme::notifier(), &theme::Notifier::changed, this, [this] { m_magnetButton->setIcon(magnet::icon()); });
     connect(out, &QToolButton::clicked, this, [this] { zoomBy(1 / 1.25); });
     connect(in, &QToolButton::clicked, this, [this] { zoomBy(1.25); });
     connect(fit, &QToolButton::clicked, this, &MappingView::zoomToFit);
@@ -344,6 +359,7 @@ void MappingView::initializeGL() { m_draw.init(); }
 void MappingView::paintGL()
 {
     paintScene();
+    paintGuides();
     paintViewportNames();
     paintCoordinates();
     refreshCoordinateBar();
@@ -413,6 +429,29 @@ void MappingView::paintViewportNames()
         p.setPen(kViewport);
         p.drawText(t, Qt::AlignLeft | Qt::AlignTop, name);
     }
+}
+
+// Magnetism: what caught the point or the frame being dragged
+void MappingView::paintGuides()
+{
+    if (m_guidePoint || !m_guideX.empty() || !m_guideY.empty()) {
+        std::vector<float> guides;
+        const QRectF vr = viewRect();
+        for (double x : m_guideX) pushLine(guides, QPointF(vr.left() + x * vr.width(), 0), QPointF(vr.left() + x * vr.width(), height()));
+        for (double y : m_guideY) pushLine(guides, QPointF(0, vr.top() + y * vr.height()), QPointF(width(), vr.top() + y * vr.height()));
+        m_draw.drawLines(guides, kGuide);
+        if (m_guidePoint) {
+            std::vector<float> ring;
+            const QPointF c = toWidget(m_guideAt);
+            const double r = 9;
+            for (int k = 0; k < 24; ++k) {
+                const double a0 = k * M_PI / 12, a1 = (k + 1) * M_PI / 12;
+                pushLine(ring, c + QPointF(r * std::cos(a0), r * std::sin(a0)), c + QPointF(r * std::cos(a1), r * std::sin(a1)));
+            }
+            m_draw.drawLines(ring, kGuide);
+        }
+    }
+
 }
 
 void MappingView::paintScene()
@@ -630,6 +669,117 @@ bool MappingView::insideLayer(int index, QPointF p) const
     return in;
 }
 
+// ---------------------------------------------------------------------------
+// Magnetism
+// ---------------------------------------------------------------------------
+bool MappingView::snapping(Qt::KeyboardModifiers mods) const { return magnet::enabled() && !(mods & Qt::ControlModifier); }
+
+void MappingView::clearGuides()
+{
+    m_guideX.clear();
+    m_guideY.clear();
+    m_guidePoint = false;
+}
+
+// What can catch the layer, its points or the viewport being dragged: the composition (edges, center lines,
+// corners, center), the viewports' frames, the other layers shown (corners, edges of their bounds), and the
+// layer's own points that are not moving
+MappingView::SnapTargets MappingView::snapTargets() const
+{
+    SnapTargets t;
+    auto box = [&t](const QRectF &b, bool corners) {
+        t.xs.insert(t.xs.end(), {b.left(), b.center().x(), b.right()});
+        t.ys.insert(t.ys.end(), {b.top(), b.center().y(), b.bottom()});
+        if (corners) t.points.insert(t.points.end(), {b.topLeft(), b.topRight(), b.bottomRight(), b.bottomLeft()});
+    };
+    box(QRectF(0, 0, 1, 1), true);
+    t.points.push_back(QPointF(0.5, 0.5));
+    for (int i = 0; i < m_engine->layerCount(); ++i) {
+        if (i == m_layer) continue;
+        const Layer *l = m_engine->layer(i);
+        if (!l || !hasPicture(l)) continue;
+        if (l->isViewport) {
+            box(l->mapping.bounds(), true);
+            continue;
+        }
+        if (!l->visible || isViewport(m_layer)) continue; // a viewport is caught by the composition and the others
+        const Mapping &m = l->mapping;
+        const QPointF c[4] = {outOf(i, m.map(0, 0)), outOf(i, m.map(1, 0)), outOf(i, m.map(1, 1)), outOf(i, m.map(0, 1))};
+        t.points.insert(t.points.end(), c, c + 4);
+        QRectF b(c[0], c[0]);
+        for (const QPointF &p : c) b = b.united(QRectF(p, p));
+        box(b, false);
+    }
+    // The layer's own points that stay where they are: they line up with each other
+    if (m_dragHandle)
+        for (const Handle &h : allHandles())
+            if (!isSelected(h)) {
+                const QPointF p = outOf(m_layer, handlePos(h));
+                t.points.push_back(p);
+                t.xs.push_back(p.x());
+                t.ys.push_back(p.y());
+            }
+    return t;
+}
+
+QPointF MappingView::snapPoint(QPointF p, const SnapTargets &t)
+{
+    clearGuides();
+    const QRectF vr = viewRect();
+    const double dx = magnet::distance() / std::max(1.0, vr.width()), dy = magnet::distance() / std::max(1.0, vr.height());
+    // A point within reach catches both coordinates
+    double best = 1.0;
+    for (const QPointF &q : t.points) {
+        const double d = std::hypot((q.x() - p.x()) / dx, (q.y() - p.y()) / dy);
+        if (d < best) {
+            best = d;
+            m_guidePoint = true;
+            m_guideAt = q;
+        }
+    }
+    if (m_guidePoint) return m_guideAt;
+    // Otherwise each coordinate on the nearest line within reach
+    QPointF r = p;
+    double bx = dx, by = dy;
+    for (double x : t.xs)
+        if (std::abs(x - p.x()) < bx) {
+            bx = std::abs(x - p.x());
+            r.setX(x);
+            m_guideX = {x};
+        }
+    for (double y : t.ys)
+        if (std::abs(y - p.y()) < by) {
+            by = std::abs(y - p.y());
+            r.setY(y);
+            m_guideY = {y};
+        }
+    return r;
+}
+
+QPointF MappingView::snapBox(const QRectF &b, const SnapTargets &t)
+{
+    clearGuides();
+    const QRectF vr = viewRect();
+    const double dx = magnet::distance() / std::max(1.0, vr.width()), dy = magnet::distance() / std::max(1.0, vr.height());
+    QPointF off;
+    double bx = dx, by = dy;
+    for (double edge : {b.left(), b.center().x(), b.right()})
+        for (double x : t.xs)
+            if (std::abs(x - edge) < bx) {
+                bx = std::abs(x - edge);
+                off.setX(x - edge);
+                m_guideX = {x};
+            }
+    for (double edge : {b.top(), b.center().y(), b.bottom()})
+        for (double y : t.ys)
+            if (std::abs(y - edge) < by) {
+                by = std::abs(y - edge);
+                off.setY(y - edge);
+                m_guideY = {y};
+            }
+    return off;
+}
+
 void MappingView::mousePressEvent(QMouseEvent *e)
 {
     // Pan: middle button, or Alt / ⌥ + drag (Space is play / pause)
@@ -699,7 +849,13 @@ void MappingView::mousePressEvent(QMouseEvent *e)
             }
         }
     }
-    if (Mapping *m = mapping()) m_dragBefore = *m;
+    if (Mapping *m = mapping()) {
+        m_dragBefore = *m;
+        m_dragStartBox = m->bounds();
+    }
+    if (m_dragHandle) m_dragRaw = handlePos(m_primary);
+    m_dragOffsetRaw = m_dragOffsetApplied = QPointF();
+    clearGuides();
     update();
 }
 
@@ -720,10 +876,28 @@ void MappingView::mouseMoveEvent(QMouseEvent *e)
     if (m_rubber) {
         m_rubberEnd = e->position();
     } else if (m_dragHandle) {
-        moveSelection(delta);
+        // The point follows the cursor from where it would be without magnetism, then is caught (or not)
+        m_dragRaw += delta;
+        QPointF target = m_dragRaw;
+        clearGuides();
+        if (snapping(e->modifiers())) target = canvasOf(m_layer, snapPoint(outOf(m_layer, m_dragRaw), snapTargets()));
+        moveSelection(target - handlePos(m_primary));
         emit mappingEdited();
     } else if (m_dragLayer) {
-        if (Mapping *m = mapping()) m->translate(delta);
+        if (Mapping *m = mapping()) {
+            m_dragOffsetRaw += delta;
+            QPointF want = m_dragOffsetRaw;
+            clearGuides();
+            if (snapping(e->modifiers())) {
+                const QRectF box = m_dragStartBox.translated(m_dragOffsetRaw);
+                const QPointF a = outOf(m_layer, box.topLeft()), b = outOf(m_layer, box.bottomRight());
+                const QRectF out = QRectF(a, b).normalized();
+                const QPointF s = snapBox(out, snapTargets());
+                if (!s.isNull()) want += canvasOf(m_layer, out.topLeft() + s) - canvasOf(m_layer, out.topLeft());
+            }
+            m->translate(want - m_dragOffsetApplied);
+            m_dragOffsetApplied = want;
+        }
         emit mappingEdited();
     }
     update();
@@ -748,6 +922,8 @@ void MappingView::mouseReleaseEvent(QMouseEvent *)
     const bool dragging = m_dragHandle || m_dragLayer;
     const bool handle = m_dragHandle;
     m_dragHandle = m_dragLayer = false;
+    clearGuides();
+    update();
     if (!dragging || !m_undo) return;
     const Mapping after = cmd::SetMapping::read(m_engine, m_layer);
     if (after.toJson() == m_dragBefore.toJson()) return;
