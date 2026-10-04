@@ -18,6 +18,9 @@ class QDoubleSpinBox;
 // moves are computed in composition coordinates, so a higher zoom means smaller steps.
 // The selected points show their position in composition pixels; the last one clicked can be typed in
 // (bottom left), the other selected points following it.
+// Magnetism (button next to the zoom): a dragged point is caught by the corners and edges around it — the
+// composition's, its center lines, the viewports' frames, the other layers', the other points of the layer —
+// and a dragged layer or viewport by its edges or center. Ctrl / ⌘ held while dragging: free.
 class MappingView : public QOpenGLWidget
 {
     Q_OBJECT
@@ -64,6 +67,17 @@ private:
     void paintScene();
     void paintViewportNames();
     void paintCoordinates();     // labels of the selected points (composition pixels)
+    // Magnetism (lock held). Targets in composition coordinates (normalized, origin top left).
+    struct SnapTargets {
+        std::vector<double> xs, ys;   // lines
+        std::vector<QPointF> points;  // corners, centers, points
+    };
+    SnapTargets snapTargets() const;
+    QPointF snapPoint(QPointF p, const SnapTargets &t);  // nearest point, else each axis on its own lines
+    QPointF snapBox(const QRectF &box, const SnapTargets &t); // offset catching its edges or its center
+    bool snapping(Qt::KeyboardModifiers mods) const;
+    void clearGuides();
+    void paintGuides();
     void refreshCoordinateBar(); // values of the point typed in, follows the selection and the mapping
     void typeCoordinate();       // a value typed: the point (and the selection) moves there
     QPointF outOf(int layer, QPointF canvas) const;
@@ -97,6 +111,13 @@ private:
     void moveSelection(QPointF delta);
     bool m_dragHandle = false, m_dragLayer = false, m_rubber = false;
     QPointF m_lastNorm, m_rubberStart, m_rubberEnd;
+    QPointF m_dragRaw;                            // the dragged point without magnetism (canvas of the layer)
+    QPointF m_dragOffsetRaw, m_dragOffsetApplied; // the dragged layer: its move without / with magnetism
+    QRectF m_dragStartBox;                        // its bounds when the drag started (canvas)
+    std::vector<double> m_guideX, m_guideY;       // what caught it, drawn while dragging
+    bool m_guidePoint = false;
+    QPointF m_guideAt;
+    QToolButton *m_magnetButton = nullptr;
 
     double m_zoom = 1.0;
     QPointF m_pan;                // offset of the view center, widget pixels

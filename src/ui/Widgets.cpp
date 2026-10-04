@@ -85,6 +85,72 @@ Notifier *notifier()
     return &n;
 }
 
+} // namespace theme
+
+namespace magnet {
+static bool g_enabled = true, g_enabledLoaded = false;
+static int g_distance = -1;
+
+Notifier *notifier()
+{
+    static Notifier n;
+    return &n;
+}
+bool enabledAtStart() { return QSettings().value(QStringLiteral("ui/magnetism"), true).toBool(); }
+void setEnabledAtStart(bool on) { QSettings().setValue(QStringLiteral("ui/magnetism"), on); }
+bool enabled()
+{
+    if (!g_enabledLoaded) {
+        g_enabled = enabledAtStart();
+        g_enabledLoaded = true;
+    }
+    return g_enabled;
+}
+void setEnabled(bool on)
+{
+    g_enabledLoaded = true;
+    if (g_enabled == on) return;
+    g_enabled = on;
+    emit notifier()->changed();
+}
+int distance()
+{
+    if (g_distance < 0) g_distance = std::clamp(QSettings().value(QStringLiteral("ui/magnetDistance"), 8).toInt(), 2, 40);
+    return g_distance;
+}
+void setDistance(int px)
+{
+    g_distance = std::clamp(px, 2, 40);
+    QSettings().setValue(QStringLiteral("ui/magnetDistance"), g_distance);
+    emit notifier()->changed();
+}
+QIcon icon()
+{
+    QIcon icon;
+    for (int on = 0; on < 2; ++on) {
+        QPixmap pm(32, 32);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        // A horseshoe magnet: red when on, grey when off, its poles silver
+        const QColor body = on ? QColor(225, 62, 56) : QColor(118, 118, 124), poles(215, 215, 220);
+        QPainterPath shoe;
+        shoe.moveTo(8, 9);
+        shoe.lineTo(8, 16);
+        shoe.arcTo(QRectF(8, 8.5, 16, 17), 180, 180);
+        shoe.lineTo(24, 9);
+        p.setPen(QPen(body, 6.5, Qt::SolidLine, Qt::FlatCap, Qt::RoundJoin));
+        p.drawPath(shoe);
+        p.setPen(QPen(poles, 6.5, Qt::SolidLine, Qt::FlatCap));
+        p.drawLine(QPointF(8, 3), QPointF(8, 9));
+        p.drawLine(QPointF(24, 3), QPointF(24, 9));
+        icon.addPixmap(pm, QIcon::Normal, on ? QIcon::On : QIcon::Off);
+    }
+    return icon;
+}
+} // namespace magnet
+
+namespace theme {
 // Dark interface, with the accent wherever a selection or an active control is shown
 void applyToApplication(QApplication &app)
 {
@@ -924,11 +990,12 @@ void SliderField::mouseMoveEvent(QMouseEvent *e)
     const double v = valueAt(e->position().x());
     // Shift: ten times finer, from where the value is
     if (e->modifiers() & Qt::ShiftModifier) return apply(m_value + (v - m_value) * 0.1, false);
-    // Otherwise the notable values catch the cursor, so they can be hit on a wide range
+    // Otherwise the notable values catch the cursor (magnetism), so they can be hit on a wide range
     const double tol = (m_max - m_min) * 0.012;
     double best = v;
-    for (double snap : m_snaps)
-        if (snap >= m_min && snap <= m_max && std::abs(v - snap) < tol) best = snap;
+    if (magnet::enabled())
+        for (double snap : m_snaps)
+            if (snap >= m_min && snap <= m_max && std::abs(v - snap) < tol) best = snap;
     apply(best, false);
 }
 void SliderField::mouseReleaseEvent(QMouseEvent *e)
