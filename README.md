@@ -25,7 +25,7 @@ row of transport buttons — play backwards, pause, play, back to the in point, 
 a row of play modes with the in / out buttons, and three bars: **Position**, **Speed** and **Loop** (the played
 range, two handles). Each bar is one control: drag it, type the value at its right end, or use the wheel; Shift
 makes the drag ten times finer and the notable values catch the cursor. The same bar is used throughout —
-opacity, volume, ROI, the balance, the color channels, the parameters of every effect and generator. Play / pause is also Space.
+opacity, volume, ROI, the balance, the color channels, the parameters of every effect and generator.
 The play modes: One-shot (freezes on the last frame), Loop, Ping-pong (decoded backwards in short windows, so any
 codec works), Stop (black and silent at the end). **In / out points** per layer bound playback in both
 directions, draggable on the playback bar. The default mode for newly loaded media is a setting.
@@ -93,6 +93,14 @@ Crossfade, Dissolve, Fade Out In, Iris and Wipe are bundled, and any ISF transit
 `progress`) of the library works. Effect chains switch at once; a layer deleted since is recreated; a layer the
 memory does not know (created since) fades out and is hidden, so the picture is the one that was stored;
 unchecked and locked layers are left alone.
+
+**Sequences** (the cue list of the show). Ordered steps, each recalling a memory and carrying a text for the
+operator; **Space** plays the next step (GO), **Shift+Space** the previous one (GO BACK). Under the preview, a bar
+shows GO BACK, GO, the previous, current and next steps — the current one in another color once something was
+changed since it was played — and the current step's text. **Sequences…** opens a window that stays in front:
+several sequences (new, duplicate, delete, rename, loop — GO on the last step plays the first), their steps (+,
+delete, move, a memory dragged from the list onto a step or below the last one, its text, double-click a number to
+play it). Saved with the project; OSC `/sequence/go`, `/sequence/back`, `/sequence/step`, `/sequence/current`.
 
 **Look.** The accent — the selected layer, the bars, the controls that are on, the links — is a very light grey
 by default and is changed in **Settings ▸ Interface ▸ Accent color**; the whole interface follows at once.
@@ -162,7 +170,7 @@ Ctrl on Windows and Linux, ⌘ on Mac.
 | Reset a parameter | click its name |
 | Accent color of the interface | Settings ▸ Interface |
 | Media Bin / Layers panel | ⇧1 / ⇧2 |
-| Play / pause the selected layer | Space |
+| GO: next step of the sequence · GO BACK | Space · ⇧Space |
 | In / out points at the position | I / O |
 | Every viewport fullscreen · in windows (again: back) | ⌘F · ⌘⇧F |
 | Blackout (picture and sound) | ⌘B |

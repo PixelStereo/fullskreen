@@ -478,6 +478,24 @@ void OscNamespace::build()
         }
     }
 
+    // --- Sequence: GO, GO BACK, a step of the current sequence (1 = first), where it is
+    {
+        add("/sequence/go", "N", 2, "GO").set = [e](const QVariantList &) { return e->sequenceGo(); };
+        add("/sequence/back", "N", 2, "GO Back").set = [e](const QVariantList &) { return e->sequenceBack(); };
+        OscNode &st = add("/sequence/step", "i", 3, "Step");
+        st.get = [e] { return QVariantList{e->sequencePosition() + 1}; };
+        st.set = [e](const QVariantList &a) { return e->sequenceGoTo(int(std::lround(num(a.value(0)))) - 1); };
+        OscNode &cur = add("/sequence/current", "i", 3, "Current Sequence");
+        cur.get = [e] { return QVariantList{e->currentSequence() + 1}; };
+        cur.set = [e](const QVariantList &a) {
+            const int i = int(std::lround(num(a.value(0)))) - 1;
+            if (i < 0 || i >= e->sequenceCount()) return false;
+            e->setCurrentSequence(i);
+            return true;
+        };
+        m_nodes["/sequence"].description = "Sequence";
+    }
+
     // --- Viewports, then the layers (top level, then the contents of each group, at any depth)
     struct Item {
         quint64 id, parent;
