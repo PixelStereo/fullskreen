@@ -245,7 +245,8 @@ QJsonObject Mapping::toJson() const
     for (const QPointF &p : offsets) off.append(QJsonArray{p.x(), p.y()});
     o["offsets"] = off;
     o["meshMode"] = meshMode;
-    if (soft.enabled || !(soft == SoftEdge())) o["soft"] = soft.toJson();
+    // Always save soft edge (even if disabled) so memories preserve crop feathering settings
+    o["soft"] = soft.toJson();
     return o;
 }
 

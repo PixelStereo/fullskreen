@@ -114,11 +114,10 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         o["outputMode"] = l.vpMode;
         o["publish"] = l.vpPublish.toJson();
     }
-    if (!l.viewportOpacity.empty()) {
-        QJsonObject vo;
-        for (const auto &[v, a] : l.viewportOpacity) vo[QString::number(v)] = double(a);
-        o["viewportOpacity"] = vo;
-    }
+    // Always save viewport opacity (even if empty) so memories preserve per-viewport visibility settings
+    QJsonObject vo;
+    for (const auto &[v, a] : l.viewportOpacity) vo[QString::number(v)] = double(a);
+    o["viewportOpacity"] = vo;
     o["name"] = l.name;
     o["visible"] = l.visible;
     o["locked"] = l.locked;
