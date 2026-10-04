@@ -6,8 +6,10 @@
 
 #include <QUndoStack>
 
+#include <QDoubleSpinBox>
 #include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QSignalBlocker>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
@@ -59,6 +61,84 @@ MappingView::MappingView(Engine *engine, QWidget *parent) : QOpenGLWidget(parent
     connect(in, &QToolButton::clicked, this, [this] { zoomBy(1.25); });
     connect(fit, &QToolButton::clicked, this, &MappingView::zoomToFit);
     updateZoomLabel();
+
+    // Position of the point clicked last, in composition pixels: typed, dragged left / right, or the wheel
+    m_coordBar = new QWidget(this);
+    m_coordBar->setStyleSheet("QWidget#coords { background:rgba(20,20,22,210); border-radius:4px; }"
+                              "QLabel { color:#bbb; padding:0 3px; }");
+    m_coordBar->setObjectName("coords");
+    auto *c = new QHBoxLayout(m_coordBar);
+    c->setContentsMargins(6, 3, 6, 3);
+    c->setSpacing(4);
+    m_coordName = new QLabel;
+    c->addWidget(m_coordName);
+    for (QDoubleSpinBox **box : {&m_coordX, &m_coordY}) {
+        auto *label = new QLabel(box == &m_coordX ? QStringLiteral("X") : QStringLiteral("Y"));
+        auto *b = new QDoubleSpinBox;
+        b->setRange(-100000, 100000);
+        b->setDecimals(1);
+        b->setSuffix(QStringLiteral(" px"));
+        b->setKeyboardTracking(false);
+        b->setFixedWidth(96);
+        b->setToolTip(QStringLiteral("Position of the point in the composition, in pixels (0, 0: top left). "
+                                     "The other selected points move with it."));
+        c->addWidget(label);
+        c->addWidget(b);
+        *box = b;
+        connect(b, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this] { typeCoordinate(); });
+    }
+    m_coordBar->hide();
+}
+
+void MappingView::refreshCoordinateBar()
+{
+    QPointF out;
+    QString name;
+    bool show = false;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Mapping *m = mapping();
+        show = m && !isViewport(m_layer) && !m_engine->isLocked(m_layer) && m_primary.valid() && isSelected(m_primary);
+        if (show) {
+            const QSize comp = m_engine->compositionSize();
+            const QPointF n = outOf(m_layer, handlePos(m_primary));
+            out = QPointF(n.x() * comp.width(), n.y() * comp.height());
+            static const char *corners[4] = {"Top left", "Top right", "Bottom right", "Bottom left"};
+            name = m_primary.kind == 0 ? QString::fromLatin1(corners[m_primary.i & 3])
+                                       : QStringLiteral("Point %1, %2").arg(m_primary.i + 1).arg(m_primary.j + 1);
+            if (m_selection.size() > 1) name += QStringLiteral(" (+%1)").arg(m_selection.size() - 1);
+        }
+    }
+    if (m_coordBar->isVisible() != show) m_coordBar->setVisible(show);
+    if (!show) return;
+    m_coordName->setText(name);
+    for (auto [box, v] : {std::pair{m_coordX, out.x()}, std::pair{m_coordY, out.y()}}) {
+        if (box->hasFocus() || std::abs(box->value() - v) < 0.05) continue; // being typed in, or the same
+        QSignalBlocker b(box);
+        box->setValue(v);
+    }
+    m_coordBar->adjustSize();
+    m_coordBar->move(8, height() - m_coordBar->height() - 8);
+}
+
+void MappingView::typeCoordinate()
+{
+    Mapping before, after;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Mapping *m = mapping();
+        if (!m || !m_primary.valid() || m_engine->isLocked(m_layer)) return;
+        const QSize comp = m_engine->compositionSize();
+        const QPointF target = canvasOf(m_layer, QPointF(m_coordX->value() / comp.width(), m_coordY->value() / comp.height()));
+        before = *m;
+        if (!isSelected(m_primary)) m_selection = {m_primary};
+        moveSelection(target - handlePos(m_primary));
+        after = *m;
+    }
+    if (m_undo && after.toJson() != before.toJson())
+        m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, QStringLiteral("Move Point"), true));
+    emit mappingEdited();
+    update();
 }
 
 void MappingView::updateZoomLabel()
@@ -265,6 +345,39 @@ void MappingView::paintGL()
 {
     paintScene();
     paintViewportNames();
+    paintCoordinates();
+    refreshCoordinateBar();
+}
+
+// Next to each selected point (a few at most), its position in composition pixels
+void MappingView::paintCoordinates()
+{
+    std::vector<std::pair<QPointF, QString>> labels;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        Mapping *m = mapping();
+        if (!m || isViewport(m_layer) || m_selection.empty()) return;
+        const QSize comp = m_engine->compositionSize();
+        // Many points selected: only the one clicked last
+        std::vector<Handle> shown = m_selection.size() <= 6 ? m_selection : std::vector<Handle>{m_primary};
+        for (const Handle &h : shown) {
+            if (!h.valid()) continue;
+            const QPointF n = outOf(m_layer, handlePos(h));
+            labels.push_back({toWidget(n), QStringLiteral("%1, %2").arg(n.x() * comp.width(), 0, 'f', 1)
+                                                .arg(n.y() * comp.height(), 0, 'f', 1)});
+        }
+    }
+    QPainter p(this);
+    QFont f = p.font();
+    f.setPointSizeF(f.pointSizeF() * 0.85);
+    p.setFont(f);
+    for (const auto &[at, text] : labels) {
+        const QRectF r(at.x() + 9, at.y() - 22, 140, 16);
+        p.setPen(QColor(0, 0, 0, 210));
+        p.drawText(r.translated(1, 1), Qt::AlignLeft | Qt::AlignVCenter, text);
+        p.setPen(kSelected);
+        p.drawText(r, Qt::AlignLeft | Qt::AlignVCenter, text);
+    }
 }
 
 // Names of the viewports, at the top left of their frame
