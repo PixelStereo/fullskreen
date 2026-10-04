@@ -150,6 +150,9 @@ public:
     void setDefaultTransition(const QString &path);
     QString defaultTransition() const;
     bool isTransitioning(quint64 layer) const; // a source transition is running on it
+    // Mask of an effect: the picture of another layer (0: none) says where the effect applies. Refused for a
+    // viewport, the layer itself, or a layer that already depends on this one (err says why).
+    bool setEffectMask(int layer, int effect, quint64 maskLayer, bool invert, QString *err = nullptr);
     PlayMode defaultPlayMode() const { return m_defaultPlayMode; }
     void seekLayer(int i, double t);
     void setLayerVolume(int i, float volume);
@@ -446,4 +449,6 @@ private:
     mutable std::mutex m_stateMutex;
     GLuint m_flipProgram = 0;
     GLint m_flipTexLoc = -1;
+    GLuint m_maskProgram = 0; // an effect's result over its input, through a mask
+    GLint m_maskInLoc = -1, m_maskFxLoc = -1, m_maskMaskLoc = -1, m_maskInvertLoc = -1;
 };

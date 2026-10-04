@@ -76,9 +76,16 @@ void Engine::renderPass(const IsfRenderContext &rc)
     const size_t n = m_layers.size();
     for (auto &l : m_layers) l->referenced = false;
     for (auto &l : m_layers) {
-        if (l->type != SourceType::Layer || !l->sourceLayer) continue;
-        const int si = indexOfId(l->sourceLayer);
-        if (si >= 0) m_layers[size_t(si)]->referenced = true;
+        // Used as a source, or as a mask: rendered even when hidden
+        if (l->type == SourceType::Layer && l->sourceLayer) {
+            const int si = indexOfId(l->sourceLayer);
+            if (si >= 0) m_layers[size_t(si)]->referenced = true;
+        }
+        for (const auto &fx : l->effects)
+            if (fx->enabled && fx->maskLayer) {
+                const int mi = indexOfId(fx->maskLayer);
+                if (mi >= 0) m_layers[size_t(mi)]->referenced = true;
+            }
     }
     enum { Todo = 0, Doing = 1, Done = 2 };
     m_renderMark.assign(n, Todo);
@@ -90,6 +97,11 @@ void Engine::renderPass(const IsfRenderContext &rc)
             const int si = indexOfId(l.sourceLayer);
             if (si >= 0) render(size_t(si));
         }
+        for (const auto &fx : l.effects) // the masks of its effects, before it
+            if (fx->enabled && fx->maskLayer) {
+                const int mi = indexOfId(fx->maskLayer);
+                if (mi >= 0 && !m_layers[size_t(mi)]->isViewport) render(size_t(mi));
+            }
         if (l.isViewport) {
             // What it sees: the items at the top of the list it shows, all rendered by now
             std::vector<Layer *> shown;
@@ -257,7 +269,29 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
             if (!fx->enabled) continue;
             RenderTarget &dst = l.fxTarget[ping];
             fx->render(rc, tex, w, h, dst, w, h);
-            tex = dst.tex;
+            // Through its mask: the effect where the mask is white, the input where it is black
+            const Layer *mask = fx->maskLayer ? layer(indexOfId(fx->maskLayer)) : nullptr;
+            if (mask && mask->finalTex && mask != &l) {
+                RenderTarget &mixed = l.maskTarget[ping];
+                mixed.ensure(w, h);
+                mixed.bind();
+                auto f = gl();
+                f->glDisable(GL_BLEND);
+                f->glUseProgram(m_maskProgram);
+                const GLuint texs[3] = {tex, dst.tex, mask->finalTex};
+                const GLint locs[3] = {m_maskInLoc, m_maskFxLoc, m_maskMaskLoc};
+                for (int k = 0; k < 3; ++k) {
+                    f->glActiveTexture(GL_TEXTURE0 + k);
+                    f->glBindTexture(GL_TEXTURE_2D, texs[k]);
+                    f->glUniform1i(locs[k], k);
+                }
+                f->glUniform1i(m_maskInvertLoc, fx->maskInvert ? 1 : 0);
+                drawQuad();
+                f->glActiveTexture(GL_TEXTURE0);
+                tex = mixed.tex;
+            } else {
+                tex = dst.tex;
+            }
             ping = 1 - ping;
         }
     }

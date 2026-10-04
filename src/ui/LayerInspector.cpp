@@ -80,7 +80,7 @@ struct LayerSnapshot {
     std::vector<std::pair<quint64, QString>> candidates;
     struct Fx {
         QString name, error;
-        bool valid = false, enabled = true;
+        bool valid = false, enabled = true, masked = false;
     };
     std::vector<Fx> effects;
     bool meshMode = false;
@@ -148,7 +148,8 @@ struct LayerSnapshot {
                 if (!o || o->isViewport || o->id == l->id || e->layerDependsOn(o->id, l->id)) continue;
                 s.candidates.push_back({o->id, o->isGroup ? o->name + QStringLiteral(" (group)") : o->name});
             }
-        for (const auto &fx : l->effects) s.effects.push_back({fx->name(), fx->error(), fx->isValid(), fx->enabled});
+        for (const auto &fx : l->effects)
+            s.effects.push_back({fx->name(), fx->error(), fx->isValid(), fx->enabled, fx->maskLayer != 0});
         s.meshMode = l->mapping.meshMode;
         s.cols = l->mapping.cols;
         s.rows = l->mapping.rows;
@@ -1387,7 +1388,9 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     m_selectedEffect = std::clamp(m_selectedEffect, 0, count - 1);
     auto *list = new QListWidget;
     for (const auto &fx : s.effects) {
-        auto *it = new QListWidgetItem(fx.name + (fx.valid ? QString() : QStringLiteral("  ⚠")));
+        auto *it = new QListWidgetItem(fx.name + (fx.masked ? QStringLiteral("  ◐") : QString()) +
+                                       (fx.valid ? QString() : QStringLiteral("  ⚠")));
+        if (fx.masked) it->setToolTip(QStringLiteral("Through a mask"));
         it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
         it->setCheckState(fx.enabled ? Qt::Checked : Qt::Unchecked);
         list->addItem(it);
@@ -1467,6 +1470,9 @@ void LayerInspector::showEffectParams()
     }
     QString name, error;
     bool valid = false;
+    quint64 maskId = 0, selfId = 0;
+    bool invert = false;
+    std::vector<std::pair<quint64, QString>> masks; // layers that can mask it (no viewport, no feedback)
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(m_layer);
@@ -1476,9 +1482,64 @@ void LayerInspector::showEffectParams()
         name = fx->name();
         error = fx->error();
         valid = fx->isValid();
+        maskId = fx->maskLayer;
+        invert = fx->maskInvert;
+        selfId = l->id;
+        for (int k = 0; k < m_engine->layerCount(); ++k) {
+            const Layer *o = m_engine->layer(k);
+            if (!o || o->isViewport || o->id == selfId || m_engine->layerDependsOn(o->id, selfId)) continue;
+            masks.push_back({o->id, o->isGroup ? o->name + QStringLiteral(" (group)") : o->name});
+        }
     }
     lay->addWidget(new QLabel(QStringLiteral("<b>%1</b>").arg(name.toHtmlEscaped())));
     if (!error.isEmpty()) lay->addWidget(errorLabel(error));
+
+    // Mask: where the effect applies, from another layer's picture stretched over this one
+    {
+        auto *row = new QHBoxLayout;
+        auto *label = new ResetLabel(QStringLiteral("Mask"), [this] {
+            const int k = m_selectedEffect;
+            editEffects(QStringLiteral("Remove Effect Mask"), [this, k] { m_engine->setEffectMask(m_layer, k, 0, false); });
+            QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection); // the list shows ◐
+        });
+        auto *pick = new QComboBox;
+        pick->addItem(QStringLiteral("None — everywhere"), QVariant(qulonglong(0)));
+        int current = 0;
+        for (const auto &[id, n] : masks) {
+            pick->addItem(n, QVariant(qulonglong(id)));
+            if (id == maskId) current = pick->count() - 1;
+        }
+        if (maskId && current == 0) { // a mask that cannot be chosen any more (gone): shown, not chosen
+            pick->addItem(QStringLiteral("(gone)"), QVariant(qulonglong(maskId)));
+            current = pick->count() - 1;
+        }
+        pick->setCurrentIndex(current);
+        pick->setToolTip(QStringLiteral("Where this effect applies: fully where the chosen layer's picture is white, not at "
+                                        "all where it is black or transparent, in proportion in between. That picture is "
+                                        "stretched over this layer's, before the mapping. The layer can stay hidden."));
+        auto *inv = new QCheckBox(QStringLiteral("Invert"));
+        inv->setChecked(invert);
+        inv->setEnabled(maskId != 0);
+        row->addWidget(label);
+        row->addWidget(pick, 1);
+        row->addWidget(inv);
+        lay->addLayout(row);
+        connect(pick, &QComboBox::activated, this, [this, pick, inv](int i) {
+            const quint64 id = pick->itemData(i).toULongLong();
+            const int k = m_selectedEffect;
+            QString err;
+            bool ok = true;
+            editEffects(id ? QStringLiteral("Set Effect Mask") : QStringLiteral("Remove Effect Mask"),
+                        [&] { ok = m_engine->setEffectMask(m_layer, k, id, inv->isChecked(), &err); });
+            if (!ok && !err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Mask"), err);
+            QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+        });
+        connect(inv, &QCheckBox::toggled, this, [this, pick](bool on) {
+            const quint64 id = pick->currentData().toULongLong();
+            const int k = m_selectedEffect;
+            editEffects(QStringLiteral("Invert Effect Mask"), [&] { m_engine->setEffectMask(m_layer, k, id, on); });
+        });
+    }
     if (valid) {
         auto *params = new ParamPanel(m_engine, m_undo, m_layer, m_selectedEffect);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);

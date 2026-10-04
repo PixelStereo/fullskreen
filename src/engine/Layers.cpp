@@ -380,6 +380,8 @@ void Engine::releaseLayer(Layer &l)
     l.effects.clear();
     l.fxTarget[0].destroy();
     l.fxTarget[1].destroy();
+    l.maskTarget[0].destroy();
+    l.maskTarget[1].destroy();
     l.groupTarget.destroy();
     l.prepTarget.destroy();
     l.vpOut[0].destroy();
@@ -576,7 +578,7 @@ void Engine::setEffectsJson(int i, const QJsonArray &a)
             inst = m_layers[size_t(i)]->effects[size_t(fi)].get();
         }
         runGl([inst, e] {
-            inst->enabled = e.value("enabled").toBool(true);
+            inst->readState(e);
             inst->restoreParams(e.value("params").toObject(), QString());
         });
     }
@@ -642,6 +644,8 @@ bool Engine::layerDependsOn(quint64 id, quint64 onId) const
         for (const auto &l : m_layers) {
             if (l->id != cur) continue;
             if (l->type == SourceType::Layer && l->sourceLayer && visit(l->sourceLayer)) return true;
+            for (const auto &fx : l->effects) // the masks of its effects
+                if (fx->maskLayer && visit(fx->maskLayer)) return true;
             if (l->isGroup)
                 for (const auto &m : m_layers)
                     if (m->parent == cur && visit(m->id)) return true;
@@ -667,6 +671,46 @@ void Engine::fixLayerReferences(QStringList *warnings)
         l->type = SourceType::None;
         l->sourceLayer = 0;
     }
+    // Masks of the effects: a layer that is gone, a viewport, or one that would feed back
+    for (auto &l : m_layers)
+        for (auto &fx : l->effects) {
+            if (!fx->maskLayer) continue;
+            const int mi = indexOfId(fx->maskLayer);
+            const bool bad = mi < 0 || m_layers[size_t(mi)]->isViewport || fx->maskLayer == l->id;
+            if (!bad && !layerDependsOn(fx->maskLayer, l->id)) continue;
+            if (warnings)
+                *warnings << l->name + " / " + fx->name() +
+                                 (mi < 0 ? QStringLiteral(": its mask layer is gone, mask dropped.")
+                                         : QStringLiteral(": its mask would feed back on the layer, mask dropped."));
+            fx->maskLayer = 0;
+        }
+}
+
+bool Engine::setEffectMask(int layerIndex, int effect, quint64 maskId, bool invert, QString *err)
+{
+    auto fail = [err](const QString &m) {
+        if (err) *err = m;
+        return false;
+    };
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(layerIndex);
+        if (!l || effect < 0 || effect >= int(l->effects.size())) return false;
+        if (maskId) {
+            const int mi = indexOfId(maskId);
+            if (mi < 0) return fail(QStringLiteral("That layer no longer exists."));
+            if (m_layers[size_t(mi)]->isViewport) return fail(QStringLiteral("A viewport cannot be a mask."));
+            if (maskId == l->id) return fail(QStringLiteral("A layer cannot mask its own effects."));
+            if (layerDependsOn(maskId, l->id))
+                return fail(QStringLiteral("\"%1\" already uses this layer: the picture would feed back on itself.")
+                                .arg(m_layers[size_t(mi)]->name));
+        }
+        IsfInstance &fx = *l->effects[size_t(effect)];
+        fx.maskLayer = maskId;
+        fx.maskInvert = invert;
+    }
+    emit layersChanged();
+    return true;
 }
 
 bool Engine::setLayerSourceLayer(int i, quint64 sourceId, LayerTap tap, QString *err)
@@ -997,7 +1041,7 @@ bool Engine::reloadIsf(IsfInstance *inst)
         const QJsonObject saved = inst->save(QString());
         ok = inst->load(inst->path());
         inst->restoreParams(saved.value("params").toObject(), QString());
-        inst->enabled = saved.value("enabled").toBool(true);
+        inst->readState(saved);
     });
     Lock lk(&m_mutex);
     for (auto &l : m_layers)

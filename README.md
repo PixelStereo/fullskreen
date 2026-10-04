@@ -42,7 +42,10 @@ Catmull-Rom interpolation; the two combine — align the corners first, refine w
 multi-selected and moved together. The preview zooms (wheel / − + Fit) for finer moves.
 
 **Effects.** An ISF chain per layer: any number of effects, reorderable, each one switchable, plus a master
-switch for the chain. Parameters are generated from each shader's JSON header. **ISF v2** is supported (multiple
+switch for the chain. Each effect can take a **mask**: the picture of another layer (hidden or not) says where it
+applies — fully on white, not at all on black or transparent, in proportion in between, or the reverse with
+*Invert*. The mask is stretched over the layer's picture, before the mapping. Parameters are generated from each
+shader's JSON header. **ISF v2** is supported (multiple
 passes, computed pass sizes, persistent and float buffers, imported images, `.vs` vertex shaders, events).
 The library is scanned in the bundled `isf/` folder, the standard ISF folders (`/Library/Graphics/ISF`,
 `~/Library/Graphics/ISF`) and your own.
@@ -202,6 +205,7 @@ bundles are supported. Names are made OSC-safe: spaces become `_`, a duplicate n
 | `…/color/enabled` · `tempEnabled` · `tintEnabled` · `addEnabled` · `removeEnabled` | T | color switches |
 | `…/spatial/position` · `scale` · `corners/tl` `tr` `br` `bl` | ff | px · % · normalized |
 | `…/effects/enabled` · `effects/<effect>/enabled` · `effects/<effect>/<input>` | | effect chain |
+| `…/effects/<effect>/mask` · `maskInvert` | s · T | mask layer by name (`""`: none), inverted |
 | `/layers/<group>/layers/<name>/…` | | layers of a group (and so on, for groups inside groups) |
 | `/layers/<name>/viewports/<viewport>` | T | shown in that viewport (items at the top of the list) |
 | `/viewports/<name>/width` · `height` · `mode` | i | size in pixels; 0 hidden, 1 window, 2 fullscreen |

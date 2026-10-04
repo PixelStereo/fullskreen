@@ -790,6 +790,64 @@ int main(int argc, char **argv)
         CHECK(e.memoryCount() == 0);
     }
 
+    // 4f. Effect masks: an effect applies where another layer's picture is white
+    {
+        QFile inv(tmp + "/Invert.fs");
+        inv.open(QIODevice::WriteOnly);
+        inv.write("/*{ \"ISFVSN\": \"2\", \"INPUTS\": [ { \"NAME\": \"inputImage\", \"TYPE\": \"image\" } ] }*/\n"
+                  "void main() { vec4 c = IMG_THIS_PIXEL(inputImage); gl_FragColor = vec4(1.0 - c.rgb, c.a); }\n");
+        inv.close();
+        QImage red(32, 16, QImage::Format_RGB32), half(32, 16, QImage::Format_RGB32), grey(32, 16, QImage::Format_RGB32);
+        red.fill(qRgb(255, 0, 0));
+        grey.fill(qRgb(128, 128, 128));
+        for (int y = 0; y < 16; ++y)
+            for (int x = 0; x < 32; ++x) half.setPixel(x, y, x < 16 ? qRgb(255, 255, 255) : qRgb(0, 0, 0));
+        red.save(tmp + "/mred.png");
+        half.save(tmp + "/mhalf.png");
+        grey.save(tmp + "/mgrey.png");
+        const int mi = e.addLayer("MaskSrc", V);
+        CHECK(e.setLayerImage(mi, tmp + "/mhalf.png", &err));
+        e.layer(mi)->visible = false; // a hidden layer still masks
+        const quint64 maskId = e.layerId(mi);
+        const int li = e.addLayer("Masked", V);
+        CHECK(e.setLayerImage(li, tmp + "/mred.png", &err));
+        e.layer(li)->mapping.resetCorners();
+        const quint64 lid = e.layerId(li);
+        CHECK(e.addEffect(li, tmp + "/Invert.fs") == 0);
+        auto at = [&](double fx) {
+            e.renderFrame();
+            const QImage g = e.grabViewport(e.mainViewportId());
+            return g.pixelColor(int(g.width() * fx), g.height() / 2);
+        };
+        CHECK(at(0.25).red() < 5 && at(0.75).red() < 5); // no mask: everywhere
+        CHECK(e.setEffectMask(e.indexOfId(lid), 0, maskId, false, &err));
+        QColor l = at(0.25), r = at(0.75);
+        CHECK(l.red() < 5 && l.green() > 250 && r.red() > 250 && r.green() < 5); // white: the effect, black: the input
+        CHECK(e.setEffectMask(e.indexOfId(lid), 0, maskId, true, &err));
+        l = at(0.25), r = at(0.75);
+        CHECK(l.red() > 250 && r.red() < 5); // inverted
+        CHECK(e.layerJson(e.indexOfId(lid)).value("effects").toArray().at(0).toObject().value("mask").toString() ==
+              QString::number(maskId));
+        // Grey: in proportion
+        CHECK(e.setLayerImage(e.indexOfId(maskId), tmp + "/mgrey.png", &err));
+        CHECK(e.setEffectMask(e.indexOfId(lid), 0, maskId, false, &err));
+        l = at(0.5);
+        CHECK(l.red() > 100 && l.red() < 160 && l.green() > 100 && l.green() < 160);
+        // Refused: itself, a viewport, a layer that already depends on this one
+        CHECK(!e.setEffectMask(e.indexOfId(lid), 0, lid, false));
+        CHECK(!e.setEffectMask(e.indexOfId(lid), 0, e.mainViewportId(), false));
+        CHECK(e.layerDependsOn(lid, maskId)); // a mask is a dependency: the mask layer cannot take this one as source
+        CHECK(!e.setLayerSourceLayer(e.indexOfId(maskId), lid, LayerTap::PostFx, &err));
+        CHECK(e.setEffectMask(e.indexOfId(lid), 0, 0, false, &err));
+        CHECK(e.setLayerSourceLayer(e.indexOfId(maskId), lid, LayerTap::PostFx, &err));
+        err.clear();
+        CHECK(!e.setEffectMask(e.indexOfId(lid), 0, maskId, false, &err) && err.contains("feed back"));
+        // The mask layer gone: the effect applies everywhere again
+        e.removeLayer(e.indexOfId(maskId));
+        CHECK(at(0.25).red() < 5 && at(0.75).red() < 5);
+        e.removeLayer(e.indexOfId(lid));
+    }
+
     // 4e. Viewports: windows onto one composition, routing, groups inside groups
     {
         e.newProject();
