@@ -702,6 +702,7 @@ int main(int argc, char **argv)
                 return g.pixelColor(g.width() / 2, g.height() / 2);
             };
             CHECK(center().blue() > 250);
+            e.setFadesManual(true); // the frames below do not move the transition: only advanceFades
             e.applyLayers(QJsonArray{red}, 1.0);
             CHECK(e.isTransitioning(tid) && e.layerJson(e.indexOfId(tid)).value("source").toObject().value("path").toString().endsWith("red.png"));
             e.advanceFades(0.5);
@@ -738,6 +739,7 @@ int main(int argc, char **argv)
             CHECK(e.isTransitioning(tid));
             e.removeLayer(e.indexOfId(tid));
             CHECK(!e.isTransitioning(tid));
+            e.setFadesManual(false);
         }
         // Saved with the project
         CHECK(e.saveProject(tmp + "/memories.fulskrin", {}, &err));

@@ -451,8 +451,10 @@ void Engine::frame(double dt)
             if (l->isGroup) shown[l->id] = l->parentVisible && l->visible;
         }
     }
-    stepFade(m_realDt);
-    stepTransitions(m_realDt);
+    if (!m_fadesManual) {
+        stepFade(m_realDt);
+        stepTransitions(m_realDt);
+    }
     for (auto &l : m_layers) updateSource(*l, dt);
     for (auto &[id, t] : m_transitions) updateSource(*t->from, dt); // the outgoing sources play on
     renderPass(rc);
