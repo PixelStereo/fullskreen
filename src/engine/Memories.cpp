@@ -4,6 +4,7 @@
 #include <QBuffer>
 #include <QDir>
 #include <QJsonArray>
+#include <QSet>
 
 // Numbers of a layer that fade from one memory to the next
 struct LayerNumbers {
@@ -209,12 +210,22 @@ Engine::Memory Engine::memory(int i) const
     return i >= 0 && i < int(m_memories.size()) ? m_memories[size_t(i)] : Memory();
 }
 
+int Engine::indexOfMemory(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    for (size_t i = 0; i < m_memories.size(); ++i)
+        if (m_memories[i].id == id) return int(i);
+    return -1;
+}
+
 void Engine::setMemory(int i, const Memory &m)
 {
     {
         Lock lk(&m_mutex);
         if (i < 0 || i >= int(m_memories.size())) return;
+        const quint64 id = m_memories[size_t(i)].id; // it keeps its identity
         m_memories[size_t(i)] = m;
+        m_memories[size_t(i)].id = id;
     }
     emit memoriesChanged();
 }
@@ -224,7 +235,12 @@ int Engine::addMemory(const Memory &m, int at)
     {
         Lock lk(&m_mutex);
         if (at < 0 || at > int(m_memories.size())) at = int(m_memories.size());
-        m_memories.insert(m_memories.begin() + at, m);
+        Memory copy = m;
+        bool taken = !copy.id;
+        for (const Memory &o : m_memories) taken = taken || o.id == copy.id;
+        if (taken) copy.id = m_nextMemoryId++;
+        m_nextMemoryId = std::max(m_nextMemoryId, copy.id + 1);
+        m_memories.insert(m_memories.begin() + at, copy);
     }
     emit memoriesChanged();
     return at;
@@ -263,12 +279,14 @@ void Engine::recallMemory(int i)
 {
     const Memory m = memory(i);
     if (m.layers.isEmpty()) return;
-    applyLayers(m.layers, m.fade);
+    applyLayers(m.layers, m.fade, true);
     emit memoryRecalled(i);
 }
 
-void Engine::applyLayers(const QJsonArray &layers, double fade)
+void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
 {
+    QSet<quint64> named; // the layers the state speaks of (left out or not)
+    for (const QJsonValue &v : layers) named.insert(v.toObject().value("id").toString().toULongLong());
     {
         Lock lk(&m_mutex);
         m_fades.clear(); // a new recall takes over from where the previous one is
@@ -397,6 +415,25 @@ void Engine::applyLayers(const QJsonArray &layers, double fade)
     }
     fixLayerReferences(); // layers re-created or sources changed: no reference left dangling or looping
     Lock lk(&m_mutex);
+    // The layers the memory does not know (created since): faded out with the memory's fade, then hidden
+    if (hideOthers)
+        for (auto &lp : m_layers) {
+            Layer &l = *lp;
+            if (l.isViewport || named.contains(l.id) || !l.visible || isLocked(indexOfId(l.id))) continue;
+            if (fade <= 0) {
+                l.visible = false;
+                continue;
+            }
+            auto job = std::make_shared<FadeJob>();
+            job->id = l.id;
+            job->from = numbersOf(l);
+            job->to = job->from;
+            job->to.opacity = 0;
+            job->finalOpacity = l.opacity;
+            job->hideAtEnd = true;
+            job->times = timesOf(l, QJsonObject(), fade);
+            jobs.push_back(job);
+        }
     m_fades = std::move(jobs);
     m_fadeElapsed = 0;
 }
@@ -550,7 +587,7 @@ QJsonObject Engine::memoryToJson(const Memory &m, const QString &dir) const
         o["effects"] = fx;
         layers.append(o);
     }
-    QJsonObject out{{"name", m.name}, {"fade", m.fade}, {"layers", layers}};
+    QJsonObject out{{"id", QString::number(m.id)}, {"name", m.name}, {"fade", m.fade}, {"layers", layers}};
     if (!m.thumbnail.isNull()) {
         QByteArray png;
         QBuffer buf(&png);
@@ -564,6 +601,7 @@ QJsonObject Engine::memoryToJson(const Memory &m, const QString &dir) const
 Engine::Memory Engine::memoryFromJson(const QJsonObject &o, const QString &dir) const
 {
     Memory m;
+    m.id = o.value("id").toString().toULongLong(); // addMemory gives one when missing or taken
     m.name = o.value("name").toString();
     m.fade = std::clamp(o.value("fade").toDouble(1.0), 0.0, 600.0);
     m.thumbnail.loadFromData(QByteArray::fromBase64(o.value("thumbnail").toString().toLatin1()), "PNG");

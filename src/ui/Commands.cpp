@@ -296,7 +296,7 @@ void RecallMemory::redo()
         m_first = false;
         m_e->recallMemory(m_memory);
     } else {
-        m_e->applyLayers(m_e->memory(m_memory).layers, 0);
+        m_e->applyLayers(m_e->memory(m_memory).layers, 0, true);
     }
 }
 

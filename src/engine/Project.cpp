@@ -51,6 +51,7 @@ void Engine::clearProject()
         m_projectPath.clear();
         m_binItems.clear();
         m_memories.clear();
+        m_nextMemoryId = 1;
         m_fades.clear();
         for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
         m_transitions.clear();
@@ -382,7 +383,16 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     m_audio->setMuted(audio.value("muted").toBool(false));
     {
         Lock lk(&m_mutex);
-        for (const QJsonValue &v : root.value("memories").toArray()) m_memories.push_back(memoryFromJson(v.toObject(), dir));
+        for (const QJsonValue &v : root.value("memories").toArray()) {
+            Memory m = memoryFromJson(v.toObject(), dir);
+            bool taken = !m.id;
+            for (const Memory &o : m_memories) taken = taken || o.id == m.id;
+            if (taken) m.id = 0; // given below, after the saved ones
+            m_memories.push_back(m);
+        }
+        for (const Memory &m : m_memories) m_nextMemoryId = std::max(m_nextMemoryId, m.id + 1);
+        for (Memory &m : m_memories)
+            if (!m.id) m.id = m_nextMemoryId++;
     }
     emit memoriesChanged();
     if (uiState) *uiState = root.value("ui").toObject();

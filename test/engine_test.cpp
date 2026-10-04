@@ -752,6 +752,43 @@ int main(int argc, char **argv)
         CHECK(e.memory(0).thumbnail.width() == 16 && e.memory(0).layers.size() == 2);
         e.recallMemory(0);
         CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6);
+        // Memories have ids of their own, kept by edits and by the project
+        CHECK(e.memory(0).id && e.memory(1).id && e.memory(0).id != e.memory(1).id);
+        {
+            const quint64 id0 = e.memory(0).id;
+            Engine::Memory m = e.memory(0);
+            m.id = 999;
+            e.setMemory(0, m);
+            CHECK(e.memory(0).id == id0 && e.indexOfMemory(id0) == 0 && e.indexOfMemory(12345) == -1);
+            e.addMemory(e.memory(1)); // a copy: another id
+            CHECK(e.memory(2).id != e.memory(1).id);
+            e.removeMemory(2);
+        }
+        // A recall shows what was stored: a layer the memory does not know fades out and is hidden
+        {
+            const int xi = e.addLayer("Extra", V);
+            const quint64 xid = e.layerId(xi);
+            e.layer(xi)->opacity = 0.7f;
+            Engine::Memory m = e.memory(0);
+            const double keptFade = m.fade;
+            m.fade = 0.5;
+            e.setMemory(0, m);
+            e.setFadesManual(true);
+            e.recallMemory(0);
+            CHECK(e.layer(e.indexOfId(xid))->visible);
+            e.advanceFades(0.25);
+            CHECK(e.layer(e.indexOfId(xid))->opacity < 0.7f && e.layer(e.indexOfId(xid))->opacity > 0.0f);
+            e.advanceFades(0.3);
+            CHECK(!e.layer(e.indexOfId(xid))->visible && std::abs(e.layer(e.indexOfId(xid))->opacity - 0.7f) < 1e-6);
+            // Applying states (undo of a recall) leaves the others alone
+            e.layer(e.indexOfId(xid))->visible = true;
+            e.applyLayers(e.memory(0).layers, 0);
+            CHECK(e.layer(e.indexOfId(xid))->visible);
+            e.setFadesManual(false);
+            e.removeLayer(e.indexOfId(xid));
+            m.fade = keptFade;
+            e.setMemory(0, m);
+        }
 
         // The inspector edits what a memory holds (its layers' JSON): the recall then applies the new values,
         // and the composition does not move until it is recalled.
