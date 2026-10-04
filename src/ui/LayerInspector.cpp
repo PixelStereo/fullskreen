@@ -8,10 +8,13 @@
 
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFontDatabase>
 #include <QMimeData>
+#include <QPlainTextEdit>
 #include <QTabWidget>
 #include <QUrl>
 #include <QDoubleSpinBox>
@@ -86,6 +89,15 @@ struct LayerSnapshot {
     std::vector<Fx> effects;
     bool meshMode = false;
     int cols = 4, rows = 4;
+    // Text layer
+    QString textContent;
+    QString textFont = "Arial";
+    int textSize = 48;
+    QColor textColor = QColor(255, 255, 255);
+    Qt::Alignment textAlign = Qt::AlignCenter;
+    float textLineHeight = 1.2f;
+    float textLetterSpacing = 0.0f;
+    double textAnimation = 0.0;
 
     static LayerSnapshot take(Engine *e, int index)
     {
@@ -154,6 +166,15 @@ struct LayerSnapshot {
         s.meshMode = l->mapping.meshMode;
         s.cols = l->mapping.cols;
         s.rows = l->mapping.rows;
+        // Text layer properties
+        s.textContent = l->textContent;
+        s.textFont = l->textFont;
+        s.textSize = l->textSize;
+        s.textColor = l->textColor;
+        s.textAlign = l->textAlign;
+        s.textLineHeight = l->textLineHeight;
+        s.textLetterSpacing = l->textLetterSpacing;
+        s.textAnimation = l->textAnimation;
         if (!l->isViewport) {
             const Layer *top = l;
             while (top->parent) {
@@ -464,6 +485,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     case SourceType::Image: desc = QStringLiteral("Image — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
     case SourceType::Isf: desc = QStringLiteral("ISF Generator — %1").arg(QFileInfo(s.sourcePath).completeBaseName()); break;
     case SourceType::Audio: desc = QStringLiteral("Audio — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
+    case SourceType::Text: desc = QStringLiteral("Text"); break;
     case SourceType::Layer: {
         QString from = QStringLiteral("(gone)");
         for (const auto &c : s.candidates)
@@ -473,6 +495,111 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
     }
     default: desc = QStringLiteral("No source"); break;
     }
+
+    // Text layer: show text editor instead of drop zone
+    if (s.type == SourceType::Text) {
+        // Text content editor
+        auto *contentLabel = new QLabel(QStringLiteral("Text"));
+        auto *editor = new QPlainTextEdit;
+        editor->setPlainText(s.textContent);
+        editor->setMinimumHeight(80);
+        editor->setToolTip(QStringLiteral("Type your text here. Different text in different cues will typewrite when recalling between them."));
+        editor->setReadOnly(m_locked);
+        auto *editorRow = new QHBoxLayout;
+        editorRow->addWidget(contentLabel, 0);
+        editorRow->addWidget(editor, 1);
+        v->addLayout(editorRow);
+        connect(editor, &QPlainTextEdit::textChanged, this, [this, editor] {
+            if (!m_locked) {
+                editSource(QStringLiteral("Edit Text Content"), [this, editor] {
+                    m_engine->setLayerTextContent(m_layer, editor->toPlainText());
+                });
+            }
+        });
+
+        v->addWidget(separator());
+
+        // Font and formatting controls
+        auto *fmt = new QFormLayout;
+        fmt->setContentsMargins(0, 2, 0, 2);
+        fmt->setHorizontalSpacing(10);
+        fmt->setVerticalSpacing(2);
+        fmt->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        // Font family selector
+        auto *fontCombo = new QComboBox;
+        const QStringList families = QFontDatabase::families();
+        int fontIdx = families.indexOf(s.textFont);
+        fontCombo->addItems(families);
+        if (fontIdx >= 0) fontCombo->setCurrentIndex(fontIdx);
+        fontCombo->setEditable(true);
+        fontCombo->setEnabled(!m_locked);
+        fmt->addRow(QStringLiteral("Font"), fontCombo);
+        connect(fontCombo, static_cast<void(QComboBox::*)(const QString &)>(&QComboBox::currentTextChanged), this, [this, fontCombo] {
+            if (!m_locked) {
+                editSource(QStringLiteral("Change Font"), [this, fontCombo] {
+                    m_engine->setLayerTextFont(m_layer, fontCombo->currentText());
+                });
+            }
+        });
+
+        // Size
+        auto *sizeSpinBox = new QSpinBox;
+        sizeSpinBox->setRange(8, 256);
+        sizeSpinBox->setValue(s.textSize);
+        sizeSpinBox->setReadOnly(m_locked);
+        fmt->addRow(QStringLiteral("Size"), sizeSpinBox);
+        connect(sizeSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, sizeSpinBox] {
+            if (!m_locked) {
+                editSource(QStringLiteral("Change Text Size"), [this, sizeSpinBox] {
+                    m_engine->setLayerTextSize(m_layer, sizeSpinBox->value());
+                });
+            }
+        });
+
+        // Color
+        auto *colorBtn = new QPushButton;
+        colorBtn->setToolTip(QStringLiteral("Click to choose text color"));
+        colorBtn->setEnabled(!m_locked);
+        auto updateColorBtn = [colorBtn](const QColor &c) {
+            colorBtn->setStyleSheet(QStringLiteral("background-color: %1; border-radius: 2px;").arg(c.name()));
+        };
+        updateColorBtn(s.textColor);
+        fmt->addRow(QStringLiteral("Color"), colorBtn);
+        connect(colorBtn, &QPushButton::clicked, this, [this, colorBtn, updateColorBtn, s] {
+            const QColor picked = QColorDialog::getColor(s.textColor, this, QStringLiteral("Text Color"));
+            if (picked.isValid()) {
+                editSource(QStringLiteral("Change Text Color"), [this, picked] {
+                    m_engine->setLayerTextColor(m_layer, picked);
+                });
+                updateColorBtn(picked);
+            }
+        });
+
+        // Alignment
+        auto *alignCombo = new QComboBox;
+        alignCombo->addItem(QStringLiteral("Left"), int(Qt::AlignLeft));
+        alignCombo->addItem(QStringLiteral("Center"), int(Qt::AlignHCenter));
+        alignCombo->addItem(QStringLiteral("Right"), int(Qt::AlignRight));
+        int alignIdx = 1; // default center
+        if ((s.textAlign & Qt::AlignLeft) == Qt::AlignLeft) alignIdx = 0;
+        else if ((s.textAlign & Qt::AlignRight) == Qt::AlignRight) alignIdx = 2;
+        alignCombo->setCurrentIndex(alignIdx);
+        alignCombo->setEnabled(!m_locked);
+        fmt->addRow(QStringLiteral("Align"), alignCombo);
+        connect(alignCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, alignCombo] {
+            if (!m_locked) {
+                editSource(QStringLiteral("Change Text Alignment"), [this, alignCombo] {
+                    m_engine->setLayerTextAlign(m_layer, Qt::Alignment(alignCombo->currentData().toInt()));
+                });
+            }
+        });
+
+        v->addLayout(fmt);
+        v->addStretch();
+        return g;
+    }
+
     // Drop zone: the current media, replaced by whatever is dropped (Media Bin, Finder). × ejects it.
     const bool loaded = s.type != SourceType::None;
     auto *zoneRow = new QHBoxLayout;

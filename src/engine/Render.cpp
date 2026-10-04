@@ -45,15 +45,18 @@ static QImage renderTextLayer(const Layer &l)
     font.setPixelSize(l.textSize);
     painter.setFont(font);
 
-    // Apply text animation as opacity if it's a numeric fade (0..1)
-    QColor textColor = l.textColor;
-    if (l.textAnimation >= 0.0 && l.textAnimation <= 1.0) {
-        textColor.setAlphaF(l.textColor.alphaF() * l.textAnimation);
+    // Text animation: character-by-character reveal (typewriter effect)
+    // textAnimation 0.0 = no characters, 1.0 = all characters
+    int charLimit = l.textContent.length();
+    if (l.textAnimation >= 0.0 && l.textAnimation < 1.0) {
+        charLimit = int(l.textContent.length() * l.textAnimation);
     }
-    painter.setPen(textColor);
+
+    const QString displayText = l.textContent.left(charLimit);
+    painter.setPen(l.textColor);
 
     // Use QTextLayout for word wrapping and line breaking
-    QTextLayout layout(l.textContent, font);
+    QTextLayout layout(displayText, font);
     QTextOption option;
     option.setWrapMode(QTextOption::WordWrap);
     option.setAlignment(Qt::Alignment(l.textAlign));
@@ -99,7 +102,7 @@ static QImage renderTextLayer(const Layer &l)
         // Apply letter spacing if needed
         if (std::abs(l.textLetterSpacing) > 1e-6f) {
             // For custom letter spacing, draw character by character
-            const QString lineText = l.textContent.mid(line.textStart(), line.textLength());
+            const QString lineText = displayText.mid(line.textStart(), line.textLength());
             float charX = 0;
             for (int j = 0; j < lineText.length(); ++j) {
                 painter.drawText(QPointF(charX, lineY + fm.ascent()), lineText.mid(j, 1));
@@ -107,7 +110,7 @@ static QImage renderTextLayer(const Layer &l)
             }
         } else {
             // Standard text drawing without custom letter spacing
-            painter.drawText(QPointF(0, lineY + fm.ascent()), l.textContent.mid(line.textStart(), line.textLength()));
+            painter.drawText(QPointF(0, lineY + fm.ascent()), displayText.mid(line.textStart(), line.textLength()));
         }
     }
 

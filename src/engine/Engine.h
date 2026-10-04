@@ -177,6 +177,13 @@ public:
     void setLayerVolume(int i, float volume);
     void setLayerMuted(int i, bool muted);
 
+    // Text layer properties
+    void setLayerTextContent(int i, const QString &text);
+    void setLayerTextFont(int i, const QString &font);
+    void setLayerTextSize(int i, int size);
+    void setLayerTextColor(int i, const QColor &color);
+    void setLayerTextAlign(int i, Qt::Alignment align);
+
     int addEffect(int layerIndex, const QString &path, QString *err = nullptr);
     void removeEffect(int layerIndex, int fx);
     void moveEffect(int layerIndex, int from, int to);

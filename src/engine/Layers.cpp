@@ -1031,6 +1031,36 @@ void Engine::setLayerMuted(int i, bool muted)
     if (Layer *l = layer(i)) l->muted = muted;
 }
 
+void Engine::setLayerTextContent(int i, const QString &text)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->textContent = text;
+}
+
+void Engine::setLayerTextFont(int i, const QString &font)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->textFont = font;
+}
+
+void Engine::setLayerTextSize(int i, int size)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->textSize = std::clamp(size, 8, 256);
+}
+
+void Engine::setLayerTextColor(int i, const QColor &color)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->textColor = color;
+}
+
+void Engine::setLayerTextAlign(int i, Qt::Alignment align)
+{
+    Lock lk(&m_mutex);
+    if (Layer *l = layer(i)) l->textAlign = align;
+}
+
 int Engine::addEffect(int li, const QString &path, QString *err)
 {
     if (!layer(li)) return -1;
