@@ -201,7 +201,12 @@ public:
         double fade = 1.0;  // seconds
         QImage thumbnail;   // output at the time it was stored
         QJsonArray layers;  // layerJson of the layers, with "included" (false: left alone by the recall)
+        // The composition: its level, the sound's master volume and mute, with "included" and "timing" as a layer's
+        // (empty: a memory stored before it was kept, left alone by the recall)
+        QJsonObject composition;
     };
+    QJsonObject captureComposition() const;
+    void applyComposition(const QJsonObject &c, double fade); // the recall's part for the composition
     int memoryCount() const;
     Memory memory(int i) const;
     void setMemory(int i, const Memory &m);
@@ -252,6 +257,7 @@ public:
         double fraction() const { return total > 0 ? std::min(1.0, elapsed / total) : 1.0; }
     };
     RecallProgress recallProgress() const;
+    void stepCompositionFade(double dt); // a memory's fade of the level and the volume (lock held)
     void stepTypewriters(double dt); // the texts memories gave are typed on (lock held)
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
     void setFadesManual(bool on) { m_fadesManual = on; } // tests: only advanceFades moves them, not the frames
@@ -288,7 +294,7 @@ public:
     void stopAudio();
     AudioOutput &audioOutput() { return *m_audio; }
     float audioVolume() const { return m_audio->masterVolume(); }
-    void setAudioVolume(float v) { m_audio->setMasterVolume(v); }
+    void setAudioVolume(float v); // stops a memory's fade of the volume
     bool audioMuted() const { return m_audio->muted(); }
     void setAudioMuted(bool m) { m_audio->setMuted(m); }
 
@@ -469,6 +475,13 @@ private:
 
     std::atomic<double> m_masterLevel{1.0};
     double m_masterTarget = 1.0, m_masterSpeed = 0.0; // units per second (0 = immediate)
+    struct CompositionFade {
+        double elapsed = 0;
+        bool level = false, volume = false;
+        double levelFrom = 1, levelTo = 1, levelDur = 0, volumeDur = 0;
+        float volumeFrom = 1, volumeTo = 1;
+        int levelCurve = 0, volumeCurve = 0;
+    } m_compFade;
     std::atomic<double> m_blackLevel{1.0};
     double m_blackTarget = 1.0, m_blackSpeed = 0.0, m_blackFade = 1.0;
 

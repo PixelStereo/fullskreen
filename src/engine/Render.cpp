@@ -34,26 +34,26 @@
 // Flipped like the images (the sources are stored bottom-up).
 static QImage renderTextLayer(const Layer &l, const QString &text)
 {
-    const int w = std::max(1, l.textWidth), h = std::max(1, l.textHeight);
+    const int w = std::max(1, l.text.width), h = std::max(1, l.text.height);
     QImage img(w, h, QImage::Format_RGBA8888_Premultiplied);
     img.fill(Qt::transparent);
     if (text.isEmpty()) return img.convertToFormat(QImage::Format_RGBA8888);
 
-    QFont font(l.textFont);
-    font.setPixelSize(std::max(1, l.textSize));
-    font.setLetterSpacing(QFont::AbsoluteSpacing, l.textLetterSpacing);
-    font.setBold(l.textBold);
-    font.setItalic(l.textItalic);
-    font.setUnderline(l.textUnderline);
-    font.setStrikeOut(l.textStrike);
+    QFont font(l.text.font);
+    font.setPixelSize(std::max(1, l.text.size));
+    font.setLetterSpacing(QFont::AbsoluteSpacing, l.text.letterSpacing);
+    font.setBold(l.text.bold);
+    font.setItalic(l.text.italic);
+    font.setUnderline(l.text.underline);
+    font.setStrikeOut(l.text.strike);
 
     QTextOption option;
     option.setWrapMode(QTextOption::WordWrap);
-    option.setAlignment(l.textAlign & Qt::AlignHorizontal_Mask ? (l.textAlign & Qt::AlignHorizontal_Mask) : Qt::AlignLeft);
+    option.setAlignment(l.text.align & Qt::AlignHorizontal_Mask ? (l.text.align & Qt::AlignHorizontal_Mask) : Qt::AlignLeft);
 
     // One layout per paragraph (a line break starts another)
     const QFontMetricsF fm(font);
-    const double step = fm.lineSpacing() * std::max(0.1f, l.textLineHeight);
+    const double step = fm.lineSpacing() * std::max(0.1f, l.text.lineHeight);
     struct Line { QTextLayout *layout; QTextLine line; double y; };
     std::vector<std::unique_ptr<QTextLayout>> layouts;
     std::vector<Line> lines;
@@ -75,8 +75,8 @@ static QImage renderTextLayer(const Layer &l, const QString &text)
     }
     const double total = y;
     double top = 0;
-    if (l.textAlign & Qt::AlignBottom) top = h - total;
-    else if (l.textAlign & Qt::AlignVCenter) top = (h - total) / 2;
+    if (l.text.align & Qt::AlignBottom) top = h - total;
+    else if (l.text.align & Qt::AlignVCenter) top = (h - total) / 2;
 
     QPainter painter(&img);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -89,21 +89,21 @@ static QImage renderTextLayer(const Layer &l, const QString &text)
     };
     // The outline: the text repeated around its place (a ring of copies), under the fill
     auto drawOutlined = [&](const QColor &outline, const QColor &fill, double dx, double dy, bool withFill) {
-        if (l.textOutline > 0.01f) {
-            const int n = std::clamp(int(l.textOutline * 6), 16, 48);
+        if (l.text.outline > 0.01f) {
+            const int n = std::clamp(int(l.text.outline * 6), 16, 48);
             for (int k = 0; k < n; ++k) {
                 const double a = 2 * M_PI * k / n;
-                draw(outline, dx + std::cos(a) * l.textOutline, dy + std::sin(a) * l.textOutline);
+                draw(outline, dx + std::cos(a) * l.text.outline, dy + std::sin(a) * l.text.outline);
             }
         }
         if (withFill) draw(fill, dx, dy);
     };
-    if (l.textShadow) { // the shadow has the shape of the text and its outline, in its own color
-        QColor sc = l.textShadowColor;
-        if (l.textOutline > 0.01f) drawOutlined(sc, sc, l.textShadowX, l.textShadowY, true);
-        else draw(sc, l.textShadowX, l.textShadowY);
+    if (l.text.shadow) { // the shadow has the shape of the text and its outline, in its own color
+        QColor sc = l.text.shadowColor;
+        if (l.text.outline > 0.01f) drawOutlined(sc, sc, l.text.shadowX, l.text.shadowY, true);
+        else draw(sc, l.text.shadowX, l.text.shadowY);
     }
-    drawOutlined(l.textOutlineColor, l.textColor, 0, 0, true);
+    drawOutlined(l.text.outlineColor, l.text.color, 0, 0, true);
     painter.end();
     return img.convertToFormat(QImage::Format_RGBA8888).mirrored(false, true);
 }
@@ -291,22 +291,22 @@ void Engine::renderLayer(Layer &l, const IsfRenderContext &rc)
         break;
     case SourceType::Text: {
         // Redrawn only when what is shown changes (typed characters, edits, style)
-        const QString shown = l.shownText();
-        const QString key = QStringLiteral("%1\n%2|%3|%4|%5|%6|%7|%8x%9|%10").arg(shown, l.textFont).arg(l.textSize)
-                                .arg(l.textColor.name(QColor::HexArgb)).arg(int(l.textAlign))
-                                .arg(l.textLineHeight).arg(l.textLetterSpacing).arg(l.textWidth).arg(l.textHeight)
-                                .arg(QStringLiteral("%1%2%3%4|%5%6|%7%8|%9").arg(l.textBold).arg(l.textItalic).arg(l.textUnderline)
-                                         .arg(l.textStrike).arg(l.textOutline).arg(l.textOutlineColor.name(QColor::HexArgb))
-                                         .arg(l.textShadow).arg(l.textShadowColor.name(QColor::HexArgb))
-                                         .arg(QStringLiteral("%1,%2").arg(l.textShadowX).arg(l.textShadowY)));
-        if (!l.textSourceTex.tex || key != l.textKey) {
+        const QString shown = l.text.shown();
+        const QString key = QStringLiteral("%1\n%2|%3|%4|%5|%6|%7|%8x%9|%10").arg(shown, l.text.font).arg(l.text.size)
+                                .arg(l.text.color.name(QColor::HexArgb)).arg(int(l.text.align))
+                                .arg(l.text.lineHeight).arg(l.text.letterSpacing).arg(l.text.width).arg(l.text.height)
+                                .arg(QStringLiteral("%1%2%3%4|%5%6|%7%8|%9").arg(l.text.bold).arg(l.text.italic).arg(l.text.underline)
+                                         .arg(l.text.strike).arg(l.text.outline).arg(l.text.outlineColor.name(QColor::HexArgb))
+                                         .arg(l.text.shadow).arg(l.text.shadowColor.name(QColor::HexArgb))
+                                         .arg(QStringLiteral("%1,%2").arg(l.text.shadowX).arg(l.text.shadowY)));
+        if (!l.textTex.tex || key != l.textKey) {
             const QImage img = renderTextLayer(l, shown);
-            l.textSourceTex.upload(img.constBits(), img.width(), img.height());
+            l.textTex.upload(img.constBits(), img.width(), img.height());
             l.textKey = key;
         }
-        tex = l.textSourceTex.tex;
-        w = l.textSourceTex.w;
-        h = l.textSourceTex.h;
+        tex = l.textTex.tex;
+        w = l.textTex.w;
+        h = l.textTex.h;
         break;
     }
     default: break;
@@ -744,6 +744,7 @@ void Engine::frame(double dt)
         stepFade(m_realDt);
         stepTransitions(m_realDt);
         stepTypewriters(m_realDt);
+        stepCompositionFade(m_realDt);
     }
     markNeeded();
     for (auto &l : m_layers) updateSource(*l, dt);

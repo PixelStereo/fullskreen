@@ -588,9 +588,19 @@ double Engine::masterTarget() const
     return m_masterTarget;
 }
 
+void Engine::setAudioVolume(float v)
+{
+    {
+        Lock lk(&m_mutex);
+        m_compFade.volume = false;
+    }
+    m_audio->setMasterVolume(v);
+}
+
 void Engine::fadeMaster(double target, double seconds)
 {
     Lock lk(&m_mutex);
+    m_compFade.level = false; // the fader takes over from a memory's fade
     m_masterTarget = std::clamp(target, 0.0, 1.0);
     m_masterSpeed = seconds > 0.0 ? 1.0 / seconds : 0.0;
 }

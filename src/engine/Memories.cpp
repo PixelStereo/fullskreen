@@ -49,6 +49,33 @@ static double applyEasing(double t, EasingCurve curve)
     return t;
 }
 
+// The Text generator's values that fade, with their timing keys ("text/<key>"; their path in the state is
+// source/<key>). The content is "typed" over its time.
+enum TextNum { TextSize, TextColor, TextLineHeight, TextLetterSpacing, TextOutline, TextOutlineColor, TextShadowColor,
+               TextShadowX, TextShadowY, TextContent, TextNumCount };
+static const char *const kTextNumKeys[TextNumCount] = {"size",         "color",         "lineHeight", "letterSpacing",
+                                                       "outline",      "outlineColor",  "shadowColor", "shadowX",
+                                                       "shadowY",      "content"};
+
+struct TextNumbers {
+    float size = 48, lineHeight = 1.2f, letterSpacing = 0, outline = 0, shadowX = 4, shadowY = 4;
+    QColor color, outlineColor, shadowColor;
+};
+static TextNumbers textNumbersOf(const TextSource &t)
+{
+    TextNumbers n;
+    n.size = float(t.size);
+    n.lineHeight = t.lineHeight;
+    n.letterSpacing = t.letterSpacing;
+    n.outline = t.outline;
+    n.shadowX = t.shadowX;
+    n.shadowY = t.shadowY;
+    n.color = t.color;
+    n.outlineColor = t.outlineColor;
+    n.shadowColor = t.shadowColor;
+    return n;
+}
+
 // Numbers of a layer that fade from one memory to the next
 struct LayerNumbers {
     float opacity = 1, volume = 1;
@@ -60,12 +87,7 @@ struct LayerNumbers {
     SoftEdge soft; // crop feathering (width and power per side)
     double speed = 1.0;
     double inPoint = 0, outPoint = -1;
-    // Text layer parameters
-    int textSize = 48;
-    QColor textColor = QColor(255, 255, 255);
-    Qt::Alignment textAlign = Qt::AlignCenter;
-    float textLineHeight = 1.2f;
-    float textLetterSpacing = 0.0f;
+    TextNumbers text; // Text generator
 };
 
 // How long each of those numbers takes to reach the memory's value (seconds; 0: a cut). By default the
@@ -76,22 +98,20 @@ struct LayerTimes {
     double viewportOpacity = 0; // viewport opacity per-viewport
     double softEdge = 0; // soft edge width and power
     double speed = 0, inPoint = 0, outPoint = 0; // playback parameters
-    double textSize = 0, textColor = 0, textAlign = 0, textLineHeight = 0, textLetterSpacing = 0; // text layer parameters
-    double textContent = 0; // typewriter: time the layer takes to type the memory's text
+    double text[TextNumCount] = {}; // Text generator (TextContent: the time the text is typed in)
     // Easing curves for each parameter (default: EaseInOut for all)
     EasingCurve opacityCurve = EasingCurve::EaseInOut, volumeCurve = EasingCurve::EaseInOut;
     EasingCurve roiCurve = EasingCurve::EaseInOut, colorCurve = EasingCurve::EaseInOut;
     EasingCurve mappingCurve = EasingCurve::EaseInOut, softEdgeCurve = EasingCurve::EaseInOut;
     EasingCurve viewportOpacityCurve = EasingCurve::EaseInOut;
     EasingCurve speedCurve = EasingCurve::EaseInOut, inOutCurve = EasingCurve::EaseInOut;
-    EasingCurve textSizeCurve = EasingCurve::EaseInOut, textColorCurve = EasingCurve::EaseInOut;
-    EasingCurve textAlignCurve = EasingCurve::EaseInOut, textLineHeightCurve = EasingCurve::EaseInOut;
-    EasingCurve textLetterSpacingCurve = EasingCurve::EaseInOut;
+    EasingCurve textCurve[TextNumCount] = {};
     std::vector<std::vector<EasingCurve>> isfCurves; // per-parameter curves
 
     double longest() const
     {
-        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, viewportOpacity, softEdge, speed, inPoint, outPoint, textSize, textColor, textAlign, textLineHeight, textLetterSpacing, textContent});
+        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, viewportOpacity, softEdge, speed, inPoint, outPoint});
+        for (double d : text) m = std::max(m, d);
         for (const auto &v : isf)
             for (double d : v) m = std::max(m, d);
         return m;
@@ -119,11 +139,7 @@ static LayerNumbers numbersOf(const Layer &l)
     n.speed = l.speed;
     n.inPoint = l.inPoint;
     n.outPoint = l.outPoint;
-    n.textSize = l.textSize;
-    n.textColor = l.textColor;
-    n.textAlign = l.textAlign;
-    n.textLineHeight = l.textLineHeight;
-    n.textLetterSpacing = l.textLetterSpacing;
+    n.text = textNumbersOf(l.text);
     auto values = [](const IsfInstance *inst) {
         std::vector<IsfValue> v;
         if (inst)
@@ -149,11 +165,15 @@ static void setNumbers(Layer &l, const LayerNumbers &n)
     l.speed = n.speed;
     l.inPoint = n.inPoint;
     l.outPoint = n.outPoint;
-    l.textSize = n.textSize;
-    l.textColor = n.textColor;
-    l.textAlign = n.textAlign;
-    l.textLineHeight = n.textLineHeight;
-    l.textLetterSpacing = n.textLetterSpacing;
+    l.text.size = int(std::lround(n.text.size));
+    l.text.lineHeight = n.text.lineHeight;
+    l.text.letterSpacing = n.text.letterSpacing;
+    l.text.outline = n.text.outline;
+    l.text.shadowX = n.text.shadowX;
+    l.text.shadowY = n.text.shadowY;
+    l.text.color = n.text.color;
+    l.text.outlineColor = n.text.outlineColor;
+    l.text.shadowColor = n.text.shadowColor;
     auto apply = [](IsfInstance *inst, const std::vector<IsfValue> &v) {
         if (!inst) return;
         for (size_t k = 0; k < v.size() && k < inst->inputs().size(); ++k) inst->inputs()[k].setValue(v[k]);
@@ -165,6 +185,11 @@ static void setNumbers(Layer &l, const LayerNumbers &n)
 static double mixd(double a, double b, double t) { return a + (b - a) * t; }
 static float mixf(float a, float b, double t) { return float(a + (b - a) * t); }
 static QPointF mixp(QPointF a, QPointF b, double t) { return a + (b - a) * t; }
+static QColor mixc(const QColor &a, const QColor &b, double t)
+{
+    return QColor::fromRgbF(mixf(a.redF(), b.redF(), t), mixf(a.greenF(), b.greenF(), t), mixf(a.blueF(), b.blueF(), t),
+                            mixf(a.alphaF(), b.alphaF(), t));
+}
 
 // Progress of a number `elapsed` seconds into its own time: 1 for a cut, eased with given curve otherwise
 static double progress(double elapsed, double duration, EasingCurve curve = EasingCurve::EaseInOut)
@@ -224,21 +249,19 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, con
         n.inPoint = mixd(a.inPoint, b.inPoint, t(d.inPoint, d.inOutCurve));
         n.outPoint = mixd(a.outPoint, b.outPoint, t(d.outPoint, d.inOutCurve));
     }
-    // Text layer parameters
+    // Text generator
     {
-        n.textSize = int(mixf(float(a.textSize), float(b.textSize), t(d.textSize, d.textSizeCurve)));
-        // Blend QColor RGB components
-        const double tc_col = t(d.textColor, d.textColorCurve);
-        n.textColor = QColor(
-            int(mixf(float(a.textColor.red()), float(b.textColor.red()), tc_col)),
-            int(mixf(float(a.textColor.green()), float(b.textColor.green()), tc_col)),
-            int(mixf(float(a.textColor.blue()), float(b.textColor.blue()), tc_col)),
-            int(mixf(float(a.textColor.alpha()), float(b.textColor.alpha()), tc_col))
-        );
-        // Text alignment is discrete (no interpolation); use target at progress > 0.5
-        n.textAlign = t(d.textAlign, d.textAlignCurve) >= 0.5 ? b.textAlign : a.textAlign;
-        n.textLineHeight = mixf(a.textLineHeight, b.textLineHeight, t(d.textLineHeight, d.textLineHeightCurve));
-        n.textLetterSpacing = mixf(a.textLetterSpacing, b.textLetterSpacing, t(d.textLetterSpacing, d.textLetterSpacingCurve));
+        auto tt = [&](int k) { return t(d.text[k], d.textCurve[k]); };
+        const TextNumbers &x = a.text, &y = b.text;
+        n.text.size = mixf(x.size, y.size, tt(TextSize));
+        n.text.lineHeight = mixf(x.lineHeight, y.lineHeight, tt(TextLineHeight));
+        n.text.letterSpacing = mixf(x.letterSpacing, y.letterSpacing, tt(TextLetterSpacing));
+        n.text.outline = mixf(x.outline, y.outline, tt(TextOutline));
+        n.text.shadowX = mixf(x.shadowX, y.shadowX, tt(TextShadowX));
+        n.text.shadowY = mixf(x.shadowY, y.shadowY, tt(TextShadowY));
+        n.text.color = mixc(x.color, y.color, tt(TextColor));
+        n.text.outlineColor = mixc(x.outlineColor, y.outlineColor, tt(TextOutlineColor));
+        n.text.shadowColor = mixc(x.shadowColor, y.shadowColor, tt(TextShadowColor));
     }
     for (size_t i = 0; i < n.isf.size() && i < a.isf.size(); ++i)
         for (size_t k = 0; k < n.isf[i].size() && k < a.isf[i].size(); ++k) {
@@ -278,12 +301,12 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.speed = time(QStringLiteral("speed"));
     d.inPoint = time(QStringLiteral("inPoint"));
     d.outPoint = time(QStringLiteral("outPoint"));
-    d.textSize = time(QStringLiteral("textSize"));
-    d.textColor = time(QStringLiteral("textColor"));
-    d.textAlign = time(QStringLiteral("textAlign"));
-    d.textLineHeight = time(QStringLiteral("textLineHeight"));
-    d.textLetterSpacing = time(QStringLiteral("textLetterSpacing"));
-    d.textContent = time(QStringLiteral("textContent"));
+    for (int k = 0; k < TextNumCount; ++k) {
+        const QString key = QStringLiteral("text/") + QString::fromLatin1(kTextNumKeys[k]);
+        d.text[k] = time(key);
+        // The typing goes at an even pace unless the memory gives it a curve
+        d.textCurve[k] = k == TextContent && !timing.contains(key + "/curve") ? EasingCurve::Linear : curve(key);
+    }
     // Read easing curves for each parameter
     d.opacityCurve = curve(QStringLiteral("opacity"));
     d.volumeCurve = curve(QStringLiteral("volume"));
@@ -294,11 +317,6 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.viewportOpacityCurve = curve(QStringLiteral("viewportOpacity"));
     d.speedCurve = curve(QStringLiteral("speed"));
     d.inOutCurve = curve(QStringLiteral("inPoint")); // use inPoint for both inPoint and outPoint
-    d.textSizeCurve = curve(QStringLiteral("textSize"));
-    d.textColorCurve = curve(QStringLiteral("textColor"));
-    d.textAlignCurve = curve(QStringLiteral("textAlign"));
-    d.textLineHeightCurve = curve(QStringLiteral("textLineHeight"));
-    d.textLetterSpacingCurve = curve(QStringLiteral("textLetterSpacing"));
     auto params = [&](const IsfInstance *inst, const QString &base) {
         std::vector<double> v;
         if (inst)
@@ -316,9 +334,11 @@ QString Engine::timingKey(const QStringList &path)
     if (path.isEmpty()) return {};
     const QString &a = path[0];
     if (a == "opacity" || a == "volume" || a == "mapping" || a == "viewportOpacity" || a == "softEdge" ||
-        a == "speed" || a == "inPoint" || a == "outPoint" || a == "textSize" || a == "textColor" ||
-        a == "textAlign" || a == "textLineHeight" || a == "textLetterSpacing" || a == "textContent")
+        a == "speed" || a == "inPoint" || a == "outPoint")
         return a;
+    if (a == "source" && path.size() >= 2)
+        for (const char *k : kTextNumKeys)
+            if (path[1] == QLatin1String(k)) return QStringLiteral("text/") + path[1]; // Text generator (a shader's are in params)
     if (a == "source" && path.size() >= 2 && path[1] == "roi") return QStringLiteral("roi");
     if (a == "source" && path.size() >= 3 && path[1] == "params") return QStringLiteral("source/params/") + path[2];
     if (a == "color" && path.size() >= 2 && (path[1] == "temp" || path[1] == "tint" || path[1] == "add" || path[1] == "remove"))
@@ -452,17 +472,81 @@ bool Engine::isFading() const
     return !m_fades.empty();
 }
 
+QJsonObject Engine::captureComposition() const
+{
+    return QJsonObject{{"included", true},
+                       {"level", masterTarget()},
+                       {"volume", double(audioVolume())},
+                       {"muted", audioMuted()}};
+}
+
+void Engine::applyComposition(const QJsonObject &c, double fade)
+{
+    if (c.isEmpty() || !c.value("included").toBool(true)) return;
+    const QJsonObject timing = c.value("timing").toObject();
+    auto time = [&](const QString &key) {
+        const QJsonValue v = timing.value(key);
+        return v.isDouble() ? std::clamp(v.toDouble(), 0.0, 600.0) : std::max(0.0, fade);
+    };
+    auto curve = [&](const QString &key) { return int(easingCurveFromKey(timing.value(key + "/curve").toString())); };
+    if (c.contains("muted")) setAudioMuted(c.value("muted").toBool());
+    const bool hasLevel = c.contains("level"), hasVolume = c.contains("volume");
+    const double level = std::clamp(c.value("level").toDouble(1), 0.0, 1.0);
+    const float volume = float(std::clamp(c.value("volume").toDouble(1), 0.0, 2.0));
+    const double levelDur = time(QStringLiteral("level")), volumeDur = time(QStringLiteral("volume"));
+    if (hasLevel && levelDur <= 0) fadeMaster(level, 0);
+    if (hasVolume && volumeDur <= 0) setAudioVolume(volume);
+    Lock lk(&m_mutex);
+    CompositionFade &f = m_compFade;
+    f.elapsed = 0;
+    f.level = hasLevel && levelDur > 0;
+    if (f.level) {
+        f.levelFrom = m_masterLevel.load();
+        f.levelTo = level;
+        f.levelDur = levelDur;
+        f.levelCurve = curve(QStringLiteral("level"));
+    }
+    f.volume = hasVolume && volumeDur > 0;
+    if (f.volume) {
+        f.volumeFrom = m_audio->masterVolume();
+        f.volumeTo = volume;
+        f.volumeDur = volumeDur;
+        f.volumeCurve = curve(QStringLiteral("volume"));
+    }
+}
+
+void Engine::stepCompositionFade(double dt)
+{
+    CompositionFade &f = m_compFade;
+    if (!f.level && !f.volume) return;
+    f.elapsed += std::max(0.0, dt);
+    if (f.level) {
+        const double p = progress(f.elapsed, f.levelDur, EasingCurve(f.levelCurve));
+        m_masterTarget = mixd(f.levelFrom, f.levelTo, p);
+        m_masterSpeed = 0; // the frame takes it as it is
+        if (f.elapsed >= f.levelDur) f.level = false;
+    }
+    if (f.volume) {
+        const double p = progress(f.elapsed, f.volumeDur, EasingCurve(f.volumeCurve));
+        m_audio->setMasterVolume(mixf(f.volumeFrom, f.volumeTo, p));
+        if (f.elapsed >= f.volumeDur) f.volume = false;
+    }
+}
+
 void Engine::recallMemory(int i)
 {
     const Memory m = memory(i);
-    if (m.layers.isEmpty()) return;
-    applyLayers(m.layers, m.fade, true);
+    if (m.layers.isEmpty() && m.composition.isEmpty()) return;
+    if (!m.layers.isEmpty()) applyLayers(m.layers, m.fade, true);
+    applyComposition(m.composition, m.fade);
     {
         Lock lk(&m_mutex);
         m_recalledMemory = m.id;
         double total = 0;
         for (const auto &job : m_fades) total = std::max(total, job->times.longest());
         for (const auto &[id, t] : m_transitions) total = std::max(total, t->duration - t->elapsed);
+        if (m_compFade.level) total = std::max(total, m_compFade.levelDur);
+        if (m_compFade.volume) total = std::max(total, m_compFade.volumeDur);
         m_recallTotal = total;
     }
     emit memoryRecalled(i);
@@ -589,31 +673,32 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         }
         to.viewportOpacity = targetViewportOpacity;
         if (l->type == SourceType::Text && src.value("type").toString() == "text") {
-            // Text generator: the style moves to the memory's, the text is typed over its time
-            to.textSize = std::clamp(src.value("size").toInt(to.textSize), 1, 1000);
-            const QColor c(src.value("color").toString());
-            if (c.isValid()) to.textColor = c;
-            to.textAlign = Qt::Alignment(src.value("align").toInt(int(to.textAlign)));
-            to.textLineHeight = float(src.value("lineHeight").toDouble(to.textLineHeight));
-            to.textLetterSpacing = float(src.value("letterSpacing").toDouble(to.textLetterSpacing));
-            l->textFont = src.value("font").toString(l->textFont);
-            l->textBold = src.value("bold").toBool(l->textBold);
-            l->textItalic = src.value("italic").toBool(l->textItalic);
-            l->textUnderline = src.value("underline").toBool(l->textUnderline);
-            l->textStrike = src.value("strike").toBool(l->textStrike);
-            l->textOutline = float(src.value("outline").toDouble(l->textOutline));
-            if (QColor oc(src.value("outlineColor").toString()); oc.isValid()) l->textOutlineColor = oc;
-            l->textShadow = src.value("shadow").toBool(l->textShadow);
-            if (QColor sc(src.value("shadowColor").toString()); sc.isValid()) l->textShadowColor = sc;
-            l->textShadowX = float(src.value("shadowX").toDouble(l->textShadowX));
-            l->textShadowY = float(src.value("shadowY").toDouble(l->textShadowY));
-            const QString content = src.value("content").toString();
-            if (content != l->textContent) {
-                const double dur = job->times.textContent;
-                l->textFrom = l->shownText(); // from what is on screen now (a recall may interrupt another)
-                l->textContent = content;
-                l->textTypeElapsed = 0;
-                l->textTypeDur = dur;
+            // Text generator: its numbers move to the memory's, its switches and words are set at once, its
+            // text is typed over its time
+            TextSource target = l->text;
+            readTextJson(target, src);
+            to.text = textNumbersOf(target);
+            TextSource &t = l->text;
+            t.font = target.font;
+            t.align = target.align;
+            t.bold = target.bold;
+            t.italic = target.italic;
+            t.underline = target.underline;
+            t.strike = target.strike;
+            t.shadow = target.shadow;
+            t.width = target.width;
+            t.height = target.height;
+            if (target.content != t.content) {
+                const double dur = job->times.text[TextContent];
+                const QString from = t.shown(); // what is on screen now (a recall may interrupt another typing)
+                t.content = target.content;
+                t.stopTyping();
+                if (dur > 0) {
+                    t.typedFrom = from;
+                    t.typeDur = dur;
+                    t.typeProgress = 0;
+                    t.typeCurve = int(job->times.textCurve[TextContent]);
+                }
             }
         }
         if (!to.isf.empty()) readParams(l->generator.get(), src.value("params").toObject(), to.isf[0]);
@@ -702,15 +787,17 @@ void Engine::advanceFades(double dt)
     stepFade(dt);
     stepTransitions(dt);
     stepTypewriters(dt);
+    stepCompositionFade(dt);
 }
 
 void Engine::stepTypewriters(double dt)
 {
     for (auto &lp : m_layers) {
-        Layer &l = *lp;
-        if (l.textTypeDur <= 0) continue;
-        l.textTypeElapsed += std::max(0.0, dt);
-        if (l.textTypeElapsed >= l.textTypeDur) l.textTypeDur = 0;
+        TextSource &t = lp->text;
+        if (t.typeDur <= 0) continue;
+        t.typeElapsed += std::max(0.0, dt);
+        if (t.typeElapsed >= t.typeDur) t.stopTyping();
+        else t.typeProgress = applyEasing(t.typeElapsed / t.typeDur, EasingCurve(t.typeCurve));
     }
 }
 
@@ -834,6 +921,7 @@ QJsonObject Engine::memoryToJson(const Memory &m, const QString &dir) const
         layers.append(o);
     }
     QJsonObject out{{"id", QString::number(m.id)}, {"name", m.name}, {"fade", m.fade}, {"layers", layers}};
+    if (!m.composition.isEmpty()) out["composition"] = m.composition;
     if (!m.thumbnail.isNull()) {
         QByteArray png;
         QBuffer buf(&png);
@@ -851,6 +939,7 @@ Engine::Memory Engine::memoryFromJson(const QJsonObject &o, const QString &dir) 
     m.name = o.value("name").toString();
     m.fade = std::clamp(o.value("fade").toDouble(1.0), 0.0, 600.0);
     m.thumbnail.loadFromData(QByteArray::fromBase64(o.value("thumbnail").toString().toLatin1()), "PNG");
+    m.composition = o.value("composition").toObject();
     for (const QJsonValue &v : o.value("layers").toArray()) {
         QJsonObject l = v.toObject();
         auto resolve = [&](QJsonObject x) {

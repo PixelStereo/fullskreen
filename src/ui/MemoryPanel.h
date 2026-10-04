@@ -24,7 +24,7 @@ inline constexpr const char *kMemoryMime = "application/x-fulskrin-memory";
 struct MemField {
     enum Kind { Info, Bool, Number, Choice };
     Kind kind = Info;
-    int row = 0;          // index of the layer in the memory
+    int row = 0;          // index of the layer in the memory (-1: the memory's composition)
     QStringList path;     // inside the layer object, e.g. {"source", "speed"} or {"effects", "0", "params", "radius"}
     double min = 0, max = 1, step = 0.01, scale = 1; // scale: displayed value = stored × scale (percentages)
     int decimals = 2;
@@ -66,6 +66,8 @@ private:
     void applyTime(int row, const QString &key, double seconds); // < 0: FOLLOW (the memory's fade)
     void applyEasingCurve(int row, const QString &paramKey, const QString &curveKey); // easing curve of a parameter
     void setInclusion(int i, quint64 layerId, bool included);
+    void setCompositionIncluded(int i, bool included);
+    void fillComposition(const QJsonObject &composition);
     void refreshRows(); // value and time texts of the tree, after an edit (no rebuild)
     int selected() const;
 

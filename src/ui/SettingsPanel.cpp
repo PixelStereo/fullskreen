@@ -12,7 +12,11 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QHBoxLayout>
+#include <QTabWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
+#include <cmath>
 
 static const char *kPlayModeKey = "playback/defaultMode";
 static const char *kHardwareKey = "playback/hardwareDecoding";
@@ -93,11 +97,29 @@ static QLabel *note(const QString &t)
     return l;
 }
 
-SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
+SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(engine)
 {
-    auto *v = new QVBoxLayout(this);
-    v->setContentsMargins(8, 8, 8, 8);
-    v->setSpacing(10);
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(4, 4, 4, 4);
+    auto *tabs = new QTabWidget;
+    tabs->setDocumentMode(true);
+    root->addWidget(tabs);
+    // One page per subject; the page shown is kept from one session to the next
+    auto page = [tabs](const QString &title) {
+        auto *w = new QWidget;
+        auto *l = new QVBoxLayout(w);
+        l->setContentsMargins(8, 8, 8, 8);
+        l->setSpacing(10);
+        tabs->addTab(w, title);
+        return l;
+    };
+    QVBoxLayout *playbackPage = page(QStringLiteral("Playback"));
+    QVBoxLayout *renderPage = page(QStringLiteral("Rendering"));
+    QVBoxLayout *audioPage = page(QStringLiteral("Audio"));
+    QVBoxLayout *interfacePage = page(QStringLiteral("Interface"));
+    QVBoxLayout *oscPage = page(QStringLiteral("OSC"));
+    tabs->setCurrentIndex(std::clamp(QSettings().value(QStringLiteral("ui/settingsTab"), 0).toInt(), 0, tabs->count() - 1));
+    connect(tabs, &QTabWidget::currentChanged, this, [](int i) { QSettings().setValue(QStringLiteral("ui/settingsTab"), i); });
 
     auto *playback = new QGroupBox(QStringLiteral("Playback"));
     auto *form = new QFormLayout(playback);
@@ -133,13 +155,13 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
         QSettings().setValue(kTransitionKey, path);
         emit transitionChanged(path);
     });
-    v->addWidget(playback);
+    playbackPage->addWidget(playback);
     connect(m_playMode, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
         QSettings().setValue(kPlayModeKey, playModeKey(PlayMode(m_playMode->currentData().toInt())));
         emit playModeChanged();
     });
 
-    // Rendering: the defaults of the projects that do not choose (Master)
+    // Rendering: the machine's, for every project
     {
         auto *box = new QGroupBox(QStringLiteral("Rendering"));
         auto *rf = new QFormLayout(box);
@@ -159,10 +181,10 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
         rf->addRow(new ResetLabel(QStringLiteral("Antialiasing"), [this] { m_samples->setCurrentIndex(2); }), m_samples);
         rf->addRow(new ResetLabel(QStringLiteral("Color depth"), [this] { m_depth->setCurrentIndex(0); }), m_depth);
         rf->addRow(m_mipmaps);
-        rf->addRow(note(QStringLiteral("Defaults of the projects that keep them (Master ▸ Rendering). Screen refresh: "
+        rf->addRow(note(QStringLiteral("For every project opened on this machine. Screen refresh: "
                                        "the outputs' vertical sync, or the main screen's rate. Antialiasing smooths the "
                                        "edges of the mapped layers; mipmaps the pictures drawn much smaller than they are.")));
-        v->addWidget(box);
+        renderPage->addWidget(box);
         auto save = [this] {
             QSettings s;
             s.setValue(kRateKey, m_rate->currentData().toDouble());
@@ -228,7 +250,7 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
         theme::setAccent(c);
         paintSwatch();
     });
-    v->addWidget(look);
+    interfacePage->addWidget(look);
 
     auto *color = new QGroupBox(QStringLiteral("Color"));
     auto *cf = new QFormLayout(color);
@@ -242,7 +264,7 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
     cf->addRow(new ResetLabel(QStringLiteral("Color widgets"), [this] { m_colorModels->setCurrentIndex(0); }), m_colorModels);
     cf->addRow(note(QStringLiteral("How the colors of a new layer's Color tab are edited. "
                                    "Each layer keeps its own choice (Color tab ▸ Edit in).")));
-    v->addWidget(color);
+    interfacePage->addWidget(color);
     connect(m_colorModels, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
         QSettings().setValue(kColorKey, m_colorModels->currentData().toInt());
         emit colorModelsChanged();
@@ -270,8 +292,9 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
         "Announced by zeroconf (_oscjson._tcp, _osc._udp): OSCQuery clients (score, Chataigne, Vezér…) find it "
         "by themselves. Addresses: /master/…, /composition/…, /layers/&lt;name&gt;/… "
         "(groups: /layers/&lt;group&gt;/layers/&lt;name&gt;/…). The whole tree: http://&lt;this machine&gt;:&lt;OSCQuery port&gt;/")));
-    v->addWidget(osc);
-    v->addStretch();
+    oscPage->addWidget(osc);
+    audioPage->addWidget(buildAudio());
+    for (QVBoxLayout *l : {playbackPage, renderPage, audioPage, interfacePage, oscPage}) l->addStretch();
     auto apply = [this] {
         QSettings s;
         s.setValue(kOscKey, m_osc->isChecked());
@@ -282,6 +305,70 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
     connect(m_osc, &QCheckBox::toggled, this, apply);
     connect(m_oscPort, qOverload<int>(&QSpinBox::valueChanged), this, apply);
     connect(m_queryPort, qOverload<int>(&QSpinBox::valueChanged), this, apply);
+}
+
+// Audio: the sound card of this machine (the master volume is the composition's)
+QWidget *SettingsPanel::buildAudio()
+{
+    auto *g = new QGroupBox(QStringLiteral("Audio Output"));
+    auto *v = new QVBoxLayout(g);
+    auto *devRow = new QHBoxLayout;
+    m_audioDevice = new QComboBox;
+    m_audioDevice->setToolTip(QStringLiteral("Sound card or audio interface used for the sound of every layer"));
+    m_audioDevice->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_audioDevice->setMinimumContentsLength(8);
+    auto *rescan = new QToolButton;
+    rescan->setText(QStringLiteral("⟳"));
+    rescan->setToolTip(QStringLiteral("Refresh the list of audio devices"));
+    devRow->addWidget(m_audioDevice, 1);
+    devRow->addWidget(rescan);
+    v->addLayout(devRow);
+    m_audioState = note(QString());
+    v->addWidget(m_audioState);
+    v->addWidget(note(QStringLiteral("Saved on this machine. The master volume and mute are in the Composition tab.")));
+    connect(rescan, &QToolButton::clicked, this, [this] { fillAudioDevices(); });
+    connect(m_audioDevice, qOverload<int>(&QComboBox::activated), this, [this](int) {
+        const QString name = m_audioDevice->currentData().toString();
+        QSettings().setValue("audio/device", name);
+        openAudioDevice(name);
+    });
+    return g;
+}
+
+void SettingsPanel::fillAudioDevices()
+{
+    const QString saved = QSettings().value("audio/device").toString();
+    QSignalBlocker b(m_audioDevice);
+    m_audioDevice->clear();
+    m_audioDevice->addItem(QStringLiteral("System default"), QString());
+    for (const QString &n : AudioOutput::deviceNames()) m_audioDevice->addItem(n, n);
+    int idx = m_audioDevice->findData(saved);
+    if (idx < 0 && !saved.isEmpty()) { // saved device currently unplugged: keep it visible
+        m_audioDevice->addItem(saved + QStringLiteral(" (not connected)"), saved);
+        idx = m_audioDevice->count() - 1;
+    }
+    m_audioDevice->setCurrentIndex(qMax(0, idx));
+}
+
+void SettingsPanel::openAudioDevice(const QString &name)
+{
+    QString err;
+    if (m_engine->startAudio(name, &err)) {
+        m_audioState->setText(QStringLiteral("Playing on \"%1\" · %2 kHz · latency %3 ms")
+                                  .arg(m_engine->audioOutput().deviceName().toHtmlEscaped())
+                                  .arg(AudioOutput::kSampleRate / 1000)
+                                  .arg(int(std::lround(m_engine->audioOutput().latency() * 1000))));
+        m_audioState->setStyleSheet("color:#888; font-size:11px;");
+    } else {
+        m_audioState->setText(err.toHtmlEscaped());
+        m_audioState->setStyleSheet("color:#ff6b5b; font-size:11px;");
+    }
+}
+
+void SettingsPanel::startAudio()
+{
+    fillAudioDevices();
+    openAudioDevice(QSettings().value("audio/device").toString());
 }
 
 void SettingsPanel::setOscStatus(const QString &s) { m_oscStatus->setText(s.toHtmlEscaped()); }

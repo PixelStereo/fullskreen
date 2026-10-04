@@ -7,6 +7,7 @@
 #include "VideoDecoder.h"
 #include "VideoTexture.h"
 
+#include <QColor>
 #include <QImage>
 #include <QRectF>
 #include <QSize>
@@ -105,6 +106,56 @@ struct ColorAdjust {
     bool operator!=(const ColorAdjust &o) const { return !(*this == o); }
 };
 
+// The Text generator's settings: what is typed and how it is set. Plain data, copied by the memories' fades.
+struct TextSource {
+    QString content;                           // the text
+    QString font = QStringLiteral("Arial");    // system font family
+    int size = 48;                             // pixels
+    QColor color = QColor(255, 255, 255);
+    Qt::Alignment align = Qt::AlignHCenter | Qt::AlignVCenter; // left / center / right / justify | top / middle / bottom
+    float lineHeight = 1.2f;                   // multiple of the font's line spacing
+    float letterSpacing = 0.0f;                // pixels added between the letters
+    bool bold = false, italic = false, underline = false, strike = false;
+    float outline = 0.0f;                      // outline width in pixels (0: none)
+    QColor outlineColor = QColor(0, 0, 0);
+    bool shadow = false;                       // drop shadow, offset in pixels
+    QColor shadowColor = QColor(0, 0, 0, 160);
+    float shadowX = 4.0f, shadowY = 4.0f;
+    int width = 1920, height = 1080;           // size of its picture
+
+    // Typewriter: a memory that gives another text types it over its time. The shown text goes from `typedFrom` to
+    // `content` (erasing back to what they share, then typing) as `typeProgress` goes from 0 to 1; not typing when
+    // `typeDur` is 0.
+    QString typedFrom;
+    double typeElapsed = 0, typeDur = 0, typeProgress = 1;
+    int typeCurve = 0; // easing of the typing (EasingCurve, Memories.cpp)
+
+    QString shown() const
+    {
+        if (typeDur <= 0) return content;
+        const QString &a = typedFrom, &b = content;
+        int c = 0;
+        while (c < a.size() && c < b.size() && a[c] == b[c]) ++c;
+        const int del = int(a.size()) - c, total = del + int(b.size()) - c;
+        const int steps = int(std::clamp(typeProgress, 0.0, 1.0) * total);
+        return steps <= del ? a.left(int(a.size()) - steps) : b.left(c + steps - del);
+    }
+    void stopTyping() { typeDur = typeElapsed = 0; typeProgress = 1; typedFrom.clear(); }
+    // Values kept in their useful range (a project or a memory read from a file may hold anything)
+    void sanitize()
+    {
+        size = std::clamp(size, 1, 1000);
+        lineHeight = std::clamp(lineHeight, 0.1f, 10.0f);
+        letterSpacing = std::clamp(letterSpacing, -200.0f, 500.0f);
+        outline = std::clamp(outline, 0.0f, 200.0f);
+        shadowX = std::clamp(shadowX, -2000.0f, 2000.0f);
+        shadowY = std::clamp(shadowY, -2000.0f, 2000.0f);
+        width = std::clamp(width, 1, 16384);
+        height = std::clamp(height, 1, 16384);
+        if (font.isEmpty()) font = QStringLiteral("Arial");
+    }
+};
+
 struct Layer {
     // Identity and structure. A group is a layer without source whose picture is the composite of its members;
     // members immediately follow their group in the layer list, and a group can hold other groups.
@@ -176,37 +227,10 @@ struct Layer {
     QImage pendingImage; // image to upload to the GPU on the next frame
     int srcWidth = 0, srcHeight = 0;
 
-    // Text layer: rendered text with system fonts
-    QString textContent;                        // the text to render
-    QString textFont = "Arial";                 // system font family
-    int textSize = 48;                          // font size in pixels
-    QColor textColor = QColor(255, 255, 255);  // text color (default white)
-    Qt::Alignment textAlign = Qt::AlignCenter; // text alignment (left/center/right, top/middle/bottom)
-    float textLineHeight = 1.2f;                // line height as multiple of font size
-    float textLetterSpacing = 0.0f;             // extra spacing between characters (in pixels)
-    bool textBold = false, textItalic = false, textUnderline = false, textStrike = false;
-    float textOutline = 0.0f;                   // outline width in pixels (0: none)
-    QColor textOutlineColor = QColor(0, 0, 0);
-    bool textShadow = false;                    // drop shadow, offset in pixels
-    QColor textShadowColor = QColor(0, 0, 0, 160);
-    float textShadowX = 4.0f, textShadowY = 4.0f;
-    int textWidth = 1920, textHeight = 1080;   // text layer dimension for rendering
-    Texture2D textSourceTex;                    // rendered text texture (render thread)
-    QString textKey;                            // what textSourceTex shows (text and style): redrawn only when it changes
-    // Typewriter: a memory that gives the layer another text types it over its time. The text goes from
-    // `textFrom` to `textContent` (erasing back to what they share, then typing); 0 duration: not typing.
-    QString textFrom;
-    double textTypeElapsed = 0, textTypeDur = 0;
-    QString shownText() const
-    {
-        if (textTypeDur <= 0 || textTypeElapsed >= textTypeDur) return textContent;
-        const QString &a = textFrom, &b = textContent;
-        int c = 0;
-        while (c < a.size() && c < b.size() && a[c] == b[c]) ++c;
-        const int del = int(a.size()) - c, total = del + int(b.size()) - c;
-        const int steps = int(textTypeElapsed / textTypeDur * total);
-        return steps <= del ? a.left(int(a.size()) - steps) : b.left(c + steps - del);
-    }
+    // Text generator (type Text): its settings, and the texture they are drawn into (render thread)
+    TextSource text;
+    Texture2D textTex;
+    QString textKey; // what textTex shows (text and style): redrawn only when it changes
 
     // ISF generator
     std::unique_ptr<IsfInstance> generator;
@@ -261,8 +285,8 @@ struct Layer {
     }
     double position() const { return timeline().position(clock); }
     bool atEnd() const { return timeline().ended(clock); } // One-shot / Stop: played to the end
-    int sourceWidth() const { return type == SourceType::Isf ? genWidth : type == SourceType::Text ? textWidth : srcWidth; }
-    int sourceHeight() const { return type == SourceType::Isf ? genHeight : type == SourceType::Text ? textHeight : srcHeight; }
+    int sourceWidth() const { return type == SourceType::Isf ? genWidth : type == SourceType::Text ? text.width : srcWidth; }
+    int sourceHeight() const { return type == SourceType::Isf ? genHeight : type == SourceType::Text ? text.height : srcHeight; }
     bool hasPicture() const { return isGroup || isViewport || (type != SourceType::Audio && !(type == SourceType::None && missingType == SourceType::Audio)); }
     bool isText() const { return type == SourceType::Text; }
     QSize viewportSize() const { return QSize(std::max(1, vpWidth), std::max(1, vpHeight)); }

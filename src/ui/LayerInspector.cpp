@@ -92,20 +92,7 @@ struct LayerSnapshot {
     std::vector<Fx> effects;
     bool meshMode = false;
     int cols = 4, rows = 4;
-    // Text layer
-    QString textContent;
-    QString textFont = "Arial";
-    int textSize = 48;
-    QColor textColor = QColor(255, 255, 255);
-    Qt::Alignment textAlign = Qt::AlignCenter;
-    float textLineHeight = 1.2f;
-    float textLetterSpacing = 0.0f;
-    bool textBold = false, textItalic = false, textUnderline = false, textStrike = false;
-    float textOutline = 0.0f;
-    QColor textOutlineColor = QColor(0, 0, 0);
-    bool textShadow = false;
-    QColor textShadowColor = QColor(0, 0, 0, 160);
-    float textShadowX = 4.0f, textShadowY = 4.0f;
+    TextSource text; // Text generator
 
     static LayerSnapshot take(Engine *e, int index)
     {
@@ -174,24 +161,7 @@ struct LayerSnapshot {
         s.meshMode = l->mapping.meshMode;
         s.cols = l->mapping.cols;
         s.rows = l->mapping.rows;
-        // Text layer properties
-        s.textContent = l->textContent;
-        s.textFont = l->textFont;
-        s.textSize = l->textSize;
-        s.textColor = l->textColor;
-        s.textAlign = l->textAlign;
-        s.textLineHeight = l->textLineHeight;
-        s.textLetterSpacing = l->textLetterSpacing;
-        s.textBold = l->textBold;
-        s.textItalic = l->textItalic;
-        s.textUnderline = l->textUnderline;
-        s.textStrike = l->textStrike;
-        s.textOutline = l->textOutline;
-        s.textOutlineColor = l->textOutlineColor;
-        s.textShadow = l->textShadow;
-        s.textShadowColor = l->textShadowColor;
-        s.textShadowX = l->textShadowX;
-        s.textShadowY = l->textShadowY;
+        s.text = l->text;
         if (!l->isViewport) {
             const Layer *top = l;
             while (top->parent) {
@@ -590,7 +560,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         };
 
         auto *editor = new QPlainTextEdit;
-        editor->setPlainText(s.textContent);
+        editor->setPlainText(s.text.content);
         editor->setMinimumHeight(90);
         editor->setPlaceholderText(QStringLiteral("Type the text here"));
         editor->setToolTip(QStringLiteral("The text of this layer. A memory that holds another text types it (typewriter) over its fade."));
@@ -604,35 +574,35 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         fmt->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
         auto *fontBox = new QFontComboBox;
-        fontBox->setCurrentFont(QFont(s.textFont));
+        fontBox->setCurrentFont(QFont(s.text.font));
         fontBox->setEnabled(!m_locked);
         fmt->addRow(QStringLiteral("Font"), fontBox);
         connect(fontBox, &QFontComboBox::currentFontChanged, this, [style](const QFont &f) {
             const QString family = f.family();
-            style(QStringLiteral("Text Font"), [family](Layer &l) { l.textFont = family; });
+            style(QStringLiteral("Text Font"), [family](Layer &l) { l.text.font = family; });
         });
 
         auto *size = new IntBox;
         size->setRange(1, 1000);
         size->setSuffix(QStringLiteral(" px"));
-        size->setValue(s.textSize);
+        size->setValue(s.text.size);
         size->setEnabled(!m_locked);
         auto *colorRow = new QHBoxLayout;
         colorRow->addWidget(size);
-        colorRow->addWidget(colorButton(s.textColor, QStringLiteral("Text Color"), [](Layer &l, const QColor &c) { l.textColor = c; }));
+        colorRow->addWidget(colorButton(s.text.color, QStringLiteral("Text Color"), [](Layer &l, const QColor &c) { l.text.color = c; }));
         colorRow->addStretch();
         fmt->addRow(QStringLiteral("Size / color"), colorRow);
         connect(size, QOverload<int>::of(&QSpinBox::valueChanged), this, [style](int px) {
-            style(QStringLiteral("Text Size"), [px](Layer &l) { l.textSize = px; });
+            style(QStringLiteral("Text Size"), [px](Layer &l) { l.text.size = px; });
         });
 
         // Bold, italic, underline, strikethrough
         auto *styleRow = new QHBoxLayout;
-        struct Toggle { const char *label, *tip; bool on; bool Layer::*field; };
-        const Toggle toggles[] = {{"B", "Bold", s.textBold, &Layer::textBold},
-                                  {"I", "Italic", s.textItalic, &Layer::textItalic},
-                                  {"U", "Underline", s.textUnderline, &Layer::textUnderline},
-                                  {"S", "Strikethrough", s.textStrike, &Layer::textStrike}};
+        struct Toggle { const char *label, *tip; bool on; bool TextSource::*field; };
+        const Toggle toggles[] = {{"B", "Bold", s.text.bold, &TextSource::bold},
+                                  {"I", "Italic", s.text.italic, &TextSource::italic},
+                                  {"U", "Underline", s.text.underline, &TextSource::underline},
+                                  {"S", "Strikethrough", s.text.strike, &TextSource::strike}};
         for (const Toggle &t : toggles) {
             auto *b = new ToggleButton(QString::fromLatin1(t.label));
             b->setToolTip(QString::fromLatin1(t.tip));
@@ -647,7 +617,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             styleRow->addWidget(b);
             auto field = t.field;
             connect(b, &QToolButton::toggled, this, [style, field, tip = QString::fromLatin1(t.tip)](bool on) {
-                style(tip, [field, on](Layer &l) { l.*field = on; });
+                style(tip, [field, on](Layer &l) { l.text.*field = on; });
             });
         }
         styleRow->addStretch();
@@ -663,8 +633,8 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         vAlign->addItem(QStringLiteral("Top"), int(Qt::AlignTop));
         vAlign->addItem(QStringLiteral("Middle"), int(Qt::AlignVCenter));
         vAlign->addItem(QStringLiteral("Bottom"), int(Qt::AlignBottom));
-        const int h0 = hAlign->findData(int(s.textAlign & Qt::AlignHorizontal_Mask));
-        const int v0 = vAlign->findData(int(s.textAlign & Qt::AlignVertical_Mask));
+        const int h0 = hAlign->findData(int(s.text.align & Qt::AlignHorizontal_Mask));
+        const int v0 = vAlign->findData(int(s.text.align & Qt::AlignVertical_Mask));
         hAlign->setCurrentIndex(h0 >= 0 ? h0 : 0);
         vAlign->setCurrentIndex(v0 >= 0 ? v0 : 0);
         hAlign->setEnabled(!m_locked);
@@ -675,57 +645,57 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         fmt->addRow(QStringLiteral("Align"), alignRow);
         auto setAlign = [style, hAlign, vAlign] {
             const int a = hAlign->currentData().toInt() | vAlign->currentData().toInt();
-            style(QStringLiteral("Text Alignment"), [a](Layer &l) { l.textAlign = Qt::Alignment(a); });
+            style(QStringLiteral("Text Alignment"), [a](Layer &l) { l.text.align = Qt::Alignment(a); });
         };
         connect(hAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
         connect(vAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
 
-        auto *lineSp = spin(s.textLineHeight, 0.2, 5.0, 0.05, 2, QStringLiteral(" ×"));
+        auto *lineSp = spin(s.text.lineHeight, 0.2, 5.0, 0.05, 2, QStringLiteral(" ×"));
         lineSp->setToolTip(QStringLiteral("Space between the lines (1 = the font's own)"));
         fmt->addRow(QStringLiteral("Line spacing"), lineSp);
         connect(lineSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
-            style(QStringLiteral("Line Spacing"), [x](Layer &l) { l.textLineHeight = float(x); });
+            style(QStringLiteral("Line Spacing"), [x](Layer &l) { l.text.lineHeight = float(x); });
         });
-        auto *letterSp = spin(s.textLetterSpacing, -50, 200, 0.5, 1, QStringLiteral(" px"));
+        auto *letterSp = spin(s.text.letterSpacing, -50, 200, 0.5, 1, QStringLiteral(" px"));
         letterSp->setToolTip(QStringLiteral("Space added between the letters"));
         fmt->addRow(QStringLiteral("Letter spacing"), letterSp);
         connect(letterSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
-            style(QStringLiteral("Letter Spacing"), [x](Layer &l) { l.textLetterSpacing = float(x); });
+            style(QStringLiteral("Letter Spacing"), [x](Layer &l) { l.text.letterSpacing = float(x); });
         });
 
         // Outline
-        auto *outline = spin(s.textOutline, 0, 100, 0.5, 1, QStringLiteral(" px"));
+        auto *outline = spin(s.text.outline, 0, 100, 0.5, 1, QStringLiteral(" px"));
         auto *outlineRow = new QHBoxLayout;
         outlineRow->addWidget(outline);
-        outlineRow->addWidget(colorButton(s.textOutlineColor, QStringLiteral("Outline Color"),
-                                          [](Layer &l, const QColor &c) { l.textOutlineColor = c; }));
+        outlineRow->addWidget(colorButton(s.text.outlineColor, QStringLiteral("Outline Color"),
+                                          [](Layer &l, const QColor &c) { l.text.outlineColor = c; }));
         outlineRow->addStretch();
         fmt->addRow(QStringLiteral("Outline"), outlineRow);
         connect(outline, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
-            style(QStringLiteral("Text Outline"), [x](Layer &l) { l.textOutline = float(x); });
+            style(QStringLiteral("Text Outline"), [x](Layer &l) { l.text.outline = float(x); });
         });
 
         // Shadow
         auto *shadow = new FlagBox(QStringLiteral("On"));
-        shadow->setChecked(s.textShadow);
+        shadow->setChecked(s.text.shadow);
         shadow->setEnabled(!m_locked);
         auto *shadowRow = new QHBoxLayout;
         shadowRow->addWidget(shadow);
-        shadowRow->addWidget(colorButton(s.textShadowColor, QStringLiteral("Shadow Color"),
-                                         [](Layer &l, const QColor &c) { l.textShadowColor = c; }));
-        auto *sx = spin(s.textShadowX, -200, 200, 1, 0, QStringLiteral(" x"));
-        auto *sy = spin(s.textShadowY, -200, 200, 1, 0, QStringLiteral(" y"));
+        shadowRow->addWidget(colorButton(s.text.shadowColor, QStringLiteral("Shadow Color"),
+                                         [](Layer &l, const QColor &c) { l.text.shadowColor = c; }));
+        auto *sx = spin(s.text.shadowX, -200, 200, 1, 0, QStringLiteral(" x"));
+        auto *sy = spin(s.text.shadowY, -200, 200, 1, 0, QStringLiteral(" y"));
         shadowRow->addWidget(sx);
         shadowRow->addWidget(sy);
         fmt->addRow(QStringLiteral("Shadow"), shadowRow);
         connect(shadow, &QCheckBox::toggled, this, [style](bool on) {
-            style(QStringLiteral("Text Shadow"), [on](Layer &l) { l.textShadow = on; });
+            style(QStringLiteral("Text Shadow"), [on](Layer &l) { l.text.shadow = on; });
         });
         connect(sx, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
-            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.textShadowX = float(x); });
+            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.text.shadowX = float(x); });
         });
         connect(sy, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
-            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.textShadowY = float(x); });
+            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.text.shadowY = float(x); });
         });
 
         v->addLayout(fmt);
