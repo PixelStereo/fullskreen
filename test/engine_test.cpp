@@ -1076,6 +1076,51 @@ int main(int argc, char **argv)
               blendModeFromKey(blendModeKey(BlendMode::Difference)) == BlendMode::Difference);
     }
 
+    // 4d-bis. Color depth: the render targets follow the project's setting
+    {
+        e.newProject();
+        e.fadeMaster(1.0, 0);
+        e.setBlackout(false, 0);
+        e.setCompositionSize(QSize(16, 16));
+        QImage col(16, 16, QImage::Format_RGB32);
+        col.fill(qRgb(200, 100, 50));
+        col.save(tmp + "/dp_col.png");
+        const int li = e.addLayer("Depth");
+        CHECK(e.setLayerImage(li, tmp + "/dp_col.png", &err));
+        {
+            Engine::Lock lk(&e.mutex());
+            e.layer(li)->mapping.resetCorners();
+            e.layer(li)->opacity = 0.5f;
+        }
+        for (int k = 0; k < 2; ++k) e.renderFrame();
+        const QColor c8 = e.grabOutput().pixelColor(8, 8);
+        CHECK(renderBits() == 8);
+        Engine::RenderSettings rs = e.renderSettings();
+        rs.depth = 10;
+        e.setRenderSettings(rs);
+        for (int k = 0; k < 3; ++k) e.renderFrame();
+        const QColor c10 = e.grabOutput().pixelColor(8, 8);
+        CHECK(renderBits() == 16 && e.effectiveRender().depth == 10);
+        CHECK(std::abs(c10.red() - c8.red()) <= 1 && std::abs(c10.green() - c8.green()) <= 1 && std::abs(c10.blue() - c8.blue()) <= 1);
+        CHECK(std::abs(c10.red() - 100) <= 1 && std::abs(c10.green() - 50) <= 1); // half of (200, 100, 50)
+        // A project keeps its own choice; the default applies when it has none
+        const QString p = tmp + "/depth.fulskrin";
+        CHECK(e.saveProject(p, QJsonObject(), &err));
+        e.newProject();
+        CHECK(e.renderSettings().depth == -1);
+        CHECK(e.loadProject(p, nullptr, &err));
+        CHECK(e.renderSettings().depth == 10);
+        Engine::RenderSettings d = e.renderDefaults();
+        d.depth = 10;
+        e.setRenderDefaults(d);
+        e.newProject();
+        CHECK(e.renderSettings().depth == -1 && e.effectiveRender().depth == 10);
+        d.depth = 8;
+        e.setRenderDefaults(d);
+        for (int k = 0; k < 2; ++k) e.renderFrame();
+        CHECK(renderBits() == 8);
+    }
+
     // 4e. Viewports: windows onto one composition, routing, groups inside groups
     {
         e.newProject();

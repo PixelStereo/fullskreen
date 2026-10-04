@@ -12,6 +12,8 @@ QList<double> frameRates(); // 0: the screen's refresh rate
 QString frameRateName(double fps);
 QList<int> samples();       // 0: off
 QString samplesName(int n);
+QList<int> depths();        // bits per channel: 8, 10
+QString depthName(int bits);
 } // namespace renderChoice
 class QComboBox;
 class QLabel;
@@ -54,7 +56,7 @@ signals:
 
 private:
     QComboBox *m_playMode = nullptr, *m_colorModels = nullptr, *m_transition = nullptr, *m_rate = nullptr,
-              *m_samples = nullptr;
+              *m_samples = nullptr, *m_depth = nullptr;
     QCheckBox *m_mipmaps = nullptr, *m_hardware = nullptr;
     QCheckBox *m_osc = nullptr;
     QSpinBox *m_oscPort = nullptr, *m_queryPort = nullptr;

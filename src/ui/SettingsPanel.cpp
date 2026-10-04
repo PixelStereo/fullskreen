@@ -24,12 +24,15 @@ static const char *kTransitionKey = "memories/transition";
 static const char *kRateKey = "render/frameRate";
 static const char *kSamplesKey = "render/antialiasing";
 static const char *kMipmapsKey = "render/mipmaps";
+static const char *kDepthKey = "render/depth";
 
 QList<double> renderChoice::frameRates() { return {0, 24, 25, 30, 50, 60, 120}; }
 QString renderChoice::frameRateName(double fps)
 {
     return fps <= 0 ? QStringLiteral("Screen refresh") : QStringLiteral("%1 fps").arg(fps);
 }
+QList<int> renderChoice::depths() { return {8, 10}; }
+QString renderChoice::depthName(int bits) { return bits >= 10 ? QStringLiteral("10 bits") : QStringLiteral("8 bits"); }
 QList<int> renderChoice::samples() { return {0, 2, 4, 8}; }
 QString renderChoice::samplesName(int n) { return n <= 1 ? QStringLiteral("Off") : QStringLiteral("%1× MSAA").arg(n); }
 
@@ -40,6 +43,7 @@ Engine::RenderSettings SettingsPanel::renderDefaults()
     r.frameRate = std::max(0.0, s.value(kRateKey, 0.0).toDouble());
     r.samples = std::max(0, s.value(kSamplesKey, 4).toInt());
     r.mipmaps = s.value(kMipmapsKey, true).toBool() ? 1 : 0;
+    r.depth = s.value(kDepthKey, 8).toInt() >= 10 ? 10 : 8;
     return r;
 }
 static constexpr int kDefaultOscPort = 1234, kDefaultQueryPort = 5678;
@@ -139,10 +143,14 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
         m_samples = new QComboBox;
         for (int n : renderChoice::samples()) m_samples->addItem(renderChoice::samplesName(n), n);
         m_samples->setCurrentIndex(std::max(0, m_samples->findData(d.samples)));
+        m_depth = new QComboBox;
+        for (int b : renderChoice::depths()) m_depth->addItem(renderChoice::depthName(b), b);
+        m_depth->setCurrentIndex(std::max(0, m_depth->findData(d.depth)));
         m_mipmaps = new QCheckBox(QStringLiteral("Smooth pictures drawn smaller (mipmaps)"));
         m_mipmaps->setChecked(d.mipmaps > 0);
         rf->addRow(new ResetLabel(QStringLiteral("Frame rate"), [this] { m_rate->setCurrentIndex(0); }), m_rate);
         rf->addRow(new ResetLabel(QStringLiteral("Antialiasing"), [this] { m_samples->setCurrentIndex(2); }), m_samples);
+        rf->addRow(new ResetLabel(QStringLiteral("Color depth"), [this] { m_depth->setCurrentIndex(0); }), m_depth);
         rf->addRow(m_mipmaps);
         rf->addRow(note(QStringLiteral("Defaults of the projects that keep them (Master ▸ Rendering). Screen refresh: "
                                        "the outputs' vertical sync, or the main screen's rate. Antialiasing smooths the "
@@ -153,10 +161,12 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
             s.setValue(kRateKey, m_rate->currentData().toDouble());
             s.setValue(kSamplesKey, m_samples->currentData().toInt());
             s.setValue(kMipmapsKey, m_mipmaps->isChecked());
+            s.setValue(kDepthKey, m_depth->currentData().toInt());
             emit renderDefaultsChanged();
         };
         connect(m_rate, qOverload<int>(&QComboBox::activated), this, save);
         connect(m_samples, qOverload<int>(&QComboBox::activated), this, save);
+        connect(m_depth, qOverload<int>(&QComboBox::activated), this, save);
         connect(m_mipmaps, &QCheckBox::toggled, this, save);
     }
 
