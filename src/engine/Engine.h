@@ -166,6 +166,7 @@ public:
 
     // --- Memories (cues, as in MadMapper): snapshots of the layers, recalled with a fade
     struct Memory {
+        quint64 id = 0;     // stable (sequences refer to it); given by addMemory
         QString name;
         double fade = 1.0;  // seconds
         QImage thumbnail;   // output at the time it was stored
@@ -179,8 +180,11 @@ public:
     QJsonArray captureLayers() const; // state of every layer, all included
     // Applies layer states (those not excluded): opacity, volume, roi, color, mapping and ISF numbers fade in
     // `fade` seconds, or in the time a state gives them ("timing": key → seconds, 0 a cut); sources and effect chains change at once; a layer that became visible fades in from 0,
-    // one that becomes hidden fades out; layers removed since are recreated. Other layers are left alone.
-    void applyLayers(const QJsonArray &layers, double fade);
+    // one that becomes hidden fades out; layers removed since are recreated. Other layers are left alone, or with
+    // hideOthers (a memory's recall: the picture as it was stored) faded out and hidden — not the viewports, not
+    // the layers the state holds but leaves out ("included": false), not the locked ones.
+    void applyLayers(const QJsonArray &layers, double fade, bool hideOthers = false);
+    int indexOfMemory(quint64 id) const; // -1: none
     void recallMemory(int i); // with its fade
     bool isFading() const;
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
@@ -416,6 +420,7 @@ private:
     void renderTransition(Layer &l, SourceTransition &t, const IsfRenderContext &rc);
     void retireTransition(std::unique_ptr<SourceTransition> t);           // sound now, OpenGL on the render thread
     double m_fadeElapsed = 0; // seconds since the last recall
+    quint64 m_nextMemoryId = 1;
     std::atomic<bool> m_fadesManual{false};
     void attachAudio(Layer &l, std::shared_ptr<AudioStream> s);
     std::atomic<double> m_fps{0};

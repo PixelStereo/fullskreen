@@ -3,54 +3,54 @@
 #include "Engine.h"
 #include "Widgets.h"
 
+#include <QButtonGroup>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
-#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMenu>
+#include <QMimeData>
 #include <QPainter>
 #include <QPushButton>
 #include <QShortcut>
 #include <QSignalBlocker>
-#include <QStyledItemDelegate>
+#include <QSplitter>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QUndoStack>
 #include <QVBoxLayout>
+#include <functional>
 
-static constexpr int kPlus = -1;
-static const QSize kThumb(128, 72);
+static const QSize kThumb(160, 90);
 
-static QIcon plusIcon()
-{
-    QPixmap pm(kThumb);
-    pm.fill(QColor(40, 40, 44));
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(QColor(120, 120, 128), 1, Qt::DashLine));
-    p.drawRoundedRect(QRectF(1, 1, kThumb.width() - 2, kThumb.height() - 2), 4, 4);
-    p.setPen(QPen(theme::accent(), 4, Qt::SolidLine, Qt::RoundCap));
-    const QPointF c(kThumb.width() / 2.0, kThumb.height() / 2.0);
-    p.drawLine(c - QPointF(12, 0), c + QPointF(12, 0));
-    p.drawLine(c - QPointF(0, 12), c + QPointF(0, 12));
-    return QIcon(pm);
-}
+// Roles of the trees
+enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, KeyRole = Qt::UserRole + 3, MemoryRole = Qt::UserRole + 6 };
+// Columns of the tree of what a memory holds
+enum Column { ColName, ColValue, ColTime };
 
-// Roles of the inspector tree
-enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, ValueRole = Qt::UserRole + 2, KeyRole = Qt::UserRole + 3,
-       TimeKeyRole = Qt::UserRole + 4, TimeRole = Qt::UserRole + 5 };
-enum Column { ColLayer, ColShown, ColValue, ColTime, ColSource };
-
-// Time of a stored value: the memory's fade (none stored), a cut (0) or its own time
+// How a value gets there at the recall
 static QString timeText(const QJsonValue &v)
 {
-    if (!v.isDouble()) return QStringLiteral("Transition");
+    if (!v.isDouble()) return QStringLiteral("Follow");
     return v.toDouble() <= 0 ? QStringLiteral("Cut") : QStringLiteral("%1 s").arg(v.toDouble(), 0, 'g', 4);
+}
+
+static QString valueText(const MemField &f, const QJsonValue &value)
+{
+    switch (f.kind) {
+    case MemField::Bool: return value.toBool() ? QStringLiteral("On") : QStringLiteral("Off");
+    case MemField::Number: return QString::number(value.toDouble() * f.scale, 'f', f.decimals) + f.suffix;
+    case MemField::Choice: {
+        const int k = f.keys.indexOf(value.toString());
+        return k >= 0 ? f.labels.value(k) : value.toString();
+    }
+    default: return value.toString();
+    }
 }
 
 // Value at `path` inside a JSON tree; a numeric component addresses an array.
@@ -116,78 +116,7 @@ static QHash<QString, IsfMeta> isfMeta(Engine *e, quint64 id, int slot, QStringL
     return out;
 }
 
-// Editor of a stored value: spin box for a number, combo box for a choice (booleans are check boxes).
-class FieldDelegate : public QStyledItemDelegate
-{
-public:
-    std::function<const MemField *(const QModelIndex &)> field;
-    std::function<void(const MemField &, const QJsonValue &)> commit;
-    std::function<void(const QModelIndex &, double)> commitTime; // < 0: back to the memory's fade
-
-    QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &, const QModelIndex &index) const override
-    {
-        if (index.column() == ColTime) {
-            if (!index.data(TimeKeyRole).isValid()) return nullptr;
-            auto *b = new QDoubleSpinBox(parent);
-            b->setRange(-0.1, 600);
-            b->setDecimals(1);
-            b->setSingleStep(0.5);
-            b->setSuffix(QStringLiteral(" s"));
-            b->setSpecialValueText(QStringLiteral("Transition")); // the lowest value: the memory's fade
-            b->setKeyboardTracking(false);
-            b->setToolTip(QStringLiteral("Transition: the memory's fade · 0: a cut · or a time of its own"));
-            return b;
-        }
-        const MemField *f = field(index);
-        if (!f) return nullptr;
-        if (f->kind == MemField::Number) {
-            auto *b = new QDoubleSpinBox(parent);
-            b->setRange(f->min * f->scale, f->max * f->scale);
-            b->setDecimals(f->decimals);
-            b->setSingleStep(f->step * f->scale);
-            b->setSuffix(f->suffix);
-            b->setKeyboardTracking(false);
-            return b;
-        }
-        if (f->kind == MemField::Choice) {
-            auto *c = new QComboBox(parent);
-            for (int k = 0; k < f->keys.size(); ++k) c->addItem(f->labels.value(k, f->keys[k]), f->keys[k]);
-            return c;
-        }
-        return nullptr;
-    }
-    void setEditorData(QWidget *editor, const QModelIndex &index) const override
-    {
-        if (index.column() == ColTime) {
-            if (auto *b = qobject_cast<QDoubleSpinBox *>(editor)) {
-                const QVariant t = index.data(TimeRole);
-                b->setValue(t.isValid() ? t.toDouble() : b->minimum());
-            }
-            return;
-        }
-        const MemField *f = field(index);
-        if (!f) return;
-        if (auto *b = qobject_cast<QDoubleSpinBox *>(editor)) b->setValue(index.data(ValueRole).toDouble() * f->scale);
-        else if (auto *c = qobject_cast<QComboBox *>(editor))
-            c->setCurrentIndex(std::max(0, c->findData(index.data(ValueRole).toString())));
-    }
-    void setModelData(QWidget *editor, QAbstractItemModel *, const QModelIndex &index) const override
-    {
-        if (index.column() == ColTime) {
-            if (auto *b = qobject_cast<QDoubleSpinBox *>(editor))
-                commitTime(index, b->value() <= b->minimum() ? -1.0 : b->value());
-            return;
-        }
-        const MemField *f = field(index);
-        if (!f) return;
-        if (auto *b = qobject_cast<QDoubleSpinBox *>(editor))
-            commit(*f, QJsonValue(b->value() / (f->scale != 0 ? f->scale : 1)));
-        else if (auto *c = qobject_cast<QComboBox *>(editor))
-            commit(*f, QJsonValue(c->currentData().toString()));
-    }
-};
-
-static QPixmap tile(const QImage &thumb, bool active)
+static QPixmap thumbnail(const QImage &thumb)
 {
     QPixmap pm(kThumb);
     pm.fill(Qt::black);
@@ -196,41 +125,85 @@ static QPixmap tile(const QImage &thumb, bool active)
         const QImage s = thumb.scaled(kThumb, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         p.drawImage(QPoint((kThumb.width() - s.width()) / 2, (kThumb.height() - s.height()) / 2), s);
     }
-    if (active) { // last recalled
-        p.setPen(QPen(theme::accent(), 4));
-        p.drawRect(QRect(QPoint(2, 2), kThumb - QSize(4, 4)));
-    }
     return pm;
 }
+
+namespace {
+// The list of the memories; a memory dragged from it carries its id (onto a step of a sequence)
+class MemoryList : public QTreeWidget
+{
+public:
+    using QTreeWidget::QTreeWidget;
+
+protected:
+    QStringList mimeTypes() const override { return {QString::fromLatin1(kMemoryMime)}; }
+    QMimeData *mimeData(const QList<QTreeWidgetItem *> &items) const override
+    {
+        if (items.isEmpty()) return nullptr;
+        auto *m = new QMimeData;
+        m->setData(kMemoryMime, QByteArray::number(items.first()->data(0, MemoryRole).toULongLong()));
+        m->setText(items.first()->text(1));
+        return m;
+    }
+};
+
+QToolButton *barButton(const QString &text, const QString &tip)
+{
+    auto *b = new QToolButton;
+    b->setText(text);
+    b->setToolTip(tip);
+    b->setMinimumSize(30, 24);
+    return b;
+}
+} // namespace
 
 MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     : QWidget(parent), m_engine(engine), m_undo(undo)
 {
     auto *h = new QHBoxLayout(this);
     h->setContentsMargins(8, 4, 8, 4);
+    auto *split = new QSplitter(Qt::Horizontal);
+    split->setChildrenCollapsible(false);
+    h->addWidget(split);
 
-    auto *left = new QVBoxLayout;
+    // --- The list: number, name, fade
+    auto *left = new QWidget;
+    auto *lv = new QVBoxLayout(left);
+    lv->setContentsMargins(0, 0, 0, 0);
+    auto *bar = new QHBoxLayout;
     auto *title = new QLabel(QStringLiteral("<b>Memories</b>"));
-    title->setToolTip(QStringLiteral("+ stores the current state of the layers · click: inspect · "
-                                     "double-click or Enter: recall"));
-    left->addWidget(title);
-    m_grid = new QListWidget;
-    m_grid->setViewMode(QListView::IconMode);
-    m_grid->setIconSize(kThumb);
-    m_grid->setGridSize(kThumb + QSize(18, 30));
-    m_grid->setMovement(QListView::Static);
-    m_grid->setResizeMode(QListView::Adjust);
-    m_grid->setWrapping(true);
-    m_grid->setWordWrap(false);
-    m_grid->setTextElideMode(Qt::ElideRight);
-    m_grid->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_grid->setContextMenuPolicy(Qt::CustomContextMenu);
-    left->addWidget(m_grid, 1);
-    h->addLayout(left, 1);
+    bar->addWidget(title);
+    bar->addStretch();
+    m_store = new QPushButton(QStringLiteral("+"));
+    m_store->setToolTip(QStringLiteral("Store the current state of the layers in a new memory"));
+    m_store->setFixedWidth(34);
+    m_go = new QPushButton(QStringLiteral("GO"));
+    m_go->setStyleSheet("QPushButton { font-weight:bold; background:#2f6b3a; color:white; padding:3px 14px; }");
+    m_go->setToolTip(QStringLiteral("Recall the selected memory (double-click or Enter in the list)"));
+    bar->addWidget(m_store);
+    bar->addWidget(m_go);
+    lv->addLayout(bar);
+    m_list = new MemoryList;
+    m_list->setColumnCount(3);
+    m_list->setHeaderLabels({QStringLiteral("#"), QStringLiteral("Name"), QStringLiteral("Fade")});
+    m_list->setRootIsDecorated(false);
+    m_list->setUniformRowHeights(true);
+    m_list->setAlternatingRowColors(true);
+    m_list->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_list->setDragEnabled(true);
+    m_list->setDragDropMode(QAbstractItemView::DragOnly);
+    m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_list->header()->setStretchLastSection(false);
+    m_list->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_list->setColumnWidth(0, 34);
+    m_list->setColumnWidth(2, 58);
+    m_list->setToolTip(QStringLiteral("Double-click or Enter: recall · drag onto a step of a sequence"));
+    lv->addWidget(m_list, 1);
+    left->setMinimumWidth(220);
+    split->addWidget(left);
 
-    // Inspector of the selected memory
+    // --- What the selected memory holds
     m_inspector = new QWidget;
-    m_inspector->setFixedWidth(540);
     auto *iv = new QVBoxLayout(m_inspector);
     iv->setContentsMargins(6, 0, 0, 0);
     auto *head = new QHBoxLayout;
@@ -247,95 +220,74 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_fade->setSingleStep(0.5);
     m_fade->setSuffix(QStringLiteral(" s"));
     m_fade->setKeyboardTracking(false);
-    m_fade->setToolTip(QStringLiteral("Fade: opacity, volume, ROI, color, mapping and ISF numbers move to the memory's "
-                                      "values in this time (unless the Time column gives one of them its own); "
-                                      "sources and effect chains change at once"));
+    m_fade->setToolTip(QStringLiteral("Fade: the values set to Follow get to the memory's in this time; sources and "
+                                      "effect chains change at once (a new source comes in with its transition)"));
     auto *fadeRow = new QHBoxLayout;
     fadeRow->addWidget(new ResetLabel(QStringLiteral("Fade"), [this] { m_fade->setValue(1.0); }));
     fadeRow->addWidget(m_fade, 1);
     fields->addWidget(m_title);
     fields->addWidget(m_name);
     fields->addLayout(fadeRow);
+    auto *buttons = new QHBoxLayout;
+    m_update = new QPushButton(QStringLiteral("Update"));
+    m_update->setToolTip(QStringLiteral("Store the current state of the layers into this memory"));
+    m_delete = new QPushButton(QStringLiteral("Delete"));
+    buttons->addWidget(m_update);
+    buttons->addWidget(m_delete);
+    fields->addLayout(buttons);
+    fields->addStretch();
     head->addWidget(m_thumb);
     head->addLayout(fields, 1);
     iv->addLayout(head);
     m_layers = new QTreeWidget;
-    m_layers->setHeaderLabels({QStringLiteral("Layer"), QStringLiteral("Shown"), QStringLiteral("Value"), QStringLiteral("Time"),
-                               QStringLiteral("Source")});
-    m_layers->headerItem()->setToolTip(ColTime, QStringLiteral("How long each value takes when the memory is recalled:\n"
-                                                               "Transition (the memory's fade), Cut, or a time of its own.\n"
-                                                               "Double-click to change it."));
+    m_layers->setColumnCount(3);
+    m_layers->setHeaderLabels({QStringLiteral("Layer / value"), QStringLiteral("Value"), QStringLiteral("Time")});
     m_layers->setRootIsDecorated(true);
     m_layers->setIndentation(12);
     m_layers->setUniformRowHeights(true);
     m_layers->setAlternatingRowColors(true);
     m_layers->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_layers->header()->setStretchLastSection(false);
-    m_layers->setColumnWidth(1, 46);
-    m_layers->setColumnWidth(ColValue, 92);
-    m_layers->setColumnWidth(ColTime, 76);
-    m_layers->setColumnWidth(ColSource, 100);
-    m_layers->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked |
-                              QAbstractItemView::EditKeyPressed);
-    m_layers->setToolTip(QStringLiteral("Unchecked layers are left alone when the memory is recalled.\n"
-                                        "Unfold a layer to see everything it stores; double-click a value to change it\n"
-                                        "(the memory changes, the composition does not)."));
-    auto *delegate = new FieldDelegate;
-    delegate->field = [this](const QModelIndex &i) -> const MemField * {
-        if (i.column() != 2) return nullptr;
-        const QVariant v = i.data(FieldRole);
-        if (!v.isValid()) return nullptr;
-        const int k = v.toInt();
-        return k >= 0 && k < int(m_fields.size()) ? &m_fields[size_t(k)] : nullptr;
-    };
-    delegate->commit = [this](const MemField &f, const QJsonValue &v) { applyField(f, v); };
-    delegate->commitTime = [this](const QModelIndex &i, double seconds) {
-        const QVariant fi = i.siblingAtColumn(ColValue).data(FieldRole);
-        if (!fi.isValid()) return;
-        applyTime(m_fields[size_t(fi.toInt())].row, i.data(TimeKeyRole).toString(), seconds);
-    };
-    delegate->setParent(m_layers);
-    m_layers->setItemDelegate(delegate);
+    m_layers->setColumnWidth(ColValue, 96);
+    m_layers->setColumnWidth(ColTime, 64);
+    m_layers->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_layers->setToolTip(QStringLiteral("Unchecked layers are left alone when the memory is recalled; layers the memory "
+                                        "does not know are hidden.\nClick a value to see it, change it and choose how it "
+                                        "gets there (right)."));
     iv->addWidget(m_layers, 1);
-    auto *buttons = new QHBoxLayout;
-    m_go = new QPushButton(QStringLiteral("GO"));
-    m_go->setStyleSheet("QPushButton { font-weight:bold; background:#2f6b3a; color:white; padding:4px 16px; }");
-    m_go->setToolTip(QStringLiteral("Recall this memory (double-click or Enter in the grid)"));
-    m_update = new QPushButton(QStringLiteral("Update"));
-    m_update->setToolTip(QStringLiteral("Store the current state of the layers into this memory"));
-    m_delete = new QPushButton(QStringLiteral("Delete"));
-    buttons->addWidget(m_go);
-    buttons->addStretch();
-    buttons->addWidget(m_update);
-    buttons->addWidget(m_delete);
-    iv->addLayout(buttons);
-    h->addWidget(m_inspector);
+    m_inspector->setMinimumWidth(340);
+    split->addWidget(m_inspector);
 
-    connect(m_grid, &QListWidget::currentRowChanged, this, [this] {
+    // --- The selected value
+    m_detail = new QWidget;
+    m_detailLayout = new QVBoxLayout(m_detail);
+    m_detailLayout->setContentsMargins(8, 0, 0, 0);
+    m_detail->setMinimumWidth(240);
+    split->addWidget(m_detail);
+    split->setStretchFactor(0, 1);
+    split->setStretchFactor(1, 2);
+    split->setStretchFactor(2, 1);
+    split->setSizes({260, 520, 300});
+
+    connect(m_list, &QTreeWidget::currentItemChanged, this, [this] {
         if (!m_filling) showInspector(selected());
     });
-    connect(m_grid, &QListWidget::itemClicked, this, [this](QListWidgetItem *it) {
-        if (it->data(Qt::UserRole).toInt() == kPlus) store();
+    connect(m_list, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *it) {
+        recall(m_list->indexOfTopLevelItem(it));
     });
-    connect(m_grid, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *it) {
-        const int i = it->data(Qt::UserRole).toInt();
-        if (i != kPlus) recall(i);
-    });
-    auto *enter = new QShortcut(QKeySequence(Qt::Key_Return), m_grid, nullptr, nullptr, Qt::WidgetShortcut);
-    connect(enter, &QShortcut::activated, this, [this] {
-        if (selected() >= 0) recall(selected());
-    });
-    auto *del = new QShortcut(QKeySequence::Delete, m_grid, nullptr, nullptr, Qt::WidgetShortcut);
+    auto *enter = new QShortcut(QKeySequence(Qt::Key_Return), m_list, nullptr, nullptr, Qt::WidgetShortcut);
+    connect(enter, &QShortcut::activated, this, [this] { recall(selected()); });
+    auto *del = new QShortcut(QKeySequence::Delete, m_list, nullptr, nullptr, Qt::WidgetShortcut);
     connect(del, &QShortcut::activated, this, [this] { removeMemory(selected()); });
-    auto *bs = new QShortcut(QKeySequence(Qt::Key_Backspace), m_grid, nullptr, nullptr, Qt::WidgetShortcut);
+    auto *bs = new QShortcut(QKeySequence(Qt::Key_Backspace), m_list, nullptr, nullptr, Qt::WidgetShortcut);
     connect(bs, &QShortcut::activated, this, [this] { removeMemory(selected()); });
-    connect(m_grid, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
-        QListWidgetItem *it = m_grid->itemAt(pos);
-        const int i = it ? it->data(Qt::UserRole).toInt() : kPlus;
+    connect(m_list, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QTreeWidgetItem *it = m_list->itemAt(pos);
+        const int i = it ? m_list->indexOfTopLevelItem(it) : -1;
         QMenu menu;
-        if (i == kPlus) {
-            menu.addAction(QStringLiteral("Store Current State"), this, &MemoryPanel::store);
-        } else {
+        menu.addAction(QStringLiteral("Store Current State"), this, &MemoryPanel::store);
+        if (i >= 0) {
+            menu.addSeparator();
             menu.addAction(QStringLiteral("Recall"), this, [this, i] { recall(i); });
             menu.addAction(QStringLiteral("Update with Current State"), this, [this, i] { updateMemory(i); });
             menu.addAction(QStringLiteral("Rename"), this, [this] {
@@ -345,11 +297,10 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
             menu.addSeparator();
             menu.addAction(QStringLiteral("Delete"), this, [this, i] { removeMemory(i); });
         }
-        menu.exec(m_grid->viewport()->mapToGlobal(pos));
+        menu.exec(m_list->viewport()->mapToGlobal(pos));
     });
-    connect(m_go, &QPushButton::clicked, this, [this] {
-        if (selected() >= 0) recall(selected());
-    });
+    connect(m_store, &QPushButton::clicked, this, &MemoryPanel::store);
+    connect(m_go, &QPushButton::clicked, this, [this] { recall(selected()); });
     connect(m_update, &QPushButton::clicked, this, [this] { updateMemory(selected()); });
     connect(m_delete, &QPushButton::clicked, this, [this] { removeMemory(selected()); });
     connect(m_name, &QLineEdit::editingFinished, this, [this] {
@@ -366,20 +317,20 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
         if (i < 0 || m_filling) return;
         Engine::Memory m = m_engine->memory(i);
         m.fade = v;
+        m_applying = true;
         m_engine->setMemory(i, m);
+        m_applying = false;
+        if (QTreeWidgetItem *it = m_list->topLevelItem(i)) it->setText(2, QStringLiteral("%1 s").arg(v, 0, 'f', 1));
         emit edited();
     });
     connect(m_layers, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *it, int col) {
+        if (m_filling || col != 0 || !it->data(0, IdRole).isValid()) return;
+        setInclusion(selected(), it->data(0, IdRole).toULongLong(), it->checkState(0) == Qt::Checked);
+    });
+    connect(m_layers, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *it) {
         if (m_filling) return;
-        if (col == 0 && it->data(0, IdRole).isValid()) { // a layer left in or out of the memory
-            setInclusion(selected(), it->data(0, IdRole).toULongLong(), it->checkState(0) == Qt::Checked);
-            return;
-        }
-        if (col != 2) return;
-        const QVariant fi = it->data(2, FieldRole);
-        if (!fi.isValid()) return;
-        const MemField &f = m_fields[size_t(fi.toInt())];
-        if (f.kind == MemField::Bool) applyField(f, it->checkState(2) == Qt::Checked);
+        m_selectedKey = it ? it->data(0, KeyRole).toString() : QString();
+        showDetail(it);
     });
     // Unfolded nodes are kept from one refresh to the next
     auto remember = [this](QTreeWidgetItem *it, bool on) {
@@ -400,30 +351,35 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
 
 int MemoryPanel::selected() const
 {
-    QListWidgetItem *it = m_grid->currentItem();
-    const int i = it ? it->data(Qt::UserRole).toInt() : kPlus;
-    return i == kPlus ? -1 : i;
+    QTreeWidgetItem *it = m_list->currentItem();
+    return it ? m_list->indexOfTopLevelItem(it) : -1;
 }
 
 void MemoryPanel::refresh()
 {
-    if (m_applying) return; // our own edit: the inspector is rebuilt on its own
+    if (m_applying) return; // our own edit: the panel already shows it
     const int keep = selected();
     m_filling = true;
-    m_grid->clear();
+    m_list->clear();
     const int n = m_engine->memoryCount();
     if (m_active >= n) m_active = -1;
     for (int i = 0; i < n; ++i) {
         const Engine::Memory m = m_engine->memory(i);
-        auto *it = new QListWidgetItem(QIcon(tile(m.thumbnail, i == m_active)),
-                                       QStringLiteral("%1  %2").arg(i + 1).arg(m.name), m_grid);
-        it->setData(Qt::UserRole, i);
-        it->setToolTip(QStringLiteral("%1 — fade %2 s\nDouble-click or Enter to recall").arg(m.name).arg(m.fade));
+        auto *it = new QTreeWidgetItem(m_list, {QString::number(i + 1), m.name, QStringLiteral("%1 s").arg(m.fade, 0, 'f', 1)});
+        it->setData(0, MemoryRole, m.id);
+        it->setTextAlignment(0, Qt::AlignRight | Qt::AlignVCenter);
+        it->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
+        if (i == m_active) { // last recalled
+            QFont f = it->font(1);
+            f.setBold(true);
+            for (int c = 0; c < 3; ++c) {
+                it->setFont(c, f);
+                it->setForeground(c, theme::accent());
+            }
+        }
     }
-    auto *plus = new QListWidgetItem(plusIcon(), QStringLiteral("Store"), m_grid);
-    plus->setData(Qt::UserRole, kPlus);
-    plus->setToolTip(QStringLiteral("Store the current state of the layers in a new memory"));
-    m_grid->setCurrentRow(keep >= 0 && keep < n ? keep : -1);
+    if (keep >= 0 && keep < n) m_list->setCurrentItem(m_list->topLevelItem(keep));
     m_filling = false;
     showInspector(selected());
 }
@@ -440,29 +396,24 @@ void MemoryPanel::showInspector(int i)
         m_thumb->clear();
         m_name->clear();
         m_filling = false;
+        showDetail(nullptr);
         return;
     }
     const Engine::Memory m = m_engine->memory(i);
     m_title->setText(QStringLiteral("<b>Memory %1</b>%2").arg(i + 1).arg(i == m_active ? QStringLiteral(" — active") : QString()));
-    m_thumb->setPixmap(tile(m.thumbnail, false));
+    m_thumb->setPixmap(thumbnail(m.thumbnail));
     m_name->setText(m.name);
     m_fade->setValue(m.fade);
+    QTreeWidgetItem *current = nullptr;
     for (int row = 0; row < m.layers.size(); ++row) {
         const QJsonObject o = m.layers[row].toObject();
-        const QJsonObject src = o.value("source").toObject();
-        const bool group = o.value("group").toBool();
-        const QString source = group ? QStringLiteral("group")
-                               : src.value("type").toString() == "none" ? QStringLiteral("—")
-                                                                         : QFileInfo(src.value("path").toString()).fileName();
         auto *it = new QTreeWidgetItem(m_layers, {(o.contains("parent") ? QStringLiteral("    ") : QString()) + o.value("name").toString(),
-                                                  o.value("visible").toBool(true) ? QStringLiteral("✓") : QStringLiteral("—"),
-                                                  QStringLiteral("%1%").arg(std::lround(o.value("opacity").toDouble(1) * 100)),
-                                                  QString(), source});
+                                                  (o.value("visible").toBool(true) ? QStringLiteral("✓ ") : QStringLiteral("— ")) +
+                                                      QStringLiteral("%1%").arg(std::lround(o.value("opacity").toDouble(1) * 100))});
         it->setData(0, IdRole, o.value("id").toString().toULongLong());
         it->setData(0, KeyRole, QStringLiteral("L") + o.value("id").toString());
-        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
         it->setCheckState(0, o.value("included").toBool(true) ? Qt::Checked : Qt::Unchecked);
-        it->setToolTip(ColSource, src.value("path").toString());
         if (m_engine->indexOfId(it->data(0, IdRole).toULongLong()) < 0) {
             it->setForeground(0, QColor(255, 180, 90));
             it->setToolTip(0, QStringLiteral("Not in the composition any more: recreated by the recall"));
@@ -470,39 +421,220 @@ void MemoryPanel::showInspector(int i)
         fillLayer(it, row, o);
         it->setExpanded(m_expanded.contains(it->data(0, KeyRole).toString()));
     }
+    // The value selected before the refresh, if it is still there
+    if (!m_selectedKey.isEmpty()) {
+        std::function<QTreeWidgetItem *(QTreeWidgetItem *)> find = [&](QTreeWidgetItem *p) -> QTreeWidgetItem * {
+            for (int k = 0; k < p->childCount(); ++k) {
+                QTreeWidgetItem *c = p->child(k);
+                if (c->data(0, KeyRole).toString() == m_selectedKey) return c;
+                if (QTreeWidgetItem *d = find(c)) return d;
+            }
+            return nullptr;
+        };
+        current = find(m_layers->invisibleRootItem());
+        if (current) m_layers->setCurrentItem(current);
+    }
     m_filling = false;
+    showDetail(current);
 }
 
-QTreeWidgetItem *MemoryPanel::addField(QTreeWidgetItem *parent, const QString &label, const MemField &f,
-                                       const QJsonValue &value)
+QTreeWidgetItem *MemoryPanel::addField(QTreeWidgetItem *parent, const MemField &f, const QJsonValue &value)
 {
-    auto *it = new QTreeWidgetItem(parent, {label});
-    it->setForeground(0, QColor(165, 165, 172));
-    it->setData(2, FieldRole, int(m_fields.size()));
-    it->setData(2, ValueRole, value.toVariant());
+    auto *it = new QTreeWidgetItem(parent, {f.label, valueText(f, value)});
+    it->setForeground(ColName, QColor(165, 165, 172));
+    it->setData(0, FieldRole, int(m_fields.size()));
+    it->setData(0, KeyRole, QStringLiteral("%1/%2").arg(f.row).arg(f.path.join('/')));
+    it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    if (f.kind == MemField::Info) it->setForeground(ColValue, QColor(140, 140, 146));
     m_fields.push_back(f);
-    switch (f.kind) {
-    case MemField::Bool:
-        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
-        it->setCheckState(2, value.toBool() ? Qt::Checked : Qt::Unchecked);
-        break;
-    case MemField::Number:
-        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
-        it->setText(2, QString::number(value.toDouble() * f.scale, 'f', f.decimals) + f.suffix);
-        break;
-    case MemField::Choice: {
-        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
-        const int k = f.keys.indexOf(value.toString());
-        it->setText(2, k >= 0 ? f.labels.value(k) : value.toString());
-        break;
-    }
-    default:
-        it->setFlags(Qt::ItemIsEnabled);
-        it->setText(2, value.toString());
-        it->setForeground(2, QColor(140, 140, 146));
-        break;
+    if (!f.timeKey.isEmpty()) {
+        const Engine::Memory m = m_engine->memory(selected());
+        const QJsonValue t = m.layers.at(f.row).toObject().value("timing").toObject().value(f.timeKey);
+        it->setText(ColTime, timeText(t));
+        it->setForeground(ColTime, t.isDouble() ? QColor(230, 230, 233) : QColor(130, 130, 136));
     }
     return it;
+}
+
+// Values and times shown in the tree, after an edit of the selected memory (the tree is not rebuilt)
+void MemoryPanel::refreshRows()
+{
+    const int i = selected();
+    if (i < 0) return;
+    const Engine::Memory m = m_engine->memory(i);
+    std::function<void(QTreeWidgetItem *)> walk = [&](QTreeWidgetItem *p) {
+        for (int k = 0; k < p->childCount(); ++k) {
+            QTreeWidgetItem *c = p->child(k);
+            const QVariant fi = c->data(0, FieldRole);
+            if (fi.isValid()) {
+                const MemField &f = m_fields[size_t(fi.toInt())];
+                const QJsonObject o = m.layers.at(f.row).toObject();
+                c->setText(ColValue, f.kind == MemField::Info ? c->text(ColValue) : valueText(f, jsonAt(o, f.path)));
+                if (!f.timeKey.isEmpty()) {
+                    const QJsonValue t = o.value("timing").toObject().value(f.timeKey);
+                    c->setText(ColTime, timeText(t));
+                    c->setForeground(ColTime, t.isDouble() ? QColor(230, 230, 233) : QColor(130, 130, 136));
+                }
+            }
+            walk(c);
+        }
+    };
+    walk(m_layers->invisibleRootItem());
+}
+
+// The selected value: what the memory holds (editable), and how it gets there at the recall
+void MemoryPanel::showDetail(QTreeWidgetItem *it)
+{
+    while (QLayoutItem *item = m_detailLayout->takeAt(0)) {
+        if (QWidget *w = item->widget()) w->deleteLater();
+        else if (QLayout *l = item->layout()) {
+            while (QLayoutItem *x = l->takeAt(0)) {
+                if (x->widget()) x->widget()->deleteLater();
+                delete x;
+            }
+        }
+        delete item;
+    }
+    auto hint = [this](const QString &t) {
+        auto *l = new QLabel(t);
+        l->setWordWrap(true);
+        l->setStyleSheet("color:#888; font-size:11px;");
+        m_detailLayout->addWidget(l);
+    };
+    const int mi = selected();
+    const QVariant fi = it ? it->data(0, FieldRole) : QVariant();
+    if (mi < 0 || !fi.isValid()) {
+        if (it && it->data(0, IdRole).isValid()) {
+            auto *title = new QLabel(QStringLiteral("<b>%1</b>").arg(it->text(0).trimmed().toHtmlEscaped()));
+            m_detailLayout->addWidget(title);
+            hint(it->checkState(0) == Qt::Checked
+                     ? QStringLiteral("In the memory: the recall takes this layer to the values below.")
+                     : QStringLiteral("Left out: the recall leaves this layer as it is."));
+        } else {
+            hint(QStringLiteral("Click a value in the memory to see it, change it, and choose how it gets there when the "
+                                "memory is recalled: CUT (at once), FOLLOW (the memory's fade) or a time of its own."));
+        }
+        m_detailLayout->addStretch();
+        return;
+    }
+    const MemField f = m_fields[size_t(fi.toInt())];
+    const Engine::Memory m = m_engine->memory(mi);
+    const QJsonObject o = m.layers.at(f.row).toObject();
+    const QJsonValue value = jsonAt(o, f.path);
+
+    // Where it is: layer › section › value
+    QStringList where{f.label};
+    for (QTreeWidgetItem *p = it->parent(); p; p = p->parent()) where.prepend(p->text(0).trimmed());
+    auto *title = new QLabel(QStringLiteral("<b>%1</b>").arg(where.join(QStringLiteral(" › ")).toHtmlEscaped()));
+    title->setWordWrap(true);
+    m_detailLayout->addWidget(title);
+
+    // The value
+    switch (f.kind) {
+    case MemField::Number: {
+        const bool bounded = f.max - f.min < 1e5;
+        if (bounded) {
+            auto *s = new SliderField;
+            s->setRange(f.min * f.scale, f.max * f.scale);
+            s->setDecimals(f.decimals);
+            s->setSuffix(f.suffix);
+            s->setSingleStep(f.step * f.scale);
+            s->setValue(value.toDouble() * f.scale);
+            m_detailLayout->addWidget(s);
+            connect(s, &SliderField::editingFinished, this,
+                    [this, f](double v) { applyField(f, QJsonValue(v / (f.scale != 0 ? f.scale : 1))); });
+        } else {
+            auto *b = new QDoubleSpinBox;
+            b->setRange(f.min * f.scale, f.max * f.scale);
+            b->setDecimals(f.decimals);
+            b->setSingleStep(f.step * f.scale);
+            b->setSuffix(f.suffix);
+            b->setKeyboardTracking(false);
+            b->setValue(value.toDouble() * f.scale);
+            m_detailLayout->addWidget(b);
+            connect(b, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                    [this, f](double v) { applyField(f, QJsonValue(v / (f.scale != 0 ? f.scale : 1))); });
+        }
+        break;
+    }
+    case MemField::Bool: {
+        auto *c = new QCheckBox(f.label);
+        c->setChecked(value.toBool());
+        m_detailLayout->addWidget(c);
+        connect(c, &QCheckBox::toggled, this, [this, f](bool on) { applyField(f, QJsonValue(on)); });
+        break;
+    }
+    case MemField::Choice: {
+        auto *c = new QComboBox;
+        for (int k = 0; k < f.keys.size(); ++k) c->addItem(f.labels.value(k, f.keys[k]), f.keys[k]);
+        c->setCurrentIndex(std::max(0, c->findData(value.toString())));
+        m_detailLayout->addWidget(c);
+        connect(c, qOverload<int>(&QComboBox::activated), this,
+                [this, f, c](int k) { applyField(f, QJsonValue(c->itemData(k).toString())); });
+        break;
+    }
+    default: {
+        auto *l = new QLabel(it->text(ColValue));
+        l->setWordWrap(true);
+        l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        l->setToolTip(it->toolTip(ColValue));
+        m_detailLayout->addWidget(l);
+        break;
+    }
+    }
+    hint(QStringLiteral("The memory changes, the composition does not, until the memory is recalled."));
+
+    // How it gets there
+    if (!f.timeKey.isEmpty()) {
+        const QJsonValue t = o.value("timing").toObject().value(f.timeKey);
+        auto *box = new QWidget;
+        auto *bv = new QVBoxLayout(box);
+        bv->setContentsMargins(0, 10, 0, 0);
+        bv->addWidget(new QLabel(f.timeKey == "source" ? QStringLiteral("<b>Transition of the source</b>")
+                                                        : QStringLiteral("<b>Transition</b>")));
+        auto *row = new QHBoxLayout;
+        auto *group = new QButtonGroup(box);
+        const char *names[] = {"CUT", "FOLLOW", "TIME"};
+        const int mode = !t.isDouble() ? 1 : t.toDouble() <= 0 ? 0 : 2;
+        for (int k = 0; k < 3; ++k) {
+            auto *b = new QPushButton(QString::fromLatin1(names[k]));
+            b->setCheckable(true);
+            b->setChecked(k == mode);
+            b->setStyleSheet(QStringLiteral("QPushButton:checked { background:%1; color:%2; font-weight:bold; }")
+                                 .arg(theme::css(), theme::onAccent().name()));
+            group->addButton(b, k);
+            row->addWidget(b);
+        }
+        auto *secs = new QDoubleSpinBox;
+        secs->setRange(0.1, 600);
+        secs->setDecimals(1);
+        secs->setSingleStep(0.5);
+        secs->setSuffix(QStringLiteral(" s"));
+        secs->setKeyboardTracking(false);
+        secs->setValue(mode == 2 ? t.toDouble() : std::max(0.1, m.fade > 0 ? m.fade : 1.0));
+        secs->setEnabled(mode == 2);
+        row->addWidget(secs);
+        bv->addLayout(row);
+        auto *note = new QLabel(QStringLiteral("CUT: at once · FOLLOW: the memory's fade (%1 s) · TIME: this value "
+                                               "only, in its own time%2")
+                                    .arg(m.fade, 0, 'f', 1)
+                                    .arg(f.timeKey == "roi" || f.timeKey == "mapping" || f.timeKey.startsWith("color/")
+                                             ? QStringLiteral(" (shared by the whole %1)").arg(f.timeKey.section('/', -1))
+                                             : QString()));
+        note->setWordWrap(true);
+        note->setStyleSheet("color:#888; font-size:11px;");
+        bv->addWidget(note);
+        m_detailLayout->addWidget(box);
+        const int row0 = f.row;
+        const QString key = f.timeKey;
+        connect(group, &QButtonGroup::idClicked, this, [this, row0, key, secs](int id) {
+            secs->setEnabled(id == 2);
+            applyTime(row0, key, id == 0 ? 0.0 : id == 1 ? -1.0 : secs->value());
+        });
+        connect(secs, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [this, row0, key](double v) { applyTime(row0, key, v); });
+    }
+    m_detailLayout->addStretch();
 }
 
 // Everything the memory stores for this layer, as editable rows grouped in sections.
@@ -526,7 +658,6 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         return it;
     };
     auto expand = [&](QTreeWidgetItem *it) { it->setExpanded(m_expanded.contains(it->data(0, KeyRole).toString())); };
-    std::function<void(QTreeWidgetItem *, const QString &)> timeCell;
     auto num = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path, double lo, double hi, double scale,
                    int decimals, const QString &suffix, double step) {
         MemField f;
@@ -539,32 +670,17 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         f.decimals = decimals;
         f.suffix = suffix;
         f.step = step;
-        QTreeWidgetItem *it = addField(p, label, f, jsonAt(o, path));
-        timeCell(it, Engine::timingKey(path)); // a value that fades: its time can be chosen
-        return it;
+        f.label = label;
+        f.timeKey = Engine::timingKey(path); // a value that fades: its time can be chosen
+        return addField(p, f, jsonAt(o, path));
     };
-    auto timeCellImpl = [&](QTreeWidgetItem *it, const QString &key) {
-        if (!key.isEmpty()) {
-            it->setFlags(it->flags() | Qt::ItemIsSelectable | Qt::ItemIsEditable);
-            const QJsonValue t = o.value("timing").toObject().value(key);
-            it->setData(ColTime, TimeKeyRole, key);
-            if (t.isDouble()) it->setData(ColTime, TimeRole, t.toDouble());
-            it->setText(ColTime, timeText(t));
-            it->setForeground(ColTime, t.isDouble() ? QColor(230, 230, 233) : QColor(130, 130, 136));
-            it->setToolTip(ColTime, QStringLiteral("Double-click: Transition (the memory's fade), 0 for a cut, or a time "
-                                                   "of its own%1")
-                                        .arg(key.contains('/') || key == "roi" || key == "mapping"
-                                                 ? QStringLiteral(" — shared by every value of %1").arg(key)
-                                                 : QString()));
-        }
-    };
-    timeCell = timeCellImpl;
     auto flag = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path) {
         MemField f;
         f.kind = MemField::Bool;
         f.row = row;
         f.path = path;
-        return addField(p, label, f, jsonAt(o, path));
+        f.label = label;
+        return addField(p, f, jsonAt(o, path));
     };
     auto choice = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path, const QStringList &keys,
                       const QStringList &labels) {
@@ -574,13 +690,15 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         f.path = path;
         f.keys = keys;
         f.labels = labels;
-        return addField(p, label, f, jsonAt(o, path));
+        f.label = label;
+        return addField(p, f, jsonAt(o, path));
     };
     auto info = [&](QTreeWidgetItem *p, const QString &label, const QString &text, const QString &tip = QString()) {
         MemField f; // Info: shown, not editable
         f.row = row;
-        auto *it = addField(p, label, f, QJsonValue(text));
-        if (!tip.isEmpty()) it->setToolTip(2, tip);
+        f.label = label;
+        auto *it = addField(p, f, QJsonValue(text));
+        if (!tip.isEmpty()) it->setToolTip(1, tip);
         return it;
     };
 
@@ -647,9 +765,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
                         QFileInfo(src.value("path").toString()).fileName(), src.value("path").toString());
         }
         // Another source than the layer's at the recall: its transition, over this time
-        timeCell(what, QStringLiteral("source"));
-        what->setToolTip(ColTime, QStringLiteral("When this memory gives the layer another source: how long the "
-                                                 "transition takes (Transition: the memory's fade, 0: a cut)"));
+        m_fields[size_t(what->data(0, FieldRole).toInt())].timeKey = QStringLiteral("source");
         const QString tr = src.value("transition").toString();
         info(sec, QStringLiteral("Transition"),
              tr.isEmpty() ? QStringLiteral("Default") : QFileInfo(tr).completeBaseName(), tr);
@@ -658,7 +774,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
                    {QStringLiteral("One-shot"), QStringLiteral("Loop"), QStringLiteral("Ping-pong"), QStringLiteral("Stop")});
             num(sec, QStringLiteral("In"), {"source", "in"}, 0, 1e6, 1, 2, QStringLiteral(" s"), 0.1);
             num(sec, QStringLiteral("Out"), {"source", "out"}, -1, 1e6, 1, 2, QStringLiteral(" s"), 0.1)
-                ->setToolTip(2, QStringLiteral("−1: end of the media"));
+                ->setToolTip(1, QStringLiteral("−1: end of the media"));
             num(sec, QStringLiteral("Speed"), {"source", "speed"}, -8, 8, 1, 2, QStringLiteral(" ×"), 0.05);
             flag(sec, QStringLiteral("Playing"), {"source", "playing"});
         }
@@ -753,11 +869,10 @@ void MemoryPanel::applyField(const MemField &f, const QJsonValue &value)
     m_engine->setMemory(i, m);
     m_applying = false;
     emit edited();
-    // Rebuilt once the edit is over (an editor or a check box is still live at this point)
-    QMetaObject::invokeMethod(this, [this] { showInspector(selected()); }, Qt::QueuedConnection);
+    refreshRows();
 }
 
-// The time of a stored value, in the selected memory (< 0: back to the memory's fade)
+// The time of a stored value, in the selected memory (< 0: FOLLOW, the memory's fade; 0: CUT)
 void MemoryPanel::applyTime(int row, const QString &key, double seconds)
 {
     const int i = selected();
@@ -775,7 +890,7 @@ void MemoryPanel::applyTime(int row, const QString &key, double seconds)
     m_engine->setMemory(i, m);
     m_applying = false;
     emit edited();
-    QMetaObject::invokeMethod(this, [this] { showInspector(selected()); }, Qt::QueuedConnection);
+    refreshRows();
 }
 
 void MemoryPanel::store()
@@ -785,7 +900,7 @@ void MemoryPanel::store()
     m.layers = m_engine->captureLayers();
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     const int i = m_engine->addMemory(m);
-    m_grid->setCurrentRow(i);
+    m_list->setCurrentItem(m_list->topLevelItem(i));
     emit edited();
 }
 
@@ -842,6 +957,8 @@ void MemoryPanel::setInclusion(int i, quint64 id, bool included)
         o["included"] = included;
         m.layers[k] = o;
     }
+    m_applying = true;
     m_engine->setMemory(i, m);
+    m_applying = false;
     emit edited();
 }

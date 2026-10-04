@@ -79,18 +79,20 @@ format and how many layers use it. Missing files are shown in red and **Replace�
 once. An **ISF › Generators** category lists the library's generators, filed by ISF category. Drag an item onto a
 layer to load it, or right-click it and pick the layer from **Load into Layer**.
 
-**Memories** (the scenes / cues of MadMapper). A grid of thumbnails storing the state of the layers; a click
-shows the content in the inspector, double-click or GO recalls it. Each layer of a memory **unfolds** — source,
-ROI, color, mapping, effects and ISF parameters — and **every stored value can be edited there**, without moving
-the composition. Numbers fade to the memory's values in its fade time, unless the **Time** column gives one of
-them its own: *Transition* (the memory's fade), *Cut*, or a number of seconds — one time for the whole ROI, the
-whole mapping, each color control and each ISF parameter. When a memory gives a layer **another source**, the
-outgoing one keeps playing, invisible, and an **ISF transition** takes it to the new one over the source's time
-(the memory's fade, a cut, or its own), before the layer's mapping; the sound crosses too. The transition is
-chosen per layer (Source tab), or by default in **Settings** (Crossfade); Crossfade, Dissolve, Fade Out In, Iris
-and Wipe are bundled, and any ISF transition (`startImage`, `endImage`, `progress`) of the library works. Effect
-chains switch at once;
-a layer deleted since is recreated; unchecked and locked layers are left alone.
+**Memories** (the scenes / cues of MadMapper). A list — number, name, fade — of states of the layers: **+**
+stores the current one, double-click, Enter or GO recalls, and a memory is dragged from there onto a step of a
+sequence. Next to it, what the selected memory holds: its picture, name and fade, and its layers, each unfolding
+into its values — source, ROI, color, mapping, effects and ISF parameters. Click a value: on the right, it can be
+changed (the memory changes, the composition does not) and given how it gets there at the recall: **CUT** (at
+once), **FOLLOW** (the memory's fade) or **a time of its own** — one time for the whole ROI, the whole mapping,
+each color control and each ISF parameter. When a memory gives a layer **another source**, the outgoing one keeps
+playing, invisible, and an **ISF transition** takes it to the new one over the source's time (the memory's fade, a
+cut, or its own), before the layer's mapping; the sound crosses too, and the ROI, mapping and color move from the
+outgoing one's. The transition is chosen per layer (Source tab), or by default in **Settings** (Crossfade);
+Crossfade, Dissolve, Fade Out In, Iris and Wipe are bundled, and any ISF transition (`startImage`, `endImage`,
+`progress`) of the library works. Effect chains switch at once; a layer deleted since is recreated; a layer the
+memory does not know (created since) fades out and is hidden, so the picture is the one that was stored;
+unchecked and locked layers are left alone.
 
 **Look.** The accent — the selected layer, the bars, the controls that are on, the links — is a very light grey
 by default and is changed in **Settings ▸ Interface ▸ Accent color**; the whole interface follows at once.
