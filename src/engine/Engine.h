@@ -368,6 +368,7 @@ private:
     void renderGroup(Layer &g, const std::vector<Layer *> &members, const IsfRenderContext &rc);
     // `view`: the part of the composition the target shows (normalized, origin top left)
     // The target is cleared to `clear` first (through a multisampled buffer when antialiasing is on)
+    void setSoftEdge(const SoftEdge &se, GLint widthLoc, GLint powerLoc);
     void compositeLayers(const RenderTarget &target, const std::vector<Layer *> &topToBottom,
                          const QRectF &view = QRectF(0, 0, 1, 1), QColor clear = QColor(0, 0, 0, 0),
                          quint64 viewport = 0); // viewport: the one drawn for (its share of each layer's opacity)
@@ -435,6 +436,7 @@ private:
     GLuint m_meshVao = 0, m_meshVbo = 0, m_meshIbo = 0;
     GLsizei m_meshIndexCount = 0;
     GLuint m_diffProgram = 0, m_blitProgram = 0, m_compProgram = 0, m_presentProgram = 0, m_prepProgram = 0;
+    GLint m_compSoftLoc = -1, m_compSoftPowLoc = -1, m_diffSoftLoc = -1, m_diffSoftPowLoc = -1;
     GLint m_diffTexLoc = -1, m_diffDstLoc = -1, m_diffOpacityLoc = -1, m_diffViewLoc = -1;
     RenderTarget m_dstCopy; // what is drawn so far, for Difference
     GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_compViewLoc = -1, m_presentTexLoc = -1;

@@ -13,6 +13,20 @@ struct Homography {
     QPointF map(double u, double v) const;
 };
 
+// Soft edge (like MadMapper's): the picture fades to transparent towards each side, to blend overlapping
+// projections. Widths are fractions of the layer's own width (left, right) or height (top, bottom);
+// power bends the fade (1 linear; above 1 darker towards the edge, below 1 lighter).
+struct SoftEdge {
+    enum Side { Left, Right, Top, Bottom };
+    bool enabled = false;
+    double width[4] = {0.1, 0.1, 0.1, 0.1}; // 0 to 0.5
+    double power[4] = {1, 1, 1, 1};         // 0.1 to 8
+    bool active() const { return enabled && (width[0] > 0 || width[1] > 0 || width[2] > 0 || width[3] > 0); }
+    QJsonObject toJson() const;
+    void fromJson(const QJsonObject &o);
+    bool operator==(const SoftEdge &o) const;
+};
+
 class Mapping
 {
 public:
@@ -23,6 +37,7 @@ public:
     std::vector<QPointF> offsets;                         // cols * rows
     bool meshMode = false;                                 // editing mode in the UI
     unsigned revision = 1;                                 // incremented on every change
+    SoftEdge soft;                                         // fades the picture towards its sides
 
     void resetMesh(int c, int r);
     void resetCorners();

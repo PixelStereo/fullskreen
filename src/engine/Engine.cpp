@@ -144,7 +144,14 @@ bool Engine::initialize(QString *err)
         "uniform vec4 u_view;\n" // scale, offset: the part of the composition the target shows
         "void main(){ v_uv = a_uv; gl_Position = vec4(a_pos*u_view.xy+u_view.zw,0.0,1.0); }\n",
         "#version 330 core\nuniform sampler2D u_tex; uniform float u_opacity; in vec2 v_uv; out vec4 o;\n"
-        "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity; o = vec4(c.rgb*a, a); }\n",
+        "uniform vec4 u_soft; uniform vec4 u_softPow;\n" // widths and powers: left, right, top, bottom (the picture's top is at v = 1)
+        "float softEdge(vec2 uv){ float e = 1.0;\n"
+        "  if (u_soft.x > 0.0) e *= pow(clamp(uv.x/u_soft.x, 0.0, 1.0), u_softPow.x);\n"
+        "  if (u_soft.y > 0.0) e *= pow(clamp((1.0-uv.x)/u_soft.y, 0.0, 1.0), u_softPow.y);\n"
+        "  if (u_soft.z > 0.0) e *= pow(clamp((1.0-uv.y)/u_soft.z, 0.0, 1.0), u_softPow.z);\n"
+        "  if (u_soft.w > 0.0) e *= pow(clamp(uv.y/u_soft.w, 0.0, 1.0), u_softPow.w);\n"
+        "  return e; }\n"
+        "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity*softEdge(v_uv); o = vec4(c.rgb*a, a); }\n",
         &log);
     // Difference needs what is already drawn, which blending cannot give: the layer reads a copy of it
     m_diffProgram = compileProgram(
@@ -152,7 +159,14 @@ bool Engine::initialize(QString *err)
         "uniform vec4 u_view;\n"
         "void main(){ v_uv = a_uv; gl_Position = vec4(a_pos*u_view.xy+u_view.zw,0.0,1.0); }\n",
         "#version 330 core\nuniform sampler2D u_tex; uniform sampler2D u_dst; uniform float u_opacity; in vec2 v_uv; out vec4 o;\n"
-        "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity;\n"
+        "uniform vec4 u_soft; uniform vec4 u_softPow;\n"
+        "float softEdge(vec2 uv){ float e = 1.0;\n"
+        "  if (u_soft.x > 0.0) e *= pow(clamp(uv.x/u_soft.x, 0.0, 1.0), u_softPow.x);\n"
+        "  if (u_soft.y > 0.0) e *= pow(clamp((1.0-uv.x)/u_soft.y, 0.0, 1.0), u_softPow.y);\n"
+        "  if (u_soft.z > 0.0) e *= pow(clamp((1.0-uv.y)/u_soft.z, 0.0, 1.0), u_softPow.z);\n"
+        "  if (u_soft.w > 0.0) e *= pow(clamp(uv.y/u_soft.w, 0.0, 1.0), u_softPow.w);\n"
+        "  return e; }\n"
+        "void main(){ vec4 c = texture(u_tex, v_uv); float a = c.a*u_opacity*softEdge(v_uv);\n"
         "  vec4 d = texelFetch(u_dst, ivec2(gl_FragCoord.xy), 0);\n"
         "  o = vec4(abs(d.rgb - c.rgb*a), d.a + a*(1.0-d.a)); }\n",
         &log);
@@ -215,6 +229,10 @@ bool Engine::initialize(QString *err)
     m_prepMaskModeLoc = f->glGetUniformLocation(m_prepProgram, "u_maskMode");
     m_compTexLoc = f->glGetUniformLocation(m_compProgram, "u_tex");
     m_compOpacityLoc = f->glGetUniformLocation(m_compProgram, "u_opacity");
+    m_compSoftLoc = f->glGetUniformLocation(m_compProgram, "u_soft");
+    m_compSoftPowLoc = f->glGetUniformLocation(m_compProgram, "u_softPow");
+    m_diffSoftLoc = f->glGetUniformLocation(m_diffProgram, "u_soft");
+    m_diffSoftPowLoc = f->glGetUniformLocation(m_diffProgram, "u_softPow");
     m_diffTexLoc = f->glGetUniformLocation(m_diffProgram, "u_tex");
     m_diffDstLoc = f->glGetUniformLocation(m_diffProgram, "u_dst");
     m_diffOpacityLoc = f->glGetUniformLocation(m_diffProgram, "u_opacity");
