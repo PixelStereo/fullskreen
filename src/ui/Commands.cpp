@@ -330,12 +330,20 @@ void SetEffects::redo()
     m_e->setEffectsJson(m_index, m_after);
 }
 
-SetShownIn::SetShownIn(Engine *e, quint64 layer, quint64 viewport, bool shown, const QString &text)
-    : m_e(e), m_layer(layer), m_viewport(viewport), m_shown(shown)
+SetOpacityIn::SetOpacityIn(Engine *e, quint64 layer, quint64 viewport, float before, float after, const QString &text)
+    : m_e(e), m_layer(layer), m_viewport(viewport), m_before(before), m_after(after)
 {
     setText(text);
 }
 
-void SetShownIn::apply(bool shown) { m_e->setShownIn(m_e->indexOfId(m_layer), m_viewport, shown); }
+bool SetOpacityIn::mergeWith(const QUndoCommand *o)
+{
+    auto *c = dynamic_cast<const SetOpacityIn *>(o);
+    if (!c || c->m_layer != m_layer || c->m_viewport != m_viewport) return false;
+    m_after = c->m_after;
+    return true;
+}
+
+void SetOpacityIn::apply(float v) { m_e->setOpacityIn(m_e->indexOfId(m_layer), m_viewport, v); }
 
 } // namespace cmd

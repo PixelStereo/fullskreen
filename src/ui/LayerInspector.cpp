@@ -48,7 +48,7 @@ struct LayerSnapshot {
     struct Route {
         quint64 id;
         QString name;
-        bool shown;
+        float opacity; // how much of it the viewport shows
     };
     std::vector<Route> routes;
     QString routedBy; // the top group of an item inside a group
@@ -162,7 +162,7 @@ struct LayerSnapshot {
             }
             if (top != l) s.routedBy = top->name;
             for (int v : e->viewports())
-                if (const Layer *vp = e->layer(v)) s.routes.push_back({vp->id, vp->name, top->shownIn(vp->id)});
+                if (const Layer *vp = e->layer(v)) s.routes.push_back({vp->id, vp->name, top->opacityIn(vp->id)});
         }
         return s;
     }
@@ -1143,7 +1143,8 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
     if (s.isViewport) return g; // drawn onto nothing: no blend, no routing
 
     auto *blend = new QComboBox;
-    for (BlendMode m : {BlendMode::Normal, BlendMode::Add, BlendMode::Screen, BlendMode::Multiply})
+    for (BlendMode m : {BlendMode::Normal, BlendMode::Add, BlendMode::Screen, BlendMode::Multiply, BlendMode::Subtract,
+                        BlendMode::Difference})
         blend->addItem(blendModeName(m), int(m));
     blend->setCurrentIndex(blend->findData(int(s.blend)));
     form->addRow(new ResetLabel(QStringLiteral("Blend"), [blend] { blend->setCurrentIndex(0); }), blend);
@@ -1162,17 +1163,32 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
         rv->addWidget(note);
     }
     for (const auto &r : s.routes) {
-        auto *c = new QCheckBox(r.name);
-        c->setChecked(r.shown);
-        c->setEnabled(s.routedBy.isEmpty());
-        c->setToolTip(QStringLiteral("Shown in the viewport “%1”").arg(r.name));
-        rv->addWidget(c);
+        auto *row = new QWidget;
+        auto *rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        auto *name = new QLabel(r.name);
+        name->setMinimumWidth(70);
+        auto *sl = new SliderField;
+        sl->setRange(0, 100);
+        sl->setDecimals(0);
+        sl->setSuffix(QStringLiteral(" %"));
+        sl->setSingleStep(1);
+        sl->setTicks(10);
+        sl->setSnaps({0, 100});
+        sl->setValue(r.opacity * 100);
+        sl->setEnabled(s.routedBy.isEmpty());
+        sl->setToolTip(QStringLiteral("How much of it the viewport “%1” shows (0 hides it)").arg(r.name));
+        rl->addWidget(name);
+        rl->addWidget(sl, 1);
+        rv->addWidget(row);
         const quint64 vp = r.id;
-        connect(c, &QCheckBox::toggled, this, [this, vp, name = r.name](bool on) {
+        auto current = std::make_shared<float>(r.opacity);
+        connect(sl, &SliderField::valueEdited, this, [this, vp, current, vname = r.name](double v) {
             if (m_engine->isLocked(m_layer)) return;
-            m_undo->push(new cmd::SetShownIn(m_engine, m_layerId, vp, on,
-                                             (on ? QStringLiteral("Show in %1") : QStringLiteral("Hide from %1")).arg(name)));
-            emit layerChanged();
+            const float after = float(v / 100.0);
+            m_undo->push(new cmd::SetOpacityIn(m_engine, m_layerId, vp, *current, after,
+                                               QStringLiteral("Opacity in %1").arg(vname)));
+            *current = after;
         });
     }
     form->addRow(new QLabel(QStringLiteral("Viewports")), routes);

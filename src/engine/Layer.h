@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -27,7 +28,7 @@ enum class LayerTap {
 };
 QString layerTapKey(LayerTap t);
 LayerTap layerTapFromKey(const QString &k);
-enum class BlendMode { Normal, Add, Screen, Multiply };
+enum class BlendMode { Normal, Add, Screen, Multiply, Subtract, Difference };
 // What a video or a sound does at its end: freeze on the last frame, loop, play backwards and forwards,
 // or stop and go black (and silent).
 enum class PlayMode { OneShot, Loop, PingPong, Stop };
@@ -116,9 +117,9 @@ struct Layer {
     QString vpScreen;                    // screen it is shown on (empty: the main one)
     int vpMode = 0;                      // 0 hidden, 1 windowed, 2 fullscreen
     PublishSettings vpPublish;           // NDI, OMT, Syphon, Spout of this viewport
-    // Viewports this item is not drawn in (an item at the top of the list; inside a group, the group decides).
-    // Kept as exclusions: a viewport created later shows everything.
-    std::vector<quint64> hiddenIn;
+    // How much of this item each viewport shows (an item at the top of the list; inside a group, the group decides).
+    // A viewport that is not in the map shows it fully, so a viewport created later shows everything.
+    std::map<quint64, float> viewportOpacity;
     int colorModels = 1;    // models shown by the Color tab for this layer (interface state, saved)
 
     QString name;
@@ -226,9 +227,11 @@ struct Layer {
     int sourceHeight() const { return type == SourceType::Isf ? genHeight : srcHeight; }
     bool hasPicture() const { return isGroup || isViewport || (type != SourceType::Audio && !(type == SourceType::None && missingType == SourceType::Audio)); }
     QSize viewportSize() const { return QSize(std::max(1, vpWidth), std::max(1, vpHeight)); }
-    bool shownIn(quint64 viewport) const
+    float opacityIn(quint64 viewport) const
     {
-        return std::find(hiddenIn.begin(), hiddenIn.end(), viewport) == hiddenIn.end();
+        const auto it = viewportOpacity.find(viewport);
+        return it == viewportOpacity.end() ? 1.0f : it->second;
     }
+    bool shownIn(quint64 viewport) const { return opacityIn(viewport) > 0.0f; }
     static QRectF fullRoi() { return QRectF(0, 0, 1, 1); }
 };

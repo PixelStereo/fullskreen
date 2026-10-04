@@ -723,18 +723,20 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  }))
             .range = {minMax(0, 2)};
     }
-    // Which viewports a top-level item is drawn in
+    // How much of a top-level item each viewport shows (0 hides it)
     for (const auto &[vid, seg] : viewports) {
         const quint64 v = vid;
-        L.method(P + "/viewports/" + seg, "T", 3, "Shown",
-                 [v](Layer &l) { return QVariantList{l.shownIn(v)}; },
-                 L.edit([v](Layer &l, const QVariantList &a) {
-                     const bool on = truth(a.value(0));
-                     auto it = std::find(l.hiddenIn.begin(), l.hiddenIn.end(), v);
-                     if (on && it != l.hiddenIn.end()) l.hiddenIn.erase(it);
-                     else if (!on && it == l.hiddenIn.end()) l.hiddenIn.push_back(v);
-                     return true;
-                 }));
+        OscNode &vo = L.method(P + "/viewports/" + seg, "f", 3, "Opacity in this viewport",
+                               [v](Layer &l) { return QVariantList{double(l.opacityIn(v))}; },
+                               L.edit([v](Layer &l, const QVariantList &a) {
+                                   if (a.isEmpty()) return false;
+                                   const float o = float(std::clamp(num(a[0]), 0.0, 1.0));
+                                   if (o >= 1.0f) l.viewportOpacity.erase(v);
+                                   else l.viewportOpacity[v] = o;
+                                   return true;
+                               }));
+        vo.range = {minMax(0, 1)};
+        vo.clip = "both";
     }
     L.method(P + "/name", "s", 3, "Name", [](Layer &l) { return QVariantList{l.name}; },
              L.edit([](Layer &l, const QVariantList &a) {

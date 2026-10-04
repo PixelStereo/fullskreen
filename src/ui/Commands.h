@@ -177,19 +177,22 @@ private:
     bool m_first = true;
 };
 
-// An item at the top of the list shown in a viewport or not (by ids: the list may change in between)
-class SetShownIn : public QUndoCommand
+// How much of an item at the top of the list a viewport shows (by ids: the list may change in between).
+// Dragging the slider is one step: the same item and viewport merge.
+class SetOpacityIn : public QUndoCommand
 {
 public:
-    SetShownIn(Engine *e, quint64 layer, quint64 viewport, bool shown, const QString &text);
-    void undo() override { apply(!m_shown); }
-    void redo() override { apply(m_shown); }
+    SetOpacityIn(Engine *e, quint64 layer, quint64 viewport, float before, float after, const QString &text);
+    void undo() override { apply(m_before); }
+    void redo() override { apply(m_after); }
+    int id() const override { return 9107; }
+    bool mergeWith(const QUndoCommand *o) override;
 
 private:
-    void apply(bool shown);
+    void apply(float v);
     Engine *m_e;
     quint64 m_layer, m_viewport;
-    bool m_shown;
+    float m_before, m_after;
 };
 
 } // namespace cmd
