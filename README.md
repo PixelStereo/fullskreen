@@ -30,6 +30,15 @@ The play modes: One-shot (freezes on the last frame), Loop, Ping-pong (decoded b
 codec works), Stop (black and silent at the end). **In / out points** per layer bound playback in both
 directions, draggable on the playback bar. The default mode for newly loaded media is a setting.
 
+**Video playback.** Frames reach the GPU as the decoder gives them — YUV planes (8 to 16 bits, every
+subsampling), NV12 / P010, RGB, grey, with or without alpha — and the GPU converts them (the stream's matrix and
+range, chroma siting): the processor only decodes. Each decoder copies its frames straight into upload buffers of
+the GPU on its own thread; the render thread only hands them over. **Hardware decoding** (VideoToolbox on macOS,
+Direct3D 11 / DXVA2 on Windows, VA-API on Linux) is used when the codec allows it (Settings ▸ Playback, on by
+default). A hidden layer keeps playing and sounding, but is neither uploaded nor rendered. The Source tab says how
+the frames travel (*Picture*: `yuv420p · BT.709`, or *converted on the CPU* for the rare layouts the GPU does not
+take).
+
 **Picture.** The **ROI** chooses the part of the source picture used (drag the sides of the rectangle).
 **Color** works like DaVinci Resolve: balance (Temp −4000…4000, Tint −100…100, luminance kept), then a color
 removed (filter) and a color added (light) — `out = balance(in) × (1 − removed) + added` — edited in RGB, HSL,
@@ -239,7 +248,9 @@ src/engine/   engine, with no widget dependency (QtCore/QtGui/OpenGL + FFmpeg)
    · Memories    memories (snapshots of the layers) and their fades
   Publish       NDI / OMT (loaded at runtime), Syphon (.mm), Spout; asynchronous GPU readback
   Isf           ISF parser and renderer (GLSL 330 core translation, passes, buffers)
-  VideoDecoder  FFmpeg decoding on a thread, frame queue, seamless loop, seeking
+  VideoDecoder  FFmpeg decoding on a thread (hardware when it can), frame queue, seamless loop, seeking;
+                frames kept as decoded and copied into the GPU's upload buffers
+  VideoTexture  a video layer's frames on the GPU: planes converted to RGBA by one draw
   AudioStream   FFmpeg audio decoding + resampling on a thread, synced to the layer playhead
   AudioOutput   sound card (miniaudio), mix of all layers, master volume, meters
   Mapping       4-corner homography + Catmull-Rom mesh
@@ -272,14 +283,20 @@ cmake --build build --target fulskrin_tests
 ./build/fulskrin_tests                     # project, video, ISF, undo, render thread, audio, OSC, memories
 test/ui_test.sh out/ui                     # Linux + Xvfb + openbox + xdotool: full interface scenario
 ./build/Fulskrin --render output.png project.fulskrin   # headless render of a project
+cmake --build build --target fulskrin_bench
+./build/fulskrin_bench a.mov b.mov c.mov d.mov     # several videos played together, 4K composition
+./build/fulskrin_bench --decode a.mov b.mov        # the decoders alone
 ```
+
+`fulskrin_bench` plays every file in a layer of one composition for 10 s and tells, for each, how many frames per
+second it showed against its own rate (`--seconds`, `--fps`, `--comp 3840x2160`).
 
 `fulskrin_tests --check-isf <folder>` compiles and renders every shader in a folder.
 
 ## Known V1 limitations
 
-- **CPU decoding to RGBA**: fine for a few HD streams. Several 4K streams will need GPU YUV→RGB conversion,
-  compressed HAP textures and hardware decoding (VideoToolbox, D3D11VA, VAAPI).
+- Hardware-decoded frames are copied back to memory before their upload (no zero-copy IOSurface / D3D11 sharing
+  yet). Hidden layers keep decoding, so that showing them is instant: they cost processor time, not GPU time.
 - **Sound**: one stereo output; no multichannel routing, per-layer output, fades or audio effects yet.
 - **Viewports are rectangles** of the composition: no per-projector warp or automatic edge blending yet
   (the SoftEdges effect on a viewport helps with manual blending).

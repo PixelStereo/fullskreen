@@ -15,6 +15,7 @@
 #include <QVBoxLayout>
 
 static const char *kPlayModeKey = "playback/defaultMode";
+static const char *kHardwareKey = "playback/hardwareDecoding";
 static const char *kColorKey = "ui/colorModel";
 static const char *kOscKey = "osc/enabled";
 static const char *kOscPortKey = "osc/udpPort";        // (osc/port, osc/queryPort: earlier defaults, ignored)
@@ -47,6 +48,7 @@ PlayMode SettingsPanel::defaultPlayMode()
 {
     return playModeFromKey(QSettings().value(kPlayModeKey).toString(), PlayMode::Loop);
 }
+bool SettingsPanel::hardwareDecoding() { return QSettings().value(kHardwareKey, true).toBool(); }
 int SettingsPanel::colorModels() { return QSettings().value(kColorKey, int(ColorEditor::Rgb)).toInt(); }
 bool SettingsPanel::oscEnabled() { return QSettings().value(kOscKey, true).toBool(); }
 int SettingsPanel::oscPort() { return QSettings().value(kOscPortKey, kDefaultOscPort).toInt(); }
@@ -105,6 +107,16 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QWidget(parent)
     form->addRow(note(QStringLiteral("When a memory gives a layer another source: the outgoing one keeps playing and "
                                      "this ISF transition takes it to the new one, over the memory's fade. "
                                      "A layer can choose its own (Source tab).")));
+    m_hardware = new QCheckBox(QStringLiteral("Hardware decoding"));
+    m_hardware->setChecked(hardwareDecoding());
+    form->addRow(m_hardware);
+    form->addRow(note(QStringLiteral("H.264, HEVC, ProRes… decoded by the graphics hardware when it can (VideoToolbox on "
+                                     "macOS, Direct3D 11 on Windows, VA-API on Linux), which leaves the processor to the "
+                                     "other videos. HAP never needs it. For the videos loaded from now on.")));
+    connect(m_hardware, &QCheckBox::toggled, this, [this](bool on) {
+        QSettings().setValue(kHardwareKey, on);
+        emit hardwareDecodingChanged();
+    });
     connect(m_transition, qOverload<int>(&QComboBox::activated), this, [this] {
         const QString path = m_transition->currentData().toString();
         QSettings().setValue(kTransitionKey, path);

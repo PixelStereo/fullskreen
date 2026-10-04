@@ -106,7 +106,11 @@ bool Engine::initialize(QString *err)
     f->glBindVertexArray(m_meshVao);
     f->glGenBuffers(1, &m_meshVbo);
     f->glBindBuffer(GL_ARRAY_BUFFER, m_meshVbo);
-    f->glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 4 * (kMeshSubdiv + 1) * (kMeshSubdiv + 1), nullptr, GL_DYNAMIC_DRAW);
+    { // the whole frame (viewport outputs); each layer has a buffer of its own
+        std::vector<float> full;
+        Mapping().buildVertices(kMeshSubdiv, full);
+        f->glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(full.size() * sizeof(float)), full.data(), GL_STATIC_DRAW);
+    }
     f->glEnableVertexAttribArray(0);
     f->glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
     f->glEnableVertexAttribArray(1);
@@ -193,6 +197,11 @@ bool Engine::initialize(QString *err)
     m_compTexLoc = f->glGetUniformLocation(m_compProgram, "u_tex");
     m_compOpacityLoc = f->glGetUniformLocation(m_compProgram, "u_opacity");
     m_compViewLoc = f->glGetUniformLocation(m_compProgram, "u_view");
+
+    if (!m_videoConv.init(m_quadVao, &log)) {
+        if (err) *err = log;
+        return false;
+    }
 
     const unsigned char black[4] = {0, 0, 0, 0};
     f->glGenTextures(1, &m_blackTex);
@@ -360,6 +369,7 @@ void Engine::releaseAll()
     auto f = gl();
     for (RenderTarget &o : m_output) o.destroy();
     m_previewTarget.destroy();
+    m_videoConv.release();
     for (GLuint p : {m_blitProgram, m_compProgram, m_presentProgram, m_flipProgram, m_prepProgram, m_maskProgram})
         if (p) f->glDeleteProgram(p);
     GLuint bufs[] = {m_quadVbo, m_meshVbo, m_meshIbo};

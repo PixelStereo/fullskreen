@@ -371,6 +371,9 @@ void Engine::releaseLayer(Layer &l)
 {
     if (l.video) l.video->close();
     l.video.reset();
+    l.frame = VideoFrame{};
+    if (l.videoTex) l.videoTex->destroy();
+    l.videoTex.reset();
     releaseAudio(*m_audio, l.audio);
     l.sourceTex.destroy();
     if (l.generator) l.generator->releaseGl();
@@ -386,6 +389,8 @@ void Engine::releaseLayer(Layer &l)
     l.prepTarget.destroy();
     l.vpOut[0].destroy();
     l.vpOut[1].destroy();
+    if (l.meshVbo) gl()->glDeleteBuffers(1, &l.meshVbo);
+    l.meshVbo = 0;
     l.finalTex = l.rawTex = 0;
 }
 
@@ -588,6 +593,9 @@ std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
 {
     auto g = std::make_shared<Garbage>();
     g->video = std::move(l.video);
+    g->videoTex = std::move(l.videoTex);
+    l.frame = VideoFrame{}; // its upload buffer belongs to the texture that goes
+    l.frameUploaded = true;
     g->audio = std::move(l.audio);
     g->tex = l.sourceTex;
     l.sourceTex = Texture2D{};
@@ -613,6 +621,7 @@ void Engine::releaseGarbage(const std::shared_ptr<Garbage> &g)
     releaseAudio(*m_audio, g->audio);
     runGl([g] {
         g->tex.destroy();
+        if (g->videoTex) g->videoTex->destroy();
         if (g->generator) g->generator->releaseGl();
         g->generatorTarget.destroy();
     }, false);

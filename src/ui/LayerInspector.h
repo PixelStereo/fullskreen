@@ -80,6 +80,7 @@ private:
     QPointer<SliderField> m_temp, m_tint;
     bool m_previewing = false;
     QPointer<QProgressBar> m_meter;
+    QPointer<QLabel> m_codecFact, m_pictureFact; // known once frames are decoded: kept up to date
     QPointer<ViewportOutputPanel> m_output;
     QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY;
     bool m_scaleLinked = true;
