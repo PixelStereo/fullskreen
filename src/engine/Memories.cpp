@@ -118,10 +118,23 @@ struct LayerTimes {
     }
 };
 
+// Which of a layer's values a fade drives. Several memories can run at once: a new recall takes over only
+// the values it holds, the others go on with the memory that started them.
+enum OwnedBit : quint64 {
+    OwnOpacity = 1ull << 0, OwnVolume = 1ull << 1, OwnRoi = 1ull << 2, OwnColor = 1ull << 3, OwnMapping = 1ull << 4,
+    OwnSoft = 1ull << 5, OwnViewportOpacity = 1ull << 6, OwnSpeed = 1ull << 7, OwnInOut = 1ull << 8, OwnIsf = 1ull << 9,
+    OwnText0 = 1ull << 10, // + TextNum
+};
+static constexpr quint64 kOwnText = ((1ull << TextNumCount) - 1) << 10;
+static constexpr quint64 kOwnAll = OwnOpacity | OwnVolume | OwnRoi | OwnColor | OwnMapping | OwnSoft | OwnViewportOpacity |
+                                   OwnSpeed | OwnInOut | OwnIsf | kOwnText;
+
 struct Engine::FadeJob {
     quint64 id = 0;
     LayerNumbers from, to;
     LayerTimes times;
+    quint64 owned = kOwnAll; // the values this fade drives (a later recall takes some over)
+    double elapsed = 0;      // its own clock: memories started at different times run side by side
     bool hideAtEnd = false;
     float finalOpacity = 1;
 };
@@ -151,29 +164,44 @@ static LayerNumbers numbersOf(const Layer &l)
     return n;
 }
 
-static void setNumbers(Layer &l, const LayerNumbers &n)
+static void setNumbers(Layer &l, const LayerNumbers &n, quint64 own = kOwnAll)
 {
-    l.opacity = n.opacity;
-    l.volume = n.volume;
-    l.roi = n.roi;
-    l.color = n.color;
-    const unsigned rev = l.mapping.revision;
-    l.mapping = n.mapping;
-    l.mapping.soft = n.soft;
-    l.mapping.revision = rev + 1;
-    l.viewportOpacity = n.viewportOpacity;
-    l.speed = n.speed;
-    l.inPoint = n.inPoint;
-    l.outPoint = n.outPoint;
-    l.text.size = int(std::lround(n.text.size));
-    l.text.lineHeight = n.text.lineHeight;
-    l.text.letterSpacing = n.text.letterSpacing;
-    l.text.outline = n.text.outline;
-    l.text.shadowX = n.text.shadowX;
-    l.text.shadowY = n.text.shadowY;
-    l.text.color = n.text.color;
-    l.text.outlineColor = n.text.outlineColor;
-    l.text.shadowColor = n.text.shadowColor;
+    if (own & OwnOpacity) l.opacity = n.opacity;
+    if (own & OwnVolume) l.volume = n.volume;
+    if (own & OwnRoi) l.roi = n.roi;
+    if (own & OwnColor) {
+        // its numbers only: the switches and the mask are not faded
+        l.color.temp = n.color.temp;
+        l.color.tint = n.color.tint;
+        for (int c = 0; c < 3; ++c) {
+            l.color.add[c] = n.color.add[c];
+            l.color.remove[c] = n.color.remove[c];
+        }
+    }
+    if (own & (OwnMapping | OwnSoft)) {
+        const unsigned rev = l.mapping.revision;
+        const SoftEdge soft = l.mapping.soft;
+        if (own & OwnMapping) l.mapping = n.mapping;
+        l.mapping.soft = (own & OwnSoft) ? n.soft : soft;
+        l.mapping.revision = rev + 1;
+    }
+    if (own & OwnViewportOpacity) l.viewportOpacity = n.viewportOpacity;
+    if (own & OwnSpeed) l.speed = n.speed;
+    if (own & OwnInOut) {
+        l.inPoint = n.inPoint;
+        l.outPoint = n.outPoint;
+    }
+    auto has = [own](int k) { return (own & (OwnText0 << k)) != 0; };
+    if (has(TextSize)) l.text.size = int(std::lround(n.text.size));
+    if (has(TextLineHeight)) l.text.lineHeight = n.text.lineHeight;
+    if (has(TextLetterSpacing)) l.text.letterSpacing = n.text.letterSpacing;
+    if (has(TextOutline)) l.text.outline = n.text.outline;
+    if (has(TextShadowX)) l.text.shadowX = n.text.shadowX;
+    if (has(TextShadowY)) l.text.shadowY = n.text.shadowY;
+    if (has(TextColor)) l.text.color = n.text.color;
+    if (has(TextOutlineColor)) l.text.outlineColor = n.text.outlineColor;
+    if (has(TextShadowColor)) l.text.shadowColor = n.text.shadowColor;
+    if (!(own & OwnIsf)) return;
     auto apply = [](IsfInstance *inst, const std::vector<IsfValue> &v) {
         if (!inst) return;
         for (size_t k = 0; k < v.size() && k < inst->inputs().size(); ++k) inst->inputs()[k].setValue(v[k]);
@@ -462,7 +490,8 @@ Engine::RecallProgress Engine::recallProgress() const
     RecallProgress r;
     r.memory = m_recalledMemory;
     r.total = m_recallTotal;
-    r.elapsed = m_fades.empty() ? m_recallTotal : m_fadeElapsed;
+    r.elapsed = m_fades.empty() && m_transitions.empty() && !m_compFade.level && !m_compFade.volume ? m_recallTotal
+                                                                                                  : m_fadeElapsed;
     return r;
 }
 
@@ -496,18 +525,20 @@ void Engine::applyComposition(const QJsonObject &c, double fade)
     const double levelDur = time(QStringLiteral("level")), volumeDur = time(QStringLiteral("volume"));
     if (hasLevel && levelDur <= 0) fadeMaster(level, 0);
     if (hasVolume && volumeDur <= 0) setAudioVolume(volume);
+    // A value the memory holds stops the fade another memory gives it; the other one goes on
     Lock lk(&m_mutex);
     CompositionFade &f = m_compFade;
-    f.elapsed = 0;
-    f.level = hasLevel && levelDur > 0;
-    if (f.level) {
+    if (hasLevel) {
+        f.level = levelDur > 0;
+        f.levelElapsed = 0;
         f.levelFrom = m_masterLevel.load();
         f.levelTo = level;
         f.levelDur = levelDur;
         f.levelCurve = curve(QStringLiteral("level"));
     }
-    f.volume = hasVolume && volumeDur > 0;
-    if (f.volume) {
+    if (hasVolume) {
+        f.volume = volumeDur > 0;
+        f.volumeElapsed = 0;
         f.volumeFrom = m_audio->masterVolume();
         f.volumeTo = volume;
         f.volumeDur = volumeDur;
@@ -518,18 +549,19 @@ void Engine::applyComposition(const QJsonObject &c, double fade)
 void Engine::stepCompositionFade(double dt)
 {
     CompositionFade &f = m_compFade;
-    if (!f.level && !f.volume) return;
-    f.elapsed += std::max(0.0, dt);
+    dt = std::max(0.0, dt);
     if (f.level) {
-        const double p = progress(f.elapsed, f.levelDur, EasingCurve(f.levelCurve));
+        f.levelElapsed += dt;
+        const double p = progress(f.levelElapsed, f.levelDur, EasingCurve(f.levelCurve));
         m_masterTarget = mixd(f.levelFrom, f.levelTo, p);
         m_masterSpeed = 0; // the frame takes it as it is
-        if (f.elapsed >= f.levelDur) f.level = false;
+        if (f.levelElapsed >= f.levelDur) f.level = false;
     }
     if (f.volume) {
-        const double p = progress(f.elapsed, f.volumeDur, EasingCurve(f.volumeCurve));
+        f.volumeElapsed += dt;
+        const double p = progress(f.volumeElapsed, f.volumeDur, EasingCurve(f.volumeCurve));
         m_audio->setMasterVolume(mixf(f.volumeFrom, f.volumeTo, p));
-        if (f.elapsed >= f.volumeDur) f.volume = false;
+        if (f.volumeElapsed >= f.volumeDur) f.volume = false;
     }
 }
 
@@ -543,10 +575,11 @@ void Engine::recallMemory(int i)
         Lock lk(&m_mutex);
         m_recalledMemory = m.id;
         double total = 0;
-        for (const auto &job : m_fades) total = std::max(total, job->times.longest());
+        for (const auto &job : m_fades)
+            if (job->elapsed <= 0) total = std::max(total, job->times.longest()); // this recall's, not the older ones
         for (const auto &[id, t] : m_transitions) total = std::max(total, t->duration - t->elapsed);
-        if (m_compFade.level) total = std::max(total, m_compFade.levelDur);
-        if (m_compFade.volume) total = std::max(total, m_compFade.volumeDur);
+        if (m_compFade.level && m_compFade.levelElapsed <= 0) total = std::max(total, m_compFade.levelDur);
+        if (m_compFade.volume && m_compFade.volumeElapsed <= 0) total = std::max(total, m_compFade.volumeDur);
         m_recallTotal = total;
     }
     emit memoryRecalled(i);
@@ -556,10 +589,19 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
 {
     QSet<quint64> named; // the layers the state speaks of (left out or not)
     for (const QJsonValue &v : layers) named.insert(v.toObject().value("id").toString().toULongLong());
-    {
+    // The memories still running go on: this recall stops their fades only for the values it sets itself
+    // (from where they are now), and leaves them the others
+    auto takeOver = [this](quint64 id, quint64 values) {
         Lock lk(&m_mutex);
-        m_fades.clear(); // a new recall takes over from where the previous one is
-    }
+        for (auto it = m_fades.begin(); it != m_fades.end();) {
+            FadeJob &j = **it;
+            if (j.id == id) {
+                j.owned &= ~values;
+                if (values & OwnOpacity) j.hideAtEnd = false;
+            }
+            it = j.owned ? it + 1 : m_fades.erase(it);
+        }
+    };
     std::vector<std::shared_ptr<FadeJob>> jobs;
     for (const QJsonValue &value : layers) {
         const QJsonObject o = value.toObject();
@@ -568,6 +610,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         int idx = indexOfId(id);
         if (idx >= 0 && isLocked(idx)) continue; // a locked layer is not changed by a memory
         if (idx < 0) { // removed since: recreated at the bottom
+            takeOver(id, kOwnAll);
             insertLayerJson(layerCount(), o);
             continue;
         }
@@ -581,6 +624,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             // fade unless it has its own), or at once for a cut
             const QJsonValue own = o.value("timing").toObject().value("source");
             const double t = own.isDouble() ? std::clamp(own.toDouble(), 0.0, 600.0) : std::max(0.0, fade);
+            takeOver(id, kOwnAll);
             if (t <= 0) {
                 replaceLayerJson(idx, o);
                 continue;
@@ -701,6 +745,14 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
                 }
             }
         }
+        // The values this state sets: their fades from other memories stop here
+        job->owned = OwnOpacity | OwnVolume | OwnViewportOpacity | OwnIsf;
+        if (roi.size() == 4) job->owned |= OwnRoi;
+        if (!color.isEmpty()) job->owned |= OwnColor;
+        if (o.contains("mapping")) job->owned |= OwnMapping | OwnSoft;
+        if (src.contains("playMode")) job->owned |= OwnSpeed | OwnInOut;
+        if (l->type == SourceType::Text && src.value("type").toString() == "text") job->owned |= kOwnText;
+        takeOver(id, job->owned);
         if (!to.isf.empty()) readParams(l->generator.get(), src.value("params").toObject(), to.isf[0]);
         for (size_t k = 0; k < l->effects.size() && k + 1 < to.isf.size() && int(k) < fx.size(); ++k)
             readParams(l->effects[k].get(), fx[int(k)].toObject().value("params").toObject(), to.isf[k + 1]);
@@ -716,14 +768,14 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             to.opacity = 0;
         }
         if (job->times.longest() <= 0) {
-            setNumbers(*l, to);
+            setNumbers(*l, to, job->owned);
             if (job->hideAtEnd) {
                 l->visible = false;
                 l->opacity = job->finalOpacity;
             }
         } else {
             // Bools and lists reach their target at once; the numbers start from where they are (a cut: there)
-            setNumbers(*l, mixNumbers(job->from, to, job->times, 0));
+            setNumbers(*l, mixNumbers(job->from, to, job->times, 0), job->owned);
             if (job->hideAtEnd && job->times.opacity <= 0) { // hidden by a cut
                 l->visible = false;
                 l->opacity = job->finalOpacity;
@@ -740,12 +792,14 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         for (auto &lp : m_layers) {
             Layer &l = *lp;
             if (l.isViewport || named.contains(l.id) || !l.visible || isLocked(indexOfId(l.id))) continue;
+            takeOver(l.id, OwnOpacity); // only its opacity: what other memories fade on it goes on
             if (fade <= 0) {
                 l.visible = false;
                 continue;
             }
             auto job = std::make_shared<FadeJob>();
             job->id = l.id;
+            job->owned = OwnOpacity;
             job->from = numbersOf(l);
             job->to = job->from;
             job->to.opacity = 0;
@@ -754,31 +808,35 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             job->times = timesOf(l, QJsonObject(), fade);
             jobs.push_back(job);
         }
-    m_fades = std::move(jobs);
+    for (auto &j : jobs) m_fades.push_back(std::move(j));
     m_fadeElapsed = 0;
 }
 
-// Every number moves on its own time; a layer that fades out is hidden once its opacity got there
+// Every number moves on its own time, each memory on its own clock; a layer that fades out is hidden once its
+// opacity got there
 void Engine::stepFade(double dt)
 {
-    if (m_fades.empty()) return;
-    m_fadeElapsed += std::max(0.0, dt);
-    bool running = false;
-    for (const auto &job : m_fades) {
+    dt = std::max(0.0, dt);
+    m_fadeElapsed += dt;
+    for (auto it = m_fades.begin(); it != m_fades.end();) {
+        FadeJob &job = **it;
+        job.elapsed += dt;
         Layer *l = nullptr;
         for (auto &x : m_layers)
-            if (x->id == job->id) l = x.get();
-        if (!l) continue;
-        setNumbers(*l, mixNumbers(job->from, job->to, job->times, m_fadeElapsed));
-        if (job->hideAtEnd && m_fadeElapsed >= job->times.opacity) {
-            l->visible = false;
-            l->opacity = job->finalOpacity;
-            job->hideAtEnd = false;
-            job->from.opacity = job->to.opacity = job->finalOpacity; // stays as stored while the rest moves on
+            if (x->id == job.id) l = x.get();
+        if (!l) {
+            it = m_fades.erase(it);
+            continue;
         }
-        running = running || m_fadeElapsed < job->times.longest();
+        setNumbers(*l, mixNumbers(job.from, job.to, job.times, job.elapsed), job.owned);
+        if (job.hideAtEnd && job.elapsed >= job.times.opacity) {
+            l->visible = false;
+            l->opacity = job.finalOpacity;
+            job.hideAtEnd = false;
+            job.from.opacity = job.to.opacity = job.finalOpacity; // stays as stored while the rest moves on
+        }
+        it = job.elapsed < job.times.longest() ? it + 1 : m_fades.erase(it);
     }
-    if (!running) m_fades.clear();
 }
 
 void Engine::advanceFades(double dt)

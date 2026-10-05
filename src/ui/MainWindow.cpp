@@ -296,6 +296,16 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_seqBar, &SequenceBar::windowRequested, this, &MainWindow::openSequences);
     connect(m_seqWindow, &SequenceWindow::goToRequested, this, &MainWindow::sequenceGoTo);
     connect(m_seqWindow, &SequenceWindow::edited, this, &MainWindow::markDirty);
+    connect(m_seqBar, &SequenceBar::stopRequested, m_engine, &Engine::sequenceStop);
+    connect(m_seqWindow, &SequenceWindow::stopRequested, m_engine, &Engine::sequenceStop);
+    // A step's memory, when its pre-wait is over (GO, Space, OSC, or a step that follows): undoable; the bar
+    // then shows the step unchanged
+    m_engine->setRecaller([this](int memory) {
+        m_memories->recall(memory);
+        m_cueUndoIndex = m_undo->index();
+        m_seqBar->setModified(false);
+        m_seqWindow->setModified(false);
+    });
     // Played elsewhere (OSC) or another sequence: nothing changed since; any edit afterwards: the bar says so
     connect(m_engine, &Engine::sequencePositionChanged, this, [this] {
         m_cueUndoIndex = m_undo->index();
@@ -355,6 +365,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
 
 MainWindow::~MainWindow()
 {
+    m_engine->setRecaller(nullptr);
     if (m_oscThread) {
         QMetaObject::invokeMethod(m_osc, [this] { m_osc->stop(); }, Qt::BlockingQueuedConnection);
         m_oscThread->quit();
@@ -500,6 +511,7 @@ void MainWindow::buildMenus()
     QMenu *seq = menuBar()->addMenu(QStringLiteral("&Sequence"));
     seq->addAction(QStringLiteral("GO — next step (Space)"), this, &MainWindow::sequenceGo);
     seq->addAction(QStringLiteral("GO BACK — previous step (Shift+Space)"), this, &MainWindow::sequenceBack);
+    seq->addAction(QStringLiteral("Stop the waits (pre-waits and follows still to come)"), m_engine, &Engine::sequenceStop);
     seq->addSeparator();
     seq->addAction(QStringLiteral("Sequences…"), this, &MainWindow::openSequences);
 
@@ -1277,22 +1289,12 @@ void MainWindow::setInOutAtPosition(bool in)
     statusBar()->showMessage((in ? QStringLiteral("In point: %1 s") : QStringLiteral("Out point: %1 s")).arg(pos, 0, 'f', 2), 3000);
 }
 
-void MainWindow::sequenceGo() { sequenceGoTo(m_engine->sequenceNext()); }
+void MainWindow::sequenceGo() { m_engine->sequenceGo(); }
 
-void MainWindow::sequenceBack() { sequenceGoTo(m_engine->sequencePrevious()); }
+void MainWindow::sequenceBack() { m_engine->sequenceBack(); }
 
-// The step's memory is recalled (undoable), then the step becomes the current one: the bar shows it unchanged
-void MainWindow::sequenceGoTo(int step)
-{
-    const Engine::Sequence s = m_engine->sequence(m_engine->currentSequence());
-    if (step < 0 || step >= int(s.steps.size())) return;
-    const int mi = m_engine->indexOfMemory(s.steps[size_t(step)].memory);
-    if (mi >= 0) m_memories->recall(mi);
-    m_engine->setSequencePosition(step);
-    m_cueUndoIndex = m_undo->index();
-    m_seqBar->setModified(false);
-    m_seqWindow->setModified(false);
-}
+// The step's GO: its pre-wait, then its memory (recalled through the undo stack, see the recaller), then what follows
+void MainWindow::sequenceGoTo(int step) { m_engine->sequenceGoTo(step); }
 
 void MainWindow::openSequences()
 {

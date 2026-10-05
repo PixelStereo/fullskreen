@@ -3,6 +3,7 @@
 #include "MemoryPanel.h"
 #include "Widgets.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDragEnterEvent>
@@ -14,6 +15,7 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QPainter>
+#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -32,6 +34,52 @@ static QString memoryName(Engine *e, quint64 id)
 
 static const char *kChanged = "#ffb347"; // something changed since the step was played
 static const QColor kLive(76, 217, 100);  // a memory running
+static const QColor kPreWait(224, 180, 58);  // waiting before the memory
+static const QColor kPostWait(86, 156, 230); // waiting before the next step's GO
+
+// Seconds as the cue list shows them: 2.5 · 1:05.0
+static QString seconds(double t)
+{
+    t = std::max(0.0, t);
+    if (t < 60) return QString::number(t, 'f', 1);
+    const int m = int(t / 60);
+    return QStringLiteral("%1:%2").arg(m).arg(t - m * 60, 4, 'f', 1, QLatin1Char('0'));
+}
+
+static QString continueName(Engine::StepContinue c)
+{
+    switch (c) {
+    case Engine::StepContinue::Follow: return QStringLiteral("↓ Follow");
+    case Engine::StepContinue::AutoFollow: return QStringLiteral("⤓ Auto-follow");
+    default: return QStringLiteral("Wait (GO)");
+    }
+}
+
+// Where a step on its way is in each of its times: -1 not there yet (or none), 0..1 on the way, 1 over
+struct RunPhases {
+    double pre = -1, action = -1, post = -1;
+    double preElapsed = 0, actionElapsed = 0, postElapsed = 0;
+};
+static RunPhases phasesOf(const Engine::StepRun &r)
+{
+    RunPhases ph;
+    auto frac = [](double e, double len) { return len > 0 ? std::clamp(e / len, 0.0, 1.0) : (e >= 0 ? 1.0 : 0.0); };
+    ph.preElapsed = std::min(r.elapsed, r.preWait);
+    ph.pre = r.preWait > 0 ? frac(r.elapsed, r.preWait) : -1;
+    if (r.fired) {
+        ph.actionElapsed = std::clamp(r.elapsed - r.preWait, 0.0, r.duration);
+        ph.action = frac(r.elapsed - r.preWait, r.duration);
+    }
+    const double at = r.continueAt();
+    if (at >= 0 && r.fired) {
+        const double start = at - r.postWait;
+        if (r.elapsed >= start) {
+            ph.postElapsed = std::clamp(r.elapsed - start, 0.0, r.postWait);
+            ph.post = frac(r.elapsed - start, r.postWait);
+        }
+    }
+    return ph;
+}
 
 // ---------------------------------------------------------------------------
 // RecallProgressBar
@@ -111,11 +159,21 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     }
     m_currentText->setWordWrap(true);
     m_currentText->setStyleSheet("color:#e4e4e8; font-style:italic;");
+    m_stop = new QPushButton(QStringLiteral("■"));
+    m_stop->setToolTip(QStringLiteral("Stop the waits: the pre-waits and follows still to come are dropped "
+                                      "(the memories already running go on)"));
+    m_stop->setEnabled(false);
+    m_stop->setFixedWidth(34);
+    m_stop->setStyleSheet("QPushButton:enabled { background:#8a2a24; color:white; }");
+    m_wait = new QLabel;
+    m_wait->setTextFormat(Qt::RichText);
+    m_wait->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_open = new QPushButton(QStringLiteral("Sequences…"));
     m_open->setToolTip(QStringLiteral("All the sequences and their steps, in a window that stays in front"));
     row->addWidget(m_sequence);
     row->addWidget(m_back);
     row->addWidget(m_go);
+    row->addWidget(m_stop);
     row->addSpacing(6);
     // Previous, current and next steps, each with its text under it
     auto column = [](QLabel *name, QLabel *text) {
@@ -133,13 +191,20 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     row->addLayout(column(m_next, m_nextText), 2);
     row->addWidget(m_open, 0, Qt::AlignTop);
     v->addLayout(row);
+    v->addWidget(m_wait);
+    m_wait->hide();
     auto *progress = new RecallProgressBar(m_engine);
     progress->setToolTip(QStringLiteral("The memory running, and where it is in its time"));
     v->addWidget(progress);
 
     connect(m_go, &QPushButton::clicked, this, &SequenceBar::goRequested);
     connect(m_back, &QPushButton::clicked, this, &SequenceBar::backRequested);
+    connect(m_stop, &QPushButton::clicked, this, &SequenceBar::stopRequested);
     connect(m_open, &QPushButton::clicked, this, &SequenceBar::windowRequested);
+    auto *waits = new QTimer(this);
+    waits->setInterval(50);
+    connect(waits, &QTimer::timeout, this, &SequenceBar::pollWaits);
+    waits->start();
     connect(m_sequence, qOverload<int>(&QComboBox::activated), this, [this](int i) {
         if (!m_filling) m_engine->setCurrentSequence(i);
     });
@@ -147,6 +212,34 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     connect(m_engine, &Engine::sequencePositionChanged, this, &SequenceBar::refresh);
     connect(m_engine, &Engine::memoriesChanged, this, &SequenceBar::refresh);
     refresh();
+}
+
+// What is waiting: a step in its pre-wait, or the next step's GO after a follow / auto-follow
+void SequenceBar::pollWaits()
+{
+    const std::vector<Engine::StepRun> runs = m_engine->sequenceRuns();
+    const Engine::Sequence s = m_engine->sequence(m_engine->currentSequence());
+    QStringList parts;
+    for (const Engine::StepRun &r : runs) {
+        if (!r.fired) {
+            parts << QStringLiteral("<span style='color:%1'>%2. pre-wait %3 s</span>")
+                         .arg(kPreWait.name()).arg(r.step + 1).arg(seconds(r.preWait - r.elapsed));
+            continue;
+        }
+        const double at = r.continueAt();
+        if (at < 0 || r.continued) continue;
+        const int n = int(s.steps.size());
+        const int next = r.step + 1 < n ? r.step + 1 : s.loop ? 0 : -1;
+        if (next < 0) continue;
+        parts << QStringLiteral("<span style='color:%1'>%2 → %3 in %4 s</span>")
+                     .arg(kPostWait.name(), r.next == Engine::StepContinue::Follow ? QStringLiteral("follow") : QStringLiteral("auto-follow"))
+                     .arg(next + 1)
+                     .arg(seconds(at - r.elapsed));
+    }
+    const QString text = parts.join(QStringLiteral(" · "));
+    if (text != m_wait->text()) m_wait->setText(text);
+    m_wait->setVisible(!text.isEmpty());
+    m_stop->setEnabled(!text.isEmpty());
 }
 
 void SequenceBar::setModified(bool on)
@@ -206,13 +299,120 @@ void SequenceBar::refresh()
 // SequenceWindow
 // ---------------------------------------------------------------------------
 
-enum StepCol { ColNum, ColMemory, ColText };
+enum StepCol { ColNum, ColMemory, ColPre, ColAction, ColPost, ColNext, ColText, ColCount };
+
+// The time columns (pre-wait, action, post-wait) filling as their time goes by, the continuation as a word;
+// the waits are edited with the app's number field, the continuation with a menu
+class StepDelegate : public QStyledItemDelegate
+{
+public:
+    StepDelegate(SequenceWindow *w) : QStyledItemDelegate(w), m_w(w) {}
+
+    QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
+    {
+        if (idx.column() == ColPre || idx.column() == ColPost) {
+            auto *b = new NumberBox(parent);
+            b->setRange(0, 3600);
+            b->setDecimals(2);
+            b->setSingleStep(0.1);
+            b->setSuffix(QStringLiteral(" s"));
+            return b;
+        }
+        if (idx.column() == ColNext) {
+            auto *c = new QComboBox(parent);
+            for (auto k : {Engine::StepContinue::Wait, Engine::StepContinue::Follow, Engine::StepContinue::AutoFollow})
+                c->addItem(continueName(k), int(k));
+            connect(c, qOverload<int>(&QComboBox::activated), this, [this, c] {
+                auto *self = const_cast<StepDelegate *>(this);
+                emit self->commitData(c);
+                emit self->closeEditor(c);
+            });
+            return c;
+        }
+        return QStyledItemDelegate::createEditor(parent, opt, idx);
+    }
+    void setEditorData(QWidget *e, const QModelIndex &idx) const override
+    {
+        if (auto *b = qobject_cast<QDoubleSpinBox *>(e)) b->setValue(idx.data(Qt::EditRole).toDouble());
+        else if (auto *c = qobject_cast<QComboBox *>(e)) {
+            c->setCurrentIndex(std::max(0, c->findData(idx.data(Qt::EditRole).toInt())));
+            c->showPopup();
+        } else QStyledItemDelegate::setEditorData(e, idx);
+    }
+    void setModelData(QWidget *e, QAbstractItemModel *m, const QModelIndex &idx) const override
+    {
+        if (auto *b = qobject_cast<QDoubleSpinBox *>(e)) m->setData(idx, b->value(), Qt::EditRole);
+        else if (auto *c = qobject_cast<QComboBox *>(e)) m->setData(idx, c->currentData().toInt(), Qt::EditRole);
+        else QStyledItemDelegate::setModelData(e, m, idx);
+    }
+
+    void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
+    {
+        const int col = idx.column();
+        if (col != ColPre && col != ColAction && col != ColPost && col != ColNext) {
+            QStyledItemDelegate::paint(p, opt, idx);
+            return;
+        }
+        QStyleOptionViewItem o(opt);
+        initStyleOption(&o, idx);
+        o.text.clear();
+        const QWidget *w = opt.widget;
+        (w ? w->style() : QApplication::style())->drawControl(QStyle::CE_ItemViewItem, &o, p, w);
+        const auto next = Engine::StepContinue(idx.sibling(idx.row(), ColNext).data(Qt::EditRole).toInt());
+        const bool selected = opt.state & QStyle::State_Selected;
+        QColor ink = opt.palette.color(selected ? QPalette::HighlightedText : QPalette::Text);
+        if (col == ColNext) {
+            if (next == Engine::StepContinue::Wait) ink.setAlphaF(0.45);
+            p->setPen(ink);
+            p->drawText(opt.rect.adjusted(6, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft, continueName(next));
+            return;
+        }
+        const double value = idx.data(Qt::EditRole).toDouble();
+        // The step on its way (the latest, should it be there twice in a loop)
+        const Engine::StepRun *run = nullptr;
+        for (const Engine::StepRun &r : m_w->m_runs)
+            if (r.step == idx.row()) run = &r;
+        double frac = -1, elapsed = 0;
+        QColor bar = kLive;
+        if (run) {
+            const RunPhases ph = phasesOf(*run);
+            if (col == ColPre) frac = ph.pre, elapsed = ph.preElapsed, bar = kPreWait;
+            else if (col == ColAction) frac = ph.action, elapsed = ph.actionElapsed;
+            else frac = ph.post, elapsed = ph.postElapsed, bar = kPostWait;
+        }
+        const QRectF r = QRectF(opt.rect).adjusted(2, 3, -2, -3);
+        if (frac >= 0) {
+            QColor back = bar;
+            back.setAlphaF(0.18);
+            p->fillRect(r, back);
+            QColor fill = bar;
+            fill.setAlphaF(frac >= 1 ? 0.35 : 0.75);
+            p->fillRect(QRectF(r.left(), r.top(), r.width() * frac, r.height()), fill);
+        }
+        // The post-wait only counts with a follow; a time of zero is quiet
+        const bool unused = col == ColPost && next == Engine::StepContinue::Wait;
+        if (unused || (value <= 0 && frac < 0)) ink.setAlphaF(0.4);
+        QFont f = opt.font;
+        QString text = seconds(value);
+        if (frac >= 0 && frac < 1) { // on its way: the time gone by, counting up
+            f.setBold(true);
+            text = seconds(elapsed);
+            ink = selected ? opt.palette.color(QPalette::HighlightedText) : QColor(Qt::white);
+        }
+        p->setFont(f);
+        p->setPen(ink);
+        p->drawText(opt.rect.adjusted(4, 0, -6, 0), Qt::AlignVCenter | Qt::AlignRight, text);
+    }
+
+private:
+    SequenceWindow *m_w;
+};
 
 SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     : QWidget(parent, Qt::Tool | Qt::WindowStaysOnTopHint), m_engine(engine)
 {
     setWindowTitle(QStringLiteral("Sequences"));
-    resize(760, 460);
+    resize(1020, 460);
     auto *h = new QHBoxLayout(this);
 
     // Sequences
@@ -240,20 +440,36 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     m_status->setTextFormat(Qt::RichText);
     right->addWidget(m_status);
     right->addWidget(new RecallProgressBar(m_engine));
-    m_steps = new QTableWidget(0, 3);
-    m_steps->setHorizontalHeaderLabels({QStringLiteral("#"), QStringLiteral("Memory"), QStringLiteral("Text")});
+    m_steps = new QTableWidget(0, ColCount);
+    m_steps->setHorizontalHeaderLabels({QStringLiteral("#"), QStringLiteral("Memory"), QStringLiteral("Pre-wait"),
+                                        QStringLiteral("Action"), QStringLiteral("Post-wait"), QStringLiteral("Continue"),
+                                        QStringLiteral("Text")});
+    m_steps->horizontalHeaderItem(ColPre)->setToolTip(QStringLiteral("Seconds between the step's GO and its memory"));
+    m_steps->horizontalHeaderItem(ColAction)->setToolTip(QStringLiteral("The memory's time: its fade, or the longest time of its own values"));
+    m_steps->horizontalHeaderItem(ColPost)->setToolTip(
+        QStringLiteral("Follow: seconds after the memory starts before the next step's GO\n"
+                       "Auto-follow: seconds after the memory ends before the next step's GO\n"
+                       "Wait: not used"));
+    m_steps->horizontalHeaderItem(ColNext)->setToolTip(
+        QStringLiteral("Wait: the next step waits for GO (button, Space, OSC)\n"
+                       "Follow: the next step goes once this one is triggered (plus the post-wait), without waiting "
+                       "for its memory to end\n"
+                       "Auto-follow: the next step goes once this one's memory is over (plus the post-wait)"));
+    m_steps->setItemDelegate(new StepDelegate(this));
+    for (int c : {ColPre, ColAction, ColPost}) m_steps->setColumnWidth(c, 70);
+    m_steps->setColumnWidth(ColNext, 110);
     m_steps->verticalHeader()->setVisible(false);
     m_steps->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_steps->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     m_steps->horizontalHeader()->setSectionResizeMode(ColText, QHeaderView::Stretch);
     m_steps->setColumnWidth(ColNum, 40);
-    m_steps->setColumnWidth(ColMemory, 200);
+    m_steps->setColumnWidth(ColMemory, 170);
     m_steps->setAcceptDrops(true);
     m_steps->viewport()->setAcceptDrops(true);
     m_steps->viewport()->installEventFilter(this);
     m_steps->setContextMenuPolicy(Qt::CustomContextMenu);
-    m_steps->setToolTip(QStringLiteral("Double-click a number to play that step · double-click a text to edit it · "
-                                       "right-click: choose the memory"));
+    m_steps->setToolTip(QStringLiteral("Double-click a number to play that step · double-click a wait, a continuation "
+                                       "or a text to edit it · right-click: choose the memory"));
     right->addWidget(m_steps, 1);
     auto *stb = new QHBoxLayout;
     m_stepAdd = new QPushButton(QStringLiteral("+ Step"));
@@ -262,6 +478,15 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     m_down = new QPushButton(QStringLiteral("▼"));
     for (QPushButton *b : {m_stepAdd, m_stepDel, m_up, m_down}) stb->addWidget(b);
     stb->addStretch();
+    m_stop = new QPushButton(QStringLiteral("■ Stop the waits"));
+    m_stop->setToolTip(QStringLiteral("The pre-waits and follows still to come are dropped (the memories already running go on)"));
+    m_stop->setEnabled(false);
+    stb->addWidget(m_stop);
+    connect(m_stop, &QPushButton::clicked, this, &SequenceWindow::stopRequested);
+    auto *runs = new QTimer(this);
+    runs->setInterval(33);
+    connect(runs, &QTimer::timeout, this, &SequenceWindow::pollRuns);
+    runs->start();
     right->addLayout(stb);
     h->addLayout(right, 3);
 
@@ -304,10 +529,17 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
         emit edited();
     });
     connect(m_steps, &QTableWidget::itemChanged, this, [this, current](QTableWidgetItem *it) {
-        if (m_filling || it->column() != ColText || current() < 0) return;
+        if (m_filling || current() < 0) return;
         Engine::Sequence s = m_engine->sequence(current());
         if (it->row() >= int(s.steps.size())) return;
-        s.steps[size_t(it->row())].text = it->text();
+        Engine::SequenceStep &st = s.steps[size_t(it->row())];
+        switch (it->column()) {
+        case ColText: st.text = it->text(); break;
+        case ColPre: st.preWait = std::clamp(it->data(Qt::EditRole).toDouble(), 0.0, 3600.0); break;
+        case ColPost: st.postWait = std::clamp(it->data(Qt::EditRole).toDouble(), 0.0, 3600.0); break;
+        case ColNext: st.next = Engine::StepContinue(std::clamp(it->data(Qt::EditRole).toInt(), 0, 2)); break;
+        default: return;
+        }
         m_engine->setSequence(current(), s);
         emit edited();
     });
@@ -345,6 +577,16 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     refresh();
 }
 
+// The steps on their way: their time columns are redrawn while they move (and once more when they are done)
+void SequenceWindow::pollRuns()
+{
+    std::vector<Engine::StepRun> runs = m_engine->sequenceRuns();
+    if (runs.empty() && m_runs.empty()) return;
+    m_runs = std::move(runs);
+    m_stop->setEnabled(m_engine->sequenceRunning());
+    if (isVisible()) m_steps->viewport()->update();
+}
+
 void SequenceWindow::setModified(bool on)
 {
     if (on == m_modified) return;
@@ -378,8 +620,21 @@ void SequenceWindow::refresh()
         mem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         if (st.memory && m_engine->indexOfMemory(st.memory) < 0) mem->setForeground(QColor(255, 120, 100));
         auto *text = new QTableWidgetItem(st.text);
+        auto *pre = new QTableWidgetItem;
+        pre->setData(Qt::EditRole, st.preWait);
+        auto *action = new QTableWidgetItem;
+        action->setData(Qt::EditRole, m_engine->memoryDuration(st.memory));
+        action->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        auto *post = new QTableWidgetItem;
+        post->setData(Qt::EditRole, st.postWait);
+        auto *next = new QTableWidgetItem;
+        next->setData(Qt::EditRole, int(st.next));
         m_steps->setItem(k, ColNum, num);
         m_steps->setItem(k, ColMemory, mem);
+        m_steps->setItem(k, ColPre, pre);
+        m_steps->setItem(k, ColAction, action);
+        m_steps->setItem(k, ColPost, post);
+        m_steps->setItem(k, ColNext, next);
         m_steps->setItem(k, ColText, text);
         if (k == pos) { // the step played: green, orange once something changed since
             const QColor c = m_modified ? QColor(QString::fromLatin1(kChanged)) : kLive;
@@ -417,7 +672,9 @@ void SequenceWindow::addStep(int at, quint64 memory)
     }
     Engine::Sequence s = m_engine->sequence(cur);
     if (at < 0 || at > int(s.steps.size())) at = int(s.steps.size());
-    s.steps.insert(s.steps.begin() + at, Engine::SequenceStep{memory, QString()});
+    Engine::SequenceStep st;
+    st.memory = memory;
+    s.steps.insert(s.steps.begin() + at, st);
     // The step played keeps being the same one
     const int pos = m_engine->sequencePosition();
     m_engine->setSequence(cur, s);

@@ -18,6 +18,8 @@ Built with Qt 6, FFmpeg, and OpenGL 3.3. Cross-platform: macOS, Windows, Linux.
 
 **Memory system** — Save and recall layer states (cues). Every parameter fades smoothly to its stored value over a configurable duration. Undo/redo throughout.
 
+**Sequences** — Cue lists of memories played with GO (button, Space, OSC). Each step has a pre-wait, a post-wait and a continuation, as in QLab: *Wait* (the next step waits for GO), *Follow* (the next step goes once this one is triggered, plus its post-wait), *Auto-follow* (the next step goes once this one's fade is over, plus its post-wait). The waits and fades are drawn filling up as they run. Memories run side by side: a memory recalled takes over only the values it holds, the others keep fading.
+
 **Sound** — Each layer plays its audio with volume, mute, and sync to playback (including speed). Mixed to stereo, meters included.
 
 **Output** — Fullscreen or windowed. Synced to vertical refresh. Blackout with fade. Publish to Syphon (macOS), Spout (Windows), NDI, or OMT.

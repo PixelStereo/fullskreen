@@ -910,6 +910,172 @@ int main(int argc, char **argv)
             e.removeSequence(0);
             CHECK(e.sequenceCount() == 0 && e.currentSequence() == -1 && !e.sequenceGo());
         }
+        // Memories run side by side: a recall takes over only the values it holds, from where they are
+        {
+            e.setFadesManual(true);
+            const int ai = e.addLayer("Side A", V);
+            const quint64 ia = e.layerId(ai);
+            const int bi = e.addLayer("Side B", V);
+            const quint64 ib = e.layerId(bi);
+            auto op = [&](quint64 id) { return e.layer(e.indexOfId(id))->opacity; };
+            auto near = [](double a, double b) { return std::abs(a - b) < 1e-3; };
+            {
+                Engine::Lock lk(&e.mutex());
+                for (quint64 id : {ia, ib}) {
+                    e.layer(e.indexOfId(id))->opacity = 0;
+                    e.layer(e.indexOfId(id))->visible = true;
+                }
+            }
+            // A memory holding one layer (the others are known, left alone)
+            auto memWith = [&](quint64 id, double opacity, double fade) {
+                Engine::Memory m;
+                m.name = "Side";
+                m.fade = fade;
+                for (const QJsonValue &v : e.captureLayers()) {
+                    QJsonObject o = v.toObject();
+                    const bool me = o.value("id").toString().toULongLong() == id;
+                    o["included"] = me;
+                    if (me) o["opacity"] = opacity;
+                    m.layers.append(o);
+                }
+                return e.addMemory(m);
+            };
+            const int mA1 = memWith(ia, 1.0, 2.0), mB1 = memWith(ib, 1.0, 2.0), mA0 = memWith(ia, 0.0, 2.0);
+            e.recallMemory(mA1);
+            e.advanceFades(1.0);
+            CHECK(near(op(ia), 0.5)); // eased: half way at half the time
+            e.recallMemory(mB1);       // another layer: A goes on
+            e.advanceFades(1.0);
+            CHECK(near(op(ia), 1.0) && near(op(ib), 0.5));
+            e.recallMemory(mA0); // A again: this one takes it over
+            e.advanceFades(1.0);
+            CHECK(near(op(ia), 0.5) && near(op(ib), 1.0));
+            e.recallMemory(mA1); // in the middle of a fade: from where it is
+            e.advanceFades(1.0);
+            CHECK(near(op(ia), 0.75));
+            e.advanceFades(5.0);
+            CHECK(near(op(ia), 1.0) && !e.isFading());
+
+            // The composition: the level and the volume each on their own clock
+            {
+                e.fadeMaster(1.0, 0);
+                e.setAudioVolume(1.0f);
+                Engine::Memory lv, vol;
+                lv.fade = vol.fade = 2.0;
+                lv.composition = QJsonObject{{"included", true}, {"level", 0.0}};
+                vol.composition = QJsonObject{{"included", true}, {"volume", 0.0}};
+                const int ml = e.addMemory(lv), mv = e.addMemory(vol);
+                e.recallMemory(ml);
+                e.advanceFades(1.0);
+                CHECK(near(e.masterTarget(), 0.5));
+                e.recallMemory(mv); // the volume only: the level goes on
+                e.advanceFades(1.0);
+                CHECK(near(e.masterTarget(), 0.0) && near(e.audioVolume(), 0.5));
+                e.advanceFades(2.0);
+                e.removeMemory(mv);
+                e.removeMemory(ml);
+                e.fadeMaster(1.0, 0);
+                e.setAudioVolume(1.0f);
+            }
+
+            // A step's action is its memory's longest time
+            CHECK(near(e.memoryDuration(e.memory(mA1).id), 2.0) && e.memoryDuration(987654) == 0);
+            {
+                Engine::Memory m = e.memory(mB1);
+                QJsonArray ls = m.layers;
+                for (int k = 0; k < ls.size(); ++k) {
+                    QJsonObject o = ls[k].toObject();
+                    if (o.value("included").toBool()) o["timing"] = QJsonObject{{"opacity", 5.0}, {"opacity/curve", "linear"}};
+                    ls[k] = o;
+                }
+                m.layers = ls;
+                e.setMemory(mB1, m);
+                CHECK(near(e.memoryDuration(m.id), 5.0));
+                m.layers = e.memory(mA1).layers; // back to the memory's fade (2 s)
+                for (int k = 0; k < m.layers.size(); ++k) {
+                    QJsonObject o = m.layers[k].toObject();
+                    const bool me = o.value("id").toString().toULongLong() == ib;
+                    o["included"] = me;
+                    o["opacity"] = 1.0;
+                    m.layers[k] = o;
+                }
+                e.setMemory(mB1, m);
+            }
+
+            // Pre-wait, post-wait, follow / auto-follow / wait
+            std::vector<int> fired;
+            e.setRecaller([&](int mi) {
+                fired.push_back(mi);
+                e.recallMemory(mi);
+            });
+            Engine::Sequence seq;
+            seq.name = "Waits";
+            Engine::SequenceStep s0, s1, s2;
+            s0.memory = e.memory(mA1).id;
+            s0.preWait = 1.0;
+            s0.postWait = 0.5;
+            s0.next = Engine::StepContinue::Follow; // the next GO 0.5 s after this one is triggered
+            s1.memory = e.memory(mB1).id;
+            s1.postWait = 0.5;
+            s1.next = Engine::StepContinue::AutoFollow; // the next GO 0.5 s after its 2 s action
+            s2.memory = e.memory(mA0).id;               // Wait
+            seq.steps = {s0, s1, s2};
+            e.setCurrentSequence(e.addSequence(seq));
+            CHECK(e.sequenceGo() && e.sequencePosition() == 0 && fired.empty()); // in its pre-wait
+            CHECK(e.sequenceRunning() && e.sequenceRuns().size() == 1 && !e.sequenceRuns()[0].fired);
+            e.advanceSequence(0.5);
+            CHECK(fired.empty());
+            e.advanceSequence(0.5);
+            CHECK(fired == std::vector<int>{mA1} && e.sequencePosition() == 0);
+            e.advanceSequence(0.4);
+            CHECK(e.sequencePosition() == 0);
+            e.advanceSequence(0.1); // 1.5 s: pre-wait + post-wait, the next one without waiting for the action
+            CHECK(fired == (std::vector<int>{mA1, mB1}) && e.sequencePosition() == 1);
+            e.advanceSequence(2.4);
+            CHECK(e.sequencePosition() == 1);
+            e.advanceSequence(0.2); // its action (2 s) and its post-wait (0.5 s) over
+            CHECK(fired == (std::vector<int>{mA1, mB1, mA0}) && e.sequencePosition() == 2);
+            e.advanceSequence(10.0);
+            CHECK(fired.size() == 3 && !e.sequenceRunning() && e.sequenceRuns().empty()); // Wait: GO is awaited
+            // All at once: the time beyond each GO is carried over to the next
+            fired.clear();
+            e.setSequencePosition(-1);
+            e.sequenceGo();
+            e.advanceSequence(10.0);
+            CHECK(fired == (std::vector<int>{mA1, mB1, mA0}) && e.sequencePosition() == 2);
+            // Stopped: what was still to come does not come
+            fired.clear();
+            e.setSequencePosition(-1);
+            e.sequenceGo();
+            e.sequenceStop();
+            e.advanceSequence(10.0);
+            CHECK(fired.empty() && e.sequencePosition() == 0);
+            // GO during a pre-wait: the playhead has moved on, the next GO is the next step
+            fired.clear();
+            e.setSequencePosition(-1);
+            e.sequenceGo();
+            CHECK(e.sequenceNext() == 1);
+            // GO BACK: at once, and the waits running are stopped
+            e.setSequencePosition(2);
+            CHECK(e.sequenceBack() && e.sequencePosition() == 1 && fired == std::vector<int>{mB1});
+            e.advanceSequence(10.0);
+            CHECK(fired == std::vector<int>{mB1}); // neither step 0's pre-wait nor step 1's auto-follow
+            // Saved with the project
+            CHECK(e.saveProject(tmp + "/waits.fulskrin", {}, &err));
+            CHECK(e.loadProject(tmp + "/waits.fulskrin", nullptr, &err));
+            {
+                const Engine::Sequence w = e.sequence(e.currentSequence());
+                CHECK(w.steps.size() == 3 && near(w.steps[0].preWait, 1.0) && near(w.steps[0].postWait, 0.5) &&
+                      w.steps[0].next == Engine::StepContinue::Follow &&
+                      w.steps[1].next == Engine::StepContinue::AutoFollow && w.steps[2].next == Engine::StepContinue::Wait);
+            }
+            e.setRecaller(nullptr);
+            e.removeSequence(e.currentSequence());
+            for (int mi : {mA0, mB1, mA1}) e.removeMemory(mi); // the last first
+            e.removeLayer(e.indexOfId(ia));
+            e.removeLayer(e.indexOfId(ib));
+            e.setFadesManual(false);
+        }
         // A recall shows what was stored: a layer the memory does not know fades out and is hidden
         {
             const int xi = e.addLayer("Extra", V);
