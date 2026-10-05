@@ -18,7 +18,9 @@ Built with Qt 6, FFmpeg, and OpenGL 3.3. Cross-platform: macOS, Windows, Linux.
 
 **Memory system** — Save and recall layer states (cues). Every parameter fades smoothly to its stored value over a configurable duration. Undo/redo throughout.
 
-**Sequences** — Cue lists of memories played with GO (button, Space, OSC). Each step has a pre-wait, a post-wait and a continuation, as in QLab: *Wait* (the next step waits for GO), *Follow* (the next step goes once this one is triggered, plus its post-wait), *Auto-follow* (the next step goes once this one's fade is over, plus its post-wait). The waits and fades are drawn filling up as they run. Memories run side by side: a memory recalled takes over only the values it holds, the others keep fading.
+**Sequences** — Cue lists of memories played with GO (button, Space, OSC). Each step has a pre-wait, a post-wait and a continuation, as in QLab: *Wait* (the next step waits for GO), *Follow* (the next step goes once this one is triggered, plus its post-wait), *Auto-follow* (the next step goes once this one's fade is over, plus its post-wait). The waits and fades are drawn filling up as they run. Memories run side by side: a memory recalled takes over only the values it holds, the others keep fading. A step recalls a memory or drives a timeline: drag either onto it.
+
+**Timelines** — Numbers of the layers (and of the composition) animated over time, outside the sequences: opacity, volume, speed, ROI, color, mapping position and rotation, text settings, every ISF parameter. Each track is a *curve* (keys clicked, dragged or drawn freehand, eased from one to the next or held) or an *oscillator* (sine, triangle, saw, square; period, phase, center, amplitude). A timeline has a duration and loops once, endlessly or a number of times, forwards or ping-pong; the curves repeat their pattern, the oscillators run on without a jump. Several play side by side. The sequences drive their transport — a timeline dropped on a step plays it, and the step can pause, stop, rewind, seek or change its loop instead — so a timeline can keep turning while the next memories come, and stop many steps later. While a timeline plays, its values win over the memories' fades.
 
 **Sound** — Each layer plays its audio with volume, mute, and sync to playback (including speed). Mixed to stereo, meters included.
 
@@ -100,6 +102,7 @@ cmake -S . -B build && cmake --build build -j
 - UDP 1234 (OSC), TCP 5678 (OSCQuery HTTP + WebSocket)
 - Zeroconf announce (`_oscjson._tcp`, `_osc._udp`)
 - Full namespace remote control
+- Timelines: `/timelines/<n>/play`, `pause`, `stop`, `rewind`, `seek <seconds>`, `playing`
 - Address patterns and bundles supported
 
 ## Known Limitations
@@ -114,7 +117,6 @@ cmake -S . -B build && cmake --build build -j
 - One output window. No per-projector edge blending automation (the SoftEdges effect enables manual blending).
 
 **Features not in V1:**
-- Timeline or keyframe animation
 - MIDI or DMX input
 - Camera, texture, or network inputs (Syphon/Spout/NDI/OMT receive)
 - Nested groups

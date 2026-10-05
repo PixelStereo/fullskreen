@@ -49,6 +49,8 @@ static double applyEasing(double t, EasingCurve curve)
     return t;
 }
 
+double easeCurve(double t, int curve) { return applyEasing(t, EasingCurve(std::clamp(curve, 0, 5))); }
+
 // The Text generator's values that fade, with their timing keys ("text/<key>"; their path in the state is
 // source/<key>). The content is "typed" over its time.
 enum TextNum { TextSize, TextColor, TextLineHeight, TextLetterSpacing, TextOutline, TextOutlineColor, TextShadowColor,
@@ -846,6 +848,7 @@ void Engine::advanceFades(double dt)
     stepTransitions(dt);
     stepTypewriters(dt);
     stepCompositionFade(dt);
+    stepAnimations(dt);
 }
 
 void Engine::stepTypewriters(double dt)

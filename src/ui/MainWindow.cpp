@@ -8,6 +8,7 @@
 #include "MediaBin.h"
 #include "MemoryPanel.h"
 #include "SequencePanel.h"
+#include "TimelinePanel.h"
 #include "OutputWindow.h"
 #include "Osc.h"
 #include "SettingsPanel.h"
@@ -298,6 +299,13 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_seqWindow, &SequenceWindow::edited, this, &MainWindow::markDirty);
     connect(m_seqBar, &SequenceBar::stopRequested, m_engine, &Engine::sequenceStop);
     connect(m_seqWindow, &SequenceWindow::stopRequested, m_engine, &Engine::sequenceStop);
+    m_timelineWindow = new TimelineWindow(m_engine, this);
+    connect(m_timelineWindow, &TimelineWindow::edited, this, &MainWindow::markDirty);
+    connect(m_seqBar, &SequenceBar::timelinesRequested, this, &MainWindow::openTimelines);
+    connect(m_seqWindow, &SequenceWindow::timelinesRequested, this, &MainWindow::openTimelines);
+    connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
+        m_timelineWindow->setCurrentLayer(r >= 0 ? m_engine->layerId(r) : 0);
+    });
     // A step's memory, when its pre-wait is over (GO, Space, OSC, or a step that follows): undoable; the bar
     // then shows the step unchanged
     m_engine->setRecaller([this](int memory) {
@@ -514,6 +522,7 @@ void MainWindow::buildMenus()
     seq->addAction(QStringLiteral("Stop the waits (pre-waits and follows still to come)"), m_engine, &Engine::sequenceStop);
     seq->addSeparator();
     seq->addAction(QStringLiteral("Sequences…"), this, &MainWindow::openSequences);
+    seq->addAction(QStringLiteral("Timelines…"), this, &MainWindow::openTimelines);
 
     QMenu *comp = menuBar()->addMenu(QStringLiteral("C&omposition"));
     comp->addAction(QStringLiteral("Composition Size (Composition tab)"), this, [this] { m_tabs->setCurrentWidget(m_tabs->widget(1)); });
@@ -1301,6 +1310,13 @@ void MainWindow::openSequences()
     m_seqWindow->show();
     m_seqWindow->raise();
     m_seqWindow->activateWindow();
+}
+
+void MainWindow::openTimelines()
+{
+    m_timelineWindow->show();
+    m_timelineWindow->raise();
+    m_timelineWindow->activateWindow();
 }
 
 void MainWindow::togglePlayCurrent()

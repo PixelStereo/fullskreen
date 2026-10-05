@@ -745,6 +745,7 @@ void Engine::frame(double dt)
         stepTransitions(m_realDt);
         stepTypewriters(m_realDt);
         stepCompositionFade(m_realDt);
+        stepAnimations(m_realDt); // after the fades: a timeline playing wins over them
     }
     markNeeded();
     for (auto &l : m_layers) updateSource(*l, dt);

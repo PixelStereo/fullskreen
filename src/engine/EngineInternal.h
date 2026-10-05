@@ -15,6 +15,11 @@ inline constexpr int kMeshSubdiv = 40;
 // The Text generator's settings in a layer state (Project.cpp)
 QJsonObject textJson(const TextSource &t);
 void readTextJson(TextSource &t, const QJsonObject &o); // onto the current values, then kept in range
+// An easing of the memories' fades (0 linear, 1 in, 2 out, 3 in-out, 4 in cubic, 5 out cubic) at t in 0..1
+double easeCurve(double t, int curve);
+// Keys of a timeline's loop mode in a project ("once", "loop", "pingPong")
+QString animLoopKey(Engine::AnimLoop l);
+Engine::AnimLoop animLoopFromKey(const QString &k);
 
 struct Engine::Garbage {
     std::unique_ptr<VideoDecoder> video;
