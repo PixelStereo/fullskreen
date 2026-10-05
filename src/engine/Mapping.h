@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QPointF>
 #include <QRectF>
+#include <QSize>
 #include <vector>
 struct Homography {
     double a = 1, b = 0, c = 0, d = 0, e = 1, f = 0, g = 0, h = 0;
@@ -48,6 +49,11 @@ public:
     // Moves / scales the whole shape so that its bounding box becomes `to` (corners and mesh warp alike:
     // an axis-aligned scale + translation composes exactly with the homography).
     void setBounds(const QRectF &to);
+
+    // Angle of the top edge, in degrees, measured in pixels of a composition of size `comp`
+    double angle(QSize comp) const;
+    // Turns the whole shape (corners and mesh) around the middle of its bounds, in pixels of `comp`
+    void rotate(double degrees, QSize comp);
 
     // Final position (homography + warp) for (u,v) in [0,1].
     QPointF map(double u, double v) const;

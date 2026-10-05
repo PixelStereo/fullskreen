@@ -267,3 +267,24 @@ void Mapping::fromJson(const QJsonObject &o)
     soft.fromJson(o.value("soft").toObject());
     ++revision;
 }
+
+double Mapping::angle(QSize comp) const
+{
+    const QPointF d = corners[1] - corners[0];
+    return std::atan2(d.y() * comp.height(), d.x() * comp.width()) * 180 / 3.14159265358979323846;
+}
+
+void Mapping::rotate(double degrees, QSize comp)
+{
+    if (std::abs(degrees) < 1e-9) return;
+    const double W = std::max(1, comp.width()), H = std::max(1, comp.height());
+    const double a = degrees * 3.14159265358979323846 / 180, c = std::cos(a), s = std::sin(a);
+    const QPointF o = bounds().center();
+    auto turn = [&](QPointF v) { // a vector in normalized units
+        const double x = v.x() * W, y = v.y() * H;
+        return QPointF((x * c - y * s) / W, (x * s + y * c) / H);
+    };
+    for (QPointF &p : corners) p = o + turn(p - o);
+    for (QPointF &p : offsets) p = turn(p);
+    ++revision;
+}

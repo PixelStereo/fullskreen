@@ -200,19 +200,53 @@ private:
     float m_before, m_after;
 };
 
-// Animation edited (tracks, duration, loop, repeat, speed)
+// A timeline (animation) edited: tracks, keys, duration, loop, repeat, speed, name. By id (the list may change).
+// Edits with the same non-empty merge key that follow one another (a key dragged, the arrows of a number) are one step.
 class SetAnimation : public QUndoCommand
 {
 public:
-    SetAnimation(Engine *e, quint64 id, const Engine::Animation &before, const Engine::Animation &after, const QString &text);
-    void undo() override;
-    void redo() override;
+    SetAnimation(Engine *e, quint64 id, const Engine::Animation &before, const Engine::Animation &after, const QString &text,
+                 const QString &mergeKey = {});
+    void undo() override { apply(m_before); }
+    void redo() override { apply(m_after); }
+    int id() const override { return m_mergeKey.isEmpty() ? -1 : 9201; }
+    bool mergeWith(const QUndoCommand *other) override;
 
 private:
     void apply(const Engine::Animation &a);
     Engine *m_e;
     quint64 m_id;
     Engine::Animation m_before, m_after;
+    QString m_mergeKey;
+};
+
+// A timeline added at `index` (applied by redo); its id is kept across undo / redo
+class AddAnimation : public QUndoCommand
+{
+public:
+    AddAnimation(Engine *e, const Engine::Animation &a, int index, const QString &text);
+    void undo() override;
+    void redo() override;
+    quint64 animationId() const { return m_a.id; }
+
+private:
+    Engine *m_e;
+    Engine::Animation m_a;
+    int m_index;
+};
+
+// A timeline deleted (applied by redo); undo puts it back with its id: the steps that drive it work again
+class RemoveAnimation : public QUndoCommand
+{
+public:
+    RemoveAnimation(Engine *e, int index);
+    void undo() override { m_e->addAnimation(m_a, m_index); }
+    void redo() override;
+
+private:
+    Engine *m_e;
+    Engine::Animation m_a;
+    int m_index;
 };
 
 } // namespace cmd

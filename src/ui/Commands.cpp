@@ -349,20 +349,60 @@ bool SetOpacityIn::mergeWith(const QUndoCommand *o)
 
 void SetOpacityIn::apply(float v) { m_e->setOpacityIn(m_e->indexOfId(m_layer), m_viewport, v); }
 
-SetAnimation::SetAnimation(Engine *e, quint64 id, const Engine::Animation &before, const Engine::Animation &after, const QString &text)
-    : m_e(e), m_id(id), m_before(before), m_after(after)
+SetAnimation::SetAnimation(Engine *e, quint64 id, const Engine::Animation &before, const Engine::Animation &after,
+                           const QString &text, const QString &mergeKey)
+    : m_e(e), m_id(id), m_before(before), m_after(after), m_mergeKey(mergeKey)
 {
     setText(text);
 }
 
-void SetAnimation::undo() { apply(m_before); }
-
-void SetAnimation::redo() { apply(m_after); }
+bool SetAnimation::mergeWith(const QUndoCommand *other)
+{
+    const auto *o = static_cast<const SetAnimation *>(other); // same id(): a SetAnimation
+    if (o->m_id != m_id || o->m_mergeKey != m_mergeKey) return false;
+    m_after = o->m_after;
+    return true;
+}
 
 void SetAnimation::apply(const Engine::Animation &a)
 {
     const int i = m_e->indexOfAnimation(m_id);
     if (i >= 0) m_e->setAnimation(i, a);
+}
+
+AddAnimation::AddAnimation(Engine *e, const Engine::Animation &a, int index, const QString &text)
+    : m_e(e), m_a(a), m_index(index)
+{
+    setText(text);
+}
+
+void AddAnimation::redo()
+{
+    const int i = m_e->addAnimation(m_a, m_index); // the first time: gets its id
+    m_a.id = m_e->animation(i).id;
+}
+
+void AddAnimation::undo()
+{
+    const int i = m_e->indexOfAnimation(m_a.id);
+    if (i >= 0) {
+        m_a = m_e->animation(i); // as it is now, should it be redone
+        m_e->removeAnimation(i);
+    }
+}
+
+RemoveAnimation::RemoveAnimation(Engine *e, int index) : m_e(e), m_a(e->animation(index)), m_index(index)
+{
+    setText(QStringLiteral("Delete Timeline"));
+}
+
+void RemoveAnimation::redo()
+{
+    const int i = m_e->indexOfAnimation(m_a.id);
+    if (i >= 0) {
+        m_index = i;
+        m_e->removeAnimation(i);
+    }
 }
 
 } // namespace cmd

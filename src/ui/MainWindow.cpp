@@ -300,6 +300,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_seqBar, &SequenceBar::stopRequested, m_engine, &Engine::sequenceStop);
     connect(m_seqWindow, &SequenceWindow::stopRequested, m_engine, &Engine::sequenceStop);
     m_timelineWindow = new TimelineWindow(m_engine, m_undo, this);
+    m_timelineWindow->addActions({m_undoAction, m_redoAction}); // undo / redo from the Timelines window too
     connect(m_timelineWindow, &TimelineWindow::edited, this, &MainWindow::markDirty);
     connect(m_seqBar, &SequenceBar::timelinesRequested, this, &MainWindow::openTimelines);
     connect(m_seqWindow, &SequenceWindow::timelinesRequested, this, &MainWindow::openTimelines);

@@ -28,6 +28,7 @@
 #include <QMutex>
 #include <QObject>
 #include <QRecursiveMutex>
+#include <limits>
 #include <QSize>
 #include <atomic>
 #include <condition_variable>
@@ -240,7 +241,8 @@ public:
         double t = 0, v = 0; // seconds into the timeline, value
         int curve = 0;       // towards the next key: an easing (0 linear, 1 in, 2 out, 3 in-out, 4 in cubic,
                              // 5 out cubic) or kAnimHold
-        bool isCurrentValue = false; // if true (at t=0), use the parameter's current value instead of v
+        bool isCurrentValue = false; // the first key only: starts from the value the number has when the timeline
+                                     // starts (v is then only a placeholder), so that nothing jumps
     };
     struct AnimTrack {
         quint64 layer = 0; // the layer driven (its id; 0: the composition)
@@ -251,6 +253,9 @@ public:
         AnimWave wave = AnimWave::Sine;
         double period = 1, center = 0.5, amplitude = 0.5, phase = 0; // oscillator (phase: 0..1 of a period)
         double valueAt(double position, double played) const; // nan: no value (a curve without keys)
+        double keyValue(size_t k) const; // a key's value (the one captured for a "current value" key)
+        // Where it is (not saved): the value read when the timeline started, for a first key "current value"
+        double captured = std::numeric_limits<double>::quiet_NaN();
     };
     struct Animation {
         quint64 id = 0; // stable (sequences refer to it); given by addAnimation
@@ -258,14 +263,20 @@ public:
         double duration = 4; // seconds of one pass
         AnimLoop loop = AnimLoop::Loop;
         int repeat = 0; // passes of Loop / PingPong (0: endless)
-        double speed = 1.0; // playback speed (0.1 to 4x)
+        double speed = 1.0; // playback speed (0.1 to 10x)
         std::vector<AnimTrack> tracks;
         // Where it is (not saved)
         AnimState state = AnimState::Stopped;
-        double clock = 0; // seconds played since its start
+        double clock = 0;      // seconds played since its start (or since its loop mode last changed)
+        bool reversed = false; // the first pass goes backwards (a loop mode changed during a ping-pong's way back)
         double length() const; // the time it plays from the start (infinity: endless)
         double position(double clock) const; // within the pass: 0..duration
         double position() const { return position(clock); }
+        bool backwardsAt(double clock) const; // the pass at that clock goes from the end to the start
+        double clockAt(double position) const; // the clock giving `position` within the pass it is in now
+        // A new loop mode / repeat while it runs: it goes on from where it is, the way it goes, and the passes
+        // count from the one it is in (Once: it ends this pass, then stops — it does not jump to the end)
+        void setLoop(AnimLoop loop, int repeat);
     };
     struct AnimParam {
         QString path, label;

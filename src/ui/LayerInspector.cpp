@@ -1468,10 +1468,31 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
         grid->addWidget(link, 1, 3);
         grid->addWidget(new QLabel(QStringLiteral("Y")), 1, 4);
         grid->addWidget(m_scaleY, 1, 5);
+        if (s.isViewport) { // a viewport is an upright rectangle of the composition
+            delete m_rotation;
+            m_rotation = nullptr;
+        } else {
+            m_rotation->setWrapping(true);
+            m_rotation->setRange(-180, 180);
+            auto *rotLabel = new ResetLabel(QStringLiteral("Rotation"), [this] { m_rotation->setValue(0); });
+            grid->addWidget(rotLabel, 2, 0);
+            grid->addWidget(m_rotation, 2, 2);
+        }
         grid->setColumnStretch(2, 1);
         grid->setColumnStretch(5, 1);
         v->addLayout(grid);
         refreshSpatial();
+        if (m_rotation) {
+            connect(m_rotation, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, comp](double deg) {
+                editMapping(QStringLiteral("Rotation"), [&](Mapping &m) {
+                    double d = std::fmod(deg - m.angle(comp), 360.0); // the shortest way round
+                    if (d > 180) d -= 360;
+                    if (d <= -180) d += 360;
+                    m.rotate(d, comp);
+                }, true);
+                refreshSpatial();
+            });
+        }
 
         connect(link, &QToolButton::toggled, this, [this](bool on) { m_scaleLinked = on; });
         auto applyBounds = [this, comp](const QString &text, const std::function<QRectF(QRectF)> &fn) {
@@ -1913,13 +1934,19 @@ void LayerInspector::refreshSpatial()
 {
     if (!m_posX) return;
     QRectF b;
+    double angle = 0;
+    const QSize comp = m_engine->compositionSize();
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(m_layer);
         if (!l) return;
         b = l->mapping.bounds();
+        angle = l->mapping.angle(comp);
     }
-    const QSize comp = m_engine->compositionSize();
+    if (m_rotation && !m_rotation->hasFocus() && std::abs(m_rotation->value() - angle) > 1e-6) {
+        QSignalBlocker blk(m_rotation);
+        m_rotation->setValue(angle);
+    }
     const double values[4] = {b.center().x() * comp.width(), b.center().y() * comp.height(), b.width() * 100.0,
                               b.height() * 100.0};
     QDoubleSpinBox *boxes[4] = {m_posX, m_posY, m_scaleX, m_scaleY};
