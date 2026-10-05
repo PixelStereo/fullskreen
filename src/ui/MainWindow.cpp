@@ -1527,10 +1527,10 @@ void MainWindow::autosave()
     }
 }
 
-void MainWindow::offerRecovery()
+bool MainWindow::offerRecovery()
 {
     const QString path = autosavePath();
-    if (!QFile::exists(path)) return;
+    if (!QFile::exists(path)) return false;
     QFile f(path);
     QJsonObject ui;
     if (f.open(QIODevice::ReadOnly)) ui = QJsonDocument::fromJson(f.readAll()).object().value("ui").toObject();
@@ -1548,7 +1548,7 @@ void MainWindow::offerRecovery()
     box.exec();
     if (box.clickedButton() != restore) {
         QFile::remove(path);
-        return;
+        return false;
     }
     QJsonObject loadedUi;
     QString err;
@@ -1566,6 +1566,7 @@ void MainWindow::offerRecovery()
     } else {
         statusBar()->showMessage(QStringLiteral("Session restored"), 6000);
     }
+    return true;
 }
 
 void MainWindow::closeEvent(QCloseEvent *e)

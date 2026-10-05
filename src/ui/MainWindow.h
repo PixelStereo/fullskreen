@@ -34,7 +34,8 @@ public:
 
     bool openProject(const QString &path);
     // Offers to restore the session if the application did not exit normally.
-    void offerRecovery();
+    bool offerRecovery(); // true: the autosaved session was restored
+    bool maybeSave();     // unsaved changes: save, discard, or cancel (false)
     void setAutosaveEnabled(bool on) { m_autosaveEnabled = on; }
     void setQuiet(bool on) { m_quiet = on; } // tests: warnings in the status bar, no dialog
 
@@ -59,7 +60,6 @@ private:
     bool save();
     bool saveAs();
     bool saveTo(const QString &path);
-    bool maybeSave();
     bool isDirty() const;
     QJsonObject uiState() const;
     void autosave();

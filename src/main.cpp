@@ -2,6 +2,7 @@
 #include "MainWindow.h"
 #include "Widgets.h"
 
+#include <QFileInfo>
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QMessageBox>
@@ -96,8 +97,17 @@ int main(int argc, char *argv[])
             w.setAutosaveEnabled(false);
             w.setQuiet(true);
         }
-        else w.offerRecovery();
-        if (!project.isEmpty()) w.openProject(project);
+        const bool restored = !cli.isSet(shotOpt) && w.offerRecovery();
+        // A project given to open after a session was restored: the restored session is not dropped silently —
+        // the same project stays as restored; another one asks first whether to save the session
+        if (!project.isEmpty()) {
+            const auto same = [](const QString &a, const QString &b) {
+                const QString ca = QFileInfo(a).canonicalFilePath(), cb = QFileInfo(b).canonicalFilePath();
+                return !ca.isEmpty() && ca == cb;
+            };
+            if (!restored) w.openProject(project);
+            else if (!same(project, engine.projectPath()) && w.maybeSave()) w.openProject(project);
+        }
         if (cli.isSet(shotOpt)) {
             QTimer::singleShot(2500, &w, [&w, &cli, &shotOpt] {
                 w.grab().save(cli.value(shotOpt));
