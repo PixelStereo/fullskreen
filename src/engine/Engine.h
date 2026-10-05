@@ -41,6 +41,7 @@ class QOffscreenSurface;
 class QSurface;
 class QThread;
 class QWindow;
+class QTimer;
 
 class Engine : public QObject
 {
@@ -223,9 +224,39 @@ public:
 
     // --- Sequences: ordered steps, each recalling a memory (and carrying a text for the operator), played by
     // GO / GO BACK. Several sequences; one is current. Saved with the project; the position is not.
+    //
+    // A step waits its pre-wait after its GO, then recalls its memory, whose fade is the step's action (its
+    // duration: the memory's longest time). What comes next (as in QLab):
+    //  - Wait: nothing, the next step waits for GO (button, Space, OSC);
+    //  - Follow: the next step gets its GO once this one was triggered (pre-wait over), after the post-wait,
+    //    without waiting for the action to end;
+    //  - AutoFollow: the next step gets its GO once the action is over, after the post-wait.
+    // A memory recalled does not stop the ones still running: only the values it holds itself are taken over.
+    enum class StepContinue { Wait = 0, Follow = 1, AutoFollow = 2 };
     struct SequenceStep {
         quint64 memory = 0; // its id (0: none yet)
         QString text;
+        double preWait = 0, postWait = 0; // seconds
+        StepContinue next = StepContinue::Wait;
+    };
+    // A step on its way: since its GO, through its pre-wait, its action, and until the next step's GO
+    struct StepRun {
+        int step = -1;
+        quint64 memory = 0;
+        double elapsed = 0; // since its GO
+        double preWait = 0, duration = 0, postWait = 0;
+        StepContinue next = StepContinue::Wait;
+        bool fired = false, continued = false;
+        // When the next step gets its GO, counted from this one's GO (< 0: never — Wait)
+        double continueAt() const
+        {
+            switch (next) {
+            case StepContinue::Follow: return preWait + postWait;
+            case StepContinue::AutoFollow: return preWait + duration + postWait;
+            default: return -1;
+            }
+        }
+        double end() const { return std::max(preWait + duration, continueAt()); }
     };
     struct Sequence {
         QString name;
@@ -243,10 +274,19 @@ public:
     void setSequencePosition(int step);   // without recalling (the interface recalls, undoable)
     int sequenceNext() const;             // the step GO plays (-1: none — the end, without loop)
     int sequencePrevious() const;         // the step GO BACK plays (-1: none)
-    // GO / GO BACK / a given step, recalling its memory (OSC; the interface recalls through its undo stack)
+    // GO / a given step: its pre-wait, then its memory, then what follows (chain = false: at once, and nothing
+    // follows). GO BACK: the previous step at once, the waits still running are stopped.
     bool sequenceGo();
     bool sequenceBack();
-    bool sequenceGoTo(int step);
+    bool sequenceGoTo(int step, bool chain = true);
+    void sequenceStop();                     // the waits still running: no step comes from them any more
+    std::vector<StepRun> sequenceRuns() const; // the steps of the current sequence on their way
+    bool sequenceRunning() const;
+    void advanceSequence(double dt);         // moves the waits on (a timer does, except with setFadesManual)
+    // The memory a step recalls goes through this (the interface: its undo stack); recallMemory by default
+    void setRecaller(std::function<void(int memoryIndex)> f) { m_recaller = std::move(f); }
+    // A memory's action: its longest time (the fade, and the times of its own values)
+    double memoryDuration(quint64 id) const;
     void recallMemory(int i); // with its fade
     bool isFading() const;
     // The memory recalled last, and where its fade is (its longest time: values with times of their own included)
@@ -476,7 +516,7 @@ private:
     std::atomic<double> m_masterLevel{1.0};
     double m_masterTarget = 1.0, m_masterSpeed = 0.0; // units per second (0 = immediate)
     struct CompositionFade {
-        double elapsed = 0;
+        double levelElapsed = 0, volumeElapsed = 0; // each on its own clock: two memories can drive them
         bool level = false, volume = false;
         double levelFrom = 1, levelTo = 1, levelDur = 0, volumeDur = 0;
         float volumeFrom = 1, volumeTo = 1;
@@ -528,6 +568,11 @@ private:
     double m_screenHz = 60;
     std::vector<Sequence> m_sequences;
     int m_currentSequence = -1, m_sequencePosition = -1;
+    std::vector<StepRun> m_runs; // of the current sequence
+    std::function<void(int)> m_recaller;
+    QTimer *m_sequenceTimer = nullptr;
+    QElapsedTimer m_sequenceClock;
+    void startSequenceTimer();
     QJsonArray sequencesToJson() const;
     void sequencesFromJson(const QJsonArray &a, int current);
     std::atomic<bool> m_fadesManual{false};
