@@ -28,15 +28,22 @@ double Engine::AnimTrack::valueAt(double position, double played) const
         return center + amplitude * w;
     }
     if (keys.empty()) return std::numeric_limits<double>::quiet_NaN();
-    if (position <= keys.front().t) return keys.front().v;
-    if (position >= keys.back().t) return keys.back().v;
+    if (position <= keys.front().t) return keyValue(0);
+    if (position >= keys.back().t) return keyValue(keys.size() - 1);
     for (size_t k = 0; k + 1 < keys.size(); ++k) {
         const AnimKey &a = keys[k], &b = keys[k + 1];
         if (position >= b.t) continue;
-        if (a.curve == kAnimHold || b.t - a.t <= 1e-9) return a.v;
-        return a.v + (b.v - a.v) * easeCurve((position - a.t) / (b.t - a.t), a.curve);
+        const double va = keyValue(k), vb = keyValue(k + 1);
+        if (a.curve == kAnimHold || b.t - a.t <= 1e-9) return va;
+        return va + (vb - va) * easeCurve((position - a.t) / (b.t - a.t), a.curve);
     }
-    return keys.back().v;
+    return keyValue(keys.size() - 1);
+}
+
+double Engine::AnimTrack::keyValue(size_t k) const
+{
+    if (k == 0 && !keys.empty() && keys[0].isCurrentValue && std::isfinite(captured)) return captured;
+    return k < keys.size() ? keys[k].v : std::numeric_limits<double>::quiet_NaN();
 }
 
 static double passDuration(double d) { return std::max(kMinDuration, d); }
@@ -48,19 +55,65 @@ double Engine::Animation::length() const
     return repeat > 0 ? d * repeat : std::numeric_limits<double>::infinity();
 }
 
+// The pass at clock c (0, 1…) and the time within it
+static void passAt(const Engine::Animation &a, double c, double *pass, double *within)
+{
+    const double d = passDuration(a.duration);
+    c = std::clamp(c, 0.0, a.length());
+    if (a.loop == Engine::AnimLoop::Once) {
+        *pass = 0;
+        *within = std::min(c, d);
+        return;
+    }
+    *pass = std::floor(c / d);
+    *within = c - *pass * d;
+    if (std::isfinite(a.length()) && c >= a.length()) { // the end of the last pass
+        *pass = std::max(0, a.repeat - 1);
+        *within = d;
+    }
+}
+
+bool Engine::Animation::backwardsAt(double c) const
+{
+    double pass = 0, within = 0;
+    passAt(*this, c, &pass, &within);
+    if (loop == AnimLoop::PingPong) return std::fmod(pass + (reversed ? 1 : 0), 2.0) == 1.0;
+    return reversed && pass == 0;
+}
+
 double Engine::Animation::position(double c) const
 {
+    double pass = 0, within = 0;
+    passAt(*this, c, &pass, &within);
+    return backwardsAt(c) ? passDuration(duration) - within : within;
+}
+
+double Engine::Animation::clockAt(double pos) const
+{
     const double d = passDuration(duration);
-    c = std::clamp(c, 0.0, length());
-    if (loop == AnimLoop::Once) return c;
-    double pass = std::floor(c / d);
-    double within = c - pass * d;
-    if (std::isfinite(length()) && c >= length()) { // the end of the last pass
-        pass = repeat - 1;
-        within = d;
+    pos = std::clamp(pos, 0.0, d);
+    double pass = 0, within = 0;
+    passAt(*this, clock, &pass, &within);
+    return pass * d + (backwardsAt(clock) ? d - pos : pos);
+}
+
+void Engine::Animation::setLoop(AnimLoop l, int n)
+{
+    n = std::max(0, n);
+    if (l == loop && n == repeat) return;
+    if (state == AnimState::Stopped) {
+        loop = l;
+        repeat = n;
+        clock = 0;
+        reversed = false;
+        return;
     }
-    const bool backwards = loop == AnimLoop::PingPong && std::fmod(pass, 2.0) == 1.0;
-    return backwards ? d - within : within;
+    const double pos = position(), d = passDuration(duration);
+    const bool back = backwardsAt(clock);
+    loop = l;
+    repeat = n;
+    reversed = back;
+    clock = back ? d - pos : pos; // within the first pass of the new mode
 }
 
 // ---------------------------------------------------------------------------
@@ -116,14 +169,23 @@ void Engine::setAnimation(int i, const Animation &a)
         Lock lk(&m_mutex);
         if (i < 0 || i >= int(m_animations.size())) return;
         Animation &x = m_animations[size_t(i)];
-        const AnimState state = x.state;
-        const double clock = x.clock;
-        const quint64 id = x.id;
+        const Animation old = x;
         x = a;
-        x.id = id;
-        x.state = state;
-        x.clock = std::min(clock, x.length());
-        for (AnimTrack &t : x.tracks) sortKeys(t);
+        x.id = old.id;
+        // Where it is stays: its clock, its way, the values captured when it started
+        x.state = old.state;
+        x.clock = old.clock;
+        x.reversed = old.reversed;
+        x.loop = old.loop;
+        x.repeat = old.repeat;
+        x.setLoop(a.loop, a.repeat); // a new loop mode: from where it is, without a jump
+        x.clock = std::min(x.clock, x.length());
+        for (AnimTrack &t : x.tracks) {
+            sortKeys(t);
+            t.captured = std::numeric_limits<double>::quiet_NaN();
+            for (const AnimTrack &o : old.tracks)
+                if (o.layer == t.layer && o.param == t.param) t.captured = o.captured;
+        }
     }
     emit animationsChanged();
 }
@@ -156,9 +218,21 @@ void Engine::controlAnimation(quint64 id, AnimAction action, double time, AnimLo
 
 void Engine::controlLocked(Animation *a, AnimAction action, double time, AnimLoop loop, int repeat)
 {
+    // The values the "current value" keys start from: read as the timeline starts
+    auto capture = [this, a] {
+        for (AnimTrack &t : a->tracks) {
+            double v = 0;
+            const bool cur = !t.oscillator && !t.keys.empty() && t.keys.front().isCurrentValue;
+            t.captured = cur && animParamValue(t.layer, t.param, &v) ? v : std::numeric_limits<double>::quiet_NaN();
+        }
+    };
     switch (action) {
     case AnimAction::Play:
-        if (a->state == AnimState::Stopped) a->clock = 0;
+        if (a->state == AnimState::Stopped) {
+            a->clock = 0;
+            a->reversed = false;
+            capture();
+        }
         a->state = AnimState::Playing;
         applyAnimation(*a); // its first values now, not a frame later
         break;
@@ -168,22 +242,25 @@ void Engine::controlLocked(Animation *a, AnimAction action, double time, AnimLoo
     case AnimAction::Stop:
         a->state = AnimState::Stopped;
         a->clock = 0;
+        a->reversed = false;
         break;
     case AnimAction::Rewind:
         a->clock = 0;
+        a->reversed = false;
+        capture();
         applyAnimation(*a);
         break;
     case AnimAction::Seek:
+        if (a->state == AnimState::Stopped) {
+            a->state = AnimState::Paused; // stays where it was sought
+            a->reversed = false;
+            capture();
+        }
         a->clock = std::clamp(time, 0.0, std::min(a->length(), 1e9));
-        if (a->state == AnimState::Stopped) a->state = AnimState::Paused; // stays where it was sought
         applyAnimation(*a);
         break;
     case AnimAction::LoopMode:
-        a->loop = loop;
-        a->repeat = std::max(0, repeat);
-        // Don't clamp a->clock to the new length: let position() handle it.
-        // If a timeline is looping and we change to Once, it should finish the current
-        // loop naturally, not jump to the end.
+        a->setLoop(loop, repeat); // from where it is: Once ends the pass it is in, no jump to the end
         break;
     }
 }
@@ -193,16 +270,6 @@ void Engine::applyAnimation(Animation &a)
     const double pos = a.position(), played = std::min(a.clock, a.length());
     for (const AnimTrack &t : a.tracks) {
         if (!t.enabled || t.param.isEmpty()) continue;
-
-        // Handle "current value" keyframe at t=0 (start of timeline)
-        if (pos <= 1e-9 && !t.keys.empty() && t.keys.front().t <= 1e-9 && t.keys.front().isCurrentValue) {
-            double currentValue = 0;
-            if (animParamValue(t.layer, t.param, &currentValue)) {
-                setAnimParam(t.layer, t.param, currentValue);
-                continue;
-            }
-        }
-
         const double v = t.valueAt(pos, played);
         if (std::isfinite(v)) setAnimParam(t.layer, t.param, v);
     }
@@ -218,6 +285,7 @@ void Engine::stepAnimations(double dt)
         if (a.clock >= a.length()) { // over: its last values stay
             a.state = AnimState::Stopped;
             a.clock = 0;
+            a.reversed = false;
         }
     }
 }
@@ -231,29 +299,6 @@ static double wrapDegrees(double d)
     if (d <= -180) d += 360;
     if (d > 180) d -= 360;
     return d;
-}
-
-// Angle of the mapping's top edge, in degrees, measured in pixels of the composition
-static double mappingAngle(const Mapping &m, QSize comp)
-{
-    const QPointF d = m.corners[1] - m.corners[0];
-    return std::atan2(d.y() * comp.height(), d.x() * comp.width()) * 180 / kPi;
-}
-
-// Turns the mapping (corners and mesh) around the middle of its bounds, in pixels of the composition
-static void rotateMapping(Mapping &m, double degrees, QSize comp)
-{
-    if (std::abs(degrees) < 1e-9) return;
-    const double W = std::max(1, comp.width()), H = std::max(1, comp.height());
-    const double a = degrees * kPi / 180, c = std::cos(a), s = std::sin(a);
-    const QPointF o = m.bounds().center();
-    auto turn = [&](QPointF v) { // a vector in normalized units
-        const double x = v.x() * W, y = v.y() * H;
-        return QPointF((x * c - y * s) / W, (x * s + y * c) / H);
-    };
-    for (QPointF &p : m.corners) p = o + turn(p - o);
-    for (QPointF &p : m.offsets) p = turn(p);
-    ++m.revision;
 }
 
 static const IsfInput *findInput(const IsfInstance *inst, const QString &name)
@@ -306,9 +351,9 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
     if (a == "mapping" && p.size() == 2) {
         Mapping &m = l.mapping;
         if (p[1] == "rotation") {
-            const double now = mappingAngle(m, comp);
+            const double now = m.angle(comp);
             if (get) *get = now;
-            if (set) rotateMapping(m, wrapDegrees(*set - now), comp);
+            if (set) m.rotate(wrapDegrees(*set - now), comp);
             return true;
         }
         if (p[1] == "x" || p[1] == "y") {
@@ -535,8 +580,8 @@ QJsonArray Engine::animationsToJson() const
             for (const AnimKey &k : t.keys) {
                 QJsonArray kv{k.t, k.v};
                 if (k.curve == kAnimHold) kv.append(QStringLiteral("hold"));
-                else if (k.curve != 3) kv.append(k.curve);
-                if (k.isCurrentValue) kv.append(true); // 4th element: current value flag
+                else if (k.curve != 3 || k.isCurrentValue) kv.append(k.curve);
+                if (k.isCurrentValue) kv.append(QStringLiteral("current")); // [t, v, curve, "current"]
                 keys.append(kv);
             }
             if (!keys.isEmpty()) o["keys"] = keys; // an oscillator keeps the curve it had, should it go back to it
@@ -585,7 +630,7 @@ void Engine::animationsFromJson(const QJsonArray &arr)
                 key.t = std::clamp(k[0].toDouble(), 0.0, a.duration);
                 key.v = k[1].toDouble();
                 key.curve = k.size() < 3 ? 3 : k[2].toString() == "hold" ? kAnimHold : std::clamp(k[2].toInt(3), 0, 5);
-                if (k.size() >= 4) key.isCurrentValue = k[3].toBool(false);
+                key.isCurrentValue = t.keys.empty() && k.size() >= 4 && k[3].toString() == "current"; // the first key only
                 t.keys.push_back(key);
             }
             sortKeys(t);

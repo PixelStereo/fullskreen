@@ -158,7 +158,7 @@ double Engine::stepDuration(const SequenceStep &st) const
         if (a.id != st.timeline) continue;
         const double len = a.length();
         if (!std::isfinite(len)) return 0; // endless: nothing to wait for
-        return a.state == AnimState::Stopped ? len : std::max(0.0, len - a.clock);
+        return (a.state == AnimState::Stopped ? len : std::max(0.0, len - a.clock)) / std::max(0.1, a.speed); // in real seconds
     }
     return 0;
 }

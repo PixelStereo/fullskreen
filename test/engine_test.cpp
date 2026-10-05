@@ -1204,6 +1204,100 @@ int main(int argc, char **argv)
             CHECK(e.sequenceGo() && e.animation(ai).state == Engine::AnimState::Stopped);
             e.controlAnimation(aid, A::LoopMode, 0, L::Loop, 0);
             CHECK(e.stepDuration(p0) == 0); // endless: nothing to wait for
+            using S = Engine::AnimState;
+            // Loop → Once while it plays past its first pass: it ends the pass it is in, no jump to the end
+            e.controlAnimation(aid, A::Play);
+            e.advanceFades(9.0); // the third pass, 1 s in
+            CHECK(near(e.animation(ai).position(), 1.0));
+            e.controlAnimation(aid, A::LoopMode, 0, L::Once);
+            CHECK(e.animation(ai).state == S::Playing && near(e.animation(ai).position(), 1.0));
+            e.advanceFades(2.0);
+            CHECK(e.animation(ai).state == S::Playing && near(e.animation(ai).position(), 3.0));
+            e.advanceFades(1.5);
+            CHECK(e.animation(ai).state == S::Stopped);
+            // Ping-pong on its way back, then Once: back to the start, then over
+            e.controlAnimation(aid, A::LoopMode, 0, L::PingPong, 0);
+            e.controlAnimation(aid, A::Play);
+            e.advanceFades(5.0);
+            CHECK(near(e.animation(ai).position(), 3.0));
+            e.controlAnimation(aid, A::LoopMode, 0, L::Once);
+            e.advanceFades(1.0);
+            CHECK(e.animation(ai).state == S::Playing && near(e.animation(ai).position(), 2.0));
+            e.advanceFades(2.5);
+            CHECK(e.animation(ai).state == S::Stopped);
+            // The same from the timeline window (an edit of the whole timeline)
+            e.controlAnimation(aid, A::LoopMode, 0, L::Loop, 0);
+            e.controlAnimation(aid, A::Play);
+            e.advanceFades(6.0);
+            {
+                Engine::Animation x = e.animation(ai);
+                x.loop = L::Once;
+                e.setAnimation(ai, x);
+            }
+            CHECK(e.animation(ai).state == S::Playing && near(e.animation(ai).position(), 2.0));
+            e.controlAnimation(aid, A::Stop);
+            // Speed: twice as fast; a step waits for the real time left
+            {
+                Engine::Animation x = e.animation(ai);
+                x.speed = 2;
+                e.setAnimation(ai, x);
+            }
+            e.controlAnimation(aid, A::Play);
+            e.advanceFades(1.0);
+            CHECK(near(e.animation(ai).clock, 2.0) && near(e.stepDuration(p0), 1.0));
+            e.controlAnimation(aid, A::Stop);
+            // Undo: the arrows of a number merge into one step
+            {
+                QUndoStack st;
+                const Engine::Animation b = e.animation(ai);
+                Engine::Animation a1 = b, a2 = b;
+                a1.speed = 1.5;
+                a2.speed = 1;
+                st.push(new cmd::SetAnimation(&e, aid, b, a1, "Speed", "speed"));
+                st.push(new cmd::SetAnimation(&e, aid, a1, a2, "Speed", "speed"));
+                CHECK(st.count() == 1 && near(e.animation(ai).speed, 1));
+                st.undo();
+                CHECK(near(e.animation(ai).speed, 2));
+                st.redo();
+                auto *add = new cmd::AddAnimation(&e, Engine::Animation(), e.animationCount(), "New");
+                st.push(add);
+                const quint64 nid = add->animationId();
+                CHECK(nid != 0 && e.indexOfAnimation(nid) >= 0);
+                st.push(new cmd::RemoveAnimation(&e, e.indexOfAnimation(nid)));
+                CHECK(e.indexOfAnimation(nid) < 0);
+                st.undo();
+                CHECK(e.indexOfAnimation(nid) >= 0);
+                st.undo();
+                CHECK(e.indexOfAnimation(nid) < 0);
+            }
+            e.controlAnimation(aid, A::LoopMode, 0, L::Loop, 0);
+            // A first key "current value": the number starts from where it is, no jump
+            quint64 cid = 0;
+            {
+                e.layer(e.indexOfId(tid))->opacity = 0.6f;
+                Engine::Animation cv;
+                cv.name = "From here";
+                cv.duration = 2;
+                cv.loop = L::Once;
+                Engine::AnimTrack t;
+                t.layer = tid;
+                t.param = "opacity";
+                t.keys = {{0, 0, 0}, {2, 1, 0}};
+                t.keys[0].isCurrentValue = true;
+                cv.tracks = {t};
+                cid = e.animation(e.addAnimation(cv)).id;
+                e.controlAnimation(cid, A::Play);
+                CHECK(near(val("opacity"), 0.6));
+                e.advanceFades(1.0);
+                CHECK(near(val("opacity"), 0.8));
+                e.advanceFades(1.5);
+                CHECK(near(val("opacity"), 1.0));
+                e.layer(e.indexOfId(tid))->opacity = 0.2f;
+                e.controlAnimation(cid, A::Play); // from 0.2 now
+                e.advanceFades(1.0);
+                CHECK(near(val("opacity"), 0.6));
+                e.controlAnimation(cid, A::Stop);
+            }
             // Saved with the project
             CHECK(e.saveProject(tmp + "/timelines.fulskrin", {}, &err));
             CHECK(e.loadProject(tmp + "/timelines.fulskrin", nullptr, &err));
@@ -1216,6 +1310,10 @@ int main(int argc, char **argv)
                       x.tracks[0].keys[1].curve == 0 && x.tracks[1].oscillator &&
                       x.tracks[1].wave == Engine::AnimWave::Saw && near(x.tracks[1].amplitude, 180) &&
                       x.tracks[0].layer == tid && x.state == Engine::AnimState::Stopped);
+                const int ck = e.indexOfAnimation(cid);
+                CHECK(ck >= 0 && e.animation(ck).tracks[0].keys[0].isCurrentValue && !e.animation(ck).tracks[0].keys[1].isCurrentValue &&
+                      e.animation(ck).tracks[0].keys[0].curve == 0);
+                if (ck >= 0) e.removeAnimation(ck);
                 const Engine::Sequence w = e.sequence(e.currentSequence());
                 CHECK(w.steps.size() == 3 && w.steps[0].timeline == aid && w.steps[0].memory == 0 &&
                       w.steps[0].action == A::Play && w.steps[1].action == A::Seek && near(w.steps[1].seekTime, 1.0) &&
