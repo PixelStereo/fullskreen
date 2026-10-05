@@ -349,4 +349,20 @@ bool SetOpacityIn::mergeWith(const QUndoCommand *o)
 
 void SetOpacityIn::apply(float v) { m_e->setOpacityIn(m_e->indexOfId(m_layer), m_viewport, v); }
 
+SetAnimation::SetAnimation(Engine *e, quint64 id, const Engine::Animation &before, const Engine::Animation &after, const QString &text)
+    : m_e(e), m_id(id), m_before(before), m_after(after)
+{
+    setText(text);
+}
+
+void SetAnimation::undo() { apply(m_before); }
+
+void SetAnimation::redo() { apply(m_after); }
+
+void SetAnimation::apply(const Engine::Animation &a)
+{
+    const int i = m_e->indexOfAnimation(m_id);
+    if (i >= 0) m_e->setAnimation(i, a);
+}
+
 } // namespace cmd

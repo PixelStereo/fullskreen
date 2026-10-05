@@ -258,6 +258,7 @@ public:
         double duration = 4; // seconds of one pass
         AnimLoop loop = AnimLoop::Loop;
         int repeat = 0; // passes of Loop / PingPong (0: endless)
+        double speed = 1.0; // playback speed (0.1 to 4x)
         std::vector<AnimTrack> tracks;
         // Where it is (not saved)
         AnimState state = AnimState::Stopped;

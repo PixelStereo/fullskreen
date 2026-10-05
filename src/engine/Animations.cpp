@@ -213,7 +213,7 @@ void Engine::stepAnimations(double dt)
     dt = std::max(0.0, dt);
     for (Animation &a : m_animations) {
         if (a.state != AnimState::Playing) continue;
-        a.clock += dt;
+        a.clock += dt * a.speed;
         applyAnimation(a);
         if (a.clock >= a.length()) { // over: its last values stay
             a.state = AnimState::Stopped;
@@ -545,6 +545,7 @@ QJsonArray Engine::animationsToJson() const
         QJsonObject o{{"id", QString::number(a.id)}, {"name", a.name}, {"duration", a.duration},
                       {"loop", animLoopKey(a.loop)}, {"tracks", tracks}};
         if (a.repeat > 0) o["repeat"] = a.repeat;
+        if (a.speed != 1.0) o["speed"] = a.speed;
         out.append(o);
     }
     return out;
@@ -561,6 +562,7 @@ void Engine::animationsFromJson(const QJsonArray &arr)
         a.duration = std::clamp(o.value("duration").toDouble(4), kMinDuration, 36000.0);
         a.loop = animLoopFromKey(o.value("loop").toString());
         a.repeat = std::clamp(o.value("repeat").toInt(0), 0, 100000);
+        a.speed = std::clamp(o.value("speed").toDouble(1.0), 0.1, 10.0);
         for (const QJsonValue &tv : o.value("tracks").toArray()) {
             const QJsonObject to = tv.toObject();
             AnimTrack t;

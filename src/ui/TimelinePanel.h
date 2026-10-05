@@ -100,11 +100,13 @@ private:
 // a timeline dragged onto a step of a sequence), and the one selected: its transport (play, pause, stop, rewind,
 // the time), duration and loop mode, and its tracks — each one a number of a layer (or of the composition), drawn as
 // a curve or given by an oscillator.
+class QUndoStack;
+
 class TimelineWindow : public QWidget
 {
     Q_OBJECT
 public:
-    explicit TimelineWindow(Engine *engine, QWidget *parent = nullptr);
+    explicit TimelineWindow(Engine *engine, QUndoStack *undo, QWidget *parent = nullptr);
     void setCurrentLayer(quint64 id) { m_currentLayer = id; } // the layer a new track drives
 
 signals:
@@ -117,13 +119,17 @@ private:
     void rebuildRows();
     void commit();      // m_edit to the engine
     void poll();        // where it is
+    void fitDuration(); // adjust duration to show all keys
     Engine *m_engine;
+    QUndoStack *m_undo = nullptr;
     TimelineList *m_list;
     QPushButton *m_add, *m_dup, *m_del;
     QWidget *m_editor;
     QPushButton *m_play, *m_pause, *m_stop, *m_rewind, *m_addTrack;
+    QPushButton *m_fit;
     QLabel *m_time;
     NumberBox *m_duration;
+    NumberBox *m_speed;
     QComboBox *m_loop;
     IntBox *m_repeat;
     TimeRuler *m_ruler;
