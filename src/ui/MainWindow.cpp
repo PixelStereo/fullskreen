@@ -25,6 +25,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileOpenEvent>
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -1567,6 +1568,25 @@ bool MainWindow::offerRecovery()
         statusBar()->showMessage(QStringLiteral("Session restored"), 6000);
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// File opening (macOS: double-click .fulskrin file or drag to app icon)
+// ---------------------------------------------------------------------------
+
+bool MainWindow::event(QEvent *e)
+{
+    if (e->type() == QEvent::FileOpen) {
+        auto *fe = static_cast<QFileOpenEvent *>(e);
+        const QString path = fe->file();
+        if (!path.isEmpty()) {
+            // If unsaved changes, ask before opening the new project
+            if (!maybeSave()) return false;
+            openProject(path);
+            return true;
+        }
+    }
+    return QMainWindow::event(e);
 }
 
 void MainWindow::closeEvent(QCloseEvent *e)
