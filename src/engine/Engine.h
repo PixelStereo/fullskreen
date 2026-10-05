@@ -222,11 +222,74 @@ public:
     void applyLayers(const QJsonArray &layers, double fade, bool hideOthers = false);
     int indexOfMemory(quint64 id) const; // -1: none
 
-    // --- Sequences: ordered steps, each recalling a memory (and carrying a text for the operator), played by
-    // GO / GO BACK. Several sequences; one is current. Saved with the project; the position is not.
+    // --- Timelines: values of the layers (and of the composition) drawn over time, played on their own clock,
+    // outside the sequences — the sequences only drive their transport (play, pause, stop, rewind, seek, loop).
+    // Called animations here (a Timeline is a media's transport); the interface names them timelines.
+    //
+    // A timeline has a duration and tracks, each driving one number: a curve (keys over the duration, each
+    // eased towards the next one — the pattern repeats when the timeline loops) or an oscillator (a wave of its
+    // own period, on the time played so that it goes on without a jump across the loops). Values are absolute.
+    // While a timeline plays, its values are set every frame after the memories' fades: they win over them.
+    // Paused or stopped, it leaves its values where they are. Several timelines play side by side.
+    enum class AnimWave { Sine = 0, Triangle = 1, Saw = 2, Square = 3 };
+    enum class AnimLoop { Once = 0, Loop = 1, PingPong = 2 };
+    enum class AnimState { Stopped = 0, Playing = 1, Paused = 2 };
+    enum class AnimAction { Play = 0, Pause = 1, Stop = 2, Rewind = 3, Seek = 4, LoopMode = 5 };
+    static constexpr int kAnimHold = 100; // a key's curve: holds its value until the next key
+    struct AnimKey {
+        double t = 0, v = 0; // seconds into the timeline, value
+        int curve = 0;       // towards the next key: an easing (0 linear, 1 in, 2 out, 3 in-out, 4 in cubic,
+                             // 5 out cubic) or kAnimHold
+    };
+    struct AnimTrack {
+        quint64 layer = 0; // the layer driven (its id; 0: the composition)
+        QString param;     // the number (see animatableParams): "opacity", "mapping/rotation", "effects/0/params/x"…
+        bool enabled = true;
+        bool oscillator = false;
+        std::vector<AnimKey> keys; // curve: sorted by time
+        AnimWave wave = AnimWave::Sine;
+        double period = 1, center = 0.5, amplitude = 0.5, phase = 0; // oscillator (phase: 0..1 of a period)
+        double valueAt(double position, double played) const; // nan: no value (a curve without keys)
+    };
+    struct Animation {
+        quint64 id = 0; // stable (sequences refer to it); given by addAnimation
+        QString name;
+        double duration = 4; // seconds of one pass
+        AnimLoop loop = AnimLoop::Loop;
+        int repeat = 0; // passes of Loop / PingPong (0: endless)
+        std::vector<AnimTrack> tracks;
+        // Where it is (not saved)
+        AnimState state = AnimState::Stopped;
+        double clock = 0; // seconds played since its start
+        double length() const; // the time it plays from the start (infinity: endless)
+        double position(double clock) const; // within the pass: 0..duration
+        double position() const { return position(clock); }
+    };
+    struct AnimParam {
+        QString path, label;
+        double min = 0, max = 1;
+    };
+    int animationCount() const;
+    Animation animation(int i) const;
+    int indexOfAnimation(quint64 id) const; // -1: none
+    int addAnimation(const Animation &a, int at = -1);
+    void setAnimation(int i, const Animation &a); // its contents; where it is stays
+    void removeAnimation(int i);
+    // The transport: Play (from where it is; from the start once stopped), Pause, Stop (back to the start,
+    // its values left as they are), Rewind (to the start), Seek (to `time`, values set at once even when not
+    // playing), LoopMode (`loop` and `repeat`)
+    void controlAnimation(quint64 id, AnimAction action, double time = 0, AnimLoop loop = AnimLoop::Loop, int repeat = 0);
+    // The numbers of a layer (0: the composition) a timeline can drive, with their ranges
+    std::vector<AnimParam> animatableParams(quint64 layer) const;
+    bool animParamValue(quint64 layer, const QString &path, double *value) const;
+    void stepAnimations(double dt); // the timelines playing move on and set their values (lock held)
+
+    // --- Sequences: ordered steps, each recalling a memory or driving a timeline (and carrying a text for the
+    // operator), played by GO / GO BACK. Several sequences; one is current. Saved with the project; the position is not.
     //
     // A step waits its pre-wait after its GO, then recalls its memory, whose fade is the step's action (its
-    // duration: the memory's longest time). What comes next (as in QLab):
+    // duration: the memory's longest time) — or acts on its timeline (Play: the time it plays, when it ends;
+    // the other actions take no time). What comes next (as in QLab):
     //  - Wait: nothing, the next step waits for GO (button, Space, OSC);
     //  - Follow: the next step gets its GO once this one was triggered (pre-wait over), after the post-wait,
     //    without waiting for the action to end;
@@ -234,14 +297,20 @@ public:
     // A memory recalled does not stop the ones still running: only the values it holds itself are taken over.
     enum class StepContinue { Wait = 0, Follow = 1, AutoFollow = 2 };
     struct SequenceStep {
-        quint64 memory = 0; // its id (0: none yet)
+        quint64 memory = 0;   // its id (0: none yet)
         QString text;
+        quint64 timeline = 0; // or a timeline's (an animation's) id, driven by `action`
+        AnimAction action = AnimAction::Play;
+        double seekTime = 0;                  // Seek
+        AnimLoop loop = AnimLoop::Loop;       // LoopMode
+        int repeat = 0;                       // LoopMode
         double preWait = 0, postWait = 0; // seconds
         StepContinue next = StepContinue::Wait;
     };
     // A step on its way: since its GO, through its pre-wait, its action, and until the next step's GO
     struct StepRun {
         int step = -1;
+        SequenceStep target; // what it does (its memory, or its timeline and action)
         quint64 memory = 0;
         double elapsed = 0; // since its GO
         double preWait = 0, duration = 0, postWait = 0;
@@ -287,6 +356,8 @@ public:
     void setRecaller(std::function<void(int memoryIndex)> f) { m_recaller = std::move(f); }
     // A memory's action: its longest time (the fade, and the times of its own values)
     double memoryDuration(quint64 id) const;
+    // A step's action: its memory's, or the time its timeline will play (Play on a timeline that ends; else 0)
+    double stepDuration(const SequenceStep &st) const;
     void recallMemory(int i); // with its fade
     bool isFading() const;
     // The memory recalled last, and where its fade is (its longest time: values with times of their own included)
@@ -398,6 +469,7 @@ signals:
     void memoriesChanged();
     void sequencesChanged();        // their contents
     void sequencePositionChanged(); // current sequence or step
+    void animationsChanged();       // the timelines' contents (not their transport)
     void memoryRecalled(int index);
     void frameRendered(); // emitted from the render thread, at most once per frame displayed by the UI
 
@@ -566,6 +638,13 @@ private:
     quint64 m_nextMemoryId = 1;
     RenderSettings m_render, m_renderDefaults{0, 0, 0};
     double m_screenHz = 60;
+    std::vector<Animation> m_animations;
+    quint64 m_nextAnimationId = 1;
+    void applyAnimation(Animation &a); // sets its values where it is (lock held)
+    void controlLocked(Animation *a, AnimAction action, double time, AnimLoop loop, int repeat);
+    bool setAnimParam(quint64 layer, const QString &path, double v); // lock held
+    QJsonArray animationsToJson() const;
+    void animationsFromJson(const QJsonArray &a);
     std::vector<Sequence> m_sequences;
     int m_currentSequence = -1, m_sequencePosition = -1;
     std::vector<StepRun> m_runs; // of the current sequence

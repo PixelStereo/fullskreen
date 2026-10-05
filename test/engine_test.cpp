@@ -1076,6 +1076,156 @@ int main(int argc, char **argv)
             e.removeLayer(e.indexOfId(ib));
             e.setFadesManual(false);
         }
+        // Timelines: curves and oscillators on their own clock; the sequences drive their transport
+        {
+            using A = Engine::AnimAction;
+            using L = Engine::AnimLoop;
+            e.setFadesManual(true);
+            auto near = [](double a, double b) { return std::abs(a - b) < 1e-3; };
+            const quint64 tid = e.layerId(e.addLayer("Anim", V));
+            auto val = [&](const QString &p) {
+                double v = std::nan("");
+                e.animParamValue(tid, p, &v);
+                return v;
+            };
+            // A curve: eased from key to key (linear here), held, then its last value
+            Engine::AnimTrack c;
+            c.layer = tid;
+            c.param = "opacity";
+            c.keys = {{0, 0, 0}, {2, 1, 0}, {3, 0.2, Engine::kAnimHold}, {4, 0.8, 0}};
+            CHECK(near(c.valueAt(1, 0), 0.5) && near(c.valueAt(3.5, 0), 0.2) && near(c.valueAt(5, 0), 0.8) &&
+                  near(c.valueAt(-1, 0), 0));
+            CHECK(std::isnan(Engine::AnimTrack().valueAt(0, 0))); // no key: no value
+            // An oscillator: on the time played, center ± amplitude
+            Engine::AnimTrack o;
+            o.oscillator = true;
+            o.period = 2;
+            o.center = 10;
+            o.amplitude = 5;
+            CHECK(near(o.valueAt(0, 0.5), 15) && near(o.valueAt(0, 1.0), 10) && near(o.valueAt(0, 1.5), 5));
+            o.wave = Engine::AnimWave::Triangle;
+            CHECK(near(o.valueAt(0, 0.25), 12.5) && near(o.valueAt(0, 1.5), 5));
+            o.wave = Engine::AnimWave::Saw;
+            CHECK(near(o.valueAt(0, 0), 5) && near(o.valueAt(0, 1), 10));
+            o.wave = Engine::AnimWave::Square;
+            CHECK(near(o.valueAt(0, 0.2), 15) && near(o.valueAt(0, 1.2), 5));
+            // Passes: loop, ping-pong, a number of them
+            Engine::Animation a;
+            a.name = "Pulse";
+            a.duration = 4;
+            a.loop = L::PingPong;
+            CHECK(near(a.position(5), 3) && !std::isfinite(a.length()));
+            a.loop = L::Loop;
+            a.repeat = 2;
+            CHECK(near(a.position(5), 1) && near(a.length(), 8) && near(a.position(9), 4));
+            a.loop = L::Once;
+            CHECK(near(a.position(9), 4) && near(a.length(), 4));
+            // Playing: the curve repeats its pattern, the oscillator turns the mapping without a jump
+            a.loop = L::Loop;
+            a.repeat = 0;
+            Engine::AnimTrack rot;
+            rot.layer = tid;
+            rot.param = "mapping/rotation";
+            rot.oscillator = true;
+            rot.wave = Engine::AnimWave::Saw;
+            rot.period = 4;
+            rot.center = 0;
+            rot.amplitude = 180;
+            a.tracks = {c, rot};
+            const int ai = e.addAnimation(a);
+            const quint64 aid = e.animation(ai).id;
+            CHECK(aid != 0 && e.indexOfAnimation(aid) == ai && e.animationCount() >= 1);
+            const QRectF before = e.layer(e.indexOfId(tid))->mapping.bounds();
+            e.controlAnimation(aid, A::Play);
+            CHECK(near(val("opacity"), 0) && e.animation(ai).state == Engine::AnimState::Playing);
+            e.advanceFades(1.0);
+            CHECK(near(val("opacity"), 0.5) && near(val("mapping/rotation"), -90));
+            e.advanceFades(1.0);
+            CHECK(near(val("opacity"), 1.0) && near(val("mapping/rotation"), 0));
+            CHECK(near(e.layer(e.indexOfId(tid))->mapping.bounds().width(), before.width())); // turned, not shrunk
+            e.advanceFades(2.5); // 4.5 s: the second pass of the pattern
+            CHECK(near(val("opacity"), 0.25) && near(val("mapping/rotation"), -135));
+            // Paused: its values are left alone
+            e.controlAnimation(aid, A::Pause);
+            e.layer(e.indexOfId(tid))->opacity = 0.9f;
+            e.advanceFades(1.0);
+            CHECK(near(val("opacity"), 0.9) && e.animation(ai).state == Engine::AnimState::Paused);
+            // Seek: the values at once (the hold), then Play goes on from there
+            e.controlAnimation(aid, A::Seek, 3.5);
+            CHECK(near(val("opacity"), 0.2) && near(e.animation(ai).clock, 3.5));
+            e.controlAnimation(aid, A::Play);
+            e.advanceFades(0.25);
+            CHECK(near(val("opacity"), 0.2) && near(e.animation(ai).clock, 3.75));
+            // Stop: back to the start, the values stay
+            e.controlAnimation(aid, A::Stop);
+            e.advanceFades(1.0);
+            CHECK(e.animation(ai).state == Engine::AnimState::Stopped && e.animation(ai).clock == 0 && near(val("opacity"), 0.2));
+            // Twice, then over with its last values
+            e.controlAnimation(aid, A::LoopMode, 0, L::Loop, 2);
+            e.controlAnimation(aid, A::Play);
+            e.advanceFades(9.0);
+            CHECK(e.animation(ai).state == Engine::AnimState::Stopped && near(val("opacity"), 0.8));
+            // The composition's level
+            {
+                Engine::Animation lv;
+                Engine::AnimTrack t;
+                t.param = "level";
+                t.keys = {{0, 0.3, 0}};
+                lv.tracks = {t};
+                const quint64 lid = e.animation(e.addAnimation(lv)).id;
+                e.controlAnimation(lid, A::Seek, 0);
+                CHECK(near(e.masterTarget(), 0.3));
+                e.removeAnimation(e.indexOfAnimation(lid));
+                e.fadeMaster(1.0, 0);
+            }
+            CHECK(!e.animatableParams(tid).empty() && e.animatableParams(0).size() == 2);
+            // Steps driving it: Play (its time, when it ends), Seek, Stop
+            e.controlAnimation(aid, A::LoopMode, 0, L::Once);
+            Engine::Sequence sq;
+            sq.name = "Timeline";
+            Engine::SequenceStep p0, p1, p2;
+            p0.timeline = aid;
+            p0.next = Engine::StepContinue::AutoFollow;
+            p1.timeline = aid;
+            p1.action = A::Seek;
+            p1.seekTime = 1.0;
+            p2.timeline = aid;
+            p2.action = A::Stop;
+            sq.steps = {p0, p1, p2};
+            e.setCurrentSequence(e.addSequence(sq));
+            CHECK(near(e.stepDuration(p0), 4) && e.stepDuration(p1) == 0);
+            CHECK(e.sequenceGo() && e.animation(ai).state == Engine::AnimState::Playing);
+            e.advanceFades(3.9);
+            e.advanceSequence(3.9);
+            CHECK(e.sequencePosition() == 0);
+            e.advanceSequence(0.2); // its 4 s over: the seek
+            CHECK(e.sequencePosition() == 1 && near(e.animation(ai).clock, 1.0) &&
+                  e.animation(ai).state == Engine::AnimState::Playing);
+            CHECK(e.sequenceGo() && e.animation(ai).state == Engine::AnimState::Stopped);
+            e.controlAnimation(aid, A::LoopMode, 0, L::Loop, 0);
+            CHECK(e.stepDuration(p0) == 0); // endless: nothing to wait for
+            // Saved with the project
+            CHECK(e.saveProject(tmp + "/timelines.fulskrin", {}, &err));
+            CHECK(e.loadProject(tmp + "/timelines.fulskrin", nullptr, &err));
+            {
+                const int k = e.indexOfAnimation(aid);
+                CHECK(k >= 0);
+                const Engine::Animation x = e.animation(k);
+                CHECK(x.name == "Pulse" && near(x.duration, 4) && x.loop == L::Loop && x.tracks.size() == 2 &&
+                      x.tracks[0].keys.size() == 4 && x.tracks[0].keys[2].curve == Engine::kAnimHold &&
+                      x.tracks[0].keys[1].curve == 0 && x.tracks[1].oscillator &&
+                      x.tracks[1].wave == Engine::AnimWave::Saw && near(x.tracks[1].amplitude, 180) &&
+                      x.tracks[0].layer == tid && x.state == Engine::AnimState::Stopped);
+                const Engine::Sequence w = e.sequence(e.currentSequence());
+                CHECK(w.steps.size() == 3 && w.steps[0].timeline == aid && w.steps[0].memory == 0 &&
+                      w.steps[0].action == A::Play && w.steps[1].action == A::Seek && near(w.steps[1].seekTime, 1.0) &&
+                      w.steps[2].action == A::Stop);
+            }
+            e.removeSequence(e.currentSequence());
+            e.removeAnimation(e.indexOfAnimation(aid));
+            e.removeLayer(e.indexOfId(tid));
+            e.setFadesManual(false);
+        }
         // A recall shows what was stored: a layer the memory does not know fades out and is hidden
         {
             const int xi = e.addLayer("Extra", V);

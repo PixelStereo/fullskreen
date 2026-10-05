@@ -111,6 +111,7 @@ void Engine::newProject()
     ensureViewport(); // a new project shows its composition through one viewport
     emit layersChanged();
     emit memoriesChanged();
+    emit animationsChanged();
     emit sequencesChanged();
     emit sequencePositionChanged();
 }
@@ -129,6 +130,9 @@ void Engine::clearProject()
         m_render = RenderSettings(); // the machine's defaults
         m_sequences.clear();
         m_currentSequence = m_sequencePosition = -1;
+        m_runs.clear();
+        m_animations.clear();
+        m_nextAnimationId = 1;
         m_fades.clear();
         m_recalledMemory = 0;
         m_recallTotal = 0;
@@ -148,6 +152,7 @@ void Engine::clearProject()
     setCompositionSize(QSize(1920, 1080));
     emit layersChanged();
     emit memoriesChanged();
+    emit animationsChanged();
 }
 
 QString Engine::resolvePath(const QJsonObject &o, const QString &projectDir) const
@@ -423,6 +428,7 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         QJsonArray mems;
         for (const Memory &m : m_memories) mems.append(memoryToJson(m, dir));
         root["memories"] = mems;
+        root["timelines"] = animationsToJson();
         root["sequences"] = sequencesToJson();
         root["currentSequence"] = m_currentSequence;
     }
@@ -495,9 +501,11 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
         for (const Memory &m : m_memories) m_nextMemoryId = std::max(m_nextMemoryId, m.id + 1);
         for (Memory &m : m_memories)
             if (!m.id) m.id = m_nextMemoryId++;
+        animationsFromJson(root.value("timelines").toArray());
         sequencesFromJson(root.value("sequences").toArray(), root.value("currentSequence").toInt(0));
     }
     emit memoriesChanged();
+    emit animationsChanged();
     emit sequencesChanged();
     emit sequencePositionChanged();
     if (uiState) *uiState = root.value("ui").toObject();

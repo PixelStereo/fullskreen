@@ -14,6 +14,7 @@ class SettingsPanel;
 class MemoryPanel;
 class SequenceBar;
 class SequenceWindow;
+class TimelineWindow;
 class OutputWindow;
 class QLabel;
 class QMenu;
@@ -112,6 +113,8 @@ private:
     MemoryPanel *m_memories = nullptr;
     SequenceBar *m_seqBar = nullptr;
     SequenceWindow *m_seqWindow = nullptr;
+    TimelineWindow *m_timelineWindow = nullptr;
+    void openTimelines();
     int m_cueUndoIndex = -1; // undo index when the current step was played: anything since is a change
     QTabWidget *m_leftTabs = nullptr;
     QTabWidget *m_tabs = nullptr;

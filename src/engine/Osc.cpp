@@ -323,6 +323,7 @@ QString OscNamespace::signature() const
         s += '\n';
     }
     for (int i = 0; i < m_e->memoryCount(); ++i) s += QStringLiteral("memory:") + m_e->memory(i).name + '\n';
+    for (int i = 0; i < m_e->animationCount(); ++i) s += QStringLiteral("timeline:") + m_e->animation(i).name + '\n';
     return s;
 }
 
@@ -495,6 +496,39 @@ void OscNamespace::build()
             return true;
         };
         m_nodes["/sequence"].description = "Sequence";
+    }
+
+    // --- Timelines (1 = first): their transport
+    {
+        m_nodes["/timelines"].description = "Timelines";
+        using A = Engine::AnimAction;
+        for (int i = 0; i < e->animationCount(); ++i) {
+            const Engine::Animation an = e->animation(i);
+            const QString base = QStringLiteral("/timelines/%1").arg(i + 1);
+            const quint64 id = an.id;
+            struct Cmd {
+                const char *key;
+                A act;
+                const char *label;
+            };
+            for (const Cmd &c : {Cmd{"play", A::Play, "Play"}, Cmd{"pause", A::Pause, "Pause"}, Cmd{"stop", A::Stop, "Stop"},
+                                 Cmd{"rewind", A::Rewind, "Rewind"}})
+                add(base + "/" + c.key, "N", 2, c.label).set = [e, id, act = c.act](const QVariantList &) {
+                    if (e->indexOfAnimation(id) < 0) return false;
+                    e->controlAnimation(id, act);
+                    return true;
+                };
+            OscNode &sk = add(base + "/seek", "f", 3, "Seek (s)");
+            sk.get = [e, id] { return QVariantList{e->animation(e->indexOfAnimation(id)).clock}; };
+            sk.set = [e, id](const QVariantList &a) {
+                if (e->indexOfAnimation(id) < 0) return false;
+                e->controlAnimation(id, A::Seek, num(a.value(0)));
+                return true;
+            };
+            OscNode &pl = add(base + "/playing", "T", 1, "Playing");
+            pl.get = [e, id] { return QVariantList{e->animation(e->indexOfAnimation(id)).state == Engine::AnimState::Playing}; };
+            m_nodes[base].description = an.name.isEmpty() ? QString::number(i + 1) : an.name;
+        }
     }
 
     // --- Viewports, then the layers (top level, then the contents of each group, at any depth)

@@ -10,6 +10,7 @@ class QPushButton;
 class QTableWidget;
 class QCheckBox;
 class QTimer;
+class QMenu;
 
 // Where the memory recalled last is in its fade: a thin bar filling over its time (green while it runs), with the
 // memory's name and the seconds as tooltip. Follows the engine by itself.
@@ -37,7 +38,8 @@ private:
 // current / next steps (the current one in another color once something was changed since it was played), the
 // current step's text, and the time left before what is waiting.
 // SequenceWindow: a floating window, always in front, to edit everything: the sequences (new, duplicate, delete,
-// rename, loop), their steps (+, delete, move, a memory dragged onto a step, its text), and to play any step.
+// rename, loop), their steps (+, delete, move, a memory or a timeline dragged onto a step, a timeline step's action,
+// its text), and to play any step.
 class SequenceBar : public QWidget
 {
     Q_OBJECT
@@ -51,6 +53,7 @@ signals:
     void backRequested();   // GO BACK: the previous step
     void stopRequested();   // the pre-waits and follows still to come
     void windowRequested(); // the floating window
+    void timelinesRequested(); // the timelines' window
     void edited();
 
 private:
@@ -74,6 +77,7 @@ public:
 
 signals:
     void goToRequested(int step); // play that step of the current sequence
+    void timelinesRequested();    // the timelines' window
     void stopRequested();         // the pre-waits and follows still to come
     void edited();                // the sequences changed: the project is modified
 
@@ -81,8 +85,10 @@ protected:
     bool eventFilter(QObject *o, QEvent *e) override; // memories dropped onto the steps
 
 private:
-    void addStep(int at, quint64 memory);
+    void addStep(int at, quint64 memory, quint64 timeline = 0);
     void setStepMemory(int step, quint64 memory);
+    void setStepTimeline(int step, quint64 timeline); // Play, unless it was already a timeline step
+    void fillActionMenu(QMenu *menu, int row);
     void removeSteps();
     void moveStep(int delta);
     Engine *m_engine;
