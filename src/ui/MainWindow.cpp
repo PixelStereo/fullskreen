@@ -26,6 +26,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileOpenEvent>
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -1543,10 +1544,10 @@ void MainWindow::autosave()
     }
 }
 
-void MainWindow::offerRecovery()
+bool MainWindow::offerRecovery()
 {
     const QString path = autosavePath();
-    if (!QFile::exists(path)) return;
+    if (!QFile::exists(path)) return false;
     QFile f(path);
     QJsonObject ui;
     if (f.open(QIODevice::ReadOnly)) ui = QJsonDocument::fromJson(f.readAll()).object().value("ui").toObject();
@@ -1564,7 +1565,7 @@ void MainWindow::offerRecovery()
     box.exec();
     if (box.clickedButton() != restore) {
         QFile::remove(path);
-        return;
+        return false;
     }
     QJsonObject loadedUi;
     QString err;
@@ -1582,6 +1583,26 @@ void MainWindow::offerRecovery()
     } else {
         statusBar()->showMessage(QStringLiteral("Session restored"), 6000);
     }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// File opening (macOS: double-click .fulskrin file or drag to app icon)
+// ---------------------------------------------------------------------------
+
+bool MainWindow::event(QEvent *e)
+{
+    if (e->type() == QEvent::FileOpen) {
+        auto *fe = static_cast<QFileOpenEvent *>(e);
+        const QString path = fe->file();
+        if (!path.isEmpty()) {
+            // If unsaved changes, ask before opening the new project
+            if (!maybeSave()) return false;
+            openProject(path);
+            return true;
+        }
+    }
+    return QMainWindow::event(e);
 }
 
 void MainWindow::closeEvent(QCloseEvent *e)
