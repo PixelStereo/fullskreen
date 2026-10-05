@@ -260,7 +260,7 @@ void Engine::controlLocked(Animation *a, AnimAction action, double time, AnimLoo
         applyAnimation(*a);
         break;
     case AnimAction::Speed:
-        a->speed = std::clamp(time, 0.1, 10.0); // the clock goes on from where it is: no jump
+        a->speed = std::clamp(time, 0.0, 10.0); // the clock goes on from where it is: no jump
         break;
     case AnimAction::LoopMode:
         a->setLoop(loop, repeat); // from where it is: Once ends the pass it is in, no jump to the end
@@ -610,7 +610,7 @@ void Engine::animationsFromJson(const QJsonArray &arr)
         a.duration = std::clamp(o.value("duration").toDouble(4), kMinDuration, 36000.0);
         a.loop = animLoopFromKey(o.value("loop").toString());
         a.repeat = std::clamp(o.value("repeat").toInt(0), 0, 100000);
-        a.speed = std::clamp(o.value("speed").toDouble(1.0), 0.1, 10.0);
+        a.speed = std::clamp(o.value("speed").toDouble(1.0), 0.0, 10.0);
         for (const QJsonValue &tv : o.value("tracks").toArray()) {
             const QJsonObject to = tv.toObject();
             AnimTrack t;

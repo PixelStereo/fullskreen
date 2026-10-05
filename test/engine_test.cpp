@@ -1256,6 +1256,10 @@ int main(int argc, char **argv)
             e.controlAnimation(aid, A::Speed, 0.5);
             e.advanceFades(1.0);
             CHECK(near(e.animation(ai).speed, 0.5) && near(e.animation(ai).clock, 2.5));
+            e.controlAnimation(aid, A::Speed, 0); // frozen where it is, still playing
+            e.advanceFades(1.0);
+            CHECK(near(e.animation(ai).clock, 2.5) && e.animation(ai).state == Engine::AnimState::Playing &&
+                  e.stepDuration(p0) == 0);
             e.controlAnimation(aid, A::Speed, 2);
             e.controlAnimation(aid, A::Stop);
             // Undo: the arrows of a number merge into one step

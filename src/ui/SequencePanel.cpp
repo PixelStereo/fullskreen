@@ -693,8 +693,8 @@ void SequenceWindow::fillActionMenu(QMenu *menu, int row)
                                      this, [this, set, cur] {
         bool ok = false;
         const double v = QInputDialog::getDouble(this, QStringLiteral("Speed"),
-                                                 QStringLiteral("Playback speed of the timeline (1 = normal)"),
-                                                 cur.action == A::Speed ? cur.speed : 1.0, 0.1, 10, 2, &ok);
+                                                 QStringLiteral("Playback speed of the timeline (1 = normal, 0 = frozen)"),
+                                                 cur.action == A::Speed ? cur.speed : 1.0, 0, 10, 2, &ok);
         if (ok) set([v](Engine::SequenceStep &st) { st.action = A::Speed; st.speed = v; });
     });
     speed->setCheckable(true);

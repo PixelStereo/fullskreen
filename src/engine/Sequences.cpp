@@ -158,7 +158,8 @@ double Engine::stepDuration(const SequenceStep &st) const
         if (a.id != st.timeline) continue;
         const double len = a.length();
         if (!std::isfinite(len)) return 0; // endless: nothing to wait for
-        return (a.state == AnimState::Stopped ? len : std::max(0.0, len - a.clock)) / std::max(0.1, a.speed); // in real seconds
+        if (a.speed <= 1e-9) return 0; // frozen: nothing to wait for
+        return (a.state == AnimState::Stopped ? len : std::max(0.0, len - a.clock)) / a.speed; // in real seconds
     }
     return 0;
 }
@@ -368,7 +369,7 @@ void Engine::sequencesFromJson(const QJsonArray &a, int current)
                 st.action = a == "pause" ? AnimAction::Pause : a == "stop" ? AnimAction::Stop : a == "rewind" ? AnimAction::Rewind
                           : a == "seek" ? AnimAction::Seek : a == "loopMode" ? AnimAction::LoopMode
                           : a == "speed" ? AnimAction::Speed : AnimAction::Play;
-                st.speed = std::clamp(so.value("speed").toDouble(1), 0.1, 10.0);
+                st.speed = std::clamp(so.value("speed").toDouble(1), 0.0, 10.0);
                 st.seekTime = std::max(0.0, so.value("time").toDouble(0));
                 st.loop = animLoopFromKey(so.value("loop").toString());
                 st.repeat = std::clamp(so.value("repeat").toInt(0), 0, 100000);

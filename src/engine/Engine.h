@@ -263,7 +263,7 @@ public:
         double duration = 4; // seconds of one pass
         AnimLoop loop = AnimLoop::Loop;
         int repeat = 0; // passes of Loop / PingPong (0: endless)
-        double speed = 1.0; // playback speed (0.1 to 10x)
+        double speed = 1.0; // playback speed (0 to 10x; 0: frozen where it is, still playing)
         std::vector<AnimTrack> tracks;
         // Where it is (not saved)
         AnimState state = AnimState::Stopped;
@@ -290,7 +290,7 @@ public:
     void removeAnimation(int i);
     // The transport: Play (from where it is; from the start once stopped), Pause, Stop (back to the start,
     // its values left as they are), Rewind (to the start), Seek (to `time`, values set at once even when not
-    // playing), LoopMode (`loop` and `repeat`), Speed (`time` is the speed, 0.1 to 10: it plays on from where it is)
+    // playing), LoopMode (`loop` and `repeat`), Speed (`time` is the speed, 0 to 10: it plays on from where it is)
     void controlAnimation(quint64 id, AnimAction action, double time = 0, AnimLoop loop = AnimLoop::Loop, int repeat = 0);
     // The numbers of a layer (0: the composition) a timeline can drive, with their ranges
     std::vector<AnimParam> animatableParams(quint64 layer) const;
