@@ -181,7 +181,9 @@ void Engine::controlLocked(Animation *a, AnimAction action, double time, AnimLoo
     case AnimAction::LoopMode:
         a->loop = loop;
         a->repeat = std::max(0, repeat);
-        a->clock = std::min(a->clock, a->length());
+        // Don't clamp a->clock to the new length: let position() handle it.
+        // If a timeline is looping and we change to Once, it should finish the current
+        // loop naturally, not jump to the end.
         break;
     }
 }
@@ -191,6 +193,16 @@ void Engine::applyAnimation(Animation &a)
     const double pos = a.position(), played = std::min(a.clock, a.length());
     for (const AnimTrack &t : a.tracks) {
         if (!t.enabled || t.param.isEmpty()) continue;
+
+        // Handle "current value" keyframe at t=0 (start of timeline)
+        if (pos <= 1e-9 && !t.keys.empty() && t.keys.front().t <= 1e-9 && t.keys.front().isCurrentValue) {
+            double currentValue = 0;
+            if (animParamValue(t.layer, t.param, &currentValue)) {
+                setAnimParam(t.layer, t.param, currentValue);
+                continue;
+            }
+        }
+
         const double v = t.valueAt(pos, played);
         if (std::isfinite(v)) setAnimParam(t.layer, t.param, v);
     }
@@ -524,6 +536,7 @@ QJsonArray Engine::animationsToJson() const
                 QJsonArray kv{k.t, k.v};
                 if (k.curve == kAnimHold) kv.append(QStringLiteral("hold"));
                 else if (k.curve != 3) kv.append(k.curve);
+                if (k.isCurrentValue) kv.append(true); // 4th element: current value flag
                 keys.append(kv);
             }
             if (!keys.isEmpty()) o["keys"] = keys; // an oscillator keeps the curve it had, should it go back to it
@@ -570,6 +583,7 @@ void Engine::animationsFromJson(const QJsonArray &arr)
                 key.t = std::clamp(k[0].toDouble(), 0.0, a.duration);
                 key.v = k[1].toDouble();
                 key.curve = k.size() < 3 ? 3 : k[2].toString() == "hold" ? kAnimHold : std::clamp(k[2].toInt(3), 0, 5);
+                if (k.size() >= 4) key.isCurrentValue = k[3].toBool(false);
                 t.keys.push_back(key);
             }
             sortKeys(t);
