@@ -200,4 +200,19 @@ private:
     float m_before, m_after;
 };
 
+// Animation edited (tracks, duration, loop, repeat, speed)
+class SetAnimation : public QUndoCommand
+{
+public:
+    SetAnimation(Engine *e, quint64 id, const Engine::Animation &before, const Engine::Animation &after, const QString &text);
+    void undo() override;
+    void redo() override;
+
+private:
+    void apply(const Engine::Animation &a);
+    Engine *m_e;
+    quint64 m_id;
+    Engine::Animation m_before, m_after;
+};
+
 } // namespace cmd

@@ -240,6 +240,7 @@ public:
         double t = 0, v = 0; // seconds into the timeline, value
         int curve = 0;       // towards the next key: an easing (0 linear, 1 in, 2 out, 3 in-out, 4 in cubic,
                              // 5 out cubic) or kAnimHold
+        bool isCurrentValue = false; // if true (at t=0), use the parameter's current value instead of v
     };
     struct AnimTrack {
         quint64 layer = 0; // the layer driven (its id; 0: the composition)
@@ -257,6 +258,7 @@ public:
         double duration = 4; // seconds of one pass
         AnimLoop loop = AnimLoop::Loop;
         int repeat = 0; // passes of Loop / PingPong (0: endless)
+        double speed = 1.0; // playback speed (0.1 to 4x)
         std::vector<AnimTrack> tracks;
         // Where it is (not saved)
         AnimState state = AnimState::Stopped;

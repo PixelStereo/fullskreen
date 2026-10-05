@@ -181,7 +181,9 @@ void Engine::controlLocked(Animation *a, AnimAction action, double time, AnimLoo
     case AnimAction::LoopMode:
         a->loop = loop;
         a->repeat = std::max(0, repeat);
-        a->clock = std::min(a->clock, a->length());
+        // Don't clamp a->clock to the new length: let position() handle it.
+        // If a timeline is looping and we change to Once, it should finish the current
+        // loop naturally, not jump to the end.
         break;
     }
 }
@@ -191,6 +193,16 @@ void Engine::applyAnimation(Animation &a)
     const double pos = a.position(), played = std::min(a.clock, a.length());
     for (const AnimTrack &t : a.tracks) {
         if (!t.enabled || t.param.isEmpty()) continue;
+
+        // Handle "current value" keyframe at t=0 (start of timeline)
+        if (pos <= 1e-9 && !t.keys.empty() && t.keys.front().t <= 1e-9 && t.keys.front().isCurrentValue) {
+            double currentValue = 0;
+            if (animParamValue(t.layer, t.param, &currentValue)) {
+                setAnimParam(t.layer, t.param, currentValue);
+                continue;
+            }
+        }
+
         const double v = t.valueAt(pos, played);
         if (std::isfinite(v)) setAnimParam(t.layer, t.param, v);
     }
@@ -201,7 +213,7 @@ void Engine::stepAnimations(double dt)
     dt = std::max(0.0, dt);
     for (Animation &a : m_animations) {
         if (a.state != AnimState::Playing) continue;
-        a.clock += dt;
+        a.clock += dt * a.speed;
         applyAnimation(a);
         if (a.clock >= a.length()) { // over: its last values stay
             a.state = AnimState::Stopped;
@@ -524,6 +536,7 @@ QJsonArray Engine::animationsToJson() const
                 QJsonArray kv{k.t, k.v};
                 if (k.curve == kAnimHold) kv.append(QStringLiteral("hold"));
                 else if (k.curve != 3) kv.append(k.curve);
+                if (k.isCurrentValue) kv.append(true); // 4th element: current value flag
                 keys.append(kv);
             }
             if (!keys.isEmpty()) o["keys"] = keys; // an oscillator keeps the curve it had, should it go back to it
@@ -532,6 +545,7 @@ QJsonArray Engine::animationsToJson() const
         QJsonObject o{{"id", QString::number(a.id)}, {"name", a.name}, {"duration", a.duration},
                       {"loop", animLoopKey(a.loop)}, {"tracks", tracks}};
         if (a.repeat > 0) o["repeat"] = a.repeat;
+        if (a.speed != 1.0) o["speed"] = a.speed;
         out.append(o);
     }
     return out;
@@ -548,6 +562,7 @@ void Engine::animationsFromJson(const QJsonArray &arr)
         a.duration = std::clamp(o.value("duration").toDouble(4), kMinDuration, 36000.0);
         a.loop = animLoopFromKey(o.value("loop").toString());
         a.repeat = std::clamp(o.value("repeat").toInt(0), 0, 100000);
+        a.speed = std::clamp(o.value("speed").toDouble(1.0), 0.1, 10.0);
         for (const QJsonValue &tv : o.value("tracks").toArray()) {
             const QJsonObject to = tv.toObject();
             AnimTrack t;
@@ -570,6 +585,7 @@ void Engine::animationsFromJson(const QJsonArray &arr)
                 key.t = std::clamp(k[0].toDouble(), 0.0, a.duration);
                 key.v = k[1].toDouble();
                 key.curve = k.size() < 3 ? 3 : k[2].toString() == "hold" ? kAnimHold : std::clamp(k[2].toInt(3), 0, 5);
+                if (k.size() >= 4) key.isCurrentValue = k[3].toBool(false);
                 t.keys.push_back(key);
             }
             sortKeys(t);

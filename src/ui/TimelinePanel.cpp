@@ -1,6 +1,7 @@
 #include "TimelinePanel.h"
 #include "Engine.h"
 #include "Widgets.h"
+#include "Commands.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -648,8 +649,8 @@ void TrackRow::changed(bool lane)
 // ---------------------------------------------------------------------------
 // TimelineWindow
 
-TimelineWindow::TimelineWindow(Engine *engine, QWidget *parent)
-    : QWidget(parent, Qt::Tool | Qt::WindowStaysOnTopHint), m_engine(engine)
+TimelineWindow::TimelineWindow(Engine *engine, QUndoStack *undo, QWidget *parent)
+    : QWidget(parent, Qt::Tool | Qt::WindowStaysOnTopHint), m_engine(engine), m_undo(undo)
 {
     setWindowTitle(QStringLiteral("Timelines"));
     resize(1120, 560);
@@ -703,10 +704,18 @@ TimelineWindow::TimelineWindow(Engine *engine, QWidget *parent)
     m_repeat->setSpecialValueText(QStringLiteral("∞"));
     m_repeat->setPrefix(QStringLiteral("× "));
     m_repeat->setToolTip(QStringLiteral("Passes (∞: until it is stopped)"));
+    m_speed = numberBox(0.1, 10, 2, 0.1);
+    m_speed->setToolTip(QStringLiteral("Playback speed (1.0 = normal)"));
+    m_fit = new QPushButton(QStringLiteral("Fit"));
+    m_fit->setToolTip(QStringLiteral("Adapt zoom to show all keys from min to max"));
+    m_fit->setMaximumWidth(40);
     for (QWidget *w : std::initializer_list<QWidget *>{m_play, m_pause, m_stop, m_rewind, m_time}) transport->addWidget(w);
     transport->addStretch();
     transport->addWidget(new QLabel(QStringLiteral("Duration")));
     transport->addWidget(m_duration);
+    transport->addWidget(m_fit);
+    transport->addWidget(new QLabel(QStringLiteral("Speed")));
+    transport->addWidget(m_speed);
     transport->addWidget(m_loop);
     transport->addWidget(m_repeat);
     v->addLayout(transport);
@@ -807,6 +816,12 @@ TimelineWindow::TimelineWindow(Engine *engine, QWidget *parent)
         m_ruler->setDuration(d);
         rebuildRows();
     });
+    connect(m_speed, &QDoubleSpinBox::valueChanged, this, [this](double s) {
+        if (m_filling) return;
+        m_edit.speed = s;
+        commit();
+    });
+    connect(m_fit, &QPushButton::clicked, this, [this] { fitDuration(); });
     connect(m_loop, qOverload<int>(&QComboBox::activated), this, [this](int k) {
         m_edit.loop = Engine::AnimLoop(k);
         m_repeat->setEnabled(k != 0);
@@ -878,6 +893,7 @@ void TimelineWindow::loadEditor()
     m_edit = i >= 0 ? m_engine->animation(i) : Engine::Animation();
     m_filling = true;
     m_duration->setValue(m_edit.duration);
+    m_speed->setValue(m_edit.speed);
     m_loop->setCurrentIndex(int(m_edit.loop));
     m_repeat->setValue(m_edit.repeat);
     m_repeat->setEnabled(m_edit.loop != Engine::AnimLoop::Once);
@@ -902,9 +918,15 @@ void TimelineWindow::commit()
 {
     const int i = m_engine->indexOfAnimation(m_current);
     if (i < 0) return;
-    m_committing = true;
-    m_engine->setAnimation(i, m_edit);
-    m_committing = false;
+    if (m_undo) {
+        // Push an undo command for this animation edit
+        const Engine::Animation before = m_engine->animation(i);
+        m_undo->push(new cmd::SetAnimation(m_engine, m_edit.id, before, m_edit, QStringLiteral("Edit timeline")));
+    } else {
+        m_committing = true;
+        m_engine->setAnimation(i, m_edit);
+        m_committing = false;
+    }
     emit edited();
 }
 
@@ -940,4 +962,25 @@ void TimelineWindow::poll()
                         .arg(shown && a.loop != Engine::AnimLoop::Once ? QStringLiteral(" · pass %1").arg(pass) : QString()));
     m_play->setEnabled(a.state != Engine::AnimState::Playing);
     m_pause->setEnabled(a.state == Engine::AnimState::Playing);
+}
+
+void TimelineWindow::fitDuration()
+{
+    if (m_edit.tracks.empty()) return;
+    double maxTime = 0;
+    for (const AnimTrack &t : m_edit.tracks) {
+        if (!t.keys.empty()) {
+            maxTime = std::max(maxTime, t.keys.back().t);
+        }
+    }
+    if (maxTime <= 0) return;
+    // Add 10% padding, with a minimum of 0.5s
+    const double padding = std::max(0.5, maxTime * 0.1);
+    m_edit.duration = std::max(0.05, maxTime + padding);
+    m_filling = true;
+    m_duration->setValue(m_edit.duration);
+    m_filling = false;
+    commit();
+    m_ruler->setDuration(m_edit.duration);
+    rebuildRows();
 }

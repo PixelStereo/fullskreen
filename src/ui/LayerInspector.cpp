@@ -1433,10 +1433,12 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
         m_posY = spin(-100000, 100000, QStringLiteral(" px"), 1);
         m_scaleX = spin(0.1, 10000, QStringLiteral(" %"), 2);
         m_scaleY = spin(0.1, 10000, QStringLiteral(" %"), 2);
+        m_rotation = spin(-360, 360, QStringLiteral("°"), 1);
         m_posX->setToolTip(QStringLiteral("Horizontal position of the layer's center, in composition pixels"));
         m_posY->setToolTip(QStringLiteral("Vertical position of the layer's center, in composition pixels"));
         m_scaleX->setToolTip(QStringLiteral("Width of the layer, in % of the composition width"));
         m_scaleY->setToolTip(QStringLiteral("Height of the layer, in % of the composition height"));
+        m_rotation->setToolTip(QStringLiteral("Rotation of the layer, in degrees"));
         auto *link = new QToolButton;
         link->setCheckable(true);
         link->setChecked(m_scaleLinked);
