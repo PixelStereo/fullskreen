@@ -213,7 +213,7 @@ void Engine::controlAnimation(quint64 id, AnimAction action, double time, AnimLo
         if (!a) return;
         controlLocked(a, action, time, loop, repeat);
     }
-    if (action == AnimAction::LoopMode) emit animationsChanged(); // its definition (saved with it)
+    if (action == AnimAction::LoopMode || action == AnimAction::Speed) emit animationsChanged(); // its definition (saved with it)
 }
 
 void Engine::controlLocked(Animation *a, AnimAction action, double time, AnimLoop loop, int repeat)
@@ -258,6 +258,9 @@ void Engine::controlLocked(Animation *a, AnimAction action, double time, AnimLoo
         }
         a->clock = std::clamp(time, 0.0, std::min(a->length(), 1e9));
         applyAnimation(*a);
+        break;
+    case AnimAction::Speed:
+        a->speed = std::clamp(time, 0.1, 10.0); // the clock goes on from where it is: no jump
         break;
     case AnimAction::LoopMode:
         a->setLoop(loop, repeat); // from where it is: Once ends the pass it is in, no jump to the end

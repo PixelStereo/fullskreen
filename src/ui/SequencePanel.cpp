@@ -45,6 +45,7 @@ static QString actionName(const Engine::SequenceStep &st)
     case A::Stop: return QStringLiteral("■ Stop");
     case A::Rewind: return QStringLiteral("⏮ Rewind");
     case A::Seek: return QStringLiteral("Seek %1 s").arg(st.seekTime, 0, 'f', 2);
+    case A::Speed: return QStringLiteral("Speed × %1").arg(st.speed, 0, 'f', 2);
     case A::LoopMode: {
         const QString n = st.repeat > 0 ? QStringLiteral(" × %1").arg(st.repeat) : QStringLiteral(" ∞");
         return st.loop == Engine::AnimLoop::Once ? QStringLiteral("Loop: once")
@@ -687,6 +688,17 @@ void SequenceWindow::fillActionMenu(QMenu *menu, int row)
     });
     seek->setCheckable(true);
     seek->setChecked(cur.action == A::Seek);
+    QAction *speed = menu->addAction(cur.action == A::Speed ? QStringLiteral("Speed…  (× %1)").arg(cur.speed, 0, 'f', 2)
+                                                            : QStringLiteral("Speed…"),
+                                     this, [this, set, cur] {
+        bool ok = false;
+        const double v = QInputDialog::getDouble(this, QStringLiteral("Speed"),
+                                                 QStringLiteral("Playback speed of the timeline (1 = normal)"),
+                                                 cur.action == A::Speed ? cur.speed : 1.0, 0.1, 10, 2, &ok);
+        if (ok) set([v](Engine::SequenceStep &st) { st.action = A::Speed; st.speed = v; });
+    });
+    speed->setCheckable(true);
+    speed->setChecked(cur.action == A::Speed);
     QMenu *loop = menu->addMenu(cur.action == A::LoopMode ? QStringLiteral("Loop mode  (%1)").arg(actionName(cur))
                                                           : QStringLiteral("Loop mode"));
     auto mode = [set](L l, int n) {

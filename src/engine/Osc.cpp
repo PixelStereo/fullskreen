@@ -525,6 +525,13 @@ void OscNamespace::build()
                 e->controlAnimation(id, A::Seek, num(a.value(0)));
                 return true;
             };
+            OscNode &sp = add(base + "/speed", "f", 3, "Speed (1 = normal)");
+            sp.get = [e, id] { return QVariantList{e->animation(e->indexOfAnimation(id)).speed}; };
+            sp.set = [e, id](const QVariantList &a) {
+                if (e->indexOfAnimation(id) < 0) return false;
+                e->controlAnimation(id, A::Speed, num(a.value(0)));
+                return true;
+            };
             OscNode &pl = add(base + "/playing", "T", 1, "Playing");
             pl.get = [e, id] { return QVariantList{e->animation(e->indexOfAnimation(id)).state == Engine::AnimState::Playing}; };
             m_nodes[base].description = an.name.isEmpty() ? QString::number(i + 1) : an.name;

@@ -297,7 +297,7 @@ void Engine::advanceSequence(double dt)
         // through the interface's undo stack)
         for (const SequenceStep &st : fire) {
             if (st.timeline) {
-                controlAnimation(st.timeline, st.action, st.seekTime, st.loop, st.repeat);
+                controlAnimation(st.timeline, st.action, st.action == AnimAction::Speed ? st.speed : st.seekTime, st.loop, st.repeat);
                 continue;
             }
             const int mi = indexOfMemory(st.memory);
@@ -327,10 +327,11 @@ QJsonArray Engine::sequencesToJson() const
         for (const SequenceStep &st : s.steps) {
             QJsonObject o;
             if (st.timeline) {
-                static const char *const actions[] = {"play", "pause", "stop", "rewind", "seek", "loopMode"};
+                static const char *const actions[] = {"play", "pause", "stop", "rewind", "seek", "loopMode", "speed"};
                 o["timeline"] = QString::number(st.timeline);
-                o["action"] = QString::fromLatin1(actions[std::clamp(int(st.action), 0, 5)]);
+                o["action"] = QString::fromLatin1(actions[std::clamp(int(st.action), 0, 6)]);
                 if (st.action == AnimAction::Seek) o["time"] = st.seekTime;
+                if (st.action == AnimAction::Speed) o["speed"] = st.speed;
                 if (st.action == AnimAction::LoopMode) {
                     o["loop"] = animLoopKey(st.loop);
                     if (st.repeat > 0) o["repeat"] = st.repeat;
@@ -365,7 +366,9 @@ void Engine::sequencesFromJson(const QJsonArray &a, int current)
             if (st.timeline) {
                 const QString a = so.value("action").toString();
                 st.action = a == "pause" ? AnimAction::Pause : a == "stop" ? AnimAction::Stop : a == "rewind" ? AnimAction::Rewind
-                          : a == "seek" ? AnimAction::Seek : a == "loopMode" ? AnimAction::LoopMode : AnimAction::Play;
+                          : a == "seek" ? AnimAction::Seek : a == "loopMode" ? AnimAction::LoopMode
+                          : a == "speed" ? AnimAction::Speed : AnimAction::Play;
+                st.speed = std::clamp(so.value("speed").toDouble(1), 0.1, 10.0);
                 st.seekTime = std::max(0.0, so.value("time").toDouble(0));
                 st.loop = animLoopFromKey(so.value("loop").toString());
                 st.repeat = std::clamp(so.value("repeat").toInt(0), 0, 100000);

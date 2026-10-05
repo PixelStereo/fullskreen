@@ -235,7 +235,7 @@ public:
     enum class AnimWave { Sine = 0, Triangle = 1, Saw = 2, Square = 3 };
     enum class AnimLoop { Once = 0, Loop = 1, PingPong = 2 };
     enum class AnimState { Stopped = 0, Playing = 1, Paused = 2 };
-    enum class AnimAction { Play = 0, Pause = 1, Stop = 2, Rewind = 3, Seek = 4, LoopMode = 5 };
+    enum class AnimAction { Play = 0, Pause = 1, Stop = 2, Rewind = 3, Seek = 4, LoopMode = 5, Speed = 6 };
     static constexpr int kAnimHold = 100; // a key's curve: holds its value until the next key
     struct AnimKey {
         double t = 0, v = 0; // seconds into the timeline, value
@@ -290,7 +290,7 @@ public:
     void removeAnimation(int i);
     // The transport: Play (from where it is; from the start once stopped), Pause, Stop (back to the start,
     // its values left as they are), Rewind (to the start), Seek (to `time`, values set at once even when not
-    // playing), LoopMode (`loop` and `repeat`)
+    // playing), LoopMode (`loop` and `repeat`), Speed (`time` is the speed, 0.1 to 10: it plays on from where it is)
     void controlAnimation(quint64 id, AnimAction action, double time = 0, AnimLoop loop = AnimLoop::Loop, int repeat = 0);
     // The numbers of a layer (0: the composition) a timeline can drive, with their ranges
     std::vector<AnimParam> animatableParams(quint64 layer) const;
@@ -317,6 +317,7 @@ public:
         double seekTime = 0;                  // Seek
         AnimLoop loop = AnimLoop::Loop;       // LoopMode
         int repeat = 0;                       // LoopMode
+        double speed = 1;                     // Speed
         double preWait = 0, postWait = 0; // seconds
         StepContinue next = StepContinue::Wait;
     };

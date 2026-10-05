@@ -1191,7 +1191,11 @@ int main(int argc, char **argv)
             p1.seekTime = 1.0;
             p2.timeline = aid;
             p2.action = A::Stop;
-            sq.steps = {p0, p1, p2};
+            Engine::SequenceStep p3;
+            p3.timeline = aid;
+            p3.action = A::Speed;
+            p3.speed = 0.75;
+            sq.steps = {p0, p1, p2, p3};
             e.setCurrentSequence(e.addSequence(sq));
             CHECK(near(e.stepDuration(p0), 4) && e.stepDuration(p1) == 0);
             CHECK(e.sequenceGo() && e.animation(ai).state == Engine::AnimState::Playing);
@@ -1245,6 +1249,14 @@ int main(int argc, char **argv)
             e.controlAnimation(aid, A::Play);
             e.advanceFades(1.0);
             CHECK(near(e.animation(ai).clock, 2.0) && near(e.stepDuration(p0), 1.0));
+            e.controlAnimation(aid, A::Stop);
+            // Speed from a step (or OSC): it plays on from where it is
+            e.controlAnimation(aid, A::Play);
+            e.advanceFades(1.0);
+            e.controlAnimation(aid, A::Speed, 0.5);
+            e.advanceFades(1.0);
+            CHECK(near(e.animation(ai).speed, 0.5) && near(e.animation(ai).clock, 2.5));
+            e.controlAnimation(aid, A::Speed, 2);
             e.controlAnimation(aid, A::Stop);
             // Undo: the arrows of a number merge into one step
             {
@@ -1315,7 +1327,8 @@ int main(int argc, char **argv)
                       e.animation(ck).tracks[0].keys[0].curve == 0);
                 if (ck >= 0) e.removeAnimation(ck);
                 const Engine::Sequence w = e.sequence(e.currentSequence());
-                CHECK(w.steps.size() == 3 && w.steps[0].timeline == aid && w.steps[0].memory == 0 &&
+                CHECK(w.steps.size() == 4 && w.steps[3].action == A::Speed && near(w.steps[3].speed, 0.75) &&
+                      w.steps[0].timeline == aid && w.steps[0].memory == 0 &&
                       w.steps[0].action == A::Play && w.steps[1].action == A::Seek && near(w.steps[1].seekTime, 1.0) &&
                       w.steps[2].action == A::Stop);
             }
