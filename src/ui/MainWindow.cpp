@@ -228,6 +228,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     // --- Media bin
     connect(m_bin, &MediaBin::relinkRequested, this, &MainWindow::relinkMedia);
     connect(m_bin, &MediaBin::useAsSourceRequested, this, [this](const QString &p) { loadIntoLayer(currentLayer(), p); });
+    connect(m_bin, &MediaBin::loadIntoNewLayerRequested, this, &MainWindow::loadIntoNewLayer);
     connect(m_bin, &MediaBin::loadIntoLayerRequested, this, [this](int i, const QString &p) { loadIntoLayer(i, p); });
     connect(m_layerTable, &LayerTable::addClicked, this, &MainWindow::addEmptyLayer);
     connect(m_layerTable, &LayerTable::filesDropped, this, [this](int row, const QStringList &paths) {
@@ -988,6 +989,16 @@ bool MainWindow::refuseLocked(int layer)
     if (!m_engine->isLocked(layer)) return false;
     statusBar()->showMessage(QStringLiteral("This layer is locked: unlock it (padlock) to edit it."), 4000);
     return true;
+}
+
+// A new layer (above the selected one) with that media: one undo step
+void MainWindow::loadIntoNewLayer(const QString &path)
+{
+    m_undo->beginMacro(QStringLiteral("Load into New Layer"));
+    addEmptyLayer();
+    const bool ok = loadIntoLayer(currentLayer(), path);
+    m_undo->endMacro();
+    if (!ok) m_undo->undo(); // nothing loaded: no empty layer left behind
 }
 
 void MainWindow::addEmptyLayer()
