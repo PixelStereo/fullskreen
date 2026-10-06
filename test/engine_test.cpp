@@ -494,7 +494,7 @@ int main(int argc, char **argv)
                     const QString seg = it.key();
                     const bool userName = parent == "layer" || parent == "viewport" || parent == "effect" || parent == "param"; // names: layers, viewports, effects, shader parameters
                     if (!userName && seg != seg.toLower()) { ++bad; qWarning("not lowercase: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString())); }
-                    if (!userName && seg.endsWith("s")) { ++bad; qWarning("plural: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString())); }
+                    if (!userName && seg.endsWith("s") && seg != "fps") { ++bad; qWarning("plural: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString())); }
                     if (!userName && (seg.endsWith("enabled") || seg.endsWith("Enabled") || seg.endsWith("On") || seg == "master")) {
                         ++bad;
                         qWarning("switch not named enable: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString()));
