@@ -25,7 +25,7 @@ static const char *kFollowKey = "ui/followFades";
 static const char *kOscKey = "osc/enabled";
 static const char *kOscPortKey = "osc/udpPort";        // (osc/port, osc/queryPort: earlier defaults, ignored)
 static const char *kQueryPortKey = "osc/oscQueryPort";
-static const char *kTransitionKey = "memories/transition";
+static const char *kTransitionKey = "snapshots/transition";
 static const char *kRateKey = "render/frameRate";
 static const char *kSamplesKey = "render/antialiasing";
 static const char *kMipmapsKey = "render/mipmaps";
@@ -131,14 +131,14 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
     form->addRow(note(QStringLiteral("Given to a video or a sound when it is loaded into a layer. "
                                      "Layers already loaded keep their own mode.")));
     m_transition = new QComboBox;
-    form->addRow(new ResetLabel(QStringLiteral("Memory transition"),
+    form->addRow(new ResetLabel(QStringLiteral("Snapshot transition"),
                                 [this] {
                                     const int k = m_transition->findText(QStringLiteral("Crossfade"));
                                     m_transition->setCurrentIndex(std::max(0, k));
                                 }),
                  m_transition);
-    form->addRow(note(QStringLiteral("When a memory gives a layer another source: the outgoing one keeps playing and "
-                                     "this ISF transition takes it to the new one, over the memory's fade. "
+    form->addRow(note(QStringLiteral("When a snapshot gives a layer another source: the outgoing one keeps playing and "
+                                     "this ISF transition takes it to the new one, over the snapshot's fade. "
                                      "A layer can choose its own (Source tab).")));
     m_hardware = new FlagBox(QStringLiteral("Hardware decoding"));
     m_hardware->setChecked(hardwareDecoding());
@@ -233,12 +233,12 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
         magnet::setEnabled(on);
     });
     connect(reach, qOverload<int>(&QSpinBox::valueChanged), this, [](int px) { magnet::setDistance(px); });
-    auto *follow = new FlagBox(QStringLiteral("Fields follow the values during memory fades"));
+    auto *follow = new FlagBox(QStringLiteral("Fields follow the values during snapshot fades"));
     follow->setChecked(followFades());
     lookForm->addRow(follow);
     lookForm->addRow(note(QStringLiteral("On: the inspector's sliders and fields (opacity, viewports, color, soft edge, "
-                                         "position, volume, speed, ISF parameters…) move with the values while a memory "
-                                         "fades them. Off: they stay still and show the memory's values once the fade is "
+                                         "position, volume, speed, ISF parameters…) move with the values while a snapshot "
+                                         "fades them. Off: they stay still and show the snapshot's values once the fade is "
                                          "over. A field being edited is never moved.")));
     connect(follow, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kFollowKey, on);
@@ -290,8 +290,8 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
     of->addRow(m_oscStatus);
     of->addRow(note(QStringLiteral(
         "Announced by zeroconf (_oscjson._tcp, _osc._udp): OSCQuery clients (score, Chataigne, Vezér…) find it "
-        "by themselves. Addresses: /composition/…, /layers/&lt;name&gt;/… "
-        "(groups: /layers/&lt;group&gt;/layers/&lt;name&gt;/…). The whole tree: http://&lt;this machine&gt;:&lt;OSCQuery port&gt;/")));
+        "by themselves. Addresses: /composition/…, /layer/&lt;name&gt;/… "
+        "(groups: /layer/&lt;group&gt;/layer/&lt;name&gt;/…). The whole tree: http://&lt;this machine&gt;:&lt;OSCQuery port&gt;/")));
     oscPage->addWidget(osc);
     audioPage->addWidget(buildAudio());
     for (QVBoxLayout *l : {playbackPage, renderPage, audioPage, interfacePage, oscPage}) l->addStretch();

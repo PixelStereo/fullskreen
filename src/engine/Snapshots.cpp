@@ -1,5 +1,6 @@
-// Memories (cues): snapshots of the layers, recalled with a fade; another source comes in with a transition.
+// Snapshots (cues): snapshots of the layers, recalled with a fade; another source comes in with a transition.
 #include "EngineInternal.h"
+#include "Osc.h"
 
 #include <QBuffer>
 #include <QDir>
@@ -13,23 +14,23 @@ QString easingCurveKey(EasingCurve c)
 {
     switch (c) {
     case EasingCurve::Linear: return QStringLiteral("linear");
-    case EasingCurve::EaseIn: return QStringLiteral("easeIn");
-    case EasingCurve::EaseOut: return QStringLiteral("easeOut");
-    case EasingCurve::EaseInOut: return QStringLiteral("easeInOut");
-    case EasingCurve::EaseInCubic: return QStringLiteral("easeInCubic");
-    case EasingCurve::EaseOutCubic: return QStringLiteral("easeOutCubic");
+    case EasingCurve::EaseIn: return QStringLiteral("ease_in");
+    case EasingCurve::EaseOut: return QStringLiteral("ease_out");
+    case EasingCurve::EaseInOut: return QStringLiteral("ease_in_out");
+    case EasingCurve::EaseInCubic: return QStringLiteral("ease_in_cubic");
+    case EasingCurve::EaseOutCubic: return QStringLiteral("ease_out_cubic");
     }
-    return QStringLiteral("easeInOut");
+    return QStringLiteral("ease_in_out");
 }
 
 EasingCurve easingCurveFromKey(const QString &k)
 {
     if (k == "linear") return EasingCurve::Linear;
-    if (k == "easeIn") return EasingCurve::EaseIn;
-    if (k == "easeOut") return EasingCurve::EaseOut;
-    if (k == "easeInOut") return EasingCurve::EaseInOut;
-    if (k == "easeInCubic") return EasingCurve::EaseInCubic;
-    if (k == "easeOutCubic") return EasingCurve::EaseOutCubic;
+    if (k == "ease_in") return EasingCurve::EaseIn;
+    if (k == "ease_out") return EasingCurve::EaseOut;
+    if (k == "ease_in_out") return EasingCurve::EaseInOut;
+    if (k == "ease_in_cubic") return EasingCurve::EaseInCubic;
+    if (k == "ease_out_cubic") return EasingCurve::EaseOutCubic;
     return EasingCurve::EaseInOut; // default
 }
 
@@ -51,13 +52,18 @@ static double applyEasing(double t, EasingCurve curve)
 
 double easeCurve(double t, int curve) { return applyEasing(t, EasingCurve(std::clamp(curve, 0, 5))); }
 
-// The Text generator's values that fade, with their timing keys ("text/<key>"; their path in the state is
-// source/<key>). The content is "typed" over its time.
+// The Text generator's values that fade, with their timing keys (their OSC address; their path in the
+// state is source/<key>). The content is "typed" over its time.
 enum TextNum { TextSize, TextColor, TextLineHeight, TextLetterSpacing, TextOutline, TextOutlineColor, TextShadowColor,
                TextShadowX, TextShadowY, TextContent, TextNumCount };
-static const char *const kTextNumKeys[TextNumCount] = {"size",         "color",         "lineHeight", "letterSpacing",
-                                                       "outline",      "outlineColor",  "shadowColor", "shadowX",
-                                                       "shadowY",      "content"};
+static const char *const kTextNumKeys[TextNumCount] = {"size",         "color",         "line_height", "letter_spacing",
+                                                       "outline",      "outline_color",  "shadow_color", "shadow_x",
+                                                       "shadow_y",      "content"};
+// The same values as OSC addresses (timing keys)
+static const char *const kTextTimeKeys[TextNumCount] = {"source/text/size",         "source/text/color",          "source/text/line_height",
+                                                        "source/text/letter_spacing", "source/text/outline",        "source/text/outline/color",
+                                                        "source/text/shadow/color", "source/text/shadow/x",      "source/text/shadow/y",
+                                                        "source/text/content"};
 
 struct TextNumbers {
     float size = 48, lineHeight = 1.2f, letterSpacing = 0, outline = 0, shadowX = 4, shadowY = 4;
@@ -78,7 +84,7 @@ static TextNumbers textNumbersOf(const TextSource &t)
     return n;
 }
 
-// Numbers of a layer that fade from one memory to the next
+// Numbers of a layer that fade from one snapshot to the next
 struct LayerNumbers {
     float opacity = 1, volume = 1;
     QRectF roi;
@@ -92,8 +98,8 @@ struct LayerNumbers {
     TextNumbers text; // Text generator
 };
 
-// How long each of those numbers takes to reach the memory's value (seconds; 0: a cut). By default the
-// memory's fade; a memory can give any of them a time of its own ("timing" in its layer state).
+// How long each of those numbers takes to reach the snapshot's value (seconds; 0: a cut). By default the
+// snapshot's fade; a snapshot can give any of them a time of its own ("timing" in its layer state).
 struct LayerTimes {
     double opacity = 0, volume = 0, roi = 0, temp = 0, tint = 0, add = 0, remove = 0, mapping = 0;
     std::vector<std::vector<double>> isf; // as LayerNumbers::isf
@@ -120,8 +126,8 @@ struct LayerTimes {
     }
 };
 
-// Which of a layer's values a fade drives. Several memories can run at once: a new recall takes over only
-// the values it holds, the others go on with the memory that started them.
+// Which of a layer's values a fade drives. Several snapshots can run at once: a new recall takes over only
+// the values it holds, the others go on with the snapshot that started them.
 enum OwnedBit : quint64 {
     OwnOpacity = 1ull << 0, OwnVolume = 1ull << 1, OwnRoi = 1ull << 2, OwnColor = 1ull << 3, OwnMapping = 1ull << 4,
     OwnSoft = 1ull << 5, OwnViewportOpacity = 1ull << 6, OwnSpeed = 1ull << 7, OwnInOut = 1ull << 8, OwnIsf = 1ull << 9,
@@ -136,7 +142,7 @@ struct Engine::FadeJob {
     LayerNumbers from, to;
     LayerTimes times;
     quint64 owned = kOwnAll; // the values this fade drives (a later recall takes some over)
-    double elapsed = 0;      // its own clock: memories started at different times run side by side
+    double elapsed = 0;      // its own clock: snapshots started at different times run side by side
     bool hideAtEnd = false;
     float finalOpacity = 1;
 };
@@ -306,7 +312,7 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, con
     return n;
 }
 
-// Times of a layer's numbers: the memory's fade, or the time the memory gives that value (key → seconds)
+// Times of a layer's numbers: the snapshot's fade, or the time the snapshot gives that value (key → seconds)
 static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade)
 {
     auto time = [&](const QString &key) {
@@ -319,62 +325,76 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     };
     LayerTimes d;
     d.opacity = time(QStringLiteral("opacity"));
-    d.volume = time(QStringLiteral("volume"));
-    d.roi = time(QStringLiteral("roi"));
+    d.volume = time(QStringLiteral("source/volume"));
+    d.roi = time(QStringLiteral("source/roi"));
     d.temp = time(QStringLiteral("color/temp"));
     d.tint = time(QStringLiteral("color/tint"));
     d.add = time(QStringLiteral("color/add"));
     d.remove = time(QStringLiteral("color/remove"));
-    d.mapping = time(QStringLiteral("mapping"));
-    d.viewportOpacity = time(QStringLiteral("viewportOpacity"));
-    d.softEdge = time(QStringLiteral("softEdge"));
-    d.speed = time(QStringLiteral("speed"));
-    d.inPoint = time(QStringLiteral("inPoint"));
-    d.outPoint = time(QStringLiteral("outPoint"));
+    d.mapping = time(QStringLiteral("spatial"));
+    d.viewportOpacity = time(QStringLiteral("viewport"));
+    d.softEdge = time(QStringLiteral("spatial/soft_edge"));
+    d.speed = time(QStringLiteral("source/speed"));
+    d.inPoint = time(QStringLiteral("source/in"));
+    d.outPoint = time(QStringLiteral("source/out"));
     for (int k = 0; k < TextNumCount; ++k) {
-        const QString key = QStringLiteral("text/") + QString::fromLatin1(kTextNumKeys[k]);
+        const QString key = QString::fromLatin1(kTextTimeKeys[k]);
         d.text[k] = time(key);
-        // The typing goes at an even pace unless the memory gives it a curve
+        // The typing goes at an even pace unless the snapshot gives it a curve
         d.textCurve[k] = k == TextContent && !timing.contains(key + "/curve") ? EasingCurve::Linear : curve(key);
     }
     // Read easing curves for each parameter
     d.opacityCurve = curve(QStringLiteral("opacity"));
-    d.volumeCurve = curve(QStringLiteral("volume"));
-    d.roiCurve = curve(QStringLiteral("roi"));
+    d.volumeCurve = curve(QStringLiteral("source/volume"));
+    d.roiCurve = curve(QStringLiteral("source/roi"));
     d.colorCurve = curve(QStringLiteral("color/temp")); // use temp for all color parameters
-    d.mappingCurve = curve(QStringLiteral("mapping"));
-    d.softEdgeCurve = curve(QStringLiteral("softEdge"));
-    d.viewportOpacityCurve = curve(QStringLiteral("viewportOpacity"));
-    d.speedCurve = curve(QStringLiteral("speed"));
-    d.inOutCurve = curve(QStringLiteral("inPoint")); // use inPoint for both inPoint and outPoint
+    d.mappingCurve = curve(QStringLiteral("spatial"));
+    d.softEdgeCurve = curve(QStringLiteral("spatial/soft_edge"));
+    d.viewportOpacityCurve = curve(QStringLiteral("viewport"));
+    d.speedCurve = curve(QStringLiteral("source/speed"));
+    d.inOutCurve = curve(QStringLiteral("source/in")); // the curve of in is also the one of out
     auto params = [&](const IsfInstance *inst, const QString &base) {
         std::vector<double> v;
         if (inst)
             for (const IsfInput &in : inst->inputs()) v.push_back(time(base + in.name));
         return v;
     };
-    d.isf.push_back(params(l.generator.get(), QStringLiteral("source/params/")));
+    d.isf.push_back(params(l.generator.get(), QStringLiteral("source/param/")));
+    QStringList fxNames;
+    for (const auto &x : l.effects) fxNames << x->name();
+    const QStringList fxSegs = osc::uniqueSegments(fxNames);
     for (size_t k = 0; k < l.effects.size(); ++k)
-        d.isf.push_back(params(l.effects[k].get(), QStringLiteral("effects/%1/params/").arg(k)));
+        d.isf.push_back(params(l.effects[k].get(), QStringLiteral("effect/%1/param/").arg(fxSegs[int(k)])));
     return d;
 }
 
-QString Engine::timingKey(const QStringList &path)
+// The key of the time (and easing) of a value of a layer, from its path in the layer's JSON: the OSC address of that
+// value, or of the group of values that fade together (the ROI, the spatial shape, a color's three components…)
+QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
 {
     if (path.isEmpty()) return {};
     const QString &a = path[0];
-    if (a == "opacity" || a == "volume" || a == "mapping" || a == "viewportOpacity" || a == "softEdge" ||
-        a == "speed" || a == "inPoint" || a == "outPoint")
-        return a;
-    if (a == "source" && path.size() >= 2)
-        for (const char *k : kTextNumKeys)
-            if (path[1] == QLatin1String(k)) return QStringLiteral("text/") + path[1]; // Text generator (a shader's are in params)
-    if (a == "source" && path.size() >= 2 && path[1] == "roi") return QStringLiteral("roi");
-    if (a == "source" && path.size() >= 3 && path[1] == "params") return QStringLiteral("source/params/") + path[2];
+    if (a == "opacity") return a;
+    if (a == "viewports") return QStringLiteral("viewport");
+    if (a == "spatial") return path.size() >= 2 && path[1] == "soft_edge" ? QStringLiteral("spatial/soft_edge") : QStringLiteral("spatial");
+    if (a == "volume") return QStringLiteral("source/volume");
+    if (a == "source" && path.size() >= 2) {
+        for (int k = 0; k < TextNumCount; ++k)
+            if (path[1] == QLatin1String(kTextNumKeys[k])) return QString::fromLatin1(kTextTimeKeys[k]); // Text generator
+        if (path[1] == "roi") return QStringLiteral("source/roi");
+        if (path[1] == "speed" || path[1] == "in" || path[1] == "out") return QStringLiteral("source/") + path[1];
+        if (path[1] == "params" && path.size() >= 3) return QStringLiteral("source/param/") + path[2];
+    }
     if (a == "color" && path.size() >= 2 && (path[1] == "temp" || path[1] == "tint" || path[1] == "add" || path[1] == "remove"))
         return QStringLiteral("color/") + path[1];
-    if (a == "effects" && path.size() >= 4 && path[2] == "params")
-        return QStringLiteral("effects/%1/params/%2").arg(path[1], path[3]);
+    if (a == "effects" && path.size() >= 4 && path[2] == "params") {
+        QStringList names;
+        for (const QJsonValue &v : layer.value("effects").toArray())
+            names << QFileInfo(v.toObject().value("path").toString()).completeBaseName();
+        const int k = path[1].toInt();
+        if (k < 0 || k >= names.size()) return {};
+        return QStringLiteral("effect/%1/param/%2").arg(osc::uniqueSegments(names).at(k), path[3]);
+    }
     return {};
 }
 
@@ -415,62 +435,62 @@ static QStringList effectPaths(const QJsonArray &a)
 
 // ---------------------------------------------------------------------------
 
-int Engine::memoryCount() const
+int Engine::snapshotCount() const
 {
     Lock lk(&m_mutex);
-    return int(m_memories.size());
+    return int(m_snapshots.size());
 }
 
-Engine::Memory Engine::memory(int i) const
+Engine::Snapshot Engine::snapshot(int i) const
 {
     Lock lk(&m_mutex);
-    return i >= 0 && i < int(m_memories.size()) ? m_memories[size_t(i)] : Memory();
+    return i >= 0 && i < int(m_snapshots.size()) ? m_snapshots[size_t(i)] : Snapshot();
 }
 
-int Engine::indexOfMemory(quint64 id) const
+int Engine::indexOfSnapshot(quint64 id) const
 {
     Lock lk(&m_mutex);
-    for (size_t i = 0; i < m_memories.size(); ++i)
-        if (m_memories[i].id == id) return int(i);
+    for (size_t i = 0; i < m_snapshots.size(); ++i)
+        if (m_snapshots[i].id == id) return int(i);
     return -1;
 }
 
-void Engine::setMemory(int i, const Memory &m)
+void Engine::setSnapshot(int i, const Snapshot &m)
 {
     {
         Lock lk(&m_mutex);
-        if (i < 0 || i >= int(m_memories.size())) return;
-        const quint64 id = m_memories[size_t(i)].id; // it keeps its identity
-        m_memories[size_t(i)] = m;
-        m_memories[size_t(i)].id = id;
+        if (i < 0 || i >= int(m_snapshots.size())) return;
+        const quint64 id = m_snapshots[size_t(i)].id; // it keeps its identity
+        m_snapshots[size_t(i)] = m;
+        m_snapshots[size_t(i)].id = id;
     }
-    emit memoriesChanged();
+    emit snapshotsChanged();
 }
 
-int Engine::addMemory(const Memory &m, int at)
+int Engine::addSnapshot(const Snapshot &m, int at)
 {
     {
         Lock lk(&m_mutex);
-        if (at < 0 || at > int(m_memories.size())) at = int(m_memories.size());
-        Memory copy = m;
+        if (at < 0 || at > int(m_snapshots.size())) at = int(m_snapshots.size());
+        Snapshot copy = m;
         bool taken = !copy.id;
-        for (const Memory &o : m_memories) taken = taken || o.id == copy.id;
-        if (taken) copy.id = m_nextMemoryId++;
-        m_nextMemoryId = std::max(m_nextMemoryId, copy.id + 1);
-        m_memories.insert(m_memories.begin() + at, copy);
+        for (const Snapshot &o : m_snapshots) taken = taken || o.id == copy.id;
+        if (taken) copy.id = m_nextSnapshotId++;
+        m_nextSnapshotId = std::max(m_nextSnapshotId, copy.id + 1);
+        m_snapshots.insert(m_snapshots.begin() + at, copy);
     }
-    emit memoriesChanged();
+    emit snapshotsChanged();
     return at;
 }
 
-void Engine::removeMemory(int i)
+void Engine::removeSnapshot(int i)
 {
     {
         Lock lk(&m_mutex);
-        if (i < 0 || i >= int(m_memories.size())) return;
-        m_memories.erase(m_memories.begin() + i);
+        if (i < 0 || i >= int(m_snapshots.size())) return;
+        m_snapshots.erase(m_snapshots.begin() + i);
     }
-    emit memoriesChanged();
+    emit snapshotsChanged();
 }
 
 QJsonArray Engine::captureLayers() const
@@ -478,7 +498,7 @@ QJsonArray Engine::captureLayers() const
     Lock lk(&m_mutex);
     QJsonArray a;
     for (int i = 0; i < int(m_layers.size()); ++i) {
-        if (m_layers[size_t(i)]->isViewport) continue; // a viewport has one state, not one per memory
+        if (m_layers[size_t(i)]->isViewport) continue; // a viewport has one state, not one per snapshot
         QJsonObject o = layerJson(i);
         o["included"] = true;
         a.append(o);
@@ -490,7 +510,7 @@ Engine::RecallProgress Engine::recallProgress() const
 {
     Lock lk(&m_mutex);
     RecallProgress r;
-    r.memory = m_recalledMemory;
+    r.snapshot = m_recalledSnapshot;
     r.total = m_recallTotal;
     r.elapsed = m_fades.empty() && m_transitions.empty() && !m_compFade.opacity && !m_compFade.volume ? m_recallTotal
                                                                                                   : m_fadeElapsed;
@@ -525,7 +545,7 @@ void Engine::applyComposition(const QJsonObject &c, double fade)
     const double opacityDur = time(QStringLiteral("opacity")), volumeDur = time(QStringLiteral("volume"));
     if (hasOpacity && opacityDur <= 0) fadeCompositionOpacity(opacity, 0);
     if (hasVolume && volumeDur <= 0) setAudioVolume(volume);
-    // A value the memory holds stops the fade another memory gives it; the other one goes on
+    // A value the snapshot holds stops the fade another snapshot gives it; the other one goes on
     Lock lk(&m_mutex);
     CompositionFade &f = m_compFade;
     if (hasOpacity) {
@@ -565,15 +585,15 @@ void Engine::stepCompositionFade(double dt)
     }
 }
 
-void Engine::recallMemory(int i)
+void Engine::recallSnapshot(int i)
 {
-    const Memory m = memory(i);
+    const Snapshot m = snapshot(i);
     if (m.layers.isEmpty() && m.composition.isEmpty()) return;
     if (!m.layers.isEmpty()) applyLayers(m.layers, m.fade, true);
     applyComposition(m.composition, m.fade);
     {
         Lock lk(&m_mutex);
-        m_recalledMemory = m.id;
+        m_recalledSnapshot = m.id;
         double total = 0;
         for (const auto &job : m_fades)
             if (job->elapsed <= 0) total = std::max(total, job->times.longest()); // this recall's, not the older ones
@@ -582,14 +602,14 @@ void Engine::recallMemory(int i)
         if (m_compFade.volume && m_compFade.volumeElapsed <= 0) total = std::max(total, m_compFade.volumeDur);
         m_recallTotal = total;
     }
-    emit memoryRecalled(i);
+    emit snapshotRecalled(i);
 }
 
 void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
 {
     QSet<quint64> named; // the layers the state speaks of (left out or not)
     for (const QJsonValue &v : layers) named.insert(v.toObject().value("id").toString().toULongLong());
-    // The memories still running go on: this recall stops their fades only for the values it sets itself
+    // The snapshots still running go on: this recall stops their fades only for the values it sets itself
     // (from where they are now), and leaves them the others
     auto takeOver = [this](quint64 id, quint64 values) {
         Lock lk(&m_mutex);
@@ -608,7 +628,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         if (!o.value("included").toBool(true) || o.value("viewport").toBool()) continue;
         const quint64 id = o.value("id").toString().toULongLong();
         int idx = indexOfId(id);
-        if (idx >= 0 && isLocked(idx)) continue; // a locked layer is not changed by a memory
+        if (idx >= 0 && isLocked(idx)) continue; // a locked layer is not changed by a snapshot
         if (idx < 0) { // removed since: recreated at the bottom
             takeOver(id, kOwnAll);
             insertLayerJson(layerCount(), o);
@@ -620,9 +640,9 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         if (!group && (curSrc.value("type") != src.value("type") || curSrc.value("layer") != src.value("layer") ||
                        curSrc.value("tap") != src.value("tap") ||
                        QDir::cleanPath(curSrc.value("path").toString()) != QDir::cleanPath(src.value("path").toString()))) {
-            // Another media: it comes in with the layer's transition over the source's time (the memory's
+            // Another media: it comes in with the layer's transition over the source's time (the snapshot's
             // fade unless it has its own), or at once for a cut
-            const QJsonValue own = o.value("timing").toObject().value("source");
+            const QJsonValue own = o.value("timing").toObject().value("source/file");
             const double t = own.isDouble() ? std::clamp(own.toDouble(), 0.0, 600.0) : std::max(0.0, fade);
             takeOver(id, kOwnAll);
             if (t <= 0) {
@@ -630,7 +650,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
                 continue;
             }
             startSourceTransition(idx, o, t);
-            // The layer now holds the memory's state; its numbers move there from the outgoing one's (ROI,
+            // The layer now holds the snapshot's state; its numbers move there from the outgoing one's (ROI,
             // color, mapping, opacity, volume) over their times, as they would with the same source
             Lock lk(&m_mutex);
             Layer *l = layer(indexOfId(id));
@@ -655,8 +675,8 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         }
         if (effectPaths(cur.value("effects").toArray()) != effectPaths(o.value("effects").toArray()))
             setEffectsJson(idx, o.value("effects").toArray()); // another chain: at once
-        if (src.contains("playMode")) {
-            setLayerPlayMode(idx, playModeFromKey(src.value("playMode").toString()));
+        if (src.contains("play_mode")) {
+            setLayerPlayMode(idx, playModeFromKey(src.value("play_mode").toString()));
             setLayerSpeed(idx, src.value("speed").toDouble(1.0));
             setLayerInOut(idx, src.value("in").toDouble(0), src.value("out").toDouble(-1));
         }
@@ -665,13 +685,13 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         Layer *l = layer(idx);
         if (!l) continue;
         l->name = o.value("name").toString(l->name);
-        l->blend = blendModeFromKey(o.value("blend").toString(blendModeKey(l->blend)));
-        l->effectsEnabled = o.value("effectsEnabled").toBool(l->effectsEnabled);
+        l->blend = blendModeFromKey(o.value("blend_mode").toString(blendModeKey(l->blend)));
+        l->effectsEnabled = o.value("effects_enable").toBool(l->effectsEnabled);
         l->muted = o.value("muted").toBool(l->muted);
-        // Which viewports it is drawn in: a memory can send a layer to another projector. Read into the
+        // Which viewports it is drawn in: a snapshot can send a layer to another projector. Read into the
         // fade's target (not onto the layer) so it moves there from the current values
         std::map<quint64, float> targetViewportOpacity;
-        const QJsonObject vo = o.value("viewportOpacity").toObject();
+        const QJsonObject vo = o.value("viewports").toObject();
         for (auto it = vo.begin(); it != vo.end(); ++it)
             targetViewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
         const QJsonArray fx = o.value("effects").toArray();
@@ -711,13 +731,13 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
                 to.color.remove[c] = float(color.value("remove").toArray().at(c).toDouble(0));
             }
         }
-        if (o.contains("mapping")) {
-            to.mapping.fromJson(o.value("mapping").toObject());
-            to.soft = to.mapping.soft; // setNumbers applies `soft` over the mapping's: the memory's crop
+        if (o.contains("spatial")) {
+            to.mapping.fromJson(o.value("spatial").toObject());
+            to.soft = to.mapping.soft; // setNumbers applies `soft` over the mapping's: the snapshot's crop
         }
         to.viewportOpacity = targetViewportOpacity;
         if (l->type == SourceType::Text && src.value("type").toString() == "text") {
-            // Text generator: its numbers move to the memory's, its switches and words are set at once, its
+            // Text generator: its numbers move to the snapshot's, its switches and words are set at once, its
             // text is typed over its time
             TextSource target = l->text;
             readTextJson(target, src);
@@ -745,12 +765,12 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
                 }
             }
         }
-        // The values this state sets: their fades from other memories stop here
+        // The values this state sets: their fades from other snapshots stop here
         job->owned = OwnOpacity | OwnVolume | OwnViewportOpacity | OwnIsf;
         if (roi.size() == 4) job->owned |= OwnRoi;
         if (!color.isEmpty()) job->owned |= OwnColor;
-        if (o.contains("mapping")) job->owned |= OwnMapping | OwnSoft;
-        if (src.contains("playMode")) job->owned |= OwnSpeed | OwnInOut;
+        if (o.contains("spatial")) job->owned |= OwnMapping | OwnSoft;
+        if (src.contains("play_mode")) job->owned |= OwnSpeed | OwnInOut;
         if (l->type == SourceType::Text && src.value("type").toString() == "text") job->owned |= kOwnText;
         takeOver(id, job->owned);
         if (!to.isf.empty()) readParams(l->generator.get(), src.value("params").toObject(), to.isf[0]);
@@ -787,12 +807,12 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
     }
     fixLayerReferences(); // layers re-created or sources changed: no reference left dangling or looping
     Lock lk(&m_mutex);
-    // The layers the memory does not know (created since): faded out with the memory's fade, then hidden
+    // The layers the snapshot does not know (created since): faded out with the snapshot's fade, then hidden
     if (hideOthers)
         for (auto &lp : m_layers) {
             Layer &l = *lp;
             if (l.isViewport || named.contains(l.id) || !l.visible || isLocked(indexOfId(l.id))) continue;
-            takeOver(l.id, OwnOpacity); // only its opacity: what other memories fade on it goes on
+            takeOver(l.id, OwnOpacity); // only its opacity: what other snapshots fade on it goes on
             if (fade <= 0) {
                 l.visible = false;
                 continue;
@@ -812,7 +832,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
     m_fadeElapsed = 0;
 }
 
-// Every number moves on its own time, each memory on its own clock; a layer that fades out is hidden once its
+// Every number moves on its own time, each snapshot on its own clock; a layer that fades out is hidden once its
 // opacity got there
 void Engine::stepFade(double dt)
 {
@@ -963,14 +983,14 @@ void Engine::retireTransition(std::unique_ptr<SourceTransition> t)
 // ---------------------------------------------------------------------------
 // Project file: paths also relative to the project, thumbnail as PNG
 
-QJsonObject Engine::memoryToJson(const Memory &m, const QString &dir) const
+QJsonObject Engine::snapshotToJson(const Snapshot &m, const QString &dir) const
 {
     QJsonArray layers;
     for (const QJsonValue &v : m.layers) {
         QJsonObject o = v.toObject();
         auto rel = [&](QJsonObject x) {
             const QString p = x.value("path").toString();
-            if (!p.isEmpty() && !dir.isEmpty()) x["relativePath"] = QDir(dir).relativeFilePath(p);
+            if (!p.isEmpty() && !dir.isEmpty()) x["relative_path"] = QDir(dir).relativeFilePath(p);
             return x;
         };
         o["source"] = rel(o.value("source").toObject());
@@ -991,10 +1011,10 @@ QJsonObject Engine::memoryToJson(const Memory &m, const QString &dir) const
     return out;
 }
 
-Engine::Memory Engine::memoryFromJson(const QJsonObject &o, const QString &dir) const
+Engine::Snapshot Engine::snapshotFromJson(const QJsonObject &o, const QString &dir) const
 {
-    Memory m;
-    m.id = o.value("id").toString().toULongLong(); // addMemory gives one when missing or taken
+    Snapshot m;
+    m.id = o.value("id").toString().toULongLong(); // addSnapshot gives one when missing or taken
     m.name = o.value("name").toString();
     m.fade = std::clamp(o.value("fade").toDouble(1.0), 0.0, 600.0);
     m.thumbnail.loadFromData(QByteArray::fromBase64(o.value("thumbnail").toString().toLatin1()), "PNG");
@@ -1003,7 +1023,7 @@ Engine::Memory Engine::memoryFromJson(const QJsonObject &o, const QString &dir) 
         QJsonObject l = v.toObject();
         auto resolve = [&](QJsonObject x) {
             if (x.contains("path")) x["path"] = resolvePath(x, dir);
-            x.remove("relativePath");
+            x.remove("relative_path");
             return x;
         };
         QJsonObject src = l.value("source").toObject();

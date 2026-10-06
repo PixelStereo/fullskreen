@@ -386,7 +386,7 @@ void MediaBin::refreshInputs()
     }
     it->setText(2, users.isEmpty() ? QStringLiteral("—") : QString::number(users.size()));
     const QString usedBy = users.isEmpty() ? QStringLiteral("Not used by any layer") : QStringLiteral("Used by:\n") + users.join('\n');
-    it->setToolTip(0, QStringLiteral("Text generator: type a text; a memory that holds another text types it (typewriter)\n\n") + usedBy);
+    it->setToolTip(0, QStringLiteral("Text generator: type a text; a snapshot that holds another text types it (typewriter)\n\n") + usedBy);
     it->setToolTip(2, usedBy);
     m_inputs->setText(0, QStringLiteral("Inputs (%1)").arg(m_inputs->childCount()));
 }

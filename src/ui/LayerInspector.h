@@ -8,7 +8,7 @@
 
 class Engine;
 class Mapping;
-struct LayerSnapshot;
+struct LayerValues;
 class QUndoStack;
 class QVBoxLayout;
 class QSlider;
@@ -52,12 +52,12 @@ signals:
     void kindChanged(const QString &kind); // "Layer", "Group" or "Viewport": the title of the tab
 
 private:
-    QWidget *buildSource(const LayerSnapshot &s);
-    QWidget *buildRoi(const LayerSnapshot &s);
-    QWidget *buildColor(const LayerSnapshot &s);
-    QWidget *buildCompositing(const LayerSnapshot &s);
-    QWidget *buildMapping(const LayerSnapshot &s);
-    QWidget *buildEffects(const LayerSnapshot &s);
+    QWidget *buildSource(const LayerValues &s);
+    QWidget *buildRoi(const LayerValues &s);
+    QWidget *buildColor(const LayerValues &s);
+    QWidget *buildCompositing(const LayerValues &s);
+    QWidget *buildMapping(const LayerValues &s);
+    QWidget *buildEffects(const LayerValues &s);
     void showEffectParams(); // parameters of the selected effect, swapped without rebuilding the list
     void editMapping(const QString &text, const std::function<void(Mapping &)> &fn, bool merge = false);
     void refreshSpatial(); // position / scale fields follow the mapping (handles dragged in the preview)
@@ -82,7 +82,7 @@ private:
     QPointer<RoiEditor> m_roi;
     QPointer<ColorEditor> m_colorAdd, m_colorRemove;
     QPointer<SliderField> m_temp, m_tint;
-    // Followed while a memory fades them (as temp / tint)
+    // Followed while a snapshot fades them (as temp / tint)
     QPointer<SliderField> m_opacity, m_volume;
     QPointer<ParamPanel> m_generatorParams, m_effectParams;
     QPointer<QGroupBox> m_softBox;

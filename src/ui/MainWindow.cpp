@@ -6,7 +6,7 @@
 #include "MappingView.h"
 #include "CompositionPanel.h" // CompositionPanel
 #include "MediaBin.h"
-#include "MemoryPanel.h"
+#include "SnapshotPanel.h"
 #include "SequencePanel.h"
 #include "TimelinePanel.h"
 #include "OutputWindow.h"
@@ -106,7 +106,7 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     screenRate();
     connect(qApp, &QGuiApplication::primaryScreenChanged, this, screenRate);
     connect(m_settings, &SettingsPanel::oscChanged, this, &MainWindow::startOsc);
-    // Default transition of the sources changed by a memory
+    // Default transition of the sources changed by a snapshot
     m_engine->setDefaultTransition(SettingsPanel::defaultTransition(m_engine->library()));
     m_settings->setTransitions(m_engine->library().transitions(), m_engine->defaultTransition());
     connect(m_settings, &SettingsPanel::transitionChanged, this, [this](const QString &p) { m_engine->setDefaultTransition(p); });
@@ -140,18 +140,18 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     top->setStretchFactor(2, 0);
     top->setSizes({560, 610, 430});
 
-    // --- Bottom: memories (grid + inspector)
-    m_memories = new MemoryPanel(m_engine, m_undo);
+    // --- Bottom: snapshots (grid + inspector)
+    m_snapshots = new SnapshotPanel(m_engine, m_undo);
     auto *split = new QSplitter(Qt::Vertical);
     split->addWidget(top);
-    split->addWidget(m_memories);
+    split->addWidget(m_snapshots);
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 0);
     split->setSizes({720, 220});
     split->setObjectName("mainSplit2"); // (layout changed: earlier saved states are not restored)
     top->setObjectName("topSplit2");
-    connect(m_memories, &MemoryPanel::edited, this, &MainWindow::markDirty);
-    connect(m_memories, &MemoryPanel::recalled, this, [this] { refreshAll(); });
+    connect(m_snapshots, &SnapshotPanel::edited, this, &MainWindow::markDirty);
+    connect(m_snapshots, &SnapshotPanel::recalled, this, [this] { refreshAll(); });
     qApp->installEventFilter(this); // Shift+1 / Shift+2: left tabs
     setCentralWidget(split);
 
@@ -308,10 +308,10 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_layerTable, &LayerTable::currentRowChanged, this, [this](int r) {
         m_timelineWindow->setCurrentLayer(r >= 0 ? m_engine->layerId(r) : 0);
     });
-    // A step's memory, when its pre-wait is over (GO, Space, OSC, or a step that follows): undoable; the bar
+    // A step's snapshot, when its pre-wait is over (GO, Space, OSC, or a step that follows): undoable; the bar
     // then shows the step unchanged
-    m_engine->setRecaller([this](int memory) {
-        m_memories->recall(memory);
+    m_engine->setRecaller([this](int snapshot) {
+        m_snapshots->recall(snapshot);
         m_cueUndoIndex = m_undo->index();
         m_seqBar->setModified(false);
         m_seqWindow->setModified(false);
@@ -1304,7 +1304,7 @@ void MainWindow::sequenceGo() { m_engine->sequenceGo(); }
 
 void MainWindow::sequenceBack() { m_engine->sequenceBack(); }
 
-// The step's GO: its pre-wait, then its memory (recalled through the undo stack, see the recaller), then what follows
+// The step's GO: its pre-wait, then its snapshot (recalled through the undo stack, see the recaller), then what follows
 void MainWindow::sequenceGoTo(int step) { m_engine->sequenceGoTo(step); }
 
 void MainWindow::openSequences()
@@ -1418,7 +1418,7 @@ void MainWindow::updateTitle()
 QJsonObject MainWindow::uiState() const
 {
     QJsonObject o;
-    o["selectedLayer"] = currentLayer();
+    o["selected_layer"] = currentLayer();
     return o;
 }
 
@@ -1444,7 +1444,7 @@ void MainWindow::afterProjectLoaded(const QJsonObject &ui)
     m_modesBefore.clear();
     m_composition->syncFromEngine();
     m_bin->refresh();
-    selectLayer(qBound(-1, ui.value("selectedLayer").toInt(0), m_engine->layerCount() - 1));
+    selectLayer(qBound(-1, ui.value("selected_layer").toInt(0), m_engine->layerCount() - 1));
     updateTitle();
 }
 
@@ -1533,9 +1533,9 @@ void MainWindow::autosave()
     if (!m_autosaveEnabled) return;
     if (m_autosaveDone && m_undo->index() == m_autosaveIndex) return; // nothing new
     QJsonObject ui = uiState();
-    ui["autosaveOf"] = m_engine->projectPath();
-    ui["autosaveTime"] = QDateTime::currentDateTime().toString(Qt::ISODate);
-    ui["autosaveDirty"] = isDirty();
+    ui["autosave_of"] = m_engine->projectPath();
+    ui["autosave_time"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    ui["autosave_dirty"] = isDirty();
     QString err;
     if (m_engine->saveProject(autosavePath(), ui, &err)) {
         m_autosaveIndex = m_undo->index();
@@ -1553,8 +1553,8 @@ bool MainWindow::offerRecovery()
     QJsonObject ui;
     if (f.open(QIODevice::ReadOnly)) ui = QJsonDocument::fromJson(f.readAll()).object().value("ui").toObject();
     f.close();
-    const QString original = ui.value("autosaveOf").toString();
-    const QDateTime when = QDateTime::fromString(ui.value("autosaveTime").toString(), Qt::ISODate);
+    const QString original = ui.value("autosave_of").toString();
+    const QDateTime when = QDateTime::fromString(ui.value("autosave_time").toString(), Qt::ISODate);
     QMessageBox box(QMessageBox::Warning, QStringLiteral("Recovery"), QStringLiteral("Fulskrin did not quit normally."),
                     QMessageBox::NoButton, this);
     box.setInformativeText(QStringLiteral("Restore the session autosaved on %1 %2?")
@@ -1572,7 +1572,7 @@ bool MainWindow::offerRecovery()
     QString err;
     m_engine->loadProject(path, &loadedUi, &err);
     m_engine->setProjectPath(original); // "Save" writes to the original project
-    m_forceDirty = ui.value("autosaveDirty").toBool(true);
+    m_forceDirty = ui.value("autosave_dirty").toBool(true);
     afterProjectLoaded(loadedUi);
     if (!err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Recovery"), err);
     const bool shown = std::any_of(m_outputs.begin(), m_outputs.end(), [](const auto &p) { return p.second.mode != 0; });

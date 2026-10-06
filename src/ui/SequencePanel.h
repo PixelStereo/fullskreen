@@ -12,8 +12,8 @@ class QCheckBox;
 class QTimer;
 class QMenu;
 
-// Where the memory recalled last is in its fade: a thin bar filling over its time (green while it runs), with the
-// memory's name and the seconds as tooltip. Follows the engine by itself.
+// Where the snapshot recalled last is in its fade: a thin bar filling over its time (green while it runs), with the
+// snapshot's name and the seconds as tooltip. Follows the engine by itself.
 class RecallProgressBar : public QWidget
 {
     Q_OBJECT
@@ -32,13 +32,13 @@ private:
     bool m_running = false;
 };
 
-// The sequences of the show: ordered steps, each recalling a memory and carrying a text for the operator, with a
+// The sequences of the show: ordered steps, each recalling a snapshot and carrying a text for the operator, with a
 // pre-wait, a post-wait and what comes next (wait for GO, follow, auto-follow), as in QLab.
 // SequenceBar: the reduced view, under the preview — GO BACK, GO, STOP (the waits still to come), the previous /
 // current / next steps (the current one in another color once something was changed since it was played), the
 // current step's text, and the time left before what is waiting.
 // SequenceWindow: a floating window, always in front, to edit everything: the sequences (new, duplicate, delete,
-// rename, loop), their steps (+, delete, move, a memory or a timeline dragged onto a step, a timeline step's action,
+// rename, loop), their steps (+, delete, move, a snapshot or a timeline dragged onto a step, a timeline step's action,
 // its text), and to play any step.
 class SequenceBar : public QWidget
 {
@@ -82,11 +82,11 @@ signals:
     void edited();                // the sequences changed: the project is modified
 
 protected:
-    bool eventFilter(QObject *o, QEvent *e) override; // memories dropped onto the steps
+    bool eventFilter(QObject *o, QEvent *e) override; // snapshots dropped onto the steps
 
 private:
-    void addStep(int at, quint64 memory, quint64 timeline = 0);
-    void setStepMemory(int step, quint64 memory);
+    void addStep(int at, quint64 snapshot, quint64 timeline = 0);
+    void setStepSnapshot(int step, quint64 snapshot);
     void setStepTimeline(int step, quint64 timeline); // Play, unless it was already a timeline step
     void fillActionMenu(QMenu *menu, int row);
     void removeSteps();

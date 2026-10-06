@@ -9,7 +9,7 @@
 #include <QSaveFile>
 #include <cmath>
 
-// The Text generator in a layer state: colors as [r, g, b, a] (0..1, so that a memory's panel edits and fades them
+// The Text generator in a layer state: colors as [r, g, b, a] (0..1, so that a snapshot's panel edits and fades them
 // like the shaders' colors), alignment as words.
 static QJsonArray colorJson(const QColor &c) { return QJsonArray{c.redF(), c.greenF(), c.blueF(), c.alphaF()}; }
 static QColor colorFromJson(const QJsonValue &v, const QColor &fallback)
@@ -37,13 +37,13 @@ QJsonObject textJson(const TextSource &t)
         if (t.align & kVFlag[k]) v = QString::fromLatin1(kVAlign[k]);
     return QJsonObject{{"content", t.content},       {"font", t.font},
                        {"size", t.size},             {"color", colorJson(t.color)},
-                       {"hAlign", h},                {"vAlign", v},
-                       {"lineHeight", t.lineHeight}, {"letterSpacing", t.letterSpacing},
+                       {"h_align", h},                {"v_align", v},
+                       {"line_height", t.lineHeight}, {"letter_spacing", t.letterSpacing},
                        {"bold", t.bold},             {"italic", t.italic},
                        {"underline", t.underline},   {"strike", t.strike},
-                       {"outline", t.outline},       {"outlineColor", colorJson(t.outlineColor)},
-                       {"shadow", t.shadow},         {"shadowColor", colorJson(t.shadowColor)},
-                       {"shadowX", t.shadowX},       {"shadowY", t.shadowY},
+                       {"outline", t.outline},       {"outline_color", colorJson(t.outlineColor)},
+                       {"shadow", t.shadow},         {"shadow_color", colorJson(t.shadowColor)},
+                       {"shadow_x", t.shadowX},       {"shadow_y", t.shadowY},
                        {"width", t.width},           {"height", t.height}};
 }
 
@@ -54,28 +54,28 @@ void readTextJson(TextSource &t, const QJsonObject &o)
     t.font = o.value("font").toString(t.font);
     t.size = o.value("size").toInt(t.size);
     t.color = colorFromJson(o.value("color"), t.color);
-    if (o.contains("hAlign") || o.contains("vAlign")) {
+    if (o.contains("h_align") || o.contains("v_align")) {
         int h = Qt::AlignLeft, v = Qt::AlignTop;
         for (int k = 0; k < 4; ++k)
-            if (o.value("hAlign").toString() == QLatin1String(kHAlign[k])) h = kHFlag[k];
+            if (o.value("h_align").toString() == QLatin1String(kHAlign[k])) h = kHFlag[k];
         for (int k = 0; k < 3; ++k)
-            if (o.value("vAlign").toString() == QLatin1String(kVAlign[k])) v = kVFlag[k];
+            if (o.value("v_align").toString() == QLatin1String(kVAlign[k])) v = kVFlag[k];
         t.align = Qt::Alignment(h | v);
     } else if (o.contains("align")) {
         t.align = Qt::Alignment(o.value("align").toInt(int(t.align)));
     }
-    t.lineHeight = float(o.value("lineHeight").toDouble(t.lineHeight));
-    t.letterSpacing = float(o.value("letterSpacing").toDouble(t.letterSpacing));
+    t.lineHeight = float(o.value("line_height").toDouble(t.lineHeight));
+    t.letterSpacing = float(o.value("letter_spacing").toDouble(t.letterSpacing));
     t.bold = o.value("bold").toBool(t.bold);
     t.italic = o.value("italic").toBool(t.italic);
     t.underline = o.value("underline").toBool(t.underline);
     t.strike = o.value("strike").toBool(t.strike);
     t.outline = float(o.value("outline").toDouble(t.outline));
-    t.outlineColor = colorFromJson(o.value("outlineColor"), t.outlineColor);
+    t.outlineColor = colorFromJson(o.value("outline_color"), t.outlineColor);
     t.shadow = o.value("shadow").toBool(t.shadow);
-    t.shadowColor = colorFromJson(o.value("shadowColor"), t.shadowColor);
-    t.shadowX = float(o.value("shadowX").toDouble(t.shadowX));
-    t.shadowY = float(o.value("shadowY").toDouble(t.shadowY));
+    t.shadowColor = colorFromJson(o.value("shadow_color"), t.shadowColor);
+    t.shadowX = float(o.value("shadow_x").toDouble(t.shadowX));
+    t.shadowY = float(o.value("shadow_y").toDouble(t.shadowY));
     t.width = o.value("width").toInt(t.width);
     t.height = o.value("height").toInt(t.height);
     t.sanitize();
@@ -110,13 +110,13 @@ void Engine::newProject()
     clearProject();
     ensureViewport(); // a new project shows its composition through one viewport
     emit layersChanged();
-    emit memoriesChanged();
+    emit snapshotsChanged();
     emit animationsChanged();
     emit sequencesChanged();
     emit sequencePositionChanged();
 }
 
-// Empties everything (layers, viewports, memories, media bin)
+// Empties everything (layers, viewports, snapshots, media bin)
 void Engine::clearProject()
 {
     std::vector<std::unique_ptr<Layer>> old;
@@ -125,8 +125,8 @@ void Engine::clearProject()
         old.swap(m_layers);
         m_projectPath.clear();
         m_binItems.clear();
-        m_memories.clear();
-        m_nextMemoryId = 1;
+        m_snapshots.clear();
+        m_nextSnapshotId = 1;
         m_render = RenderSettings(); // the machine's defaults
         m_sequences.clear();
         m_currentSequence = m_sequencePosition = -1;
@@ -134,7 +134,7 @@ void Engine::clearProject()
         m_animations.clear();
         m_nextAnimationId = 1;
         m_fades.clear();
-        m_recalledMemory = 0;
+        m_recalledSnapshot = 0;
         m_recallTotal = 0;
         for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
         m_transitions.clear();
@@ -150,7 +150,7 @@ void Engine::clearProject()
     }
     setCompositionSize(QSize(1920, 1080));
     emit layersChanged();
-    emit memoriesChanged();
+    emit snapshotsChanged();
     emit animationsChanged();
 }
 
@@ -159,7 +159,7 @@ QString Engine::resolvePath(const QJsonObject &o, const QString &projectDir) con
     const QString abs = o.value("path").toString();
     if (!abs.isEmpty() && QFile::exists(abs)) return abs;
     if (!projectDir.isEmpty()) {
-        const QString rel = o.value("relativePath").toString();
+        const QString rel = o.value("relative_path").toString();
         if (!rel.isEmpty()) {
             const QString p = QDir(projectDir).absoluteFilePath(rel);
             if (QFile::exists(p)) return QDir::cleanPath(p);
@@ -187,25 +187,25 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         o["width"] = l.vpWidth;
         o["height"] = l.vpHeight;
         o["screen"] = l.vpScreen;
-        o["outputMode"] = l.vpMode;
+        o["output_mode"] = l.vpMode;
         o["publish"] = l.vpPublish.toJson();
     }
-    // Always save viewport opacity (even if empty) so memories preserve per-viewport visibility settings
+    // Always save viewport opacity (even if empty) so snapshots preserve per-viewport visibility settings
     QJsonObject vo;
     for (const auto &[v, a] : l.viewportOpacity) vo[QString::number(v)] = double(a);
-    o["viewportOpacity"] = vo;
+    o["viewports"] = vo;
     o["name"] = l.name;
     o["visible"] = l.visible;
     o["locked"] = l.locked;
     o["opacity"] = l.opacity;
-    o["blend"] = blendModeKey(l.blend);
+    o["blend_mode"] = blendModeKey(l.blend);
     o["volume"] = l.volume;
     o["muted"] = l.muted;
     QJsonObject src;
     switch (l.type) {
     case SourceType::Video:
         src["type"] = "video";
-        src["playMode"] = playModeKey(l.mode);
+        src["play_mode"] = playModeKey(l.mode);
         src["in"] = l.inPoint;
         src["out"] = l.outPoint;
         src["speed"] = l.speed;
@@ -213,7 +213,7 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         break;
     case SourceType::Audio:
         src["type"] = "audio";
-        src["playMode"] = playModeKey(l.mode);
+        src["play_mode"] = playModeKey(l.mode);
         src["in"] = l.inPoint;
         src["out"] = l.outPoint;
         src["speed"] = l.speed;
@@ -241,7 +241,7 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         // Missing file: keep what was intended, so nothing is lost on save.
         if (l.missingType == SourceType::Video || l.missingType == SourceType::Audio) {
             src["type"] = l.missingType == SourceType::Video ? "video" : "audio";
-            src["playMode"] = playModeKey(l.mode);
+            src["play_mode"] = playModeKey(l.mode);
             src["in"] = l.inPoint;
             src["out"] = l.outPoint;
             src["speed"] = l.speed;
@@ -255,7 +255,7 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     }
     if ((l.type != SourceType::None && l.type != SourceType::Layer) || l.missingType != SourceType::None) {
         src["path"] = l.sourcePath;
-        if (!projectDir.isEmpty()) src["relativePath"] = QDir(projectDir).relativeFilePath(l.sourcePath);
+        if (!projectDir.isEmpty()) src["relative_path"] = QDir(projectDir).relativeFilePath(l.sourcePath);
     }
     const QRectF c = l.roi;
     src["roi"] = QJsonArray{c.left(), c.top(), c.right(), c.bottom()};
@@ -264,21 +264,21 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     auto rgb = [](const float v[3]) { return QJsonArray{v[0], v[1], v[2]}; };
     o["color"] = QJsonObject{{"temp", l.color.temp},        {"tint", l.color.tint},
                              {"add", rgb(l.color.add)},    {"remove", rgb(l.color.remove)},
-                             {"enabled", l.color.enabled}, {"tempOn", l.color.tempOn},
-                             {"tintOn", l.color.tintOn},   {"addOn", l.color.addOn},
-                             {"removeOn", l.color.removeOn}};
+                             {"enable", l.color.enabled}, {"temp_enable", l.color.tempOn},
+                             {"tint_enable", l.color.tintOn},   {"add_enable", l.color.addOn},
+                             {"remove_enable", l.color.removeOn}};
     if (l.color.maskLayer) {
         QJsonObject col = o["color"].toObject();
         col["mask"] = QString::number(l.color.maskLayer);
-        if (l.color.maskInvert) col["maskInvert"] = true;
+        if (l.color.maskInvert) col["mask_invert"] = true;
         o["color"] = col;
     }
     QJsonArray fx;
     for (const auto &e : l.effects) fx.append(e->save(projectDir));
     o["effects"] = fx;
-    o["effectsEnabled"] = l.effectsEnabled;
-    o["colorModels"] = l.colorModels;
-    o["mapping"] = l.mapping.toJson();
+    o["effects_enable"] = l.effectsEnabled;
+    o["color_models"] = l.colorModels;
+    o["spatial"] = l.mapping.toJson();
     return o;
 }
 
@@ -292,7 +292,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         l->name = o.value("name").toString(l->name);
         l->visible = o.value("visible").toBool(true);
         l->opacity = float(o.value("opacity").toDouble(1.0));
-        l->blend = blendModeFromKey(o.value("blend").toString());
+        l->blend = blendModeFromKey(o.value("blend_mode").toString());
         l->volume = float(std::clamp(o.value("volume").toDouble(1.0), 0.0, 2.0));
         l->muted = o.value("muted").toBool(false);
         l->locked = o.value("locked").toBool(false);
@@ -303,19 +303,19 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             l->vpWidth = std::clamp(o.value("width").toInt(1920), 1, 16384);
             l->vpHeight = std::clamp(o.value("height").toInt(1080), 1, 16384);
             l->vpScreen = o.value("screen").toString();
-            l->vpMode = std::clamp(o.value("outputMode").toInt(0), 0, 2);
+            l->vpMode = std::clamp(o.value("output_mode").toInt(0), 0, 2);
             l->vpPublish = PublishSettings::fromJson(o.value("publish").toObject());
         }
         l->viewportOpacity.clear();
-        const QJsonObject vo = o.value("viewportOpacity").toObject();
+        const QJsonObject vo = o.value("viewports").toObject();
         for (auto it = vo.begin(); it != vo.end(); ++it)
             l->viewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
-        l->effectsEnabled = o.value("effectsEnabled").toBool(true);
+        l->effectsEnabled = o.value("effects_enable").toBool(true);
         {
             const QString t = o.value("source").toObject().value("transition").toString();
             l->transition = t.isEmpty() ? QString() : resolvePath(QJsonObject{{"path", t}}, projectDir);
         }
-        l->colorModels = o.value("colorModels").toInt(l->colorModels);
+        l->colorModels = o.value("color_models").toInt(l->colorModels);
         // Saved id kept unless another layer already has it
         const quint64 id = o.value("id").toString().toULongLong();
         bool taken = false;
@@ -342,7 +342,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         }
         const bool ok = video ? setLayerVideo(index, path, &err) : setLayerAudio(index, path, &err);
         if (!ok && warnings) *warnings << name + ": " + missingMessage(path, err);
-        setLayerPlayMode(index, playModeFromKey(src.value("playMode").toString()));
+        setLayerPlayMode(index, playModeFromKey(src.value("play_mode").toString()));
         setLayerInOut(index, src.value("in").toDouble(0), src.value("out").toDouble(-1));
         Lock lk(&m_mutex);
         Layer *l = layer(index);
@@ -404,7 +404,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
     }
     // The mapping is restored after the source (which would otherwise auto-adjust the aspect ratio).
     Lock lk(&m_mutex);
-    layer(index)->mapping.fromJson(o.value("mapping").toObject());
+    layer(index)->mapping.fromJson(o.value("spatial").toObject());
 }
 
 bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QString *err)
@@ -414,7 +414,7 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
     {
         Lock lk(&m_mutex);
         root["app"] = "Fulskrin";
-        root["formatVersion"] = 1;
+        root["format_version"] = 1;
         root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()},
                                     {"fps", renderSettings().frameRate}};
         QJsonArray layers;
@@ -422,15 +422,15 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         root["layers"] = layers;
         QJsonArray bin;
         for (const QString &p : m_binItems)
-            bin.append(QJsonObject{{"path", p}, {"relativePath", QDir(dir).relativeFilePath(p)}});
+            bin.append(QJsonObject{{"path", p}, {"relative_path", QDir(dir).relativeFilePath(p)}});
         root["bin"] = bin;
         root["audio"] = QJsonObject{{"volume", double(m_audio->volume())}};
         QJsonArray mems;
-        for (const Memory &m : m_memories) mems.append(memoryToJson(m, dir));
-        root["memories"] = mems;
+        for (const Snapshot &m : m_snapshots) mems.append(snapshotToJson(m, dir));
+        root["snapshots"] = mems;
         root["timelines"] = animationsToJson();
         root["sequences"] = sequencesToJson();
-        root["currentSequence"] = m_currentSequence;
+        root["current_sequence"] = m_currentSequence;
     }
     root["ui"] = uiState;
     // Atomic write: a crash during save does not corrupt the existing file.
@@ -493,20 +493,20 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     m_audio->setVolume(float(std::clamp(audio.value("volume").toDouble(1.0), 0.0, 2.0)));
     {
         Lock lk(&m_mutex);
-        for (const QJsonValue &v : root.value("memories").toArray()) {
-            Memory m = memoryFromJson(v.toObject(), dir);
+        for (const QJsonValue &v : root.value("snapshots").toArray()) {
+            Snapshot m = snapshotFromJson(v.toObject(), dir);
             bool taken = !m.id;
-            for (const Memory &o : m_memories) taken = taken || o.id == m.id;
+            for (const Snapshot &o : m_snapshots) taken = taken || o.id == m.id;
             if (taken) m.id = 0; // given below, after the saved ones
-            m_memories.push_back(m);
+            m_snapshots.push_back(m);
         }
-        for (const Memory &m : m_memories) m_nextMemoryId = std::max(m_nextMemoryId, m.id + 1);
-        for (Memory &m : m_memories)
-            if (!m.id) m.id = m_nextMemoryId++;
+        for (const Snapshot &m : m_snapshots) m_nextSnapshotId = std::max(m_nextSnapshotId, m.id + 1);
+        for (Snapshot &m : m_snapshots)
+            if (!m.id) m.id = m_nextSnapshotId++;
         animationsFromJson(root.value("timelines").toArray());
-        sequencesFromJson(root.value("sequences").toArray(), root.value("currentSequence").toInt(0));
+        sequencesFromJson(root.value("sequences").toArray(), root.value("current_sequence").toInt(0));
     }
-    emit memoriesChanged();
+    emit snapshotsChanged();
     emit animationsChanged();
     emit sequencesChanged();
     emit sequencePositionChanged();

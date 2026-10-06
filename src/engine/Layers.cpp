@@ -507,13 +507,13 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
         if (!(parts & PartRoi)) src["roi"] = merged.value("source").toObject().value("roi");
         merged["source"] = src;
         if (parts & PartColor) merged["color"] = o.value("color");
-        if (parts & PartSpatial) merged["mapping"] = o.value("mapping");
+        if (parts & PartSpatial) merged["spatial"] = o.value("spatial");
         if (parts & PartEffects) {
             merged["effects"] = o.value("effects");
-            merged["effectsEnabled"] = o.value("effectsEnabled");
+            merged["effects_enable"] = o.value("effects_enable");
         }
         if (parts & PartCompositing)
-            for (const char *k : {"opacity", "blend"}) merged[QLatin1String(k)] = o.value(QLatin1String(k));
+            for (const char *k : {"opacity", "blend_mode"}) merged[QLatin1String(k)] = o.value(QLatin1String(k));
         replaceLayerJson(i, merged);
         fixLayerReferences(); // a pasted layer source must not make the picture feed back
         return true;
@@ -525,13 +525,13 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
         Lock lk(&m_mutex);
         Layer *l = layer(i);
         if (!l) return false;
-        if (parts & PartEffects) l->effectsEnabled = o.value("effectsEnabled").toBool(true);
+        if (parts & PartEffects) l->effectsEnabled = o.value("effects_enable").toBool(true);
         if (parts & PartRoi) l->roi = roiFromJson(o.value("source").toObject());
         if (parts & PartColor) colorFromJson(l->color, o.value("color").toObject());
-        if (parts & PartSpatial) l->mapping.fromJson(o.value("mapping").toObject());
+        if (parts & PartSpatial) l->mapping.fromJson(o.value("spatial").toObject());
         if (parts & PartCompositing) {
             l->opacity = float(std::clamp(o.value("opacity").toDouble(l->opacity), 0.0, 1.0));
-            l->blend = blendModeFromKey(o.value("blend").toString());
+            l->blend = blendModeFromKey(o.value("blend_mode").toString());
         }
     }
     emit layersChanged();

@@ -1,4 +1,4 @@
-#include "MemoryPanel.h"
+#include "SnapshotPanel.h"
 #include "Commands.h"
 #include "Engine.h"
 #include "Widgets.h"
@@ -31,8 +31,8 @@
 static const QSize kThumb(160, 90);
 
 // Roles of the trees
-enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, KeyRole = Qt::UserRole + 3, MemoryRole = Qt::UserRole + 6 };
-// Columns of the tree of what a memory holds
+enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, KeyRole = Qt::UserRole + 3, SnapshotRole = Qt::UserRole + 6 };
+// Columns of the tree of what a snapshot holds
 enum Column { ColName, ColValue, ColTime };
 
 // How a value gets there at the recall
@@ -64,17 +64,17 @@ static QStringList easingCurveLabels()
 
 static QStringList easingCurveKeys()
 {
-    return {QStringLiteral("linear"), QStringLiteral("easeIn"), QStringLiteral("easeOut"),
-            QStringLiteral("easeInOut"), QStringLiteral("easeInCubic"), QStringLiteral("easeOutCubic")};
+    return {QStringLiteral("linear"), QStringLiteral("ease_in"), QStringLiteral("ease_out"),
+            QStringLiteral("ease_in_out"), QStringLiteral("ease_in_cubic"), QStringLiteral("ease_out_cubic")};
 }
 
-// The object a field's row refers to: a layer of the memory, or (-1) its composition
-static QJsonObject rowObject(const Engine::Memory &m, int row)
+// The object a field's row refers to: a layer of the snapshot, or (-1) its composition
+static QJsonObject rowObject(const Engine::Snapshot &m, int row)
 {
     if (row < 0) return m.composition;
     return row < m.layers.size() ? m.layers.at(row).toObject() : QJsonObject();
 }
-static bool setRowObject(Engine::Memory &m, int row, const QJsonObject &o)
+static bool setRowObject(Engine::Snapshot &m, int row, const QJsonObject &o)
 {
     if (row < 0) {
         m.composition = o;
@@ -161,19 +161,19 @@ static QPixmap thumbnail(const QImage &thumb)
 }
 
 namespace {
-// The list of the memories; a memory dragged from it carries its id (onto a step of a sequence)
-class MemoryList : public QTreeWidget
+// The list of the snapshots; a snapshot dragged from it carries its id (onto a step of a sequence)
+class SnapshotList : public QTreeWidget
 {
 public:
     using QTreeWidget::QTreeWidget;
 
 protected:
-    QStringList mimeTypes() const override { return {QString::fromLatin1(kMemoryMime)}; }
+    QStringList mimeTypes() const override { return {QString::fromLatin1(kSnapshotMime)}; }
     QMimeData *mimeData(const QList<QTreeWidgetItem *> &items) const override
     {
         if (items.isEmpty()) return nullptr;
         auto *m = new QMimeData;
-        m->setData(kMemoryMime, QByteArray::number(items.first()->data(0, MemoryRole).toULongLong()));
+        m->setData(kSnapshotMime, QByteArray::number(items.first()->data(0, SnapshotRole).toULongLong()));
         m->setText(items.first()->text(1));
         return m;
     }
@@ -189,29 +189,29 @@ QToolButton *barButton(const QString &text, const QString &tip)
 }
 } // namespace
 
-// The list of the memories: the one recalled last is marked apart from the selection — a green stripe on its left
+// The list of the snapshots: the one recalled last is marked apart from the selection — a green stripe on its left
 // and ▶ before its number — and its fade fills the row's bottom while it runs.
 namespace {
-const QColor kLiveMemory(76, 217, 100);
+const QColor kLiveSnapshot(76, 217, 100);
 
-class MemoryRowDelegate : public QStyledItemDelegate
+class SnapshotRowDelegate : public QStyledItemDelegate
 {
 public:
-    MemoryRowDelegate(Engine *e, QObject *parent) : QStyledItemDelegate(parent), m_engine(e) {}
+    SnapshotRowDelegate(Engine *e, QObject *parent) : QStyledItemDelegate(parent), m_engine(e) {}
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &index) const override
     {
         QStyledItemDelegate::paint(p, opt, index);
         const Engine::RecallProgress r = m_engine->recallProgress();
-        if (!r.memory || index.siblingAtColumn(0).data(MemoryRole).toULongLong() != r.memory) return;
+        if (!r.snapshot || index.siblingAtColumn(0).data(SnapshotRole).toULongLong() != r.snapshot) return;
         p->save();
-        if (index.column() == 0) p->fillRect(QRectF(opt.rect.left(), opt.rect.top(), 4, opt.rect.height()), kLiveMemory);
-        if (r.running()) { // the whole row's width is the memory's time
+        if (index.column() == 0) p->fillRect(QRectF(opt.rect.left(), opt.rect.top(), 4, opt.rect.height()), kLiveSnapshot);
+        if (r.running()) { // the whole row's width is the snapshot's time
             const QAbstractItemView *view = qobject_cast<const QAbstractItemView *>(opt.widget);
             const int total = view ? view->viewport()->width() : opt.rect.width();
             const double fill = r.fraction() * total;
             const QRectF bar(opt.rect.left(), opt.rect.bottom() - 2, opt.rect.width(), 3);
             const QRectF done = bar.intersected(QRectF(0, bar.top(), fill, bar.height()));
-            if (!done.isEmpty()) p->fillRect(done, kLiveMemory);
+            if (!done.isEmpty()) p->fillRect(done, kLiveSnapshot);
         }
         p->restore();
     }
@@ -221,7 +221,7 @@ private:
 };
 } // namespace
 
-MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
+SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     : QWidget(parent), m_engine(engine), m_undo(undo)
 {
     auto *h = new QHBoxLayout(this);
@@ -235,19 +235,19 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     auto *lv = new QVBoxLayout(left);
     lv->setContentsMargins(0, 0, 0, 0);
     auto *bar = new QHBoxLayout;
-    auto *title = new QLabel(QStringLiteral("<b>Memories</b>"));
+    auto *title = new QLabel(QStringLiteral("<b>Snapshots</b>"));
     bar->addWidget(title);
     bar->addStretch();
     m_store = new QPushButton(QStringLiteral("+"));
-    m_store->setToolTip(QStringLiteral("Store the current state of the layers in a new memory"));
+    m_store->setToolTip(QStringLiteral("Store the current state of the layers in a new snapshot"));
     m_store->setFixedWidth(34);
     m_go = new QPushButton(QStringLiteral("GO"));
     m_go->setStyleSheet("QPushButton { font-weight:bold; background:#2f6b3a; color:white; padding:3px 14px; }");
-    m_go->setToolTip(QStringLiteral("Recall the selected memory (double-click or Enter in the list)"));
+    m_go->setToolTip(QStringLiteral("Recall the selected snapshot (double-click or Enter in the list)"));
     bar->addWidget(m_store);
     bar->addWidget(m_go);
     lv->addLayout(bar);
-    m_list = new MemoryList;
+    m_list = new SnapshotList;
     m_list->setColumnCount(3);
     m_list->setHeaderLabels({QStringLiteral("#"), QStringLiteral("Name"), QStringLiteral("Fade")});
     m_list->setRootIsDecorated(false);
@@ -262,9 +262,9 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_list->setColumnWidth(0, 44);
     m_list->setColumnWidth(2, 58);
     m_list->setToolTip(QStringLiteral("Double-click or Enter: recall · drag onto a step of a sequence\n"
-                                      "Green stripe and ▶: the memory recalled last; the green line under it: its fade"));
-    m_list->setItemDelegate(new MemoryRowDelegate(m_engine, m_list));
-    { // the fade running moves the line under its memory
+                                      "Green stripe and ▶: the snapshot recalled last; the green line under it: its fade"));
+    m_list->setItemDelegate(new SnapshotRowDelegate(m_engine, m_list));
+    { // the fade running moves the line under its snapshot
         auto *t = new QTimer(this);
         t->setInterval(33);
         connect(t, &QTimer::timeout, this, [this] {
@@ -278,7 +278,7 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     left->setMinimumWidth(220);
     split->addWidget(left);
 
-    // --- What the selected memory holds
+    // --- What the selected snapshot holds
     m_inspector = new QWidget;
     auto *iv = new QVBoxLayout(m_inspector);
     iv->setContentsMargins(6, 0, 0, 0);
@@ -296,7 +296,7 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_fade->setSingleStep(0.5);
     m_fade->setSuffix(QStringLiteral(" s"));
     m_fade->setKeyboardTracking(false);
-    m_fade->setToolTip(QStringLiteral("Fade: the values set to Follow get to the memory's in this time; sources and "
+    m_fade->setToolTip(QStringLiteral("Fade: the values set to Follow get to the snapshot's in this time; sources and "
                                       "effect chains change at once (a new source comes in with its transition)"));
     auto *fadeRow = new QHBoxLayout;
     fadeRow->addWidget(new ResetLabel(QStringLiteral("Fade"), [this] { m_fade->setValue(1.0); }));
@@ -306,7 +306,7 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     fields->addLayout(fadeRow);
     auto *buttons = new QHBoxLayout;
     m_update = new QPushButton(QStringLiteral("Update"));
-    m_update->setToolTip(QStringLiteral("Store the current state of the layers into this memory"));
+    m_update->setToolTip(QStringLiteral("Store the current state of the layers into this snapshot"));
     m_delete = new QPushButton(QStringLiteral("Delete"));
     buttons->addWidget(m_update);
     buttons->addWidget(m_delete);
@@ -327,7 +327,7 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_layers->setColumnWidth(ColValue, 96);
     m_layers->setColumnWidth(ColTime, 64);
     m_layers->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_layers->setToolTip(QStringLiteral("Unchecked layers are left alone when the memory is recalled; layers the memory "
+    m_layers->setToolTip(QStringLiteral("Unchecked layers are left alone when the snapshot is recalled; layers the snapshot "
                                         "does not know are hidden.\nClick a value to see it, change it and choose how it "
                                         "gets there (right)."));
     iv->addWidget(m_layers, 1);
@@ -354,47 +354,47 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     auto *enter = new QShortcut(QKeySequence(Qt::Key_Return), m_list, nullptr, nullptr, Qt::WidgetShortcut);
     connect(enter, &QShortcut::activated, this, [this] { recall(selected()); });
     auto *del = new QShortcut(QKeySequence::Delete, m_list, nullptr, nullptr, Qt::WidgetShortcut);
-    connect(del, &QShortcut::activated, this, [this] { removeMemory(selected()); });
+    connect(del, &QShortcut::activated, this, [this] { removeSnapshot(selected()); });
     auto *bs = new QShortcut(QKeySequence(Qt::Key_Backspace), m_list, nullptr, nullptr, Qt::WidgetShortcut);
-    connect(bs, &QShortcut::activated, this, [this] { removeMemory(selected()); });
+    connect(bs, &QShortcut::activated, this, [this] { removeSnapshot(selected()); });
     connect(m_list, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
         QTreeWidgetItem *it = m_list->itemAt(pos);
         const int i = it ? m_list->indexOfTopLevelItem(it) : -1;
         QMenu menu;
-        menu.addAction(QStringLiteral("Store Current State"), this, &MemoryPanel::store);
+        menu.addAction(QStringLiteral("Store Current State"), this, &SnapshotPanel::store);
         if (i >= 0) {
             menu.addSeparator();
             menu.addAction(QStringLiteral("Recall"), this, [this, i] { recall(i); });
-            menu.addAction(QStringLiteral("Update with Current State"), this, [this, i] { updateMemory(i); });
+            menu.addAction(QStringLiteral("Update with Current State"), this, [this, i] { updateSnapshot(i); });
             menu.addAction(QStringLiteral("Rename"), this, [this] {
                 m_name->setFocus();
                 m_name->selectAll();
             });
             menu.addSeparator();
-            menu.addAction(QStringLiteral("Delete"), this, [this, i] { removeMemory(i); });
+            menu.addAction(QStringLiteral("Delete"), this, [this, i] { removeSnapshot(i); });
         }
         menu.exec(m_list->viewport()->mapToGlobal(pos));
     });
-    connect(m_store, &QPushButton::clicked, this, &MemoryPanel::store);
+    connect(m_store, &QPushButton::clicked, this, &SnapshotPanel::store);
     connect(m_go, &QPushButton::clicked, this, [this] { recall(selected()); });
-    connect(m_update, &QPushButton::clicked, this, [this] { updateMemory(selected()); });
-    connect(m_delete, &QPushButton::clicked, this, [this] { removeMemory(selected()); });
+    connect(m_update, &QPushButton::clicked, this, [this] { updateSnapshot(selected()); });
+    connect(m_delete, &QPushButton::clicked, this, [this] { removeSnapshot(selected()); });
     connect(m_name, &QLineEdit::editingFinished, this, [this] {
         const int i = selected();
         if (i < 0) return;
-        Engine::Memory m = m_engine->memory(i);
+        Engine::Snapshot m = m_engine->snapshot(i);
         if (m.name == m_name->text()) return;
         m.name = m_name->text();
-        m_engine->setMemory(i, m);
+        m_engine->setSnapshot(i, m);
         emit edited();
     });
     connect(m_fade, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double v) {
         const int i = selected();
         if (i < 0 || m_filling) return;
-        Engine::Memory m = m_engine->memory(i);
+        Engine::Snapshot m = m_engine->snapshot(i);
         m.fade = v;
         m_applying = true;
-        m_engine->setMemory(i, m);
+        m_engine->setSnapshot(i, m);
         m_applying = false;
         if (QTreeWidgetItem *it = m_list->topLevelItem(i)) it->setText(2, QStringLiteral("%1 s").arg(v, 0, 'f', 1));
         emit edited();
@@ -422,32 +422,32 @@ MemoryPanel::MemoryPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     };
     connect(m_layers, &QTreeWidget::itemExpanded, this, [remember](QTreeWidgetItem *it) { remember(it, true); });
     connect(m_layers, &QTreeWidget::itemCollapsed, this, [remember](QTreeWidgetItem *it) { remember(it, false); });
-    connect(m_engine, &Engine::memoriesChanged, this, &MemoryPanel::refresh);
-    connect(m_engine, &Engine::memoryRecalled, this, [this](int i) {
+    connect(m_engine, &Engine::snapshotsChanged, this, &SnapshotPanel::refresh);
+    connect(m_engine, &Engine::snapshotRecalled, this, [this](int i) {
         m_active = i;
         refresh();
     });
     refresh();
 }
 
-int MemoryPanel::selected() const
+int SnapshotPanel::selected() const
 {
     QTreeWidgetItem *it = m_list->currentItem();
     return it ? m_list->indexOfTopLevelItem(it) : -1;
 }
 
-void MemoryPanel::refresh()
+void SnapshotPanel::refresh()
 {
     if (m_applying) return; // our own edit: the panel already shows it
     const int keep = selected();
     m_filling = true;
     m_list->clear();
-    const int n = m_engine->memoryCount();
+    const int n = m_engine->snapshotCount();
     if (m_active >= n) m_active = -1;
     for (int i = 0; i < n; ++i) {
-        const Engine::Memory m = m_engine->memory(i);
+        const Engine::Snapshot m = m_engine->snapshot(i);
         auto *it = new QTreeWidgetItem(m_list, {QString::number(i + 1), m.name, QStringLiteral("%1 s").arg(m.fade, 0, 'f', 1)});
-        it->setData(0, MemoryRole, m.id);
+        it->setData(0, SnapshotRole, m.id);
         it->setTextAlignment(0, Qt::AlignRight | Qt::AlignVCenter);
         it->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
         it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
@@ -457,7 +457,7 @@ void MemoryPanel::refresh()
             f.setBold(true);
             for (int c = 0; c < 3; ++c) {
                 it->setFont(c, f);
-                it->setForeground(c, kLiveMemory);
+                it->setForeground(c, kLiveSnapshot);
             }
         }
     }
@@ -466,23 +466,23 @@ void MemoryPanel::refresh()
     showInspector(selected());
 }
 
-void MemoryPanel::showInspector(int i)
+void SnapshotPanel::showInspector(int i)
 {
     m_filling = true;
     m_fields.clear();
-    const bool valid = i >= 0 && i < m_engine->memoryCount();
+    const bool valid = i >= 0 && i < m_engine->snapshotCount();
     for (QWidget *w : std::initializer_list<QWidget *>{m_name, m_fade, m_layers, m_go, m_update, m_delete}) w->setEnabled(valid);
     m_layers->clear();
     if (!valid) {
-        m_title->setText(QStringLiteral("<span style='color:#888'>No memory selected.<br>+ stores the current state.</span>"));
+        m_title->setText(QStringLiteral("<span style='color:#888'>No snapshot selected.<br>+ stores the current state.</span>"));
         m_thumb->clear();
         m_name->clear();
         m_filling = false;
         showDetail(nullptr);
         return;
     }
-    const Engine::Memory m = m_engine->memory(i);
-    m_title->setText(QStringLiteral("<b>Memory %1</b>%2").arg(i + 1).arg(i == m_active ? QStringLiteral(" <span style='color:#4cd964'>▶ recalled last</span>") : QString()));
+    const Engine::Snapshot m = m_engine->snapshot(i);
+    m_title->setText(QStringLiteral("<b>Snapshot %1</b>%2").arg(i + 1).arg(i == m_active ? QStringLiteral(" <span style='color:#4cd964'>▶ recalled last</span>") : QString()));
     m_thumb->setPixmap(thumbnail(m.thumbnail));
     m_name->setText(m.name);
     m_fade->setValue(m.fade);
@@ -521,7 +521,7 @@ void MemoryPanel::showInspector(int i)
     showDetail(current);
 }
 
-QTreeWidgetItem *MemoryPanel::addField(QTreeWidgetItem *parent, const MemField &f, const QJsonValue &value)
+QTreeWidgetItem *SnapshotPanel::addField(QTreeWidgetItem *parent, const MemField &f, const QJsonValue &value)
 {
     auto *it = new QTreeWidgetItem(parent, {f.label, valueText(f, value)});
     it->setForeground(ColName, QColor(165, 165, 172));
@@ -531,7 +531,7 @@ QTreeWidgetItem *MemoryPanel::addField(QTreeWidgetItem *parent, const MemField &
     if (f.kind == MemField::Info) it->setForeground(ColValue, QColor(140, 140, 146));
     m_fields.push_back(f);
     if (!f.timeKey.isEmpty()) {
-        const Engine::Memory m = m_engine->memory(selected());
+        const Engine::Snapshot m = m_engine->snapshot(selected());
         const QJsonValue t = rowObject(m, f.row).value("timing").toObject().value(f.timeKey);
         it->setText(ColTime, timeText(t));
         it->setForeground(ColTime, t.isDouble() ? QColor(230, 230, 233) : QColor(130, 130, 136));
@@ -539,12 +539,12 @@ QTreeWidgetItem *MemoryPanel::addField(QTreeWidgetItem *parent, const MemField &
     return it;
 }
 
-// Values and times shown in the tree, after an edit of the selected memory (the tree is not rebuilt)
-void MemoryPanel::refreshRows()
+// Values and times shown in the tree, after an edit of the selected snapshot (the tree is not rebuilt)
+void SnapshotPanel::refreshRows()
 {
     const int i = selected();
     if (i < 0) return;
-    const Engine::Memory m = m_engine->memory(i);
+    const Engine::Snapshot m = m_engine->snapshot(i);
     std::function<void(QTreeWidgetItem *)> walk = [&](QTreeWidgetItem *p) {
         for (int k = 0; k < p->childCount(); ++k) {
             QTreeWidgetItem *c = p->child(k);
@@ -565,8 +565,8 @@ void MemoryPanel::refreshRows()
     walk(m_layers->invisibleRootItem());
 }
 
-// The selected value: what the memory holds (editable), and how it gets there at the recall
-void MemoryPanel::showDetail(QTreeWidgetItem *it)
+// The selected value: what the snapshot holds (editable), and how it gets there at the recall
+void SnapshotPanel::showDetail(QTreeWidgetItem *it)
 {
     while (QLayoutItem *item = m_detailLayout->takeAt(0)) {
         if (QWidget *w = item->widget()) w->deleteLater();
@@ -591,17 +591,17 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
             auto *title = new QLabel(QStringLiteral("<b>%1</b>").arg(it->text(0).trimmed().toHtmlEscaped()));
             m_detailLayout->addWidget(title);
             hint(it->checkState(0) == Qt::Checked
-                     ? QStringLiteral("In the memory: the recall takes this layer to the values below.")
+                     ? QStringLiteral("In the snapshot: the recall takes this layer to the values below.")
                      : QStringLiteral("Left out: the recall leaves this layer as it is."));
         } else {
-            hint(QStringLiteral("Click a value in the memory to see it, change it, and choose how it gets there when the "
-                                "memory is recalled: CUT (at once), FOLLOW (the memory's fade) or a time of its own."));
+            hint(QStringLiteral("Click a value in the snapshot to see it, change it, and choose how it gets there when the "
+                                "snapshot is recalled: CUT (at once), FOLLOW (the snapshot's fade) or a time of its own."));
         }
         m_detailLayout->addStretch();
         return;
     }
     const MemField f = m_fields[size_t(fi.toInt())];
-    const Engine::Memory m = m_engine->memory(mi);
+    const Engine::Snapshot m = m_engine->snapshot(mi);
     const QJsonObject o = rowObject(m, f.row);
     const QJsonValue value = jsonAt(o, f.path);
 
@@ -665,7 +665,7 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
         break;
     }
     }
-    hint(QStringLiteral("The memory changes, the composition does not, until the memory is recalled."));
+    hint(QStringLiteral("The snapshot changes, the composition does not, until the snapshot is recalled."));
 
     // How it gets there
     if (!f.timeKey.isEmpty()) {
@@ -673,8 +673,8 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
         auto *box = new QWidget;
         auto *bv = new QVBoxLayout(box);
         bv->setContentsMargins(0, 10, 0, 0);
-        bv->addWidget(new QLabel(f.timeKey == "source"         ? QStringLiteral("<b>Transition of the source</b>")
-                                 : f.timeKey == "text/content" ? QStringLiteral("<b>Typing (typewriter)</b>")
+        bv->addWidget(new QLabel(f.timeKey == "source/file"         ? QStringLiteral("<b>Transition of the source</b>")
+                                 : f.timeKey == "source/text/content" ? QStringLiteral("<b>Typing (typewriter)</b>")
                                                                 : QStringLiteral("<b>Transition</b>")));
         auto *row = new QHBoxLayout;
         auto *group = new QButtonGroup(box);
@@ -699,11 +699,11 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
         secs->setEnabled(mode == 2);
         row->addWidget(secs);
         bv->addLayout(row);
-        auto *note = new QLabel(QStringLiteral("CUT: at once · FOLLOW: the memory's fade (%1 s) · TIME: this value "
+        auto *note = new QLabel(QStringLiteral("CUT: at once · FOLLOW: the snapshot's fade (%1 s) · TIME: this value "
                                                "only, in its own time%2")
                                     .arg(m.fade, 0, 'f', 1)
-                                    .arg(f.timeKey == "roi" || f.timeKey == "mapping" || f.timeKey.startsWith("color/") ||
-                                                     (f.timeKey.startsWith("text/") && f.timeKey.endsWith("olor"))
+                                    .arg(f.timeKey == "source/roi" || f.timeKey == "spatial" || f.timeKey.startsWith("color/") ||
+                                                     (f.timeKey.startsWith("source/text/") && f.timeKey.endsWith("/color"))
                                              ? QStringLiteral(" (shared by the whole %1)").arg(f.timeKey.section('/', -1))
                                              : QString()));
         note->setWordWrap(true);
@@ -745,8 +745,8 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
     m_detailLayout->addStretch();
 }
 
-// Everything the memory stores for this layer, as editable rows grouped in sections.
-void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject &o)
+// Everything the snapshot stores for this layer, as editable rows grouped in sections.
+void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject &o)
 {
     const QString lkey = QStringLiteral("L") + o.value("id").toString();
     const quint64 id = o.value("id").toString().toULongLong();
@@ -779,7 +779,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         f.suffix = suffix;
         f.step = step;
         f.label = label;
-        f.timeKey = Engine::timingKey(path); // a value that fades: its time can be chosen
+        f.timeKey = Engine::timingKey(path, o); // a value that fades: its time can be chosen
         return addField(p, f, jsonAt(o, path));
     };
     auto flag = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path) {
@@ -813,7 +813,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
     flag(parent, QStringLiteral("Visible"), {"visible"});
     flag(parent, QStringLiteral("Locked"), {"locked"});
     num(parent, QStringLiteral("Opacity"), {"opacity"}, 0, 1, 100, 0, QStringLiteral(" %"), 0.01);
-    choice(parent, QStringLiteral("Blend Mode"), {"blend"}, {"normal", "add", "screen", "multiply", "subtract", "difference"},
+    choice(parent, QStringLiteral("Blend Mode"), {"blend_mode"}, {"normal", "add", "screen", "multiply", "subtract", "difference"},
            {QStringLiteral("Normal"), QStringLiteral("Add"), QStringLiteral("Screen"), QStringLiteral("Multiply"), QStringLiteral("Subtract"),
             QStringLiteral("Difference")});
     if (hasSound) {
@@ -821,7 +821,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         flag(parent, QStringLiteral("Muted"), {"muted"});
     }
 
-    // Parameters of a shader (generator or effect), from the values the memory holds
+    // Parameters of a shader (generator or effect), from the values the snapshot holds
     auto isfParams = [&](QTreeWidgetItem *p, const QStringList &base, int slot) {
         const QJsonObject params = jsonAt(o, base).toObject();
         if (params.isEmpty()) return;
@@ -874,12 +874,12 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
                         QFileInfo(src.value("path").toString()).fileName(), src.value("path").toString());
         }
         // Another source than the layer's at the recall: its transition, over this time
-        m_fields[size_t(what->data(0, FieldRole).toInt())].timeKey = QStringLiteral("source");
+        m_fields[size_t(what->data(0, FieldRole).toInt())].timeKey = QStringLiteral("source/file");
         const QString tr = src.value("transition").toString();
         info(sec, QStringLiteral("Transition"),
              tr.isEmpty() ? QStringLiteral("Default") : QFileInfo(tr).completeBaseName(), tr);
         if (hasSound) {
-            choice(sec, QStringLiteral("Play mode"), {"source", "playMode"}, {"oneshot", "loop", "pingpong", "stop"},
+            choice(sec, QStringLiteral("Play mode"), {"source", "play_mode"}, {"oneshot", "loop", "pingpong", "stop"},
                    {QStringLiteral("One-shot"), QStringLiteral("Loop"), QStringLiteral("Ping-pong"), QStringLiteral("Stop")});
             num(sec, QStringLiteral("In"), {"source", "in"}, 0, 1e6, 1, 2, QStringLiteral(" s"), 0.1);
             num(sec, QStringLiteral("Out"), {"source", "out"}, -1, 1e6, 1, 2, QStringLiteral(" s"), 0.1)
@@ -896,7 +896,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
             // Text generator: the text (its typing time: the typewriter), the words and switches set at once, the
             // numbers that fade, each with its time and easing
             QTreeWidgetItem *content = info(sec, QStringLiteral("Text"), jsonAt(o, {"source", "content"}).toString());
-            m_fields[size_t(content->data(0, FieldRole).toInt())].timeKey = Engine::timingKey({"source", "content"});
+            m_fields[size_t(content->data(0, FieldRole).toInt())].timeKey = Engine::timingKey({"source", "content"}, o);
             info(sec, QStringLiteral("Font"), jsonAt(o, {"source", "font"}).toString());
             num(sec, QStringLiteral("Size"), {"source", "size"}, 1, 1000, 1, 0, QStringLiteral(" px"), 1);
             static const char *kRgba[] = {"R", "G", "B", "A"};
@@ -910,21 +910,21 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
             flag(sec, QStringLiteral("Italic"), {"source", "italic"});
             flag(sec, QStringLiteral("Underline"), {"source", "underline"});
             flag(sec, QStringLiteral("Strikethrough"), {"source", "strike"});
-            choice(sec, QStringLiteral("Align"), {"source", "hAlign"}, {"left", "center", "right", "justify"},
+            choice(sec, QStringLiteral("Align"), {"source", "h_align"}, {"left", "center", "right", "justify"},
                    {QStringLiteral("Left"), QStringLiteral("Center"), QStringLiteral("Right"), QStringLiteral("Justified")});
-            choice(sec, QStringLiteral("Vertical"), {"source", "vAlign"}, {"top", "middle", "bottom"},
+            choice(sec, QStringLiteral("Vertical"), {"source", "v_align"}, {"top", "middle", "bottom"},
                    {QStringLiteral("Top"), QStringLiteral("Middle"), QStringLiteral("Bottom")});
-            num(sec, QStringLiteral("Line spacing"), {"source", "lineHeight"}, 0.1, 10, 1, 2, QStringLiteral(" ×"), 0.05);
-            num(sec, QStringLiteral("Letter spacing"), {"source", "letterSpacing"}, -200, 500, 1, 1, QStringLiteral(" px"), 0.5);
+            num(sec, QStringLiteral("Line spacing"), {"source", "line_height"}, 0.1, 10, 1, 2, QStringLiteral(" ×"), 0.05);
+            num(sec, QStringLiteral("Letter spacing"), {"source", "letter_spacing"}, -200, 500, 1, 1, QStringLiteral(" px"), 0.5);
             QTreeWidgetItem *outline = section(sec, QStringLiteral("Outline"), QStringLiteral("textOutline"));
             num(outline, QStringLiteral("Width"), {"source", "outline"}, 0, 200, 1, 1, QStringLiteral(" px"), 0.5);
-            rgba(outline, QStringLiteral("Color"), QStringLiteral("outlineColor"));
+            rgba(outline, QStringLiteral("Color"), QStringLiteral("outline_color"));
             expand(outline);
             QTreeWidgetItem *shadow = section(sec, QStringLiteral("Shadow"), QStringLiteral("textShadow"));
             flag(shadow, QStringLiteral("On"), {"source", "shadow"});
-            rgba(shadow, QStringLiteral("Color"), QStringLiteral("shadowColor"));
-            num(shadow, QStringLiteral("X"), {"source", "shadowX"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
-            num(shadow, QStringLiteral("Y"), {"source", "shadowY"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
+            rgba(shadow, QStringLiteral("Color"), QStringLiteral("shadow_color"));
+            num(shadow, QStringLiteral("X"), {"source", "shadow_x"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
+            num(shadow, QStringLiteral("Y"), {"source", "shadow_y"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
             expand(shadow);
             num(sec, QStringLiteral("Width"), {"source", "width"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
             num(sec, QStringLiteral("Height"), {"source", "height"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
@@ -943,45 +943,45 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
 
     if (o.contains("color")) {
         QTreeWidgetItem *sec = section(parent, QStringLiteral("Color"), QStringLiteral("color"));
-        flag(sec, QStringLiteral("Enabled"), {"color", "enabled"});
-        flag(sec, QStringLiteral("Temperature on"), {"color", "tempOn"});
+        flag(sec, QStringLiteral("Enable"), {"color", "enable"});
+        flag(sec, QStringLiteral("Temperature Enable"), {"color", "temp_enable"});
         num(sec, QStringLiteral("Temperature"), {"color", "temp"}, -ColorAdjust::kTempRange, ColorAdjust::kTempRange, 1, 0,
             QStringLiteral(" K"), 10);
-        flag(sec, QStringLiteral("Tint on"), {"color", "tintOn"});
+        flag(sec, QStringLiteral("Tint Enable"), {"color", "tint_enable"});
         num(sec, QStringLiteral("Tint"), {"color", "tint"}, -ColorAdjust::kTintRange, ColorAdjust::kTintRange, 1, 0,
             QString(), 1);
         static const char *kRgb[] = {"Red", "Green", "Blue"};
-        flag(sec, QStringLiteral("Add on"), {"color", "addOn"});
+        flag(sec, QStringLiteral("Add Enable"), {"color", "add_enable"});
         for (int c = 0; c < 3; ++c)
             num(sec, QStringLiteral("Add ") + QString::fromLatin1(kRgb[c]), {"color", "add", QString::number(c)}, 0, 1,
                 100, 0, QStringLiteral(" %"), 0.01);
-        flag(sec, QStringLiteral("Remove on"), {"color", "removeOn"});
+        flag(sec, QStringLiteral("Remove Enable"), {"color", "remove_enable"});
         for (int c = 0; c < 3; ++c)
             num(sec, QStringLiteral("Remove ") + QString::fromLatin1(kRgb[c]), {"color", "remove", QString::number(c)}, 0,
                 1, 100, 0, QStringLiteral(" %"), 0.01);
         expand(sec);
     }
 
-    if (o.contains("mapping")) {
-        const QJsonObject map = o.value("mapping").toObject();
-        QTreeWidgetItem *sec = section(parent, QStringLiteral("Mapping"), QStringLiteral("mapping"));
-        flag(sec, QStringLiteral("Mesh mode"), {"mapping", "meshMode"});
+    if (o.contains("spatial")) {
+        const QJsonObject map = o.value("spatial").toObject();
+        QTreeWidgetItem *sec = section(parent, QStringLiteral("Spatial"), QStringLiteral("spatial"));
+        flag(sec, QStringLiteral("Mesh mode"), {"spatial", "mesh_mode"});
         static const char *kCorners[] = {"Top-left", "Top-right", "Bottom-right", "Bottom-left"};
         for (int c = 0; c < 4 && c < map.value("corners").toArray().size(); ++c) {
-            num(sec, QString::fromLatin1(kCorners[c]) + " X", {"mapping", "corners", QString::number(c), "0"}, -10, 10, 1,
+            num(sec, QString::fromLatin1(kCorners[c]) + " X", {"spatial", "corners", QString::number(c), "0"}, -10, 10, 1,
                 4, QString(), 0.001);
-            num(sec, QString::fromLatin1(kCorners[c]) + " Y", {"mapping", "corners", QString::number(c), "1"}, -10, 10, 1,
+            num(sec, QString::fromLatin1(kCorners[c]) + " Y", {"spatial", "corners", QString::number(c), "1"}, -10, 10, 1,
                 4, QString(), 0.001);
         }
         const int cols = map.value("cols").toInt(4), rows = map.value("rows").toInt(4);
         const QJsonArray offsets = map.value("offsets").toArray();
         info(sec, QStringLiteral("Mesh"), QStringLiteral("%1 × %2").arg(cols).arg(rows));
-        if (map.value("meshMode").toBool() && offsets.size() == cols * rows && offsets.size() <= 64) {
+        if (map.value("mesh_mode").toBool() && offsets.size() == cols * rows && offsets.size() <= 64) {
             QTreeWidgetItem *pts = section(sec, QStringLiteral("Mesh points"), QStringLiteral("mesh"));
             for (int k = 0; k < offsets.size(); ++k) {
                 const QString label = QStringLiteral("(%1, %2)").arg(k % cols + 1).arg(k / cols + 1);
-                num(pts, label + " X", {"mapping", "offsets", QString::number(k), "0"}, -10, 10, 1, 4, QString(), 0.001);
-                num(pts, label + " Y", {"mapping", "offsets", QString::number(k), "1"}, -10, 10, 1, 4, QString(), 0.001);
+                num(pts, label + " X", {"spatial", "offsets", QString::number(k), "0"}, -10, 10, 1, 4, QString(), 0.001);
+                num(pts, label + " Y", {"spatial", "offsets", QString::number(k), "1"}, -10, 10, 1, 4, QString(), 0.001);
             }
             expand(pts);
         }
@@ -990,39 +990,39 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
 
     const QJsonArray effects = o.value("effects").toArray();
     QTreeWidgetItem *fxSec = section(parent, QStringLiteral("Effects (%1)").arg(effects.size()), QStringLiteral("effects"));
-    flag(fxSec, QStringLiteral("All effects"), {"effectsEnabled"});
+    flag(fxSec, QStringLiteral("Enable"), {"effects_enable"});
     for (int k = 0; k < effects.size(); ++k) {
         const QJsonObject fx = effects[k].toObject();
         QTreeWidgetItem *one = section(fxSec, QStringLiteral("%1. %2").arg(k + 1).arg(QFileInfo(fx.value("path").toString()).completeBaseName()),
                                        QStringLiteral("fx%1").arg(k));
         one->setToolTip(0, fx.value("path").toString());
-        flag(one, QStringLiteral("Enabled"), {"effects", QString::number(k), "enabled"});
+        flag(one, QStringLiteral("Enable"), {"effects", QString::number(k), "enable"});
         isfParams(one, {"effects", QString::number(k), "params"}, k);
         expand(one);
     }
     expand(fxSec);
 }
 
-// Writes a value into the selected memory: what the recall will apply changes, the composition does not move.
-void MemoryPanel::applyField(const MemField &f, const QJsonValue &value)
+// Writes a value into the selected snapshot: what the recall will apply changes, the composition does not move.
+void SnapshotPanel::applyField(const MemField &f, const QJsonValue &value)
 {
     const int i = selected();
     if (i < 0) return;
-    Engine::Memory m = m_engine->memory(i);
+    Engine::Snapshot m = m_engine->snapshot(i);
     if (!setRowObject(m, f.row, jsonWith(rowObject(m, f.row), f.path, value).toObject())) return;
     m_applying = true;
-    m_engine->setMemory(i, m);
+    m_engine->setSnapshot(i, m);
     m_applying = false;
     emit edited();
     refreshRows();
 }
 
-// The time of a stored value, in the selected memory (< 0: FOLLOW, the memory's fade; 0: CUT)
-void MemoryPanel::applyTime(int row, const QString &key, double seconds)
+// The time of a stored value, in the selected snapshot (< 0: FOLLOW, the snapshot's fade; 0: CUT)
+void SnapshotPanel::applyTime(int row, const QString &key, double seconds)
 {
     const int i = selected();
     if (i < 0 || key.isEmpty()) return;
-    Engine::Memory m = m_engine->memory(i);
+    Engine::Snapshot m = m_engine->snapshot(i);
     if (row >= m.layers.size()) return;
     QJsonObject o = rowObject(m, row);
     QJsonObject timing = o.value("timing").toObject();
@@ -1032,18 +1032,18 @@ void MemoryPanel::applyTime(int row, const QString &key, double seconds)
     else o["timing"] = timing;
     setRowObject(m, row, o);
     m_applying = true;
-    m_engine->setMemory(i, m);
+    m_engine->setSnapshot(i, m);
     m_applying = false;
     emit edited();
     refreshRows();
 }
 
-// The easing curve of a parameter in the selected memory's timing
-void MemoryPanel::applyEasingCurve(int row, const QString &paramKey, const QString &curveKey)
+// The easing curve of a parameter in the selected snapshot's timing
+void SnapshotPanel::applyEasingCurve(int row, const QString &paramKey, const QString &curveKey)
 {
     const int i = selected();
     if (i < 0 || paramKey.isEmpty() || curveKey.isEmpty()) return;
-    Engine::Memory m = m_engine->memory(i);
+    Engine::Snapshot m = m_engine->snapshot(i);
     if (row >= m.layers.size()) return;
     QJsonObject o = rowObject(m, row);
     QJsonObject timing = o.value("timing").toObject();
@@ -1052,35 +1052,35 @@ void MemoryPanel::applyEasingCurve(int row, const QString &paramKey, const QStri
     o["timing"] = timing;
     setRowObject(m, row, o);
     m_applying = true;
-    m_engine->setMemory(i, m);
+    m_engine->setSnapshot(i, m);
     m_applying = false;
     emit edited();
     refreshRows();
 }
 
-void MemoryPanel::store()
+void SnapshotPanel::store()
 {
-    Engine::Memory m;
-    m.name = QStringLiteral("Memory %1").arg(m_engine->memoryCount() + 1);
+    Engine::Snapshot m;
+    m.name = QStringLiteral("Snapshot %1").arg(m_engine->snapshotCount() + 1);
     m.layers = m_engine->captureLayers();
     m.composition = m_engine->captureComposition();
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    const int i = m_engine->addMemory(m);
+    const int i = m_engine->addSnapshot(m);
     m_list->setCurrentItem(m_list->topLevelItem(i));
     emit edited();
 }
 
-void MemoryPanel::recall(int i)
+void SnapshotPanel::recall(int i)
 {
-    if (i < 0 || i >= m_engine->memoryCount()) return;
-    m_undo->push(new cmd::RecallMemory(m_engine, i));
+    if (i < 0 || i >= m_engine->snapshotCount()) return;
+    m_undo->push(new cmd::RecallSnapshot(m_engine, i));
     emit recalled();
 }
 
-void MemoryPanel::updateMemory(int i)
+void SnapshotPanel::updateSnapshot(int i)
 {
-    if (i < 0 || i >= m_engine->memoryCount()) return;
-    Engine::Memory m = m_engine->memory(i);
+    if (i < 0 || i >= m_engine->snapshotCount()) return;
+    Engine::Snapshot m = m_engine->snapshot(i);
     // Layers left out stay out; the times given to values are kept
     QSet<quint64> excluded;
     QHash<quint64, QJsonValue> timing;
@@ -1107,34 +1107,34 @@ void MemoryPanel::updateMemory(int i)
     }
     m.composition = comp;
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    m_engine->setMemory(i, m);
+    m_engine->setSnapshot(i, m);
     emit edited();
 }
 
-void MemoryPanel::removeMemory(int i)
+void SnapshotPanel::removeSnapshot(int i)
 {
-    if (i < 0 || i >= m_engine->memoryCount()) return;
+    if (i < 0 || i >= m_engine->snapshotCount()) return;
     if (m_active == i) m_active = -1;
     else if (m_active > i) --m_active;
-    m_engine->removeMemory(i);
+    m_engine->removeSnapshot(i);
     emit edited();
 }
 
-void MemoryPanel::setCompositionIncluded(int i, bool included)
+void SnapshotPanel::setCompositionIncluded(int i, bool included)
 {
     if (i < 0) return;
-    Engine::Memory m = m_engine->memory(i);
+    Engine::Snapshot m = m_engine->snapshot(i);
     if (m.composition.isEmpty()) m.composition = m_engine->captureComposition();
     m.composition["included"] = included;
     m_applying = true;
-    m_engine->setMemory(i, m);
+    m_engine->setSnapshot(i, m);
     m_applying = false;
     emit edited();
 }
 
-// The composition in the memory: its opacity and the sound volume (a memory stored before they were kept:
+// The composition in the snapshot: its opacity and the sound volume (a snapshot stored before they were kept:
 // nothing, the recall leaves them)
-void MemoryPanel::fillComposition(const QJsonObject &c)
+void SnapshotPanel::fillComposition(const QJsonObject &c)
 {
     auto *top = new QTreeWidgetItem(m_layers, {QStringLiteral("Composition"),
                                                c.isEmpty() ? QStringLiteral("—")
@@ -1145,7 +1145,7 @@ void MemoryPanel::fillComposition(const QJsonObject &c)
     top->setFont(0, bold);
     if (c.isEmpty()) {
         top->setFlags(Qt::ItemIsEnabled);
-        top->setToolTip(0, QStringLiteral("Stored before memories kept the composition: Update to add it"));
+        top->setToolTip(0, QStringLiteral("Stored before snapshots kept the composition: Update to add it"));
         return;
     }
     top->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
@@ -1170,10 +1170,10 @@ void MemoryPanel::fillComposition(const QJsonObject &c)
     top->setExpanded(m_expanded.contains(QStringLiteral("composition")));
 }
 
-void MemoryPanel::setInclusion(int i, quint64 id, bool included)
+void SnapshotPanel::setInclusion(int i, quint64 id, bool included)
 {
     if (i < 0) return;
-    Engine::Memory m = m_engine->memory(i);
+    Engine::Snapshot m = m_engine->snapshot(i);
     for (int k = 0; k < m.layers.size(); ++k) {
         QJsonObject o = m.layers[k].toObject();
         if (o.value("id").toString().toULongLong() != id) continue;
@@ -1181,7 +1181,7 @@ void MemoryPanel::setInclusion(int i, quint64 id, bool included)
         m.layers[k] = o;
     }
     m_applying = true;
-    m_engine->setMemory(i, m);
+    m_engine->setSnapshot(i, m);
     m_applying = false;
     emit edited();
 }

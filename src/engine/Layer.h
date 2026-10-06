@@ -106,7 +106,7 @@ struct ColorAdjust {
     bool operator!=(const ColorAdjust &o) const { return !(*this == o); }
 };
 
-// The Text generator's settings: what is typed and how it is set. Plain data, copied by the memories' fades.
+// The Text generator's settings: what is typed and how it is set. Plain data, copied by the snapshots' fades.
 struct TextSource {
     QString content;                           // the text
     QString font = QStringLiteral("Arial");    // system font family
@@ -123,12 +123,12 @@ struct TextSource {
     float shadowX = 4.0f, shadowY = 4.0f;
     int width = 1920, height = 1080;           // size of its picture
 
-    // Typewriter: a memory that gives another text types it over its time. The shown text goes from `typedFrom` to
+    // Typewriter: a snapshot that gives another text types it over its time. The shown text goes from `typedFrom` to
     // `content` (erasing back to what they share, then typing) as `typeProgress` goes from 0 to 1; not typing when
     // `typeDur` is 0.
     QString typedFrom;
     double typeElapsed = 0, typeDur = 0, typeProgress = 1;
-    int typeCurve = 0; // easing of the typing (EasingCurve, Memories.cpp)
+    int typeCurve = 0; // easing of the typing (EasingCurve, Snapshots.cpp)
 
     QString shown() const
     {
@@ -141,7 +141,7 @@ struct TextSource {
         return steps <= del ? a.left(int(a.size()) - steps) : b.left(c + steps - del);
     }
     void stopTyping() { typeDur = typeElapsed = 0; typeProgress = 1; typedFrom.clear(); }
-    // Values kept in their useful range (a project or a memory read from a file may hold anything)
+    // Values kept in their useful range (a project or a snapshot read from a file may hold anything)
     void sanitize()
     {
         size = std::clamp(size, 1, 1000);
@@ -255,7 +255,7 @@ struct Layer {
     GLuint meshVbo = 0;  // its mesh's vertices (render thread)
     Mapping meshShape;   // the mapping they were built from
 
-    // Transition used when a memory gives this layer another source (ISF with startImage, endImage, progress;
+    // Transition used when a snapshot gives this layer another source (ISF with startImage, endImage, progress;
     // empty: the default one, chosen in the settings)
     QString transition;
     float transitionGain = 1.0f; // sound during such a transition: the incoming source rises, the outgoing one falls

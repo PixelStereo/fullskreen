@@ -1,6 +1,6 @@
 #include "SequencePanel.h"
 #include "Engine.h"
-#include "MemoryPanel.h"
+#include "SnapshotPanel.h"
 #include "TimelinePanel.h"
 #include "Widgets.h"
 
@@ -26,12 +26,12 @@
 #include <QVBoxLayout>
 #include <cmath>
 
-static QString memoryName(Engine *e, quint64 id)
+static QString snapshotName(Engine *e, quint64 id)
 {
     if (!id) return QStringLiteral("—");
-    const int i = e->indexOfMemory(id);
-    if (i < 0) return QStringLiteral("(memory gone)");
-    const Engine::Memory m = e->memory(i);
+    const int i = e->indexOfSnapshot(id);
+    if (i < 0) return QStringLiteral("(snapshot gone)");
+    const Engine::Snapshot m = e->snapshot(i);
     return QStringLiteral("%1  %2").arg(i + 1).arg(m.name);
 }
 
@@ -62,23 +62,23 @@ static QString timelineName(Engine *e, quint64 id)
     return i < 0 ? QStringLiteral("(timeline gone)") : e->animation(i).name;
 }
 
-// What a step does: its memory (with its number), or its timeline and the action on it
+// What a step does: its snapshot (with its number), or its timeline and the action on it
 static QString stepTarget(Engine *e, const Engine::SequenceStep &st, bool numbered = true)
 {
     if (st.timeline) return QStringLiteral("≋ %1 · %2").arg(timelineName(e, st.timeline), actionName(st));
-    if (numbered) return memoryName(e, st.memory);
-    const int mi = e->indexOfMemory(st.memory);
-    return !st.memory ? QStringLiteral("—") : mi < 0 ? QStringLiteral("(memory gone)") : e->memory(mi).name;
+    if (numbered) return snapshotName(e, st.snapshot);
+    const int mi = e->indexOfSnapshot(st.snapshot);
+    return !st.snapshot ? QStringLiteral("—") : mi < 0 ? QStringLiteral("(snapshot gone)") : e->snapshot(mi).name;
 }
 
 static bool targetGone(Engine *e, const Engine::SequenceStep &st)
 {
-    return st.timeline ? e->indexOfAnimation(st.timeline) < 0 : st.memory && e->indexOfMemory(st.memory) < 0;
+    return st.timeline ? e->indexOfAnimation(st.timeline) < 0 : st.snapshot && e->indexOfSnapshot(st.snapshot) < 0;
 }
 
 static const char *kChanged = "#ffb347"; // something changed since the step was played
-static const QColor kLive(76, 217, 100);  // a memory running
-static const QColor kPreWait(224, 180, 58);  // waiting before the memory
+static const QColor kLive(76, 217, 100);  // a snapshot running
+static const QColor kPreWait(224, 180, 58);  // waiting before the snapshot
 static const QColor kPostWait(86, 156, 230); // waiting before the next step's GO
 
 // Seconds as the cue list shows them: 2.5 · 1:05.0
@@ -141,14 +141,14 @@ RecallProgressBar::RecallProgressBar(Engine *engine, QWidget *parent) : QWidget(
 void RecallProgressBar::poll()
 {
     const Engine::RecallProgress r = m_engine->recallProgress();
-    const double f = r.memory ? r.fraction() : 0.0;
+    const double f = r.snapshot ? r.fraction() : 0.0;
     const bool running = r.running();
     if (std::abs(f - m_fraction) < 1e-4 && running == m_running) return;
     m_fraction = f;
     m_running = running;
-    const int mi = m_engine->indexOfMemory(r.memory);
+    const int mi = m_engine->indexOfSnapshot(r.snapshot);
     setToolTip(mi < 0 ? QString()
-                      : QStringLiteral("%1. %2 — %3 / %4 s").arg(mi + 1).arg(m_engine->memory(mi).name)
+                      : QStringLiteral("%1. %2 — %3 / %4 s").arg(mi + 1).arg(m_engine->snapshot(mi).name)
                             .arg(std::min(r.elapsed, r.total), 0, 'f', 1).arg(r.total, 0, 'f', 1));
     update();
 }
@@ -206,7 +206,7 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     m_currentText->setStyleSheet("color:#e4e4e8; font-style:italic;");
     m_stop = new QPushButton(QStringLiteral("■"));
     m_stop->setToolTip(QStringLiteral("Stop the waits: the pre-waits and follows still to come are dropped "
-                                      "(the memories already running go on)"));
+                                      "(the snapshots already running go on)"));
     m_stop->setEnabled(false);
     m_stop->setFixedWidth(34);
     m_stop->setStyleSheet("QPushButton:enabled { background:#8a2a24; color:white; }");
@@ -248,7 +248,7 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     v->addWidget(m_wait);
     m_wait->hide();
     auto *progress = new RecallProgressBar(m_engine);
-    progress->setToolTip(QStringLiteral("The memory running, and where it is in its time"));
+    progress->setToolTip(QStringLiteral("The snapshot running, and where it is in its time"));
     v->addWidget(progress);
 
     connect(m_go, &QPushButton::clicked, this, &SequenceBar::goRequested);
@@ -264,7 +264,7 @@ SequenceBar::SequenceBar(Engine *engine, QWidget *parent) : QWidget(parent), m_e
     });
     connect(m_engine, &Engine::sequencesChanged, this, &SequenceBar::refresh);
     connect(m_engine, &Engine::sequencePositionChanged, this, &SequenceBar::refresh);
-    connect(m_engine, &Engine::memoriesChanged, this, &SequenceBar::refresh);
+    connect(m_engine, &Engine::snapshotsChanged, this, &SequenceBar::refresh);
     connect(m_engine, &Engine::animationsChanged, this, &SequenceBar::refresh);
     refresh();
 }
@@ -352,7 +352,7 @@ void SequenceBar::refresh()
 // SequenceWindow
 // ---------------------------------------------------------------------------
 
-enum StepCol { ColNum, ColMemory, ColPre, ColAction, ColPost, ColNext, ColText, ColCount };
+enum StepCol { ColNum, ColSnapshot, ColPre, ColAction, ColPost, ColNext, ColText, ColCount };
 
 // The time columns (pre-wait, action, post-wait) filling as their time goes by, the continuation as a word;
 // the waits are edited with the app's number field, the continuation with a menu
@@ -488,27 +488,27 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
 
     // Steps
     auto *right = new QVBoxLayout;
-    right->addWidget(new QLabel(QStringLiteral("<b>Steps</b> — drag a memory or a timeline onto a step (or below the last one to add one)")));
+    right->addWidget(new QLabel(QStringLiteral("<b>Steps</b> — drag a snapshot or a timeline onto a step (or below the last one to add one)")));
     m_status = new QLabel;
     m_status->setTextFormat(Qt::RichText);
     right->addWidget(m_status);
     right->addWidget(new RecallProgressBar(m_engine));
     m_steps = new QTableWidget(0, ColCount);
-    m_steps->setHorizontalHeaderLabels({QStringLiteral("#"), QStringLiteral("Memory / Timeline"), QStringLiteral("Pre-wait"),
+    m_steps->setHorizontalHeaderLabels({QStringLiteral("#"), QStringLiteral("Snapshot / Timeline"), QStringLiteral("Pre-wait"),
                                         QStringLiteral("Action"), QStringLiteral("Post-wait"), QStringLiteral("Continue"),
                                         QStringLiteral("Text")});
-    m_steps->horizontalHeaderItem(ColPre)->setToolTip(QStringLiteral("Seconds between the step's GO and its memory"));
-    m_steps->horizontalHeaderItem(ColAction)->setToolTip(QStringLiteral("The memory's time: its fade, or the longest time of its own values\n"
+    m_steps->horizontalHeaderItem(ColPre)->setToolTip(QStringLiteral("Seconds between the step's GO and its snapshot"));
+    m_steps->horizontalHeaderItem(ColAction)->setToolTip(QStringLiteral("The snapshot's time: its fade, or the longest time of its own values\n"
                                                                          "A timeline played: the time it plays, when it ends (endless: 0)"));
     m_steps->horizontalHeaderItem(ColPost)->setToolTip(
-        QStringLiteral("Follow: seconds after the memory starts before the next step's GO\n"
-                       "Auto-follow: seconds after the memory ends before the next step's GO\n"
+        QStringLiteral("Follow: seconds after the snapshot starts before the next step's GO\n"
+                       "Auto-follow: seconds after the snapshot ends before the next step's GO\n"
                        "Wait: not used"));
     m_steps->horizontalHeaderItem(ColNext)->setToolTip(
         QStringLiteral("Wait: the next step waits for GO (button, Space, OSC)\n"
                        "Follow: the next step goes once this one is triggered (plus the post-wait), without waiting "
-                       "for its memory to end\n"
-                       "Auto-follow: the next step goes once this one's memory is over (plus the post-wait)"));
+                       "for its snapshot to end\n"
+                       "Auto-follow: the next step goes once this one's snapshot is over (plus the post-wait)"));
     m_steps->setItemDelegate(new StepDelegate(this));
     for (int c : {ColPre, ColAction, ColPost}) m_steps->setColumnWidth(c, 70);
     m_steps->setColumnWidth(ColNext, 110);
@@ -517,14 +517,14 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     m_steps->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     m_steps->horizontalHeader()->setSectionResizeMode(ColText, QHeaderView::Stretch);
     m_steps->setColumnWidth(ColNum, 40);
-    m_steps->setColumnWidth(ColMemory, 220);
+    m_steps->setColumnWidth(ColSnapshot, 220);
     m_steps->setAcceptDrops(true);
     m_steps->viewport()->setAcceptDrops(true);
     m_steps->viewport()->installEventFilter(this);
     m_steps->setContextMenuPolicy(Qt::CustomContextMenu);
     m_steps->setToolTip(QStringLiteral("Double-click a number to play that step · double-click a wait, a continuation "
                                        "or a text to edit it · double-click a timeline step: its action · right-click: "
-                                       "choose the memory or the timeline"));
+                                       "choose the snapshot or the timeline"));
     right->addWidget(m_steps, 1);
     auto *stb = new QHBoxLayout;
     m_stepAdd = new QPushButton(QStringLiteral("+ Step"));
@@ -534,7 +534,7 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     for (QPushButton *b : {m_stepAdd, m_stepDel, m_up, m_down}) stb->addWidget(b);
     stb->addStretch();
     m_stop = new QPushButton(QStringLiteral("■ Stop the waits"));
-    m_stop->setToolTip(QStringLiteral("The pre-waits and follows still to come are dropped (the memories already running go on)"));
+    m_stop->setToolTip(QStringLiteral("The pre-waits and follows still to come are dropped (the snapshots already running go on)"));
     m_stop->setEnabled(false);
     stb->addWidget(m_stop);
     connect(m_stop, &QPushButton::clicked, this, &SequenceWindow::stopRequested);
@@ -604,7 +604,7 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     });
     connect(m_steps, &QTableWidget::cellDoubleClicked, this, [this](int row, int col) {
         if (col == ColNum) emit goToRequested(row);
-        if (col == ColMemory) {
+        if (col == ColSnapshot) {
             const Engine::Sequence s = m_engine->sequence(m_engine->currentSequence());
             if (row < int(s.steps.size()) && s.steps[size_t(row)].timeline) {
                 const QRect r = m_steps->visualItemRect(m_steps->item(row, col));
@@ -617,11 +617,11 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     connect(m_steps, &QTableWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
         const int row = m_steps->rowAt(pos.y());
         QMenu menu;
-        QMenu *mem = menu.addMenu(row >= 0 ? QStringLiteral("Memory of this step") : QStringLiteral("New step with memory"));
-        for (int i = 0; i < m_engine->memoryCount(); ++i) {
-            const Engine::Memory m = m_engine->memory(i);
+        QMenu *mem = menu.addMenu(row >= 0 ? QStringLiteral("Snapshot of this step") : QStringLiteral("New step with snapshot"));
+        for (int i = 0; i < m_engine->snapshotCount(); ++i) {
+            const Engine::Snapshot m = m_engine->snapshot(i);
             mem->addAction(QStringLiteral("%1  %2").arg(i + 1).arg(m.name), this, [this, row, id = m.id] {
-                if (row >= 0) setStepMemory(row, id);
+                if (row >= 0) setStepSnapshot(row, id);
                 else addStep(-1, id);
             });
         }
@@ -653,7 +653,7 @@ SequenceWindow::SequenceWindow(Engine *engine, QWidget *parent)
     connect(m_down, &QPushButton::clicked, this, [this] { moveStep(+1); });
     connect(m_engine, &Engine::sequencesChanged, this, &SequenceWindow::refresh);
     connect(m_engine, &Engine::sequencePositionChanged, this, &SequenceWindow::refresh);
-    connect(m_engine, &Engine::memoriesChanged, this, &SequenceWindow::refresh);
+    connect(m_engine, &Engine::snapshotsChanged, this, &SequenceWindow::refresh);
     connect(m_engine, &Engine::animationsChanged, this, &SequenceWindow::refresh);
     refresh();
 }
@@ -782,7 +782,7 @@ void SequenceWindow::refresh()
         auto *next = new QTableWidgetItem;
         next->setData(Qt::EditRole, int(st.next));
         m_steps->setItem(k, ColNum, num);
-        m_steps->setItem(k, ColMemory, mem);
+        m_steps->setItem(k, ColSnapshot, mem);
         m_steps->setItem(k, ColPre, pre);
         m_steps->setItem(k, ColAction, action);
         m_steps->setItem(k, ColPost, post);
@@ -799,7 +799,7 @@ void SequenceWindow::refresh()
             }
         }
     }
-    if (keep >= 0 && keep < m_steps->rowCount()) m_steps->setCurrentCell(keep, ColMemory);
+    if (keep >= 0 && keep < m_steps->rowCount()) m_steps->setCurrentCell(keep, ColSnapshot);
     if (pos >= 0 && pos < int(s.steps.size()))
         m_status->setText(QStringLiteral("Played: <b style='color:%1'>%2. %3</b>%4")
                               .arg((m_modified ? QColor(QString::fromLatin1(kChanged)) : kLive).name())
@@ -813,7 +813,7 @@ void SequenceWindow::refresh()
     m_filling = false;
 }
 
-void SequenceWindow::addStep(int at, quint64 memory, quint64 timeline)
+void SequenceWindow::addStep(int at, quint64 snapshot, quint64 timeline)
 {
     int cur = m_engine->currentSequence();
     if (cur < 0) { // a first sequence for it
@@ -825,23 +825,23 @@ void SequenceWindow::addStep(int at, quint64 memory, quint64 timeline)
     Engine::Sequence s = m_engine->sequence(cur);
     if (at < 0 || at > int(s.steps.size())) at = int(s.steps.size());
     Engine::SequenceStep st;
-    st.memory = timeline ? 0 : memory;
+    st.snapshot = timeline ? 0 : snapshot;
     st.timeline = timeline; // Play, by default
     s.steps.insert(s.steps.begin() + at, st);
     // The step played keeps being the same one
     const int pos = m_engine->sequencePosition();
     m_engine->setSequence(cur, s);
     if (pos >= at) m_engine->setSequencePosition(pos + 1);
-    m_steps->setCurrentCell(at, ColMemory);
+    m_steps->setCurrentCell(at, ColSnapshot);
     emit edited();
 }
 
-void SequenceWindow::setStepMemory(int step, quint64 memory)
+void SequenceWindow::setStepSnapshot(int step, quint64 snapshot)
 {
     const int cur = m_engine->currentSequence();
     Engine::Sequence s = m_engine->sequence(cur);
     if (step < 0 || step >= int(s.steps.size())) return;
-    s.steps[size_t(step)].memory = memory;
+    s.steps[size_t(step)].snapshot = snapshot;
     s.steps[size_t(step)].timeline = 0;
     m_engine->setSequence(cur, s);
     emit edited();
@@ -853,9 +853,9 @@ void SequenceWindow::setStepTimeline(int step, quint64 timeline)
     Engine::Sequence s = m_engine->sequence(cur);
     if (step < 0 || step >= int(s.steps.size())) return;
     Engine::SequenceStep &st = s.steps[size_t(step)];
-    if (!st.timeline) st.action = Engine::AnimAction::Play; // a step that recalled a memory: Play
+    if (!st.timeline) st.action = Engine::AnimAction::Play; // a step that recalled a snapshot: Play
     st.timeline = timeline;
-    st.memory = 0;
+    st.snapshot = 0;
     m_engine->setSequence(cur, s);
     emit edited();
 }
@@ -893,28 +893,28 @@ void SequenceWindow::moveStep(int delta)
     else if (pos == to) pos = r;
     m_engine->setSequence(cur, s);
     m_engine->setSequencePosition(pos);
-    m_steps->setCurrentCell(to, ColMemory);
+    m_steps->setCurrentCell(to, ColSnapshot);
     emit edited();
 }
 
-// A memory or a timeline dragged from its list: onto a step, it becomes what the step does (a timeline: Play); below
+// A snapshot or a timeline dragged from its list: onto a step, it becomes what the step does (a timeline: Play); below
 // the last one, a new step
 bool SequenceWindow::eventFilter(QObject *o, QEvent *e)
 {
     if (o != m_steps->viewport()) return QWidget::eventFilter(o, e);
     if (e->type() == QEvent::DragEnter || e->type() == QEvent::DragMove) {
         auto *d = static_cast<QDragMoveEvent *>(e);
-        if (!d->mimeData()->hasFormat(kMemoryMime) && !d->mimeData()->hasFormat(kTimelineMime)) return false;
+        if (!d->mimeData()->hasFormat(kSnapshotMime) && !d->mimeData()->hasFormat(kTimelineMime)) return false;
         d->acceptProposedAction();
         return true;
     }
     if (e->type() == QEvent::Drop) {
         auto *d = static_cast<QDropEvent *>(e);
         const bool timeline = d->mimeData()->hasFormat(kTimelineMime);
-        if (!d->mimeData()->hasFormat(kMemoryMime) && !timeline) return false;
-        const quint64 id = d->mimeData()->data(timeline ? kTimelineMime : kMemoryMime).toULongLong();
+        if (!d->mimeData()->hasFormat(kSnapshotMime) && !timeline) return false;
+        const quint64 id = d->mimeData()->data(timeline ? kTimelineMime : kSnapshotMime).toULongLong();
         const int row = m_steps->rowAt(d->position().toPoint().y());
-        if (row >= 0) timeline ? setStepTimeline(row, id) : setStepMemory(row, id);
+        if (row >= 0) timeline ? setStepTimeline(row, id) : setStepSnapshot(row, id);
         else timeline ? addStep(-1, 0, id) : addStep(-1, id);
         d->acceptProposedAction();
         return true;

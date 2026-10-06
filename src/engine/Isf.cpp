@@ -329,9 +329,9 @@ void IsfInstance::setImageTexture(const QString &name, GLuint tex, int w, int h)
 
 void IsfInstance::readState(const QJsonObject &o)
 {
-    enabled = o.value("enabled").toBool(true);
+    enabled = o.value("enable").toBool(true);
     maskLayer = o.value("mask").toString().toULongLong();
-    maskInvert = o.value("maskInvert").toBool(false);
+    maskInvert = o.value("mask_invert").toBool(false);
 }
 
 IsfInstance::~IsfInstance()
@@ -759,10 +759,10 @@ QJsonObject IsfInstance::save(const QString &projectDir) const
 {
     QJsonObject o;
     o["path"] = m_path;
-    if (!projectDir.isEmpty()) o["relativePath"] = QDir(projectDir).relativeFilePath(m_path);
-    o["enabled"] = enabled;
+    if (!projectDir.isEmpty()) o["relative_path"] = QDir(projectDir).relativeFilePath(m_path);
+    o["enable"] = enabled;
     if (maskLayer) o["mask"] = QString::number(maskLayer); // ids are strings: JSON numbers are doubles
-    if (maskInvert) o["maskInvert"] = true;
+    if (maskInvert) o["mask_invert"] = true;
     QJsonObject params;
     for (const IsfInput &in : m_inputs) {
         switch (in.type) {

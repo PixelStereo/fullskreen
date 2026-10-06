@@ -45,7 +45,7 @@
 #include <memory>
 
 // Copy of a layer's state taken under the lock: widgets are built afterwards without blocking rendering.
-struct LayerSnapshot {
+struct LayerValues {
     bool valid = false;
     quint64 id = 0;
     bool isGroup = false, isViewport = false, locked = false, lockedByGroup = false;
@@ -83,7 +83,7 @@ struct LayerSnapshot {
     // Another layer as the source, and the layers that could be chosen (id, name; cycles left out)
     quint64 sourceLayer = 0;
     LayerTap sourceTap = LayerTap::PostFx;
-    QString transition; // when a memory changes the source (empty: the default)
+    QString transition; // when a snapshot changes the source (empty: the default)
     std::vector<std::pair<quint64, QString>> candidates;
     struct Fx {
         QString name, error;
@@ -94,9 +94,9 @@ struct LayerSnapshot {
     int cols = 4, rows = 4;
     TextSource text; // Text generator
 
-    static LayerSnapshot take(Engine *e, int index)
+    static LayerValues take(Engine *e, int index)
     {
-        LayerSnapshot s;
+        LayerValues s;
         Engine::Lock lk(&e->mutex());
         Layer *l = e->layer(index);
         if (!l) return s;
@@ -340,7 +340,7 @@ void LayerInspector::rebuild()
     v->setSpacing(10);
     m_layout->addWidget(m_content);
 
-    const LayerSnapshot s = LayerSnapshot::take(m_engine, m_layer);
+    const LayerValues s = LayerValues::take(m_engine, m_layer);
     if (!s.valid) {
         emit kindChanged(QStringLiteral("Layer"));
         auto *empty = new QLabel(QStringLiteral("No layer selected.\n\nCreate a layer with the + button,\n"
@@ -437,7 +437,7 @@ void LayerInspector::rebuild()
     refreshDynamic();
 }
 
-QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
+QWidget *LayerInspector::buildSource(const LayerValues &s)
 {
     auto *g = new QWidget;
     auto *v = new QVBoxLayout(g);
@@ -563,7 +563,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         editor->setPlainText(s.text.content);
         editor->setMinimumHeight(90);
         editor->setPlaceholderText(QStringLiteral("Type the text here"));
-        editor->setToolTip(QStringLiteral("The text of this layer. A memory that holds another text types it (typewriter) over its fade."));
+        editor->setToolTip(QStringLiteral("The text of this layer. A snapshot that holds another text types it (typewriter) over its fade."));
         editor->setReadOnly(m_locked);
         v->addWidget(editor);
         connect(editor, &QPlainTextEdit::textChanged, this, [this, editor, live] {
@@ -676,7 +676,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         });
 
         // Shadow
-        auto *shadow = new FlagBox(QStringLiteral("On"));
+        auto *shadow = new FlagBox(QStringLiteral("Enable"));
         shadow->setChecked(s.text.shadow);
         shadow->setEnabled(!m_locked);
         auto *shadowRow = new QHBoxLayout;
@@ -750,7 +750,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         }
     }
 
-    // Transition when a memory gives this layer another source
+    // Transition when a snapshot gives this layer another source
     {
         auto *row = new QHBoxLayout;
         auto *label = new ResetLabel(QStringLiteral("Transition"), [this] {
@@ -772,9 +772,9 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
             k = pick->count() - 1;
         }
         pick->setCurrentIndex(std::max(0, k));
-        pick->setToolTip(QStringLiteral("When a memory gives this layer another source, the outgoing one keeps playing and "
-                                        "this ISF transition takes it to the new one, over the memory's fade "
-                                        "(or the time the memory gives the source)"));
+        pick->setToolTip(QStringLiteral("When a snapshot gives this layer another source, the outgoing one keeps playing and "
+                                        "this ISF transition takes it to the new one, over the snapshot's fade "
+                                        "(or the time the snapshot gives the source)"));
         row->addWidget(label);
         row->addWidget(pick, 1);
         v->addLayout(row);
@@ -1098,7 +1098,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
 }
 
 // Part of the source picture used: preview with a rectangle whose sides are dragged, numeric fields in %
-QWidget *LayerInspector::buildRoi(const LayerSnapshot &s)
+QWidget *LayerInspector::buildRoi(const LayerValues &s)
 {
     auto *box = new QGroupBox;
     auto *v = new QVBoxLayout(box);
@@ -1165,7 +1165,7 @@ QWidget *LayerInspector::buildRoi(const LayerSnapshot &s)
     return box;
 }
 
-QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
+QWidget *LayerInspector::buildColor(const LayerValues &s)
 {
     auto *g = new QWidget;
     auto *outer = new QVBoxLayout(g);
@@ -1333,7 +1333,7 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
     return g;
 }
 
-QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
+QWidget *LayerInspector::buildCompositing(const LayerValues &s)
 {
     auto *g = new QWidget; // titled by its sub-tab
     auto *form = new QFormLayout(g);
@@ -1410,7 +1410,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
     return g;
 }
 
-QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
+QWidget *LayerInspector::buildMapping(const LayerValues &s)
 {
     auto *g = new QWidget; // titled by its sub-tab
     auto *v = new QVBoxLayout(g);
@@ -1654,7 +1654,7 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     // Soft edge: the picture fades out towards each side (to blend overlapping projections)
     {
         const SoftEdge se = cmd::SetMapping::read(m_engine, m_layer).soft;
-        auto *box = new QGroupBox(QStringLiteral("Soft edge"));
+        auto *box = new QGroupBox(QStringLiteral("Soft Edge"));
         box->setCheckable(true);
         box->setChecked(se.enabled);
         m_softBox = box;
@@ -1712,13 +1712,13 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     return g;
 }
 
-QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
+QWidget *LayerInspector::buildEffects(const LayerValues &s)
 {
     auto *g = new QWidget; // titled by its sub-tab
     auto *v = new QVBoxLayout(g);
 
     // General switch of the chain
-    auto *all = new FlagBox(QStringLiteral("Effects enabled"));
+    auto *all = new FlagBox(QStringLiteral("Effects Enable"));
     all->setChecked(s.effectsEnabled);
     all->setToolTip(QStringLiteral("Turns the whole effect chain on or off (each effect keeps its own switch)"));
     all->setStyleSheet("QCheckBox { font-weight:bold; }");
@@ -1960,7 +1960,7 @@ void LayerInspector::refreshSpatial()
 
 void LayerInspector::refreshDynamic()
 {
-    // The fields show the values as they move (a memory's fade), unless Settings keeps them still until it is over
+    // The fields show the values as they move (a snapshot's fade), unless Settings keeps them still until it is over
     const bool follow = SettingsPanel::followFades() || !m_engine->isFading();
     if (follow) refreshSpatial();
     if (m_output) m_output->refreshStatus(); // mode set by ⌘F or a closed window, publishing states
@@ -1975,7 +1975,7 @@ void LayerInspector::refreshDynamic()
         m_engine->requestSourcePreview(0);
     }
     m_previewing = wantPreview;
-    // Values changed elsewhere (OSC, undo, a memory) follow in the fields
+    // Values changed elsewhere (OSC, undo, a snapshot) follow in the fields
     if (follow) {
         QRectF roi;
         QColor add, remove;

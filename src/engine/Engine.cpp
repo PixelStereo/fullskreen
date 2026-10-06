@@ -1,6 +1,6 @@
 // Engine: life of the engine itself — OpenGL context and render thread, the runGl() task protocol,
 // the output window, the composition size, and the composition opacity / blackout fades.
-// The rest of its methods live in Layers.cpp, Render.cpp, Project.cpp, Media.cpp and Memories.cpp.
+// The rest of its methods live in Layers.cpp, Render.cpp, Project.cpp, Media.cpp and Snapshots.cpp.
 #include "EngineInternal.h"
 
 #include <QDebug>
@@ -600,7 +600,7 @@ void Engine::setAudioVolume(float v)
 void Engine::fadeCompositionOpacity(double target, double seconds)
 {
     Lock lk(&m_mutex);
-    m_compFade.opacity = false; // the fader takes over from a memory's fade
+    m_compFade.opacity = false; // the fader takes over from a snapshot's fade
     m_compositionOpacityTarget = std::clamp(target, 0.0, 1.0);
     m_compositionOpacitySpeed = seconds > 0.0 ? 1.0 / seconds : 0.0;
 }
