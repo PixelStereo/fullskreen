@@ -332,7 +332,7 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.add = time(QStringLiteral("color/add"));
     d.remove = time(QStringLiteral("color/remove"));
     d.mapping = time(QStringLiteral("spatial"));
-    d.viewportOpacity = time(QStringLiteral("viewports"));
+    d.viewportOpacity = time(QStringLiteral("viewport"));
     d.softEdge = time(QStringLiteral("spatial/soft_edge"));
     d.speed = time(QStringLiteral("source/speed"));
     d.inPoint = time(QStringLiteral("source/in"));
@@ -350,7 +350,7 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.colorCurve = curve(QStringLiteral("color/temp")); // use temp for all color parameters
     d.mappingCurve = curve(QStringLiteral("spatial"));
     d.softEdgeCurve = curve(QStringLiteral("spatial/soft_edge"));
-    d.viewportOpacityCurve = curve(QStringLiteral("viewports"));
+    d.viewportOpacityCurve = curve(QStringLiteral("viewport"));
     d.speedCurve = curve(QStringLiteral("source/speed"));
     d.inOutCurve = curve(QStringLiteral("source/in")); // the curve of in is also the one of out
     auto params = [&](const IsfInstance *inst, const QString &base) {
@@ -359,12 +359,12 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
             for (const IsfInput &in : inst->inputs()) v.push_back(time(base + in.name));
         return v;
     };
-    d.isf.push_back(params(l.generator.get(), QStringLiteral("source/params/")));
+    d.isf.push_back(params(l.generator.get(), QStringLiteral("source/param/")));
     QStringList fxNames;
     for (const auto &x : l.effects) fxNames << x->name();
     const QStringList fxSegs = osc::uniqueSegments(fxNames);
     for (size_t k = 0; k < l.effects.size(); ++k)
-        d.isf.push_back(params(l.effects[k].get(), QStringLiteral("effects/%1/params/").arg(fxSegs[int(k)])));
+        d.isf.push_back(params(l.effects[k].get(), QStringLiteral("effect/%1/param/").arg(fxSegs[int(k)])));
     return d;
 }
 
@@ -374,7 +374,8 @@ QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
 {
     if (path.isEmpty()) return {};
     const QString &a = path[0];
-    if (a == "opacity" || a == "viewports") return a;
+    if (a == "opacity") return a;
+    if (a == "viewports") return QStringLiteral("viewport");
     if (a == "spatial") return path.size() >= 2 && path[1] == "soft_edge" ? QStringLiteral("spatial/soft_edge") : QStringLiteral("spatial");
     if (a == "volume") return QStringLiteral("source/volume");
     if (a == "source" && path.size() >= 2) {
@@ -382,7 +383,7 @@ QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
             if (path[1] == QLatin1String(kTextNumKeys[k])) return QString::fromLatin1(kTextTimeKeys[k]); // Text generator
         if (path[1] == "roi") return QStringLiteral("source/roi");
         if (path[1] == "speed" || path[1] == "in" || path[1] == "out") return QStringLiteral("source/") + path[1];
-        if (path[1] == "params" && path.size() >= 3) return QStringLiteral("source/params/") + path[2];
+        if (path[1] == "params" && path.size() >= 3) return QStringLiteral("source/param/") + path[2];
     }
     if (a == "color" && path.size() >= 2 && (path[1] == "temp" || path[1] == "tint" || path[1] == "add" || path[1] == "remove"))
         return QStringLiteral("color/") + path[1];
@@ -392,7 +393,7 @@ QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
             names << QFileInfo(v.toObject().value("path").toString()).completeBaseName();
         const int k = path[1].toInt();
         if (k < 0 || k >= names.size()) return {};
-        return QStringLiteral("effects/%1/params/%2").arg(osc::uniqueSegments(names).at(k), path[3]);
+        return QStringLiteral("effect/%1/param/%2").arg(osc::uniqueSegments(names).at(k), path[3]);
     }
     return {};
 }

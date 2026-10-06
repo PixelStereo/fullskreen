@@ -290,8 +290,8 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
     of->addRow(m_oscStatus);
     of->addRow(note(QStringLiteral(
         "Announced by zeroconf (_oscjson._tcp, _osc._udp): OSCQuery clients (score, Chataigne, Vezér…) find it "
-        "by themselves. Addresses: /composition/…, /layers/&lt;name&gt;/… "
-        "(groups: /layers/&lt;group&gt;/layers/&lt;name&gt;/…). The whole tree: http://&lt;this machine&gt;:&lt;OSCQuery port&gt;/")));
+        "by themselves. Addresses: /composition/…, /layer/&lt;name&gt;/… "
+        "(groups: /layer/&lt;group&gt;/layer/&lt;name&gt;/…). The whole tree: http://&lt;this machine&gt;:&lt;OSCQuery port&gt;/")));
     oscPage->addWidget(osc);
     audioPage->addWidget(buildAudio());
     for (QVBoxLayout *l : {playbackPage, renderPage, audioPage, interfacePage, oscPage}) l->addStretch();

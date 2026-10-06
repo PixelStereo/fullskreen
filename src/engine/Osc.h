@@ -10,8 +10,8 @@
 //    OSC messages accepted as binary frames.
 //
 // Everything is hierarchical and lowercase (layer, group and ISF names aside); a parameter that switches something
-// on or off is the child "enable" of what it switches (color/tint/enable, effects/<fx>/enable); the parameters of a shader are under params/.
-// Layers are addressed by name, groups contain their members: /layers/<group>/layers/<layer>/opacity.
+// on or off is the child "enable" of what it switches (color/tint/enable, effect/<fx>/enable); the parameters of a shader are under param/.
+// Layers are addressed by name, groups contain their members: /layer/<group>/layer/<layer>/opacity.
 // Names are made OSC-safe (spaces and reserved characters become '_') and unique among siblings ("_2").
 // A locked layer refuses every write except visible, locked and the transport (play, restart, position).
 // Writes do not go through the undo stack (show control); edited() tells the interface to refresh.

@@ -430,7 +430,7 @@ int main(int argc, char **argv)
         }
         back.clear();
         CHECK(osc::decode(bundle, back) && back.size() == 2 && back[1].address == "/y");
-        CHECK(osc::match("/layers/*/opacity", "/layers/A_b/opacity") && !osc::match("/layers/*/opacity", "/layers/a/b/opacity"));
+        CHECK(osc::match("/layer/*/opacity", "/layer/A_b/opacity") && !osc::match("/layer/*/opacity", "/layer/a/b/opacity"));
         CHECK(osc::match("/l/{foo,bar}/[a-c]?", "/l/bar/bx") && !osc::match("/l/{foo,bar}/[!a-c]", "/l/foo/a"));
         CHECK(osc::safeName(" My layer/1 ") == "My_layer_1");
 
@@ -444,35 +444,35 @@ int main(int argc, char **argv)
         OscServer server(&e);
         CHECK(server.start(0, 0, "test", false));
         CHECK(server.oscPort() > 0 && server.queryPort() > 0);
-        const QString L = "/layers/G/layers/My_layer";
+        const QString L = "/layer/G/layer/My_layer";
         CHECK(server.handleMessage({L + "/opacity", "f", {0.25}}) && std::abs(e.layer(V + 1)->opacity - 0.25f) < 1e-6);
-        CHECK(server.handleMessage({"/layers/G/layers/*/opacity", "f", {0.5}}) && std::abs(e.layer(V + 1)->opacity - 0.5f) < 1e-6);
+        CHECK(server.handleMessage({"/layer/G/layer/*/opacity", "f", {0.5}}) && std::abs(e.layer(V + 1)->opacity - 0.5f) < 1e-6);
         CHECK(server.handleMessage({L + "/color/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(V + 1)->color.add[2] - 0.3f) < 1e-6);
         CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
         CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
         CHECK(server.handleMessage({L + "/source/roi/left", "f", {0.25}}) && std::abs(e.layer(V + 1)->roi.left() - 0.25) < 1e-9);
-        CHECK(server.handleMessage({L + "/effects/FlipCrop/params/flipH", "T", {true}}));
+        CHECK(server.handleMessage({L + "/effect/FlipCrop/param/flipH", "T", {true}}));
         CHECK(e.layer(V + 1)->effects[0]->inputs()[1].bValue || e.layer(V + 1)->effects[0]->inputs()[2].bValue);
-        CHECK(server.handleMessage({L + "/effects/enable", "F", {false}}) && !e.layer(V + 1)->effectsEnabled);
-        CHECK(server.handleMessage({"/layers/G/opacity", "i", {0}}) && e.layer(V + 0)->opacity == 0.0f);
+        CHECK(server.handleMessage({L + "/effect/enable", "F", {false}}) && !e.layer(V + 1)->effectsEnabled);
+        CHECK(server.handleMessage({"/layer/G/opacity", "i", {0}}) && e.layer(V + 0)->opacity == 0.0f);
         CHECK(server.handleMessage({"/composition/blackout", "T", {true}}) && e.blackout());
         server.handleMessage({"/composition/blackout", "i", {0}});
         CHECK(!e.blackout());
         // Locked group: its member refuses edits, visibility still works
-        CHECK(server.handleMessage({"/layers/G/locked", "T", {true}}) && e.isLocked(V + 1));
+        CHECK(server.handleMessage({"/layer/G/locked", "T", {true}}) && e.isLocked(V + 1));
         CHECK(!server.handleMessage({L + "/opacity", "f", {0.9}}) && std::abs(e.layer(V + 1)->opacity - 0.5f) < 1e-6);
         CHECK(server.handleMessage({L + "/visible", "F", {false}}) && !e.layer(V + 1)->visible);
-        server.handleMessage({"/layers/G/locked", "F", {false}});
+        server.handleMessage({"/layer/G/locked", "F", {false}});
         // Renaming changes the address
         CHECK(server.handleMessage({L + "/name", "s", {QStringLiteral("Front wall")}}) && e.layer(V + 1)->name == "Front wall");
         int status = 0;
-        QJsonObject v = QJsonDocument::fromJson(server.httpGet("/layers/G/layers/Front_wall/opacity?VALUE", &status)).object();
+        QJsonObject v = QJsonDocument::fromJson(server.httpGet("/layer/G/layer/Front_wall/opacity?VALUE", &status)).object();
         CHECK(status == 200 && v.value("VALUE").toArray().at(0).toDouble() == 0.5);
         server.httpGet(L + "/opacity", &status);
         CHECK(status == 404);
         QJsonObject root = QJsonDocument::fromJson(server.httpGet("/", &status)).object();
-        const QJsonObject op = root["CONTENTS"].toObject()["layers"].toObject()["CONTENTS"].toObject()["G"].toObject()["CONTENTS"]
-                                   .toObject()["layers"].toObject()["CONTENTS"].toObject()["Front_wall"].toObject()["CONTENTS"]
+        const QJsonObject op = root["CONTENTS"].toObject()["layer"].toObject()["CONTENTS"].toObject()["G"].toObject()["CONTENTS"]
+                                   .toObject()["layer"].toObject()["CONTENTS"].toObject()["Front_wall"].toObject()["CONTENTS"]
                                    .toObject()["opacity"].toObject();
         CHECK(op.value("TYPE").toString() == "f" && op.value("ACCESS").toInt() == 3 &&
               op.value("RANGE").toArray().at(0).toObject().value("MAX").toDouble() == 1.0);
@@ -492,8 +492,9 @@ int main(int argc, char **argv)
                 for (auto it = c.begin(); it != c.end(); ++it) {
                     ++nodes;
                     const QString seg = it.key();
-                    const bool userName = parent == "layers" || parent == "viewports" || parent == "effects" || parent == "params"; // names: layers, viewports, effects, shader parameters
+                    const bool userName = parent == "layer" || parent == "viewport" || parent == "effect" || parent == "param"; // names: layers, viewports, effects, shader parameters
                     if (!userName && seg != seg.toLower()) { ++bad; qWarning("not lowercase: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString())); }
+                    if (!userName && seg.endsWith("s")) { ++bad; qWarning("plural: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString())); }
                     if (!userName && (seg.endsWith("enabled") || seg.endsWith("Enabled") || seg.endsWith("On") || seg == "master")) {
                         ++bad;
                         qWarning("switch not named enable: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString()));
@@ -503,7 +504,7 @@ int main(int argc, char **argv)
             };
             walk(root, QString());
             CHECK(nodes > 50 && bad == 0);
-            const QString LF = "/layers/G/layers/Front_wall";
+            const QString LF = "/layer/G/layer/Front_wall";
             CHECK(server.handleMessage({LF + "/color/tint/enable", "T", {true}}) && e.layer(V + 1)->color.tintOn);
             CHECK(server.handleMessage({LF + "/color/mask/invert", "T", {true}}) && e.layer(V + 1)->color.maskInvert);
             CHECK(server.handleMessage({LF + "/blend_mode", "s", {QStringLiteral("add")}}) && e.layer(V + 1)->blend == BlendMode::Add);
@@ -524,7 +525,7 @@ int main(int argc, char **argv)
             return done();
         };
         // Real UDP message
-        const QString F = "/layers/G/layers/Front_wall";
+        const QString F = "/layer/G/layer/Front_wall";
         QUdpSocket udp;
         udp.writeDatagram(osc::encode({F + "/opacity", "f", {0.75}}), QHostAddress::LocalHost, server.oscPort());
         CHECK(pump([&] { return std::abs(e.layer(V + 1)->opacity - 0.75f) < 1e-6; }));
@@ -587,7 +588,7 @@ int main(int argc, char **argv)
         }));
         {
             int st = 0;
-            const QJsonObject layers = QJsonDocument::fromJson(server.httpGet("/layers", &st)).object();
+            const QJsonObject layers = QJsonDocument::fromJson(server.httpGet("/layer", &st)).object();
             CHECK(layers["CONTENTS"].toObject().contains("Late") && layers["CONTENTS"].toObject()["Late"].toObject()["DESCRIPTION"].toString() == "Late");
         }
         ws.close();
@@ -716,7 +717,7 @@ int main(int argc, char **argv)
             e.advanceFades(2.0);
             CHECK(std::abs(L()->color.temp - 1000) < 1e-3 && !e.isFading());
             CHECK(Engine::timingKey({"source", "roi", "2"}, {}) == "source/roi" && Engine::timingKey({"color", "add", "1"}, {}) == "color/add" &&
-                  Engine::timingKey({"effects", "0", "params", "radius"}, QJsonObject{{"effects", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "effects/Blur/params/radius" &&
+                  Engine::timingKey({"effects", "0", "params", "radius"}, QJsonObject{{"effects", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "effect/Blur/param/radius" &&
                   Engine::timingKey({"source", "speed"}, {}) == "source/speed" && Engine::timingKey({"source", "file"}, {}).isEmpty());
             // Text generator: the snapshot's text is typed over its time (erased back to what both share, then
             // typed); its style moves on its own times
@@ -760,7 +761,7 @@ int main(int argc, char **argv)
                 e.advanceFades(3.0);
                 CHECK(Engine::timingKey({"source", "color", "2"}, {}) == "source/text/color" &&
                       Engine::timingKey({"source", "content"}, {}) == "source/text/content" &&
-                      Engine::timingKey({"source", "params", "size"}, {}) == "source/params/size");
+                      Engine::timingKey({"source", "params", "size"}, {}) == "source/param/size");
                 // Kept in range when read from a file
                 src["size"] = 100000;
                 src["line_height"] = -3;
