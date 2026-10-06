@@ -24,6 +24,7 @@
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cmath>
 
 using AnimKey = Engine::AnimKey;
@@ -575,7 +576,9 @@ private:
     int m_i;
     std::vector<Engine::AnimParam> m_params;
     FlagBox *m_on;
-    QComboBox *m_layer, *m_param, *m_kind, *m_wave;
+    QComboBox *m_layer, *m_kind, *m_wave;
+    QPushButton *m_param; // its menu: the categories, each one a sub-menu of its numbers
+    void selectParam(const QString &path);
     QWidget *m_osc;
     NumberBox *m_period, *m_center, *m_amp, *m_phase;
     CurveLane *m_lane;
@@ -613,9 +616,10 @@ TrackRow::TrackRow(TimelineWindow *w, int index) : m_w(w), m_e(w->m_engine), m_i
     auto *del = new QPushButton(QStringLiteral("✕"));
     del->setFixedWidth(26);
     del->setToolTip(QStringLiteral("Delete the track"));
-    m_param = new QComboBox;
-    m_param->setToolTip(QStringLiteral("The number driven"));
-    m_param->setMaxVisibleItems(24);
+    m_param = new QPushButton;
+    m_param->setToolTip(QStringLiteral("The number driven: a category, then the number in it"));
+    m_param->setMenu(new QMenu(m_param));
+    m_param->setStyleSheet(QStringLiteral("QPushButton { text-align:left; padding-left:6px; }"));
     m_kind = new QComboBox;
     m_kind->addItem(QStringLiteral("Curve"));
     m_kind->addItem(QStringLiteral("Oscillator"));
@@ -675,15 +679,6 @@ TrackRow::TrackRow(TimelineWindow *w, int index) : m_w(w), m_e(w->m_engine), m_i
         // Its first number, from where it is
         track().param = m_params.empty() ? QString() : m_params.front().path;
         track().keys = {AnimKey{0, currentValue(), 3}};
-        fill();
-        changed();
-    });
-    connect(m_param, qOverload<int>(&QComboBox::activated), this, [this](int) {
-        track().param = m_param->currentData().toString();
-        const auto [lo, hi] = range();
-        track().keys = {AnimKey{0, currentValue(), 3}};
-        track().center = track().param == "mapping/rotation" ? 0 : (lo + hi) / 2;
-        track().amplitude = track().param == "mapping/rotation" ? 180 : (hi - lo) / 2;
         fill();
         changed();
     });
@@ -753,11 +748,48 @@ TrackRow::TrackRow(TimelineWindow *w, int index) : m_w(w), m_e(w->m_engine), m_i
     fill();
 }
 
+// The category of a number: its label up to " › " (none: shown at the top of the menu)
+static QString paramCategory(const QString &label)
+{
+    const int k = label.indexOf(QStringLiteral(" › "));
+    return k < 0 ? QString() : label.left(k);
+}
+
 void TrackRow::fillParams()
 {
     m_params = m_e->animatableParams(track().layer);
-    m_param->clear();
-    for (const Engine::AnimParam &p : m_params) m_param->addItem(p.label, p.path);
+    QMenu *menu = m_param->menu();
+    menu->clear();
+    std::vector<std::pair<QString, QMenu *>> subs; // in the order they come
+    for (const Engine::AnimParam &p : m_params) {
+        const QString cat = paramCategory(p.label);
+        QMenu *into = menu;
+        QString text = p.label;
+        if (!cat.isEmpty()) {
+            auto it = std::find_if(subs.begin(), subs.end(), [&](const auto &x) { return x.first == cat; });
+            if (it == subs.end()) {
+                subs.push_back({cat, menu->addMenu(cat)});
+                it = subs.end() - 1;
+            }
+            into = it->second;
+            text = p.label.mid(cat.size() + 3);
+        }
+        QAction *a = into->addAction(text, this, [this, path = p.path] { selectParam(path); });
+        a->setCheckable(true);
+        a->setChecked(p.path == track().param);
+    }
+}
+
+void TrackRow::selectParam(const QString &path)
+{
+    track().param = path;
+    const auto [lo, hi] = range();
+    track().keys = {AnimKey{0, currentValue(), 3}};
+    track().center = path == "mapping/rotation" ? 0 : (lo + hi) / 2;
+    track().amplitude = path == "mapping/rotation" ? 180 : (hi - lo) / 2;
+    fillParams(); // the check mark
+    fill();
+    changed();
 }
 
 void TrackRow::fill()
@@ -771,12 +803,10 @@ void TrackRow::fill()
         li = m_layer->count() - 1;
     }
     m_layer->setCurrentIndex(li);
-    int pi = m_param->findData(t.param);
-    if (pi < 0 && !t.param.isEmpty()) {
-        m_param->addItem(QStringLiteral("(%1 — not on this layer)").arg(t.param), t.param);
-        pi = m_param->count() - 1;
-    }
-    m_param->setCurrentIndex(pi);
+    QString label = t.param.isEmpty() ? QStringLiteral("(choose a number)") : QStringLiteral("(%1 — not on this layer)").arg(t.param);
+    for (const Engine::AnimParam &p : m_params)
+        if (p.path == t.param) label = p.label;
+    m_param->setText(label);
     m_kind->setCurrentIndex(t.oscillator ? 1 : 0);
     m_wave->setCurrentIndex(int(t.wave));
     m_wave->setVisible(t.oscillator);
@@ -883,8 +913,8 @@ TimelineWindow::TimelineWindow(Engine *engine, QUndoStack *undo, QWidget *parent
     m_repeat->setSpecialValueText(QStringLiteral("∞"));
     m_repeat->setPrefix(QStringLiteral("× "));
     m_repeat->setToolTip(QStringLiteral("Passes (∞: until it is stopped)"));
-    m_speed = numberBox(0.1, 10, 2, 0.1);
-    m_speed->setToolTip(QStringLiteral("Playback speed (1.0 = normal)"));
+    m_speed = numberBox(0, 10, 2, 0.1);
+    m_speed->setToolTip(QStringLiteral("Playback speed (1 = normal, 0 = frozen where it is)"));
     for (QWidget *w : std::initializer_list<QWidget *>{m_play, m_pause, m_stop, m_rewind, m_time}) transport->addWidget(w);
     transport->addStretch();
     transport->addWidget(new QLabel(QStringLiteral("Duration")));

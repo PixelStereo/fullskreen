@@ -235,7 +235,7 @@ public:
     enum class AnimWave { Sine = 0, Triangle = 1, Saw = 2, Square = 3 };
     enum class AnimLoop { Once = 0, Loop = 1, PingPong = 2 };
     enum class AnimState { Stopped = 0, Playing = 1, Paused = 2 };
-    enum class AnimAction { Play = 0, Pause = 1, Stop = 2, Rewind = 3, Seek = 4, LoopMode = 5 };
+    enum class AnimAction { Play = 0, Pause = 1, Stop = 2, Rewind = 3, Seek = 4, LoopMode = 5, Speed = 6 };
     static constexpr int kAnimHold = 100; // a key's curve: holds its value until the next key
     struct AnimKey {
         double t = 0, v = 0; // seconds into the timeline, value
@@ -263,7 +263,7 @@ public:
         double duration = 4; // seconds of one pass
         AnimLoop loop = AnimLoop::Loop;
         int repeat = 0; // passes of Loop / PingPong (0: endless)
-        double speed = 1.0; // playback speed (0.1 to 10x)
+        double speed = 1.0; // playback speed (0 to 10x; 0: frozen where it is, still playing)
         std::vector<AnimTrack> tracks;
         // Where it is (not saved)
         AnimState state = AnimState::Stopped;
@@ -290,7 +290,7 @@ public:
     void removeAnimation(int i);
     // The transport: Play (from where it is; from the start once stopped), Pause, Stop (back to the start,
     // its values left as they are), Rewind (to the start), Seek (to `time`, values set at once even when not
-    // playing), LoopMode (`loop` and `repeat`)
+    // playing), LoopMode (`loop` and `repeat`), Speed (`time` is the speed, 0 to 10: it plays on from where it is)
     void controlAnimation(quint64 id, AnimAction action, double time = 0, AnimLoop loop = AnimLoop::Loop, int repeat = 0);
     // The numbers of a layer (0: the composition) a timeline can drive, with their ranges
     std::vector<AnimParam> animatableParams(quint64 layer) const;
@@ -301,8 +301,10 @@ public:
     // operator), played by GO / GO BACK. Several sequences; one is current. Saved with the project; the position is not.
     //
     // A step waits its pre-wait after its GO, then recalls its memory, whose fade is the step's action (its
-    // duration: the memory's longest time) — or acts on its timeline (Play: the time it plays, when it ends;
-    // the other actions take no time). What comes next (as in QLab):
+    // duration: the memory's longest time) — or acts on its timeline (Play: the time it plays, when it ends,
+    // followed as it goes: a speed or a loop mode changed meanwhile, by a step or by OSC, is taken into account,
+    // and a frozen timeline (speed 0) is waited for until it moves on and ends; the other actions take no time).
+    // What comes next (as in QLab):
     //  - Wait: nothing, the next step waits for GO (button, Space, OSC);
     //  - Follow: the next step gets its GO once this one was triggered (pre-wait over), after the post-wait,
     //    without waiting for the action to end;
@@ -317,6 +319,7 @@ public:
         double seekTime = 0;                  // Seek
         AnimLoop loop = AnimLoop::Loop;       // LoopMode
         int repeat = 0;                       // LoopMode
+        double speed = 1;                     // Speed
         double preWait = 0, postWait = 0; // seconds
         StepContinue next = StepContinue::Wait;
     };
@@ -329,6 +332,7 @@ public:
         double preWait = 0, duration = 0, postWait = 0;
         StepContinue next = StepContinue::Wait;
         bool fired = false, continued = false;
+        bool trackPending = false, tracking = false; // a Play: its action lasts as long as the timeline does
         // When the next step gets its GO, counted from this one's GO (< 0: never — Wait)
         double continueAt() const
         {
@@ -369,8 +373,10 @@ public:
     void setRecaller(std::function<void(int memoryIndex)> f) { m_recaller = std::move(f); }
     // A memory's action: its longest time (the fade, and the times of its own values)
     double memoryDuration(quint64 id) const;
-    // A step's action: its memory's, or the time its timeline will play (Play on a timeline that ends; else 0)
+    // A step's action: its memory's, or the time its timeline will play (Play on a timeline that ends; else 0;
+    // infinity: its timeline is frozen, speed 0, and plays on when its speed is raised)
     double stepDuration(const SequenceStep &st) const;
+    double animationRemaining(quint64 id) const; // real seconds a timeline playing has left (infinity: not moving)
     void recallMemory(int i); // with its fade
     bool isFading() const;
     // The memory recalled last, and where its fade is (its longest time: values with times of their own included)

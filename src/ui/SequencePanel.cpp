@@ -45,6 +45,7 @@ static QString actionName(const Engine::SequenceStep &st)
     case A::Stop: return QStringLiteral("■ Stop");
     case A::Rewind: return QStringLiteral("⏮ Rewind");
     case A::Seek: return QStringLiteral("Seek %1 s").arg(st.seekTime, 0, 'f', 2);
+    case A::Speed: return QStringLiteral("Speed × %1").arg(st.speed, 0, 'f', 2);
     case A::LoopMode: {
         const QString n = st.repeat > 0 ? QStringLiteral(" × %1").arg(st.repeat) : QStringLiteral(" ∞");
         return st.loop == Engine::AnimLoop::Once ? QStringLiteral("Loop: once")
@@ -83,6 +84,7 @@ static const QColor kPostWait(86, 156, 230); // waiting before the next step's G
 // Seconds as the cue list shows them: 2.5 · 1:05.0
 static QString seconds(double t)
 {
+    if (!std::isfinite(t)) return QStringLiteral("∞");
     t = std::max(0.0, t);
     if (t < 60) return QString::number(t, 'f', 1);
     const int m = int(t / 60);
@@ -687,6 +689,17 @@ void SequenceWindow::fillActionMenu(QMenu *menu, int row)
     });
     seek->setCheckable(true);
     seek->setChecked(cur.action == A::Seek);
+    QAction *speed = menu->addAction(cur.action == A::Speed ? QStringLiteral("Speed…  (× %1)").arg(cur.speed, 0, 'f', 2)
+                                                            : QStringLiteral("Speed…"),
+                                     this, [this, set, cur] {
+        bool ok = false;
+        const double v = QInputDialog::getDouble(this, QStringLiteral("Speed"),
+                                                 QStringLiteral("Playback speed of the timeline (1 = normal, 0 = frozen)"),
+                                                 cur.action == A::Speed ? cur.speed : 1.0, 0, 10, 2, &ok);
+        if (ok) set([v](Engine::SequenceStep &st) { st.action = A::Speed; st.speed = v; });
+    });
+    speed->setCheckable(true);
+    speed->setChecked(cur.action == A::Speed);
     QMenu *loop = menu->addMenu(cur.action == A::LoopMode ? QStringLiteral("Loop mode  (%1)").arg(actionName(cur))
                                                           : QStringLiteral("Loop mode"));
     auto mode = [set](L l, int n) {
@@ -761,7 +774,8 @@ void SequenceWindow::refresh()
         // A timeline played without end: no time to wait for, shown as ∞
         const int ai = st.timeline ? m_engine->indexOfAnimation(st.timeline) : -1;
         const bool endless = ai >= 0 && st.action == Engine::AnimAction::Play && !std::isfinite(m_engine->animation(ai).length());
-        action->setData(Qt::EditRole, endless ? -1.0 : m_engine->stepDuration(st));
+        const double length = m_engine->stepDuration(st);
+        action->setData(Qt::EditRole, endless || !std::isfinite(length) ? -1.0 : length); // ∞: a frozen timeline too
         action->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         auto *post = new QTableWidgetItem;
         post->setData(Qt::EditRole, st.postWait);

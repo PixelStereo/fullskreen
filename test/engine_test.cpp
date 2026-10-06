@@ -1191,16 +1191,21 @@ int main(int argc, char **argv)
             p1.seekTime = 1.0;
             p2.timeline = aid;
             p2.action = A::Stop;
-            sq.steps = {p0, p1, p2};
+            Engine::SequenceStep p3;
+            p3.timeline = aid;
+            p3.action = A::Speed;
+            p3.speed = 0.75;
+            sq.steps = {p0, p1, p2, p3};
             e.setCurrentSequence(e.addSequence(sq));
             CHECK(near(e.stepDuration(p0), 4) && e.stepDuration(p1) == 0);
             CHECK(e.sequenceGo() && e.animation(ai).state == Engine::AnimState::Playing);
             e.advanceFades(3.9);
             e.advanceSequence(3.9);
             CHECK(e.sequencePosition() == 0);
+            e.advanceFades(0.2); // (the timeline and the sequence run together)
             e.advanceSequence(0.2); // its 4 s over: the seek
             CHECK(e.sequencePosition() == 1 && near(e.animation(ai).clock, 1.0) &&
-                  e.animation(ai).state == Engine::AnimState::Playing);
+                  e.animation(ai).state == Engine::AnimState::Paused); // over, then sought: stays where it was sought
             CHECK(e.sequenceGo() && e.animation(ai).state == Engine::AnimState::Stopped);
             e.controlAnimation(aid, A::LoopMode, 0, L::Loop, 0);
             CHECK(e.stepDuration(p0) == 0); // endless: nothing to wait for
@@ -1246,6 +1251,63 @@ int main(int argc, char **argv)
             e.advanceFades(1.0);
             CHECK(near(e.animation(ai).clock, 2.0) && near(e.stepDuration(p0), 1.0));
             e.controlAnimation(aid, A::Stop);
+            // Speed from a step (or OSC): it plays on from where it is
+            e.controlAnimation(aid, A::Play);
+            e.advanceFades(1.0);
+            e.controlAnimation(aid, A::Speed, 0.5);
+            e.advanceFades(1.0);
+            CHECK(near(e.animation(ai).speed, 0.5) && near(e.animation(ai).clock, 2.5));
+            e.controlAnimation(aid, A::Speed, 0); // frozen where it is, still playing
+            e.advanceFades(1.0);
+            CHECK(near(e.animation(ai).clock, 2.5) && e.animation(ai).state == Engine::AnimState::Playing &&
+                  !std::isfinite(e.stepDuration(p0)));
+            e.controlAnimation(aid, A::Stop);
+            // An auto-follow Play on a frozen timeline waits; its speed raised meanwhile (OSC), it goes on, and the
+            // next step comes once the timeline is really over
+            {
+                const int keepSeq = e.currentSequence();
+                Engine::Animation x = e.animation(ai);
+                x.loop = L::Once;
+                x.speed = 0;
+                e.setAnimation(ai, x);
+                Engine::Sequence fq;
+                fq.name = "Frozen";
+                Engine::SequenceStep f0, f1;
+                f0.timeline = aid;
+                f0.next = Engine::StepContinue::AutoFollow;
+                f1.timeline = aid;
+                f1.action = A::Pause;
+                fq.steps = {f0, f1};
+                const int fi = e.addSequence(fq);
+                e.setCurrentSequence(fi);
+                CHECK(!std::isfinite(e.stepDuration(f0)));
+                CHECK(e.sequenceGo() && e.animation(ai).state == Engine::AnimState::Playing);
+                for (int k = 0; k < 3; ++k) {
+                    e.advanceFades(10.0);
+                    e.advanceSequence(10.0);
+                }
+                CHECK(e.sequencePosition() == 0 && near(e.animation(ai).clock, 0)); // still waiting
+                e.controlAnimation(aid, A::Speed, 2);
+                e.advanceSequence(0.01); // it sees the speed
+                e.advanceFades(1.0);
+                e.advanceSequence(1.0);
+                CHECK(e.sequencePosition() == 0 && near(e.animation(ai).clock, 2.0));
+                e.controlAnimation(aid, A::Speed, 0); // frozen again: it waits again
+                e.advanceFades(5.0);
+                e.advanceSequence(5.0);
+                CHECK(e.sequencePosition() == 0 && near(e.animation(ai).clock, 2.0));
+                e.controlAnimation(aid, A::Speed, 2);
+                e.advanceSequence(0.01);
+                e.advanceFades(1.5);
+                e.advanceSequence(1.5); // its 4 s played: over, and the next step comes
+                CHECK(e.sequencePosition() == 1);
+                e.sequenceStop();
+                e.setCurrentSequence(keepSeq);
+                e.removeSequence(fi);
+                e.controlAnimation(aid, A::Stop);
+                x.speed = 2;
+                e.setAnimation(ai, x);
+            }
             // Undo: the arrows of a number merge into one step
             {
                 QUndoStack st;
@@ -1315,7 +1377,8 @@ int main(int argc, char **argv)
                       e.animation(ck).tracks[0].keys[0].curve == 0);
                 if (ck >= 0) e.removeAnimation(ck);
                 const Engine::Sequence w = e.sequence(e.currentSequence());
-                CHECK(w.steps.size() == 3 && w.steps[0].timeline == aid && w.steps[0].memory == 0 &&
+                CHECK(w.steps.size() == 4 && w.steps[3].action == A::Speed && near(w.steps[3].speed, 0.75) &&
+                      w.steps[0].timeline == aid && w.steps[0].memory == 0 &&
                       w.steps[0].action == A::Play && w.steps[1].action == A::Seek && near(w.steps[1].seekTime, 1.0) &&
                       w.steps[2].action == A::Stop);
             }

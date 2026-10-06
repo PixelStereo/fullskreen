@@ -1,4 +1,5 @@
 // Sequences: ordered steps recalling memories, played with GO / GO BACK (the cue list of a show).
+#include <limits>
 #include "EngineInternal.h"
 
 #include <QJsonArray>
@@ -158,7 +159,23 @@ double Engine::stepDuration(const SequenceStep &st) const
         if (a.id != st.timeline) continue;
         const double len = a.length();
         if (!std::isfinite(len)) return 0; // endless: nothing to wait for
-        return (a.state == AnimState::Stopped ? len : std::max(0.0, len - a.clock)) / std::max(0.1, a.speed); // in real seconds
+        if (a.speed <= 1e-9) return std::numeric_limits<double>::infinity(); // frozen: waits for its speed
+        return (a.state == AnimState::Stopped ? len : std::max(0.0, len - a.clock)) / a.speed; // in real seconds
+    }
+    return 0;
+}
+
+// What a timeline that was told to play still has to play, in real seconds: 0 once it is over (or stopped,
+// or gone, or endless: nothing to wait for), infinity while it does not move (paused, or speed 0)
+double Engine::animationRemaining(quint64 id) const
+{
+    Lock lk(&m_mutex);
+    for (const Animation &a : m_animations) {
+        if (a.id != id) continue;
+        const double len = a.length();
+        if (a.state == AnimState::Stopped || !std::isfinite(len)) return 0;
+        if (a.state == AnimState::Paused || a.speed <= 1e-9) return std::numeric_limits<double>::infinity();
+        return std::max(0.0, len - a.clock) / a.speed;
     }
     return 0;
 }
@@ -273,7 +290,11 @@ void Engine::advanceSequence(double dt)
                 if (!r.fired && r.elapsed >= r.preWait) {
                     r.fired = true;
                     if (r.target.timeline) r.duration = stepDuration(r.target); // where the timeline is now
+                    r.trackPending = r.target.timeline && r.target.action == AnimAction::Play;
                     fire.push_back(r.target);
+                } else if (r.tracking) {
+                    // The timeline plays on its own clock: its speed or loop mode may have changed since
+                    r.duration = std::max(0.0, r.elapsed - r.preWait) + animationRemaining(r.target.timeline);
                 }
                 const double at = r.continueAt();
                 if (!r.fired || r.continued || at < 0 || r.elapsed < at) continue;
@@ -297,13 +318,18 @@ void Engine::advanceSequence(double dt)
         // through the interface's undo stack)
         for (const SequenceStep &st : fire) {
             if (st.timeline) {
-                controlAnimation(st.timeline, st.action, st.seekTime, st.loop, st.repeat);
+                controlAnimation(st.timeline, st.action, st.action == AnimAction::Speed ? st.speed : st.seekTime, st.loop, st.repeat);
                 continue;
             }
             const int mi = indexOfMemory(st.memory);
             if (mi < 0) continue; // a step without its memory (gone): the position moves, nothing else
             if (m_recaller) m_recaller(mi);
             else recallMemory(mi);
+        }
+        {
+            Lock lk(&m_mutex); // the Plays are issued: their steps follow the timelines from now on
+            for (StepRun &r : m_runs)
+                if (r.trackPending) r.trackPending = false, r.tracking = true;
         }
         if (started.empty()) break;
         {
@@ -327,10 +353,11 @@ QJsonArray Engine::sequencesToJson() const
         for (const SequenceStep &st : s.steps) {
             QJsonObject o;
             if (st.timeline) {
-                static const char *const actions[] = {"play", "pause", "stop", "rewind", "seek", "loopMode"};
+                static const char *const actions[] = {"play", "pause", "stop", "rewind", "seek", "loopMode", "speed"};
                 o["timeline"] = QString::number(st.timeline);
-                o["action"] = QString::fromLatin1(actions[std::clamp(int(st.action), 0, 5)]);
+                o["action"] = QString::fromLatin1(actions[std::clamp(int(st.action), 0, 6)]);
                 if (st.action == AnimAction::Seek) o["time"] = st.seekTime;
+                if (st.action == AnimAction::Speed) o["speed"] = st.speed;
                 if (st.action == AnimAction::LoopMode) {
                     o["loop"] = animLoopKey(st.loop);
                     if (st.repeat > 0) o["repeat"] = st.repeat;
@@ -365,7 +392,9 @@ void Engine::sequencesFromJson(const QJsonArray &a, int current)
             if (st.timeline) {
                 const QString a = so.value("action").toString();
                 st.action = a == "pause" ? AnimAction::Pause : a == "stop" ? AnimAction::Stop : a == "rewind" ? AnimAction::Rewind
-                          : a == "seek" ? AnimAction::Seek : a == "loopMode" ? AnimAction::LoopMode : AnimAction::Play;
+                          : a == "seek" ? AnimAction::Seek : a == "loopMode" ? AnimAction::LoopMode
+                          : a == "speed" ? AnimAction::Speed : AnimAction::Play;
+                st.speed = std::clamp(so.value("speed").toDouble(1), 0.0, 10.0);
                 st.seekTime = std::max(0.0, so.value("time").toDouble(0));
                 st.loop = animLoopFromKey(so.value("loop").toString());
                 st.repeat = std::clamp(so.value("repeat").toInt(0), 0, 100000);
