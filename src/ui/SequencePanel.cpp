@@ -84,6 +84,7 @@ static const QColor kPostWait(86, 156, 230); // waiting before the next step's G
 // Seconds as the cue list shows them: 2.5 · 1:05.0
 static QString seconds(double t)
 {
+    if (!std::isfinite(t)) return QStringLiteral("∞");
     t = std::max(0.0, t);
     if (t < 60) return QString::number(t, 'f', 1);
     const int m = int(t / 60);
@@ -773,7 +774,8 @@ void SequenceWindow::refresh()
         // A timeline played without end: no time to wait for, shown as ∞
         const int ai = st.timeline ? m_engine->indexOfAnimation(st.timeline) : -1;
         const bool endless = ai >= 0 && st.action == Engine::AnimAction::Play && !std::isfinite(m_engine->animation(ai).length());
-        action->setData(Qt::EditRole, endless ? -1.0 : m_engine->stepDuration(st));
+        const double length = m_engine->stepDuration(st);
+        action->setData(Qt::EditRole, endless || !std::isfinite(length) ? -1.0 : length); // ∞: a frozen timeline too
         action->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         auto *post = new QTableWidgetItem;
         post->setData(Qt::EditRole, st.postWait);

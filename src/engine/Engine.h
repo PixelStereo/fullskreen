@@ -301,8 +301,10 @@ public:
     // operator), played by GO / GO BACK. Several sequences; one is current. Saved with the project; the position is not.
     //
     // A step waits its pre-wait after its GO, then recalls its memory, whose fade is the step's action (its
-    // duration: the memory's longest time) — or acts on its timeline (Play: the time it plays, when it ends;
-    // the other actions take no time). What comes next (as in QLab):
+    // duration: the memory's longest time) — or acts on its timeline (Play: the time it plays, when it ends,
+    // followed as it goes: a speed or a loop mode changed meanwhile, by a step or by OSC, is taken into account,
+    // and a frozen timeline (speed 0) is waited for until it moves on and ends; the other actions take no time).
+    // What comes next (as in QLab):
     //  - Wait: nothing, the next step waits for GO (button, Space, OSC);
     //  - Follow: the next step gets its GO once this one was triggered (pre-wait over), after the post-wait,
     //    without waiting for the action to end;
@@ -330,6 +332,7 @@ public:
         double preWait = 0, duration = 0, postWait = 0;
         StepContinue next = StepContinue::Wait;
         bool fired = false, continued = false;
+        bool trackPending = false, tracking = false; // a Play: its action lasts as long as the timeline does
         // When the next step gets its GO, counted from this one's GO (< 0: never — Wait)
         double continueAt() const
         {
@@ -370,8 +373,10 @@ public:
     void setRecaller(std::function<void(int memoryIndex)> f) { m_recaller = std::move(f); }
     // A memory's action: its longest time (the fade, and the times of its own values)
     double memoryDuration(quint64 id) const;
-    // A step's action: its memory's, or the time its timeline will play (Play on a timeline that ends; else 0)
+    // A step's action: its memory's, or the time its timeline will play (Play on a timeline that ends; else 0;
+    // infinity: its timeline is frozen, speed 0, and plays on when its speed is raised)
     double stepDuration(const SequenceStep &st) const;
+    double animationRemaining(quint64 id) const; // real seconds a timeline playing has left (infinity: not moving)
     void recallMemory(int i); // with its fade
     bool isFading() const;
     // The memory recalled last, and where its fade is (its longest time: values with times of their own included)
