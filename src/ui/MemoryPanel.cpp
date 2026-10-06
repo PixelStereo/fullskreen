@@ -64,8 +64,8 @@ static QStringList easingCurveLabels()
 
 static QStringList easingCurveKeys()
 {
-    return {QStringLiteral("linear"), QStringLiteral("easeIn"), QStringLiteral("easeOut"),
-            QStringLiteral("easeInOut"), QStringLiteral("easeInCubic"), QStringLiteral("easeOutCubic")};
+    return {QStringLiteral("linear"), QStringLiteral("ease_in"), QStringLiteral("ease_out"),
+            QStringLiteral("ease_in_out"), QStringLiteral("ease_in_cubic"), QStringLiteral("ease_out_cubic")};
 }
 
 // The object a field's row refers to: a layer of the memory, or (-1) its composition
@@ -673,8 +673,8 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
         auto *box = new QWidget;
         auto *bv = new QVBoxLayout(box);
         bv->setContentsMargins(0, 10, 0, 0);
-        bv->addWidget(new QLabel(f.timeKey == "source"         ? QStringLiteral("<b>Transition of the source</b>")
-                                 : f.timeKey == "text/content" ? QStringLiteral("<b>Typing (typewriter)</b>")
+        bv->addWidget(new QLabel(f.timeKey == "source/file"         ? QStringLiteral("<b>Transition of the source</b>")
+                                 : f.timeKey == "source/text/content" ? QStringLiteral("<b>Typing (typewriter)</b>")
                                                                 : QStringLiteral("<b>Transition</b>")));
         auto *row = new QHBoxLayout;
         auto *group = new QButtonGroup(box);
@@ -702,8 +702,8 @@ void MemoryPanel::showDetail(QTreeWidgetItem *it)
         auto *note = new QLabel(QStringLiteral("CUT: at once · FOLLOW: the memory's fade (%1 s) · TIME: this value "
                                                "only, in its own time%2")
                                     .arg(m.fade, 0, 'f', 1)
-                                    .arg(f.timeKey == "roi" || f.timeKey == "mapping" || f.timeKey.startsWith("color/") ||
-                                                     (f.timeKey.startsWith("text/") && f.timeKey.endsWith("olor"))
+                                    .arg(f.timeKey == "source/roi" || f.timeKey == "spatial" || f.timeKey.startsWith("color/") ||
+                                                     (f.timeKey.startsWith("source/text/") && f.timeKey.endsWith("/color"))
                                              ? QStringLiteral(" (shared by the whole %1)").arg(f.timeKey.section('/', -1))
                                              : QString()));
         note->setWordWrap(true);
@@ -779,7 +779,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
         f.suffix = suffix;
         f.step = step;
         f.label = label;
-        f.timeKey = Engine::timingKey(path); // a value that fades: its time can be chosen
+        f.timeKey = Engine::timingKey(path, o); // a value that fades: its time can be chosen
         return addField(p, f, jsonAt(o, path));
     };
     auto flag = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path) {
@@ -813,7 +813,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
     flag(parent, QStringLiteral("Visible"), {"visible"});
     flag(parent, QStringLiteral("Locked"), {"locked"});
     num(parent, QStringLiteral("Opacity"), {"opacity"}, 0, 1, 100, 0, QStringLiteral(" %"), 0.01);
-    choice(parent, QStringLiteral("Blend Mode"), {"blend"}, {"normal", "add", "screen", "multiply", "subtract", "difference"},
+    choice(parent, QStringLiteral("Blend Mode"), {"blend_mode"}, {"normal", "add", "screen", "multiply", "subtract", "difference"},
            {QStringLiteral("Normal"), QStringLiteral("Add"), QStringLiteral("Screen"), QStringLiteral("Multiply"), QStringLiteral("Subtract"),
             QStringLiteral("Difference")});
     if (hasSound) {
@@ -874,12 +874,12 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
                         QFileInfo(src.value("path").toString()).fileName(), src.value("path").toString());
         }
         // Another source than the layer's at the recall: its transition, over this time
-        m_fields[size_t(what->data(0, FieldRole).toInt())].timeKey = QStringLiteral("source");
+        m_fields[size_t(what->data(0, FieldRole).toInt())].timeKey = QStringLiteral("source/file");
         const QString tr = src.value("transition").toString();
         info(sec, QStringLiteral("Transition"),
              tr.isEmpty() ? QStringLiteral("Default") : QFileInfo(tr).completeBaseName(), tr);
         if (hasSound) {
-            choice(sec, QStringLiteral("Play mode"), {"source", "playMode"}, {"oneshot", "loop", "pingpong", "stop"},
+            choice(sec, QStringLiteral("Play mode"), {"source", "play_mode"}, {"oneshot", "loop", "pingpong", "stop"},
                    {QStringLiteral("One-shot"), QStringLiteral("Loop"), QStringLiteral("Ping-pong"), QStringLiteral("Stop")});
             num(sec, QStringLiteral("In"), {"source", "in"}, 0, 1e6, 1, 2, QStringLiteral(" s"), 0.1);
             num(sec, QStringLiteral("Out"), {"source", "out"}, -1, 1e6, 1, 2, QStringLiteral(" s"), 0.1)
@@ -896,7 +896,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
             // Text generator: the text (its typing time: the typewriter), the words and switches set at once, the
             // numbers that fade, each with its time and easing
             QTreeWidgetItem *content = info(sec, QStringLiteral("Text"), jsonAt(o, {"source", "content"}).toString());
-            m_fields[size_t(content->data(0, FieldRole).toInt())].timeKey = Engine::timingKey({"source", "content"});
+            m_fields[size_t(content->data(0, FieldRole).toInt())].timeKey = Engine::timingKey({"source", "content"}, o);
             info(sec, QStringLiteral("Font"), jsonAt(o, {"source", "font"}).toString());
             num(sec, QStringLiteral("Size"), {"source", "size"}, 1, 1000, 1, 0, QStringLiteral(" px"), 1);
             static const char *kRgba[] = {"R", "G", "B", "A"};
@@ -910,21 +910,21 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
             flag(sec, QStringLiteral("Italic"), {"source", "italic"});
             flag(sec, QStringLiteral("Underline"), {"source", "underline"});
             flag(sec, QStringLiteral("Strikethrough"), {"source", "strike"});
-            choice(sec, QStringLiteral("Align"), {"source", "hAlign"}, {"left", "center", "right", "justify"},
+            choice(sec, QStringLiteral("Align"), {"source", "h_align"}, {"left", "center", "right", "justify"},
                    {QStringLiteral("Left"), QStringLiteral("Center"), QStringLiteral("Right"), QStringLiteral("Justified")});
-            choice(sec, QStringLiteral("Vertical"), {"source", "vAlign"}, {"top", "middle", "bottom"},
+            choice(sec, QStringLiteral("Vertical"), {"source", "v_align"}, {"top", "middle", "bottom"},
                    {QStringLiteral("Top"), QStringLiteral("Middle"), QStringLiteral("Bottom")});
-            num(sec, QStringLiteral("Line spacing"), {"source", "lineHeight"}, 0.1, 10, 1, 2, QStringLiteral(" ×"), 0.05);
-            num(sec, QStringLiteral("Letter spacing"), {"source", "letterSpacing"}, -200, 500, 1, 1, QStringLiteral(" px"), 0.5);
+            num(sec, QStringLiteral("Line spacing"), {"source", "line_height"}, 0.1, 10, 1, 2, QStringLiteral(" ×"), 0.05);
+            num(sec, QStringLiteral("Letter spacing"), {"source", "letter_spacing"}, -200, 500, 1, 1, QStringLiteral(" px"), 0.5);
             QTreeWidgetItem *outline = section(sec, QStringLiteral("Outline"), QStringLiteral("textOutline"));
             num(outline, QStringLiteral("Width"), {"source", "outline"}, 0, 200, 1, 1, QStringLiteral(" px"), 0.5);
-            rgba(outline, QStringLiteral("Color"), QStringLiteral("outlineColor"));
+            rgba(outline, QStringLiteral("Color"), QStringLiteral("outline_color"));
             expand(outline);
             QTreeWidgetItem *shadow = section(sec, QStringLiteral("Shadow"), QStringLiteral("textShadow"));
             flag(shadow, QStringLiteral("On"), {"source", "shadow"});
-            rgba(shadow, QStringLiteral("Color"), QStringLiteral("shadowColor"));
-            num(shadow, QStringLiteral("X"), {"source", "shadowX"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
-            num(shadow, QStringLiteral("Y"), {"source", "shadowY"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
+            rgba(shadow, QStringLiteral("Color"), QStringLiteral("shadow_color"));
+            num(shadow, QStringLiteral("X"), {"source", "shadow_x"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
+            num(shadow, QStringLiteral("Y"), {"source", "shadow_y"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
             expand(shadow);
             num(sec, QStringLiteral("Width"), {"source", "width"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
             num(sec, QStringLiteral("Height"), {"source", "height"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
@@ -943,45 +943,45 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
 
     if (o.contains("color")) {
         QTreeWidgetItem *sec = section(parent, QStringLiteral("Color"), QStringLiteral("color"));
-        flag(sec, QStringLiteral("Enabled"), {"color", "enabled"});
-        flag(sec, QStringLiteral("Temperature on"), {"color", "tempOn"});
+        flag(sec, QStringLiteral("Enable"), {"color", "enable"});
+        flag(sec, QStringLiteral("Temperature Enable"), {"color", "temp_enable"});
         num(sec, QStringLiteral("Temperature"), {"color", "temp"}, -ColorAdjust::kTempRange, ColorAdjust::kTempRange, 1, 0,
             QStringLiteral(" K"), 10);
-        flag(sec, QStringLiteral("Tint on"), {"color", "tintOn"});
+        flag(sec, QStringLiteral("Tint Enable"), {"color", "tint_enable"});
         num(sec, QStringLiteral("Tint"), {"color", "tint"}, -ColorAdjust::kTintRange, ColorAdjust::kTintRange, 1, 0,
             QString(), 1);
         static const char *kRgb[] = {"Red", "Green", "Blue"};
-        flag(sec, QStringLiteral("Add on"), {"color", "addOn"});
+        flag(sec, QStringLiteral("Add Enable"), {"color", "add_enable"});
         for (int c = 0; c < 3; ++c)
             num(sec, QStringLiteral("Add ") + QString::fromLatin1(kRgb[c]), {"color", "add", QString::number(c)}, 0, 1,
                 100, 0, QStringLiteral(" %"), 0.01);
-        flag(sec, QStringLiteral("Remove on"), {"color", "removeOn"});
+        flag(sec, QStringLiteral("Remove Enable"), {"color", "remove_enable"});
         for (int c = 0; c < 3; ++c)
             num(sec, QStringLiteral("Remove ") + QString::fromLatin1(kRgb[c]), {"color", "remove", QString::number(c)}, 0,
                 1, 100, 0, QStringLiteral(" %"), 0.01);
         expand(sec);
     }
 
-    if (o.contains("mapping")) {
-        const QJsonObject map = o.value("mapping").toObject();
-        QTreeWidgetItem *sec = section(parent, QStringLiteral("Mapping"), QStringLiteral("mapping"));
-        flag(sec, QStringLiteral("Mesh mode"), {"mapping", "meshMode"});
+    if (o.contains("spatial")) {
+        const QJsonObject map = o.value("spatial").toObject();
+        QTreeWidgetItem *sec = section(parent, QStringLiteral("Spatial"), QStringLiteral("spatial"));
+        flag(sec, QStringLiteral("Mesh mode"), {"spatial", "mesh_mode"});
         static const char *kCorners[] = {"Top-left", "Top-right", "Bottom-right", "Bottom-left"};
         for (int c = 0; c < 4 && c < map.value("corners").toArray().size(); ++c) {
-            num(sec, QString::fromLatin1(kCorners[c]) + " X", {"mapping", "corners", QString::number(c), "0"}, -10, 10, 1,
+            num(sec, QString::fromLatin1(kCorners[c]) + " X", {"spatial", "corners", QString::number(c), "0"}, -10, 10, 1,
                 4, QString(), 0.001);
-            num(sec, QString::fromLatin1(kCorners[c]) + " Y", {"mapping", "corners", QString::number(c), "1"}, -10, 10, 1,
+            num(sec, QString::fromLatin1(kCorners[c]) + " Y", {"spatial", "corners", QString::number(c), "1"}, -10, 10, 1,
                 4, QString(), 0.001);
         }
         const int cols = map.value("cols").toInt(4), rows = map.value("rows").toInt(4);
         const QJsonArray offsets = map.value("offsets").toArray();
         info(sec, QStringLiteral("Mesh"), QStringLiteral("%1 × %2").arg(cols).arg(rows));
-        if (map.value("meshMode").toBool() && offsets.size() == cols * rows && offsets.size() <= 64) {
+        if (map.value("mesh_mode").toBool() && offsets.size() == cols * rows && offsets.size() <= 64) {
             QTreeWidgetItem *pts = section(sec, QStringLiteral("Mesh points"), QStringLiteral("mesh"));
             for (int k = 0; k < offsets.size(); ++k) {
                 const QString label = QStringLiteral("(%1, %2)").arg(k % cols + 1).arg(k / cols + 1);
-                num(pts, label + " X", {"mapping", "offsets", QString::number(k), "0"}, -10, 10, 1, 4, QString(), 0.001);
-                num(pts, label + " Y", {"mapping", "offsets", QString::number(k), "1"}, -10, 10, 1, 4, QString(), 0.001);
+                num(pts, label + " X", {"spatial", "offsets", QString::number(k), "0"}, -10, 10, 1, 4, QString(), 0.001);
+                num(pts, label + " Y", {"spatial", "offsets", QString::number(k), "1"}, -10, 10, 1, 4, QString(), 0.001);
             }
             expand(pts);
         }
@@ -990,13 +990,13 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
 
     const QJsonArray effects = o.value("effects").toArray();
     QTreeWidgetItem *fxSec = section(parent, QStringLiteral("Effects (%1)").arg(effects.size()), QStringLiteral("effects"));
-    flag(fxSec, QStringLiteral("All effects"), {"effectsEnabled"});
+    flag(fxSec, QStringLiteral("Enable"), {"effects_enable"});
     for (int k = 0; k < effects.size(); ++k) {
         const QJsonObject fx = effects[k].toObject();
         QTreeWidgetItem *one = section(fxSec, QStringLiteral("%1. %2").arg(k + 1).arg(QFileInfo(fx.value("path").toString()).completeBaseName()),
                                        QStringLiteral("fx%1").arg(k));
         one->setToolTip(0, fx.value("path").toString());
-        flag(one, QStringLiteral("Enabled"), {"effects", QString::number(k), "enabled"});
+        flag(one, QStringLiteral("Enable"), {"effects", QString::number(k), "enable"});
         isfParams(one, {"effects", QString::number(k), "params"}, k);
         expand(one);
     }

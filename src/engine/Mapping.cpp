@@ -203,7 +203,7 @@ void Mapping::fitAspect(double srcAspect, double compAspect)
 QJsonObject SoftEdge::toJson() const
 {
     QJsonObject o;
-    o["enabled"] = enabled;
+    o["enable"] = enabled;
     QJsonArray w, p;
     for (int i = 0; i < 4; ++i) {
         w.append(width[i]);
@@ -217,7 +217,7 @@ QJsonObject SoftEdge::toJson() const
 void SoftEdge::fromJson(const QJsonObject &o)
 {
     *this = SoftEdge();
-    enabled = o.value("enabled").toBool(false);
+    enabled = o.value("enable").toBool(false);
     const QJsonArray w = o.value("width").toArray(), p = o.value("power").toArray();
     for (int i = 0; i < 4; ++i) {
         if (i < w.size()) width[i] = std::clamp(w[i].toDouble(), 0.0, 0.5);
@@ -244,9 +244,9 @@ QJsonObject Mapping::toJson() const
     QJsonArray off;
     for (const QPointF &p : offsets) off.append(QJsonArray{p.x(), p.y()});
     o["offsets"] = off;
-    o["meshMode"] = meshMode;
+    o["mesh_mode"] = meshMode;
     // Always save soft edge (even if disabled) so memories preserve crop feathering settings
-    o["soft"] = soft.toJson();
+    o["soft_edge"] = soft.toJson();
     return o;
 }
 
@@ -263,8 +263,8 @@ void Mapping::fromJson(const QJsonObject &o)
         QJsonArray p = off[i].toArray();
         offsets[size_t(i)] = QPointF(p[0].toDouble(), p[1].toDouble());
     }
-    meshMode = o.value("meshMode").toBool(false);
-    soft.fromJson(o.value("soft").toObject());
+    meshMode = o.value("mesh_mode").toBool(false);
+    soft.fromJson(o.value("soft_edge").toObject());
     ++revision;
 }
 

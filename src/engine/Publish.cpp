@@ -34,9 +34,9 @@ QJsonObject PublishSettings::toJson() const
 {
     QJsonObject o;
     for (int i = 0; i < kPublishKindCount; ++i)
-        o[kKeys[i]] = QJsonObject{{"enabled", targets[i].enabled}, {"name", targets[i].name}};
-    o["omtQuality"] = omtQuality;
-    if (!libraryFolder.isEmpty()) o["libraryFolder"] = libraryFolder;
+        o[kKeys[i]] = QJsonObject{{"enable", targets[i].enabled}, {"name", targets[i].name}};
+    o["omt_quality"] = omtQuality;
+    if (!libraryFolder.isEmpty()) o["library_folder"] = libraryFolder;
     return o;
 }
 
@@ -45,12 +45,12 @@ PublishSettings PublishSettings::fromJson(const QJsonObject &o)
     PublishSettings s;
     for (int i = 0; i < kPublishKindCount; ++i) {
         const QJsonObject t = o.value(kKeys[i]).toObject();
-        s.targets[i].enabled = t.value("enabled").toBool(false);
+        s.targets[i].enabled = t.value("enable").toBool(false);
         s.targets[i].name = t.value("name").toString(QStringLiteral("Fulskrin"));
         if (s.targets[i].name.trimmed().isEmpty()) s.targets[i].name = QStringLiteral("Fulskrin");
     }
-    s.omtQuality = o.value("omtQuality").toInt(0);
-    s.libraryFolder = o.value("libraryFolder").toString();
+    s.omtQuality = o.value("omt_quality").toInt(0);
+    s.libraryFolder = o.value("library_folder").toString();
     return s;
 }
 

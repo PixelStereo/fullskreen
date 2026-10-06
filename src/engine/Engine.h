@@ -246,7 +246,7 @@ public:
     };
     struct AnimTrack {
         quint64 layer = 0; // the layer driven (its id; 0: the composition)
-        QString param;     // the number (see animatableParams): "opacity", "mapping/rotation", "effects/0/params/x"…
+        QString param;     // the number (see animatableParams): "opacity", "spatial/rotation", "effects/<fx>/<param>"… (the OSC address inside the layer)
         bool enabled = true;
         bool oscillator = false;
         std::vector<AnimKey> keys; // curve: sorted by time
@@ -392,8 +392,8 @@ public:
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
     void setFadesManual(bool on) { m_fadesManual = on; } // tests: only advanceFades moves them, not the frames
     // Key under which a memory stores the time of a stored value (its path in the layer state), empty for a value
-    // that does not fade: "opacity", "roi", "color/temp", "mapping", "effects/0/params/radius"…
-    static QString timingKey(const QStringList &path);
+    // that does not fade: "opacity", "source/roi", "color/temp", "spatial", "effects/<fx>/<param>"…
+    static QString timingKey(const QStringList &path, const QJsonObject &layer);
 
     // --- External media (media bin)
     struct MediaRef {

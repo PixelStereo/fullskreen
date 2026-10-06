@@ -676,7 +676,7 @@ QWidget *LayerInspector::buildSource(const LayerSnapshot &s)
         });
 
         // Shadow
-        auto *shadow = new FlagBox(QStringLiteral("On"));
+        auto *shadow = new FlagBox(QStringLiteral("Enable"));
         shadow->setChecked(s.text.shadow);
         shadow->setEnabled(!m_locked);
         auto *shadowRow = new QHBoxLayout;
@@ -1654,7 +1654,7 @@ QWidget *LayerInspector::buildMapping(const LayerSnapshot &s)
     // Soft edge: the picture fades out towards each side (to blend overlapping projections)
     {
         const SoftEdge se = cmd::SetMapping::read(m_engine, m_layer).soft;
-        auto *box = new QGroupBox(QStringLiteral("Soft edge"));
+        auto *box = new QGroupBox(QStringLiteral("Soft Edge"));
         box->setCheckable(true);
         box->setChecked(se.enabled);
         m_softBox = box;
@@ -1718,7 +1718,7 @@ QWidget *LayerInspector::buildEffects(const LayerSnapshot &s)
     auto *v = new QVBoxLayout(g);
 
     // General switch of the chain
-    auto *all = new FlagBox(QStringLiteral("Effects enabled"));
+    auto *all = new FlagBox(QStringLiteral("Effects Enable"));
     all->setChecked(s.effectsEnabled);
     all->setToolTip(QStringLiteral("Turns the whole effect chain on or off (each effect keeps its own switch)"));
     all->setStyleSheet("QCheckBox { font-weight:bold; }");

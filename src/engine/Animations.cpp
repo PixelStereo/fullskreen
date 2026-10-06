@@ -1,6 +1,7 @@
 // Timelines (animations): numbers of the layers drawn over time — curves and oscillators — played on their own
 // clock; the sequences drive their transport.
 #include "EngineInternal.h"
+#include "Osc.h"
 
 #include <QJsonArray>
 #include <cmath>
@@ -322,81 +323,99 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
     };
     const QStringList p = path.split(QLatin1Char('/'));
     const QString &a = p.value(0);
-    if (p.size() == 1) {
-        if (a == "opacity") return num(l.opacity, 0, 1);
-        if (a == "volume") return num(l.volume, 0, 2);
-        if (a == "speed") return num(l.speed, -16, 16);
-        return false;
-    }
-    if (a == "roi" && p.size() == 2) {
-        QRectF r = l.roi;
-        double x = r.x(), y = r.y(), w = r.width(), h = r.height();
-        bool ok = true;
-        if (p[1] == "x") num(x, -1, 2);
-        else if (p[1] == "y") num(y, -1, 2);
-        else if (p[1] == "w") num(w, 0.001, 4);
-        else if (p[1] == "h") num(h, 0.001, 4);
-        else ok = false;
-        if (ok && set) l.roi = QRectF(x, y, w, h);
-        return ok;
+    if (path == "opacity") return num(l.opacity, 0, 1);
+    if (a == "source") {
+        if (path == "source/volume") return num(l.volume, 0, 2);
+        if (path == "source/speed") return num(l.speed, -16, 16);
+        if (a == "source" && p.value(1) == "roi" && p.size() == 3) {
+            const int side = QStringList{"left", "top", "right", "bottom"}.indexOf(p[2]);
+            if (side < 0) return false;
+            double v[4] = {l.roi.left(), l.roi.top(), l.roi.right(), l.roi.bottom()};
+            if (get) *get = v[side];
+            if (set) {
+                v[side] = std::clamp(*set, 0.0, 1.0);
+                const double minSize = 0.002;
+                if (side == 0) v[0] = std::min(v[0], v[2] - minSize);
+                if (side == 2) v[2] = std::max(v[2], v[0] + minSize);
+                if (side == 1) v[1] = std::min(v[1], v[3] - minSize);
+                if (side == 3) v[3] = std::max(v[3], v[1] + minSize);
+                l.roi = QRectF(QPointF(v[0], v[1]), QPointF(v[2], v[3])) & Layer::fullRoi();
+            }
+            return true;
+        }
+        if (p.value(1) == "text" && l.isText()) {
+            TextSource &t = l.text;
+            const QString sub = p.mid(2).join('/');
+            auto io = [&](double cur, double lo, double hi, auto store) {
+                if (get) *get = cur;
+                if (set) store(std::clamp(*set, lo, hi));
+                return true;
+            };
+            if (sub == "size") return io(t.size, 1, 1000, [&](double x) { t.size = int(std::lround(x)); });
+            if (sub == "line_height") return io(t.lineHeight, 0.1, 10, [&](double x) { t.lineHeight = float(x); });
+            if (sub == "letter_spacing") return io(t.letterSpacing, -200, 500, [&](double x) { t.letterSpacing = float(x); });
+            if (sub == "outline") return io(t.outline, 0, 200, [&](double x) { t.outline = float(x); });
+            if (sub == "shadow/x") return io(t.shadowX, -2000, 2000, [&](double x) { t.shadowX = float(x); });
+            if (sub == "shadow/y") return io(t.shadowY, -2000, 2000, [&](double x) { t.shadowY = float(x); });
+            return false;
+        }
     }
     if (a == "color") {
         ColorAdjust &c = l.color;
-        if (p[1] == "temp") return num(c.temp, -ColorAdjust::kTempRange, ColorAdjust::kTempRange);
-        if (p[1] == "tint") return num(c.tint, -ColorAdjust::kTintRange, ColorAdjust::kTintRange);
-        if ((p[1] == "add" || p[1] == "remove") && p.size() == 3) {
+        if (path == "color/temp") return num(c.temp, -ColorAdjust::kTempRange, ColorAdjust::kTempRange);
+        if (path == "color/tint") return num(c.tint, -ColorAdjust::kTintRange, ColorAdjust::kTintRange);
+        if ((p.value(1) == "add" || p.value(1) == "remove") && p.size() == 3) {
             const int k = QStringLiteral("rgb").indexOf(p[2]);
             if (k < 0 || p[2].size() != 1) return false;
             return num(p[1] == "add" ? c.add[k] : c.remove[k], 0, 1);
         }
         return false;
     }
-    if (a == "mapping" && p.size() == 2) {
+    if (a == "spatial") {
         Mapping &m = l.mapping;
-        if (p[1] == "rotation") {
+        if (path == "spatial/rotation") {
             const double now = m.angle(comp);
             if (get) *get = now;
             if (set) m.rotate(wrapDegrees(*set - now), comp);
             return true;
         }
-        if (p[1] == "x" || p[1] == "y") {
-            const QPointF tl = m.bounds().topLeft();
-            const double now = p[1] == "x" ? tl.x() : tl.y();
+        if (p.size() == 3 && (p[1] == "position" || p[1] == "scale") && (p[2] == "x" || p[2] == "y")) {
+            const bool x = p[2] == "x";
+            QRectF b = m.bounds();
+            const double size = x ? comp.width() : comp.height();
+            // position: the centre, in composition pixels; scale: % of the composition
+            const double now = p[1] == "position" ? (x ? b.center().x() : b.center().y()) * size : (x ? b.width() : b.height()) * 100.0;
             if (get) *get = now;
             if (set) {
-                const double d = std::clamp(*set, -4.0, 5.0) - now;
-                m.translate(p[1] == "x" ? QPointF(d, 0) : QPointF(0, d));
+                if (p[1] == "position") {
+                    QPointF c = b.center();
+                    const double v = std::clamp(*set, -4.0 * size, 5.0 * size) / size;
+                    (x ? c.rx() : c.ry()) = v;
+                    b.moveCenter(c);
+                } else {
+                    const QPointF c = b.center();
+                    const double v = std::clamp(*set, 0.1, 2000.0) / 100.0;
+                    b.setSize(QSizeF(x ? v : b.width(), x ? b.height() : v));
+                    b.moveCenter(c);
+                }
+                m.setBounds(b);
             }
             return true;
         }
         return false;
     }
-    if (a == "text" && p.size() == 2 && l.isText()) {
-        TextSource &t = l.text;
-        if (p[1] == "size") {
-            double v = t.size;
-            num(v, 1, 1000);
-            if (set) t.size = int(std::lround(v));
-            return true;
-        }
-        if (p[1] == "lineHeight") return num(t.lineHeight, 0.1, 10);
-        if (p[1] == "letterSpacing") return num(t.letterSpacing, -200, 500);
-        if (p[1] == "outline") return num(t.outline, 0, 200);
-        if (p[1] == "shadowX") return num(t.shadowX, -2000, 2000);
-        if (p[1] == "shadowY") return num(t.shadowY, -2000, 2000);
-        return false;
-    }
-    // ISF: source/params/<name>[/<x|y|r|g|b|a>], effects/<k>/params/<name>[/…]
+    // ISF: source/<name>[/<x|y|r|g|b|a>], effects/<fx>/<name>[/…] (fx: its segment, as in the OSC address)
     IsfInstance *inst = nullptr;
     int at = 0;
-    if (a == "source" && p.size() >= 3 && p[1] == "params") {
+    if (a == "source" && p.size() >= 2) {
         inst = l.generator.get();
+        at = 1;
+    } else if (a == "effects" && p.size() >= 3) {
+        QStringList names;
+        for (const auto &x : l.effects) names << x->name();
+        const int k = osc::uniqueSegments(names).indexOf(p[1]);
+        if (k >= 0) inst = l.effects[size_t(k)].get();
         at = 2;
-    } else if (a == "effects" && p.size() >= 4 && p[2] == "params") {
-        bool ok = false;
-        const int k = p[1].toInt(&ok);
-        if (ok && k >= 0 && k < int(l.effects.size())) inst = l.effects[size_t(k)].get();
-        at = 3;
     }
     if (!inst) return false;
     IsfInput *in = inst->input(p[at]);
@@ -487,19 +506,22 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
     for (auto &x : m_layers)
         if (x->id == layer) l = x.get();
     if (!l) return out;
+    // Labels: "<Category> › <Parameter>", the categories being the branches of the OSC address
     add("opacity", "Opacity", 0, 1);
-    add("mapping/rotation", "Mapping › Rotation (°)", -180, 180);
-    add("mapping/x", "Mapping › X", -1, 2);
-    add("mapping/y", "Mapping › Y", -1, 2);
+    add("spatial/rotation", "Spatial › Rotation (°)", -180, 180);
+    add("spatial/position/x", "Spatial › Position X", -4.0 * m_compSize.width(), 5.0 * m_compSize.width());
+    add("spatial/position/y", "Spatial › Position Y", -4.0 * m_compSize.height(), 5.0 * m_compSize.height());
+    add("spatial/scale/x", "Spatial › Scale X (%)", 0.1, 2000);
+    add("spatial/scale/y", "Spatial › Scale Y (%)", 0.1, 2000);
     if (l->hasTransport()) {
-        add("volume", "Volume", 0, 2);
-        add("speed", "Speed", 0, 4);
+        add("source/volume", "Source › Volume", 0, 2);
+        add("source/speed", "Source › Speed", 0, 4);
     }
     if (!l->isGroup) {
-        add("roi/x", "ROI › X", 0, 1);
-        add("roi/y", "ROI › Y", 0, 1);
-        add("roi/w", "ROI › Width", 0, 1);
-        add("roi/h", "ROI › Height", 0, 1);
+        add("source/roi/left", "Source › ROI Left", 0, 1);
+        add("source/roi/top", "Source › ROI Top", 0, 1);
+        add("source/roi/right", "Source › ROI Right", 0, 1);
+        add("source/roi/bottom", "Source › ROI Bottom", 0, 1);
     }
     add("color/temp", "Color › Temperature", -ColorAdjust::kTempRange, ColorAdjust::kTempRange);
     add("color/tint", "Color › Tint", -ColorAdjust::kTintRange, ColorAdjust::kTintRange);
@@ -508,12 +530,12 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
             add(QStringLiteral("color/%1/%2").arg(QLatin1String(k)).arg(QChar("rgb"[c])),
                 QStringLiteral("Color › %1 %2").arg(QLatin1String(k[0] == 'a' ? "Add" : "Remove")).arg(QChar("RGB"[c])), 0, 1);
     if (l->isText()) {
-        add("text/size", "Text › Size", 1, 400);
-        add("text/lineHeight", "Text › Line height", 0.5, 3);
-        add("text/letterSpacing", "Text › Letter spacing", -20, 100);
-        add("text/outline", "Text › Outline", 0, 40);
-        add("text/shadowX", "Text › Shadow X", -100, 100);
-        add("text/shadowY", "Text › Shadow Y", -100, 100);
+        add("source/text/size", "Source › Text Size", 1, 400);
+        add("source/text/line_height", "Source › Text Line Height", 0.5, 3);
+        add("source/text/letter_spacing", "Source › Text Letter Spacing", -20, 100);
+        add("source/text/outline", "Source › Text Outline", 0, 40);
+        add("source/text/shadow/x", "Source › Text Shadow X", -100, 100);
+        add("source/text/shadow/y", "Source › Text Shadow Y", -100, 100);
     }
     auto isf = [&](const IsfInstance *inst, const QString &base, const QString &title) {
         if (!inst) return;
@@ -541,10 +563,12 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
             }
         }
     };
-    isf(l->generator.get(), QStringLiteral("source/params/"), QStringLiteral("Source"));
+    isf(l->generator.get(), QStringLiteral("source/"), QStringLiteral("Source"));
+    QStringList fxNames;
+    for (const auto &x : l->effects) fxNames << x->name();
+    const QStringList fxSegs = osc::uniqueSegments(fxNames);
     for (size_t k = 0; k < l->effects.size(); ++k)
-        isf(l->effects[k].get(), QStringLiteral("effects/%1/params/").arg(k),
-            QStringLiteral("FX %1 %2").arg(k + 1).arg(l->effects[k]->name()));
+        isf(l->effects[k].get(), QStringLiteral("effects/%1/").arg(fxSegs[int(k)]), QStringLiteral("Effects › %1").arg(l->effects[k]->name()));
     return out;
 }
 
@@ -552,7 +576,7 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
 // Project
 
 static const char *const kWaveKeys[] = {"sine", "triangle", "saw", "square"};
-static const char *const kLoopKeys[] = {"once", "loop", "pingPong"};
+static const char *const kLoopKeys[] = {"once", "loop", "pingpong"};
 
 static int keyIndex(const char *const *keys, int n, const QString &k, int fallback)
 {
@@ -571,7 +595,7 @@ QJsonArray Engine::animationsToJson() const
         QJsonArray tracks;
         for (const AnimTrack &t : a.tracks) {
             QJsonObject o{{"layer", QString::number(t.layer)}, {"param", t.param}};
-            if (!t.enabled) o["enabled"] = false;
+            if (!t.enabled) o["enable"] = false;
             if (t.oscillator) {
                 o["oscillator"] = QJsonObject{{"wave", QString::fromLatin1(kWaveKeys[int(t.wave)])},
                                               {"period", t.period},
@@ -616,7 +640,7 @@ void Engine::animationsFromJson(const QJsonArray &arr)
             AnimTrack t;
             t.layer = to.value("layer").toString().toULongLong();
             t.param = to.value("param").toString();
-            t.enabled = to.value("enabled").toBool(true);
+            t.enabled = to.value("enable").toBool(true);
             if (to.contains("oscillator")) {
                 const QJsonObject w = to.value("oscillator").toObject();
                 t.oscillator = true;

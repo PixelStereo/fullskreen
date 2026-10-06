@@ -52,6 +52,9 @@ bool decode(const QByteArray &packet, std::vector<Message> &out);
 bool match(const QString &pattern, const QString &address);
 // Name usable as one segment of an OSC address
 QString safeName(const QString &name);
+// The segment of each effect of a layer (names made safe; a repeated name gets _2, _3…): the same in OSC addresses,
+// timeline parameters and memory times
+QStringList uniqueSegments(const QStringList &names);
 
 } // namespace osc
 

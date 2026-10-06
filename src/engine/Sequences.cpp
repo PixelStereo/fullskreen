@@ -353,7 +353,7 @@ QJsonArray Engine::sequencesToJson() const
         for (const SequenceStep &st : s.steps) {
             QJsonObject o;
             if (st.timeline) {
-                static const char *const actions[] = {"play", "pause", "stop", "rewind", "seek", "loopMode", "speed"};
+                static const char *const actions[] = {"play", "pause", "stop", "rewind", "seek", "loop_mode", "speed"};
                 o["timeline"] = QString::number(st.timeline);
                 o["action"] = QString::fromLatin1(actions[std::clamp(int(st.action), 0, 6)]);
                 if (st.action == AnimAction::Seek) o["time"] = st.seekTime;
@@ -366,9 +366,9 @@ QJsonArray Engine::sequencesToJson() const
                 o["memory"] = QString::number(st.memory);
             }
             if (!st.text.isEmpty()) o["text"] = st.text;
-            if (st.preWait > 0) o["preWait"] = st.preWait;
-            if (st.postWait > 0) o["postWait"] = st.postWait;
-            if (st.next != StepContinue::Wait) o["continue"] = st.next == StepContinue::Follow ? "follow" : "autoFollow";
+            if (st.preWait > 0) o["pre_wait"] = st.preWait;
+            if (st.postWait > 0) o["post_wait"] = st.postWait;
+            if (st.next != StepContinue::Wait) o["continue"] = st.next == StepContinue::Follow ? "follow" : "auto_follow";
             steps.append(o);
         }
         out.append(QJsonObject{{"name", s.name}, {"loop", s.loop}, {"steps", steps}});
@@ -392,7 +392,7 @@ void Engine::sequencesFromJson(const QJsonArray &a, int current)
             if (st.timeline) {
                 const QString a = so.value("action").toString();
                 st.action = a == "pause" ? AnimAction::Pause : a == "stop" ? AnimAction::Stop : a == "rewind" ? AnimAction::Rewind
-                          : a == "seek" ? AnimAction::Seek : a == "loopMode" ? AnimAction::LoopMode
+                          : a == "seek" ? AnimAction::Seek : a == "loop_mode" ? AnimAction::LoopMode
                           : a == "speed" ? AnimAction::Speed : AnimAction::Play;
                 st.speed = std::clamp(so.value("speed").toDouble(1), 0.0, 10.0);
                 st.seekTime = std::max(0.0, so.value("time").toDouble(0));
@@ -401,10 +401,10 @@ void Engine::sequencesFromJson(const QJsonArray &a, int current)
                 st.memory = 0;
             }
             st.text = so.value("text").toString();
-            st.preWait = std::clamp(so.value("preWait").toDouble(0), 0.0, 3600.0);
-            st.postWait = std::clamp(so.value("postWait").toDouble(0), 0.0, 3600.0);
+            st.preWait = std::clamp(so.value("pre_wait").toDouble(0), 0.0, 3600.0);
+            st.postWait = std::clamp(so.value("post_wait").toDouble(0), 0.0, 3600.0);
             const QString c = so.value("continue").toString();
-            st.next = c == "follow" ? StepContinue::Follow : c == "autoFollow" ? StepContinue::AutoFollow : StepContinue::Wait;
+            st.next = c == "follow" ? StepContinue::Follow : c == "auto_follow" ? StepContinue::AutoFollow : StepContinue::Wait;
             s.steps.push_back(st);
         }
         m_sequences.push_back(s);

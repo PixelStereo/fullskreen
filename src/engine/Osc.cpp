@@ -248,6 +248,20 @@ QString safeName(const QString &name)
     return s.isEmpty() ? QStringLiteral("_") : s;
 }
 
+QStringList uniqueSegments(const QStringList &names)
+{
+    QStringList out;
+    QHash<QString, int> used;
+    for (const QString &n : names) {
+        const QString base = safeName(n);
+        QString seg = base;
+        if (int k = used.value(base)) seg += QStringLiteral("_%1").arg(k + 1);
+        used[base] += 1;
+        out << seg;
+    }
+    return out;
+}
+
 } // namespace osc
 
 // ---------------------------------------------------------------------------
@@ -650,7 +664,7 @@ struct LayerNodes {
                 return nullptr;
             };
             const IsfInput::Type t = in.type;
-            OscNode &n = method(prefix + '/' + osc::safeName(name).toLower(), type, t == IsfInput::Event ? 2 : 3,
+            OscNode &n = method(prefix + '/' + osc::safeName(name), type, t == IsfInput::Event ? 2 : 3,
                                 in.label.isEmpty() ? name : in.label,
                                 t == IsfInput::Event ? std::function<QVariantList(Layer &)>()
                                                      : [input, t](Layer &) -> QVariantList {
@@ -706,9 +720,8 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     LayerNodes L{this, e, id, [this](const QString &p, const QString &t, int a, const QString &d) -> OscNode & {
                      return add(p, t, a, d);
                  }};
-    bool isGroup, isViewport, topLevel, transport, sound, picture;
+    bool isGroup, isViewport, topLevel, transport, sound, picture, text;
     std::vector<std::pair<quint64, QString>> viewports; // routing of a top-level item
-    QStringList fxNames;
     std::vector<std::pair<int, QString>> effects;
     bool generator;
     {
@@ -730,16 +743,17 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
             }
         }
         transport = l->hasTransport();
+        text = l->isText();
         sound = bool(l->audio);
         picture = l->hasPicture();
         generator = l->generator && l->generator->isValid();
         // Generator parameters
         if (generator) L.isfParams(P + "/source", -1, *l->generator);
-        QHash<QString, int> used;
+        QStringList fxNames;
+        for (const auto &x : l->effects) fxNames << x->name();
+        const QStringList segs = osc::uniqueSegments(fxNames);
         for (int k = 0; k < int(l->effects.size()); ++k) {
-            QString seg = osc::safeName(l->effects[size_t(k)]->name());
-            if (int n = used.value(seg)) seg += QStringLiteral("_%1").arg(n + 1);
-            used[osc::safeName(l->effects[size_t(k)]->name())] += 1;
+            const QString seg = segs[k];
             effects.emplace_back(k, seg);
             if (l->effects[size_t(k)]->isValid()) L.isfParams(P + "/effects/" + seg, k, *l->effects[size_t(k)]);
         }
@@ -768,7 +782,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     // How much of a top-level item each viewport shows (0 hides it)
     for (const auto &[vid, seg] : viewports) {
         const quint64 v = vid;
-        OscNode &vo = L.method(P + "/viewports/" + seg, "f", 3, "Opacity in this viewport",
+        OscNode &vo = L.method(P + "/viewports/" + seg + "/opacity", "f", 3, "Opacity in this viewport",
                                [v](Layer &l) { return QVariantList{double(l.opacityIn(v))}; },
                                L.edit([v](Layer &l, const QVariantList &a) {
                                    if (a.isEmpty()) return false;
@@ -968,7 +982,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      return true;
                  }))
             .range = {minMax(-360, 360)};
-        static const char *kCorners[] = {"tl", "tr", "br", "bl"};
+        static const char *kCorners[] = {"top_left", "top_right", "bottom_right", "bottom_left"};
         static const char *kCornerNames[] = {"Top Left", "Top Right", "Bottom Right", "Bottom Left"};
         for (int k = 0; k < 4; ++k)
             L.method(P + "/spatial/corners/" + kCorners[k], "ff", 3, kCornerNames[k],
@@ -980,7 +994,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      }));
 
         // Soft edge: the picture fades out towards each side (width: 0..1 of the layer, 0.5 at most)
-        L.method(P + "/spatial/softedge/enable", "T", 3, "Soft Edge Enable",
+        L.method(P + "/spatial/soft_edge/enable", "T", 3, "Soft Edge Enable",
                  [](Layer &l) { return QVariantList{l.mapping.soft.enabled}; },
                  L.edit([](Layer &l, const QVariantList &a) {
                      l.mapping.soft.enabled = truth(a.value(0));
@@ -988,7 +1002,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  }));
         static const char *kSoftSides[] = {"left", "right", "top", "bottom"};
         for (int k = 0; k < 4; ++k) {
-            OscNode &w = L.method(P + "/spatial/softedge/" + kSoftSides[k] + "/width", "f", 3, QString("Soft Edge Width, %1").arg(kSoftSides[k]),
+            OscNode &w = L.method(P + "/spatial/soft_edge/" + kSoftSides[k] + "/width", "f", 3, QString("Soft Edge Width, %1").arg(kSoftSides[k]),
                                   [k](Layer &l) { return QVariantList{l.mapping.soft.width[k]}; },
                                   L.edit([k](Layer &l, const QVariantList &a) {
                                       if (a.isEmpty()) return false;
@@ -997,7 +1011,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                                   }));
             w.range = {minMax(0, 0.5)};
             w.clip = "both";
-            OscNode &p = L.method(P + "/spatial/softedge/" + kSoftSides[k] + "/power", "f", 3, QString("Soft Edge Power, %1").arg(kSoftSides[k]),
+            OscNode &p = L.method(P + "/spatial/soft_edge/" + kSoftSides[k] + "/power", "f", 3, QString("Soft Edge Power, %1").arg(kSoftSides[k]),
                                   [k](Layer &l) { return QVariantList{l.mapping.soft.power[k]}; },
                                   L.edit([k](Layer &l, const QVariantList &a) {
                                       if (a.isEmpty()) return false;
@@ -1110,6 +1124,68 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  })
             .range = {vals({"prefx", "postfx"})};
     }
+    if (text) {
+        // Text generator
+        auto textEdit = [&L](std::function<bool(TextSource &, const QVariantList &)> fn) {
+            return L.edit([fn](Layer &l, const QVariantList &a) {
+                if (!fn(l.text, a)) return false;
+                l.text.sanitize();
+                return true;
+            });
+        };
+        auto rgba = [](const QColor &c) { return QVariantList{c.redF(), c.greenF(), c.blueF(), c.alphaF()}; };
+        auto toColor = [](const QVariantList &a, QColor &c) {
+            if (a.size() < 3) return false;
+            c = QColor::fromRgbF(float(std::clamp(num(a[0]), 0.0, 1.0)), float(std::clamp(num(a[1]), 0.0, 1.0)),
+                                 float(std::clamp(num(a[2]), 0.0, 1.0)), float(a.size() > 3 ? std::clamp(num(a[3]), 0.0, 1.0) : 1.0));
+            return true;
+        };
+        const QString T = P + "/source/text";
+        L.method(T + "/content", "s", 3, "Text", [](Layer &l) { return QVariantList{l.text.content}; },
+                 textEdit([](TextSource &t, const QVariantList &a) { t.content = a.value(0).toString(); return true; }));
+        L.method(T + "/font", "s", 3, "Font", [](Layer &l) { return QVariantList{l.text.font}; },
+                 textEdit([](TextSource &t, const QVariantList &a) { t.font = a.value(0).toString(); return true; }));
+        struct Num {
+            const char *path, *label;
+            double lo, hi;
+            std::function<double(TextSource &)> get;
+            std::function<void(TextSource &, double)> set;
+        };
+        const Num nums[] = {
+            {"/size", "Size (px)", 1, 1000, [](TextSource &t) { return double(t.size); }, [](TextSource &t, double v) { t.size = int(std::lround(v)); }},
+            {"/line_height", "Line Height", 0.1, 10, [](TextSource &t) { return double(t.lineHeight); }, [](TextSource &t, double v) { t.lineHeight = float(v); }},
+            {"/letter_spacing", "Letter Spacing (px)", -200, 500, [](TextSource &t) { return double(t.letterSpacing); }, [](TextSource &t, double v) { t.letterSpacing = float(v); }},
+            {"/outline", "Outline Width (px)", 0, 200, [](TextSource &t) { return double(t.outline); }, [](TextSource &t, double v) { t.outline = float(v); }},
+            {"/shadow/x", "Shadow X (px)", -2000, 2000, [](TextSource &t) { return double(t.shadowX); }, [](TextSource &t, double v) { t.shadowX = float(v); }},
+            {"/shadow/y", "Shadow Y (px)", -2000, 2000, [](TextSource &t) { return double(t.shadowY); }, [](TextSource &t, double v) { t.shadowY = float(v); }}};
+        for (const Num &x : nums) {
+            auto get = x.get;
+            auto set = x.set;
+            const double lo = x.lo, hi = x.hi;
+            OscNode &n = L.method(T + x.path, "f", 3, x.label, [get](Layer &l) { return QVariantList{get(l.text)}; },
+                                  textEdit([set, lo, hi](TextSource &t, const QVariantList &a) {
+                                      if (a.isEmpty()) return false;
+                                      set(t, std::clamp(num(a[0]), lo, hi));
+                                      return true;
+                                  }));
+            n.range = {minMax(lo, hi)};
+            n.clip = "both";
+        }
+        L.method(T + "/shadow/enable", "T", 3, "Shadow Enable", [](Layer &l) { return QVariantList{l.text.shadow}; },
+                 textEdit([](TextSource &t, const QVariantList &a) { t.shadow = truth(a.value(0)); return true; }));
+        struct Col {
+            const char *path, *label;
+            QColor TextSource::*member;
+        };
+        for (const Col &c : {Col{"/color", "Color", &TextSource::color}, Col{"/outline/color", "Outline Color", &TextSource::outlineColor},
+                             Col{"/shadow/color", "Shadow Color", &TextSource::shadowColor}}) {
+            auto member = c.member;
+            OscNode &n = L.method(T + c.path, "ffff", 3, c.label, [member, rgba](Layer &l) { return rgba(l.text.*member); },
+                                  textEdit([member, toColor](TextSource &t, const QVariantList &a) { return toColor(a, t.*member); }));
+            n.range = {minMax(0, 1), minMax(0, 1), minMax(0, 1), minMax(0, 1)};
+            n.clip = "both";
+        }
+    }
     if (transport) {
         L.method(P + "/source/play", "T", 3, "Play", [](Layer &l) { return QVariantList{l.playing}; },
                  [e](int idx, const QVariantList &a) {
@@ -1197,7 +1273,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     // Readable names of the containers
     static const std::pair<const char *, const char *> kNames[] = {
         {"/source", "Source"}, {"/source/roi", "ROI"}, {"/color", "Color"},
-        {"/spatial", "Spatial"}, {"/spatial/corners", "Corners"}, {"/effects", "Effects"}};
+        {"/spatial", "Spatial"}, {"/spatial/corners", "Corners"}, {"/spatial/soft_edge", "Soft Edge"}, {"/source/text", "Text"}, {"/effects", "Effects"}};
     for (const auto &[suffix, name] : kNames) {
         auto it = m_nodes.find(P + suffix);
         if (it != m_nodes.end()) it->second.description = name;

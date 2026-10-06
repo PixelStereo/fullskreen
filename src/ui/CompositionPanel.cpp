@@ -223,7 +223,7 @@ QWidget *CompositionPanel::buildComposition()
     form->addRow(QStringLiteral("Frame rate"), m_rate);
     form->addRow(note(QStringLiteral("The pixel space every layer lives in. Each viewport shows a part of it, "
                                      "placed by its Spatial tab: three 1920 × 1080 projectors side by side "
-                                     "make a 5760 × 1080 composition. Mapping is relative: it follows size changes.")));
+                                     "make a 5760 × 1080 composition. The spatial placement is relative: it follows size changes.")));
 
     connect(m_preset, qOverload<int>(&QComboBox::activated), this, [this](int i) {
         const QSize s = m_preset->itemData(i).toSize();

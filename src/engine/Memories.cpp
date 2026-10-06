@@ -1,5 +1,6 @@
 // Memories (cues): snapshots of the layers, recalled with a fade; another source comes in with a transition.
 #include "EngineInternal.h"
+#include "Osc.h"
 
 #include <QBuffer>
 #include <QDir>
@@ -13,23 +14,23 @@ QString easingCurveKey(EasingCurve c)
 {
     switch (c) {
     case EasingCurve::Linear: return QStringLiteral("linear");
-    case EasingCurve::EaseIn: return QStringLiteral("easeIn");
-    case EasingCurve::EaseOut: return QStringLiteral("easeOut");
-    case EasingCurve::EaseInOut: return QStringLiteral("easeInOut");
-    case EasingCurve::EaseInCubic: return QStringLiteral("easeInCubic");
-    case EasingCurve::EaseOutCubic: return QStringLiteral("easeOutCubic");
+    case EasingCurve::EaseIn: return QStringLiteral("ease_in");
+    case EasingCurve::EaseOut: return QStringLiteral("ease_out");
+    case EasingCurve::EaseInOut: return QStringLiteral("ease_in_out");
+    case EasingCurve::EaseInCubic: return QStringLiteral("ease_in_cubic");
+    case EasingCurve::EaseOutCubic: return QStringLiteral("ease_out_cubic");
     }
-    return QStringLiteral("easeInOut");
+    return QStringLiteral("ease_in_out");
 }
 
 EasingCurve easingCurveFromKey(const QString &k)
 {
     if (k == "linear") return EasingCurve::Linear;
-    if (k == "easeIn") return EasingCurve::EaseIn;
-    if (k == "easeOut") return EasingCurve::EaseOut;
-    if (k == "easeInOut") return EasingCurve::EaseInOut;
-    if (k == "easeInCubic") return EasingCurve::EaseInCubic;
-    if (k == "easeOutCubic") return EasingCurve::EaseOutCubic;
+    if (k == "ease_in") return EasingCurve::EaseIn;
+    if (k == "ease_out") return EasingCurve::EaseOut;
+    if (k == "ease_in_out") return EasingCurve::EaseInOut;
+    if (k == "ease_in_cubic") return EasingCurve::EaseInCubic;
+    if (k == "ease_out_cubic") return EasingCurve::EaseOutCubic;
     return EasingCurve::EaseInOut; // default
 }
 
@@ -51,13 +52,18 @@ static double applyEasing(double t, EasingCurve curve)
 
 double easeCurve(double t, int curve) { return applyEasing(t, EasingCurve(std::clamp(curve, 0, 5))); }
 
-// The Text generator's values that fade, with their timing keys ("text/<key>"; their path in the state is
-// source/<key>). The content is "typed" over its time.
+// The Text generator's values that fade, with their timing keys (their OSC address; their path in the
+// state is source/<key>). The content is "typed" over its time.
 enum TextNum { TextSize, TextColor, TextLineHeight, TextLetterSpacing, TextOutline, TextOutlineColor, TextShadowColor,
                TextShadowX, TextShadowY, TextContent, TextNumCount };
-static const char *const kTextNumKeys[TextNumCount] = {"size",         "color",         "lineHeight", "letterSpacing",
-                                                       "outline",      "outlineColor",  "shadowColor", "shadowX",
-                                                       "shadowY",      "content"};
+static const char *const kTextNumKeys[TextNumCount] = {"size",         "color",         "line_height", "letter_spacing",
+                                                       "outline",      "outline_color",  "shadow_color", "shadow_x",
+                                                       "shadow_y",      "content"};
+// The same values as OSC addresses (timing keys)
+static const char *const kTextTimeKeys[TextNumCount] = {"source/text/size",         "source/text/color",          "source/text/line_height",
+                                                        "source/text/letter_spacing", "source/text/outline",        "source/text/outline/color",
+                                                        "source/text/shadow/color", "source/text/shadow/x",      "source/text/shadow/y",
+                                                        "source/text/content"};
 
 struct TextNumbers {
     float size = 48, lineHeight = 1.2f, letterSpacing = 0, outline = 0, shadowX = 4, shadowY = 4;
@@ -319,62 +325,75 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     };
     LayerTimes d;
     d.opacity = time(QStringLiteral("opacity"));
-    d.volume = time(QStringLiteral("volume"));
-    d.roi = time(QStringLiteral("roi"));
+    d.volume = time(QStringLiteral("source/volume"));
+    d.roi = time(QStringLiteral("source/roi"));
     d.temp = time(QStringLiteral("color/temp"));
     d.tint = time(QStringLiteral("color/tint"));
     d.add = time(QStringLiteral("color/add"));
     d.remove = time(QStringLiteral("color/remove"));
-    d.mapping = time(QStringLiteral("mapping"));
-    d.viewportOpacity = time(QStringLiteral("viewportOpacity"));
-    d.softEdge = time(QStringLiteral("softEdge"));
-    d.speed = time(QStringLiteral("speed"));
-    d.inPoint = time(QStringLiteral("inPoint"));
-    d.outPoint = time(QStringLiteral("outPoint"));
+    d.mapping = time(QStringLiteral("spatial"));
+    d.viewportOpacity = time(QStringLiteral("viewports"));
+    d.softEdge = time(QStringLiteral("spatial/soft_edge"));
+    d.speed = time(QStringLiteral("source/speed"));
+    d.inPoint = time(QStringLiteral("source/in"));
+    d.outPoint = time(QStringLiteral("source/out"));
     for (int k = 0; k < TextNumCount; ++k) {
-        const QString key = QStringLiteral("text/") + QString::fromLatin1(kTextNumKeys[k]);
+        const QString key = QString::fromLatin1(kTextTimeKeys[k]);
         d.text[k] = time(key);
         // The typing goes at an even pace unless the memory gives it a curve
         d.textCurve[k] = k == TextContent && !timing.contains(key + "/curve") ? EasingCurve::Linear : curve(key);
     }
     // Read easing curves for each parameter
     d.opacityCurve = curve(QStringLiteral("opacity"));
-    d.volumeCurve = curve(QStringLiteral("volume"));
-    d.roiCurve = curve(QStringLiteral("roi"));
+    d.volumeCurve = curve(QStringLiteral("source/volume"));
+    d.roiCurve = curve(QStringLiteral("source/roi"));
     d.colorCurve = curve(QStringLiteral("color/temp")); // use temp for all color parameters
-    d.mappingCurve = curve(QStringLiteral("mapping"));
-    d.softEdgeCurve = curve(QStringLiteral("softEdge"));
-    d.viewportOpacityCurve = curve(QStringLiteral("viewportOpacity"));
-    d.speedCurve = curve(QStringLiteral("speed"));
-    d.inOutCurve = curve(QStringLiteral("inPoint")); // use inPoint for both inPoint and outPoint
+    d.mappingCurve = curve(QStringLiteral("spatial"));
+    d.softEdgeCurve = curve(QStringLiteral("spatial/soft_edge"));
+    d.viewportOpacityCurve = curve(QStringLiteral("viewports"));
+    d.speedCurve = curve(QStringLiteral("source/speed"));
+    d.inOutCurve = curve(QStringLiteral("source/in")); // the curve of in is also the one of out
     auto params = [&](const IsfInstance *inst, const QString &base) {
         std::vector<double> v;
         if (inst)
             for (const IsfInput &in : inst->inputs()) v.push_back(time(base + in.name));
         return v;
     };
-    d.isf.push_back(params(l.generator.get(), QStringLiteral("source/params/")));
+    d.isf.push_back(params(l.generator.get(), QStringLiteral("source/")));
+    QStringList fxNames;
+    for (const auto &x : l.effects) fxNames << x->name();
+    const QStringList fxSegs = osc::uniqueSegments(fxNames);
     for (size_t k = 0; k < l.effects.size(); ++k)
-        d.isf.push_back(params(l.effects[k].get(), QStringLiteral("effects/%1/params/").arg(k)));
+        d.isf.push_back(params(l.effects[k].get(), QStringLiteral("effects/%1/").arg(fxSegs[int(k)])));
     return d;
 }
 
-QString Engine::timingKey(const QStringList &path)
+// The key of the time (and easing) of a value of a layer, from its path in the layer's JSON: the OSC address of that
+// value, or of the group of values that fade together (the ROI, the spatial shape, a color's three components…)
+QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
 {
     if (path.isEmpty()) return {};
     const QString &a = path[0];
-    if (a == "opacity" || a == "volume" || a == "mapping" || a == "viewportOpacity" || a == "softEdge" ||
-        a == "speed" || a == "inPoint" || a == "outPoint")
-        return a;
-    if (a == "source" && path.size() >= 2)
-        for (const char *k : kTextNumKeys)
-            if (path[1] == QLatin1String(k)) return QStringLiteral("text/") + path[1]; // Text generator (a shader's are in params)
-    if (a == "source" && path.size() >= 2 && path[1] == "roi") return QStringLiteral("roi");
-    if (a == "source" && path.size() >= 3 && path[1] == "params") return QStringLiteral("source/params/") + path[2];
+    if (a == "opacity" || a == "viewports") return a;
+    if (a == "spatial") return path.size() >= 2 && path[1] == "soft_edge" ? QStringLiteral("spatial/soft_edge") : QStringLiteral("spatial");
+    if (a == "volume") return QStringLiteral("source/volume");
+    if (a == "source" && path.size() >= 2) {
+        for (int k = 0; k < TextNumCount; ++k)
+            if (path[1] == QLatin1String(kTextNumKeys[k])) return QString::fromLatin1(kTextTimeKeys[k]); // Text generator
+        if (path[1] == "roi") return QStringLiteral("source/roi");
+        if (path[1] == "speed" || path[1] == "in" || path[1] == "out") return QStringLiteral("source/") + path[1];
+        if (path[1] == "params" && path.size() >= 3) return QStringLiteral("source/") + path[2];
+    }
     if (a == "color" && path.size() >= 2 && (path[1] == "temp" || path[1] == "tint" || path[1] == "add" || path[1] == "remove"))
         return QStringLiteral("color/") + path[1];
-    if (a == "effects" && path.size() >= 4 && path[2] == "params")
-        return QStringLiteral("effects/%1/params/%2").arg(path[1], path[3]);
+    if (a == "effects" && path.size() >= 4 && path[2] == "params") {
+        QStringList names;
+        for (const QJsonValue &v : layer.value("effects").toArray())
+            names << QFileInfo(v.toObject().value("path").toString()).completeBaseName();
+        const int k = path[1].toInt();
+        if (k < 0 || k >= names.size()) return {};
+        return QStringLiteral("effects/%1/%2").arg(osc::uniqueSegments(names).at(k), path[3]);
+    }
     return {};
 }
 
@@ -622,7 +641,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
                        QDir::cleanPath(curSrc.value("path").toString()) != QDir::cleanPath(src.value("path").toString()))) {
             // Another media: it comes in with the layer's transition over the source's time (the memory's
             // fade unless it has its own), or at once for a cut
-            const QJsonValue own = o.value("timing").toObject().value("source");
+            const QJsonValue own = o.value("timing").toObject().value("source/file");
             const double t = own.isDouble() ? std::clamp(own.toDouble(), 0.0, 600.0) : std::max(0.0, fade);
             takeOver(id, kOwnAll);
             if (t <= 0) {
@@ -655,8 +674,8 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         }
         if (effectPaths(cur.value("effects").toArray()) != effectPaths(o.value("effects").toArray()))
             setEffectsJson(idx, o.value("effects").toArray()); // another chain: at once
-        if (src.contains("playMode")) {
-            setLayerPlayMode(idx, playModeFromKey(src.value("playMode").toString()));
+        if (src.contains("play_mode")) {
+            setLayerPlayMode(idx, playModeFromKey(src.value("play_mode").toString()));
             setLayerSpeed(idx, src.value("speed").toDouble(1.0));
             setLayerInOut(idx, src.value("in").toDouble(0), src.value("out").toDouble(-1));
         }
@@ -665,13 +684,13 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         Layer *l = layer(idx);
         if (!l) continue;
         l->name = o.value("name").toString(l->name);
-        l->blend = blendModeFromKey(o.value("blend").toString(blendModeKey(l->blend)));
-        l->effectsEnabled = o.value("effectsEnabled").toBool(l->effectsEnabled);
+        l->blend = blendModeFromKey(o.value("blend_mode").toString(blendModeKey(l->blend)));
+        l->effectsEnabled = o.value("effects_enable").toBool(l->effectsEnabled);
         l->muted = o.value("muted").toBool(l->muted);
         // Which viewports it is drawn in: a memory can send a layer to another projector. Read into the
         // fade's target (not onto the layer) so it moves there from the current values
         std::map<quint64, float> targetViewportOpacity;
-        const QJsonObject vo = o.value("viewportOpacity").toObject();
+        const QJsonObject vo = o.value("viewports").toObject();
         for (auto it = vo.begin(); it != vo.end(); ++it)
             targetViewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
         const QJsonArray fx = o.value("effects").toArray();
@@ -711,8 +730,8 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
                 to.color.remove[c] = float(color.value("remove").toArray().at(c).toDouble(0));
             }
         }
-        if (o.contains("mapping")) {
-            to.mapping.fromJson(o.value("mapping").toObject());
+        if (o.contains("spatial")) {
+            to.mapping.fromJson(o.value("spatial").toObject());
             to.soft = to.mapping.soft; // setNumbers applies `soft` over the mapping's: the memory's crop
         }
         to.viewportOpacity = targetViewportOpacity;
@@ -749,8 +768,8 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         job->owned = OwnOpacity | OwnVolume | OwnViewportOpacity | OwnIsf;
         if (roi.size() == 4) job->owned |= OwnRoi;
         if (!color.isEmpty()) job->owned |= OwnColor;
-        if (o.contains("mapping")) job->owned |= OwnMapping | OwnSoft;
-        if (src.contains("playMode")) job->owned |= OwnSpeed | OwnInOut;
+        if (o.contains("spatial")) job->owned |= OwnMapping | OwnSoft;
+        if (src.contains("play_mode")) job->owned |= OwnSpeed | OwnInOut;
         if (l->type == SourceType::Text && src.value("type").toString() == "text") job->owned |= kOwnText;
         takeOver(id, job->owned);
         if (!to.isf.empty()) readParams(l->generator.get(), src.value("params").toObject(), to.isf[0]);
@@ -970,7 +989,7 @@ QJsonObject Engine::memoryToJson(const Memory &m, const QString &dir) const
         QJsonObject o = v.toObject();
         auto rel = [&](QJsonObject x) {
             const QString p = x.value("path").toString();
-            if (!p.isEmpty() && !dir.isEmpty()) x["relativePath"] = QDir(dir).relativeFilePath(p);
+            if (!p.isEmpty() && !dir.isEmpty()) x["relative_path"] = QDir(dir).relativeFilePath(p);
             return x;
         };
         o["source"] = rel(o.value("source").toObject());
@@ -1003,7 +1022,7 @@ Engine::Memory Engine::memoryFromJson(const QJsonObject &o, const QString &dir) 
         QJsonObject l = v.toObject();
         auto resolve = [&](QJsonObject x) {
             if (x.contains("path")) x["path"] = resolvePath(x, dir);
-            x.remove("relativePath");
+            x.remove("relative_path");
             return x;
         };
         QJsonObject src = l.value("source").toObject();

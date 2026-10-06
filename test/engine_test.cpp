@@ -12,6 +12,7 @@
 #include <QElapsedTimer>
 #include <QLineF>
 #include <mutex>
+#include <QRegularExpression>
 #include <QUndoStack>
 #include <QCoreApplication>
 #include <QDir>
@@ -450,7 +451,7 @@ int main(int argc, char **argv)
         CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
         CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
         CHECK(server.handleMessage({L + "/source/roi/left", "f", {0.25}}) && std::abs(e.layer(V + 1)->roi.left() - 0.25) < 1e-9);
-        CHECK(server.handleMessage({L + "/effects/FlipCrop/fliph", "T", {true}}));
+        CHECK(server.handleMessage({L + "/effects/FlipCrop/flipH", "T", {true}}));
         CHECK(e.layer(V + 1)->effects[0]->inputs()[1].bValue || e.layer(V + 1)->effects[0]->inputs()[2].bValue);
         CHECK(server.handleMessage({L + "/effects/enable", "F", {false}}) && !e.layer(V + 1)->effectsEnabled);
         CHECK(server.handleMessage({"/layers/G/opacity", "i", {0}}) && e.layer(V + 0)->opacity == 0.0f);
@@ -491,13 +492,13 @@ int main(int argc, char **argv)
                 for (auto it = c.begin(); it != c.end(); ++it) {
                     ++nodes;
                     const QString seg = it.key();
-                    const bool userName = parent == "layers" || parent == "viewports" || parent == "effects" || parent == "params";
+                    const bool userName = parent == "layers" || parent == "viewports" || parent == "effects" || parent == "*fx"; // names: layers, viewports, effects, shader parameters
                     if (!userName && seg != seg.toLower()) { ++bad; qWarning("not lowercase: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString())); }
                     if (!userName && (seg.endsWith("enabled") || seg.endsWith("Enabled") || seg.endsWith("On") || seg == "master")) {
                         ++bad;
                         qWarning("switch not named enable: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString()));
                     }
-                    walk(it.value().toObject(), userName ? QStringLiteral("*") : seg);
+                    walk(it.value().toObject(), userName ? (parent == "effects" ? QStringLiteral("*fx") : QStringLiteral("*")) : seg);
                 }
             };
             walk(root, QString());
@@ -714,9 +715,9 @@ int main(int argc, char **argv)
             CHECK(L()->color.temp < 1 && e.isFading());
             e.advanceFades(2.0);
             CHECK(std::abs(L()->color.temp - 1000) < 1e-3 && !e.isFading());
-            CHECK(Engine::timingKey({"source", "roi", "2"}) == "roi" && Engine::timingKey({"color", "add", "1"}) == "color/add" &&
-                  Engine::timingKey({"effects", "0", "params", "radius"}) == "effects/0/params/radius" &&
-                  Engine::timingKey({"source", "speed"}).isEmpty());
+            CHECK(Engine::timingKey({"source", "roi", "2"}, {}) == "source/roi" && Engine::timingKey({"color", "add", "1"}, {}) == "color/add" &&
+                  Engine::timingKey({"effects", "0", "params", "radius"}, QJsonObject{{"effects", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "effects/Blur/radius" &&
+                  Engine::timingKey({"source", "speed"}, {}) == "source/speed" && Engine::timingKey({"source", "file"}, {}).isEmpty());
             // Text generator: the memory's text is typed over its time (erased back to what both share, then
             // typed); its style moves on its own times
             {
@@ -731,13 +732,13 @@ int main(int argc, char **argv)
                 });
                 QJsonObject st = e.layerJson(e.indexOfId(xid));
                 QJsonObject src = st.value("source").toObject();
-                CHECK(src.value("type") == "text" && src.value("color").isArray() && src.value("hAlign") == "center");
+                CHECK(src.value("type") == "text" && src.value("color").isArray() && src.value("h_align") == "center");
                 src["content"] = "Help me";
                 src["size"] = 80;
                 src["bold"] = true;
                 src["color"] = QJsonArray{1, 0, 0, 1};
                 st["source"] = src;
-                st["timing"] = QJsonObject{{"text/size", 2.0}, {"text/color", 0}};
+                st["timing"] = QJsonObject{{"source/text/size", 2.0}, {"source/text/color", 0}};
                 e.applyLayers(QJsonArray{st}, 1.0);
                 CHECK(X()->text.content == "Help me" && X()->text.shown() == "Hello" && X()->text.bold);
                 CHECK(X()->text.color == QColor(255, 0, 0)); // a cut
@@ -753,16 +754,16 @@ int main(int argc, char **argv)
                 // A cut types nothing
                 src["content"] = "Cut";
                 st["source"] = src;
-                st["timing"] = QJsonObject{{"text/content", 0}};
+                st["timing"] = QJsonObject{{"source/text/content", 0}};
                 e.applyLayers(QJsonArray{st}, 1.0);
                 CHECK(X()->text.shown() == "Cut");
                 e.advanceFades(3.0);
-                CHECK(Engine::timingKey({"source", "color", "2"}) == "text/color" &&
-                      Engine::timingKey({"source", "content"}) == "text/content" &&
-                      Engine::timingKey({"source", "params", "size"}) == "source/params/size");
+                CHECK(Engine::timingKey({"source", "color", "2"}, {}) == "source/text/color" &&
+                      Engine::timingKey({"source", "content"}, {}) == "source/text/content" &&
+                      Engine::timingKey({"source", "params", "size"}, {}) == "source/size");
                 // Kept in range when read from a file
                 src["size"] = 100000;
-                src["lineHeight"] = -3;
+                src["line_height"] = -3;
                 st["source"] = src;
                 st.remove("timing");
                 e.applyLayers(QJsonArray{st}, 0.0);
@@ -796,6 +797,24 @@ int main(int argc, char **argv)
                 const int mi = e.addMemory(mc);
                 CHECK(e.saveProject(tmp + "/comp.fulskrin", {}, &err));
                 CHECK(readJson(tmp + "/comp.fulskrin").value("memories").toArray().at(mi).toObject().value("composition") == c);
+                // Every key of a project is lowercase snake_case (parameter names of shaders and the times of a memory aside)
+                {
+                    int bad = 0;
+                    std::function<void(const QJsonValue &)> walk = [&](const QJsonValue &v) {
+                        if (v.isArray()) {
+                            for (const QJsonValue &x : v.toArray()) walk(x);
+                        } else if (v.isObject()) {
+                            const QJsonObject o = v.toObject();
+                            for (auto it = o.begin(); it != o.end(); ++it) {
+                                static const QRegularExpression ok("^[a-z0-9_]+$");
+                                if (!ok.match(it.key()).hasMatch()) { ++bad; qWarning("project key: %s", qPrintable(it.key())); }
+                                if (it.key() != "params" && it.key() != "timing") walk(it.value());
+                            }
+                        }
+                    };
+                    walk(readJson(tmp + "/comp.fulskrin"));
+                    CHECK(bad == 0);
+                }
                 e.removeMemory(mi);
                 e.fadeCompositionOpacity(1.0, 0);
                 e.setAudioVolume(1.0f);
@@ -879,11 +898,11 @@ int main(int argc, char **argv)
             e.advanceFades(0.6);
             CHECK(center().blue() > 250);
             // The source's own time: a cut, no transition
-            red["timing"] = QJsonObject{{"source", 0}};
+            red["timing"] = QJsonObject{{"source/file", 0}};
             e.applyLayers(QJsonArray{red}, 1.0);
             CHECK(!e.isTransitioning(tid) && center().red() > 250);
             // A transition running when the layer goes: it goes with it
-            blue["timing"] = QJsonObject{{"source", 2.0}};
+            blue["timing"] = QJsonObject{{"source/file", 2.0}};
             e.applyLayers(QJsonArray{blue}, 0.0); // its own time even with no memory fade
             CHECK(e.isTransitioning(tid));
             e.removeLayer(e.indexOfId(tid));
@@ -1156,7 +1175,7 @@ int main(int argc, char **argv)
             a.repeat = 0;
             Engine::AnimTrack rot;
             rot.layer = tid;
-            rot.param = "mapping/rotation";
+            rot.param = "spatial/rotation";
             rot.oscillator = true;
             rot.wave = Engine::AnimWave::Saw;
             rot.period = 4;
@@ -1170,12 +1189,12 @@ int main(int argc, char **argv)
             e.controlAnimation(aid, A::Play);
             CHECK(near(val("opacity"), 0) && e.animation(ai).state == Engine::AnimState::Playing);
             e.advanceFades(1.0);
-            CHECK(near(val("opacity"), 0.5) && near(val("mapping/rotation"), -90));
+            CHECK(near(val("opacity"), 0.5) && near(val("spatial/rotation"), -90));
             e.advanceFades(1.0);
-            CHECK(near(val("opacity"), 1.0) && near(val("mapping/rotation"), 0));
+            CHECK(near(val("opacity"), 1.0) && near(val("spatial/rotation"), 0));
             CHECK(near(e.layer(e.indexOfId(tid))->mapping.bounds().width(), before.width())); // turned, not shrunk
             e.advanceFades(2.5); // 4.5 s: the second pass of the pattern
-            CHECK(near(val("opacity"), 0.25) && near(val("mapping/rotation"), -135));
+            CHECK(near(val("opacity"), 0.25) && near(val("spatial/rotation"), -135));
             // Paused: its values are left alone
             e.controlAnimation(aid, A::Pause);
             e.layer(e.indexOfId(tid))->opacity = 0.9f;
@@ -1450,7 +1469,7 @@ int main(int argc, char **argv)
             Engine::Memory edited = e.memory(0);
             QJsonObject l0 = edited.layers[0].toObject();
             l0["opacity"] = 0.25;
-            l0["blend"] = "screen";
+            l0["blend_mode"] = "screen";
             QJsonObject l1 = edited.layers[1].toObject();
             QJsonObject src = l1.value("source").toObject();
             QJsonObject params = src.value("params").toObject();
@@ -1571,7 +1590,7 @@ int main(int argc, char **argv)
         // Saved, read back, recalled by a memory
         const QJsonObject json = e.layerJson(e.indexOfId(lid));
         CHECK(json.value("color").toObject().value("mask").toString() == QString::number(maskId)
-              && json.value("color").toObject().value("maskInvert").toBool());
+              && json.value("color").toObject().value("mask_invert").toBool());
         CHECK(e.setColorMask(e.indexOfId(lid), 0, false, &err));
         e.replaceLayerJson(e.indexOfId(lid), json);
         {
@@ -1645,7 +1664,7 @@ int main(int argc, char **argv)
         CHECK(g.pixelColor(20, 19).red() > 100 && g.pixelColor(20, 35).blue() > 250);
         // Saved and loaded
         Mapping m;
-        m.fromJson(e.layerJson(e.indexOfId(id)).value("mapping").toObject());
+        m.fromJson(e.layerJson(e.indexOfId(id)).value("spatial").toObject());
         CHECK(m.soft.enabled && m.soft.width[SoftEdge::Top] == 0.5 && m.soft.power[SoftEdge::Top] == 2);
     }
 
@@ -1829,7 +1848,7 @@ int main(int argc, char **argv)
         a = e.grabViewport(vp1);
         b = e.grabViewport(vp2);
         CHECK(a.pixelColor(16, 8).red() > 250 && b.pixelColor(16, 8).blue() < 5 && b.pixelColor(16, 8).red() < 5);
-        CHECK(e.layerJson(li).value("viewportOpacity").toObject().size() == 1);
+        CHECK(e.layerJson(li).value("viewports").toObject().size() == 1);
         // Half of it in the second viewport: the blue is halfway to black, the first viewport is unchanged
         e.setOpacityIn(li, vp2, 0.5f);
         for (int k = 0; k < 2; ++k) e.renderFrame();
@@ -1837,7 +1856,7 @@ int main(int argc, char **argv)
         b = e.grabViewport(vp2);
         CHECK(std::abs(b.pixelColor(16, 8).blue() - 128) < 4 && a.pixelColor(16, 8).red() > 250);
         e.setOpacityIn(li, vp2, 1.0f);
-        CHECK(e.layerJson(li).value("viewportOpacity").toObject().isEmpty());
+        CHECK(e.layerJson(li).value("viewports").toObject().isEmpty());
         // A viewport has its own color and opacity
         {
             Engine::Lock lk(&e.mutex());
@@ -2161,7 +2180,7 @@ int main(int argc, char **argv)
         }
         QJsonObject legacy = e.layerJson(V + 0);
         QJsonObject color = legacy.value("color").toObject();
-        for (const QString &k : {QStringLiteral("enabled"), QStringLiteral("removeOn")}) color.remove(k);
+        for (const QString &k : {QStringLiteral("enable"), QStringLiteral("remove_enable")}) color.remove(k);
         legacy["color"] = color;
         e.replaceLayerJson(V + 0, legacy);
         {
@@ -2740,7 +2759,7 @@ int main(int argc, char **argv)
                 Engine::Lock lk(&e.mutex());
                 CHECK(!e.layer(s1)->ended && e.layer(s1)->finalTex != 0);
             }
-            CHECK(e.layerJson(s1).value("source").toObject().value("playMode").toString() == "oneshot");
+            CHECK(e.layerJson(s1).value("source").toObject().value("play_mode").toString() == "oneshot");
             // Default mode (preference) given to a newly loaded video
             e.setDefaultPlayMode(PlayMode::PingPong);
             CHECK(e.setLayerVideo(s1, root + "/media/h264.mp4", &err));

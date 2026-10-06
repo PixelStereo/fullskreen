@@ -1418,7 +1418,7 @@ void MainWindow::updateTitle()
 QJsonObject MainWindow::uiState() const
 {
     QJsonObject o;
-    o["selectedLayer"] = currentLayer();
+    o["selected_layer"] = currentLayer();
     return o;
 }
 
@@ -1444,7 +1444,7 @@ void MainWindow::afterProjectLoaded(const QJsonObject &ui)
     m_modesBefore.clear();
     m_composition->syncFromEngine();
     m_bin->refresh();
-    selectLayer(qBound(-1, ui.value("selectedLayer").toInt(0), m_engine->layerCount() - 1));
+    selectLayer(qBound(-1, ui.value("selected_layer").toInt(0), m_engine->layerCount() - 1));
     updateTitle();
 }
 
@@ -1533,9 +1533,9 @@ void MainWindow::autosave()
     if (!m_autosaveEnabled) return;
     if (m_autosaveDone && m_undo->index() == m_autosaveIndex) return; // nothing new
     QJsonObject ui = uiState();
-    ui["autosaveOf"] = m_engine->projectPath();
-    ui["autosaveTime"] = QDateTime::currentDateTime().toString(Qt::ISODate);
-    ui["autosaveDirty"] = isDirty();
+    ui["autosave_of"] = m_engine->projectPath();
+    ui["autosave_time"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    ui["autosave_dirty"] = isDirty();
     QString err;
     if (m_engine->saveProject(autosavePath(), ui, &err)) {
         m_autosaveIndex = m_undo->index();
@@ -1553,8 +1553,8 @@ bool MainWindow::offerRecovery()
     QJsonObject ui;
     if (f.open(QIODevice::ReadOnly)) ui = QJsonDocument::fromJson(f.readAll()).object().value("ui").toObject();
     f.close();
-    const QString original = ui.value("autosaveOf").toString();
-    const QDateTime when = QDateTime::fromString(ui.value("autosaveTime").toString(), Qt::ISODate);
+    const QString original = ui.value("autosave_of").toString();
+    const QDateTime when = QDateTime::fromString(ui.value("autosave_time").toString(), Qt::ISODate);
     QMessageBox box(QMessageBox::Warning, QStringLiteral("Recovery"), QStringLiteral("Fulskrin did not quit normally."),
                     QMessageBox::NoButton, this);
     box.setInformativeText(QStringLiteral("Restore the session autosaved on %1 %2?")
@@ -1572,7 +1572,7 @@ bool MainWindow::offerRecovery()
     QString err;
     m_engine->loadProject(path, &loadedUi, &err);
     m_engine->setProjectPath(original); // "Save" writes to the original project
-    m_forceDirty = ui.value("autosaveDirty").toBool(true);
+    m_forceDirty = ui.value("autosave_dirty").toBool(true);
     afterProjectLoaded(loadedUi);
     if (!err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Recovery"), err);
     const bool shown = std::any_of(m_outputs.begin(), m_outputs.end(), [](const auto &p) { return p.second.mode != 0; });

@@ -748,10 +748,10 @@ TrackRow::TrackRow(TimelineWindow *w, int index) : m_w(w), m_e(w->m_engine), m_i
     fill();
 }
 
-// The category of a number: its label up to " › " (none: shown at the top of the menu)
+// The category of a number: its label up to the last " › " (none: shown at the top of the menu)
 static QString paramCategory(const QString &label)
 {
-    const int k = label.indexOf(QStringLiteral(" › "));
+    const int k = label.lastIndexOf(QStringLiteral(" › "));
     return k < 0 ? QString() : label.left(k);
 }
 
@@ -785,8 +785,8 @@ void TrackRow::selectParam(const QString &path)
     track().param = path;
     const auto [lo, hi] = range();
     track().keys = {AnimKey{0, currentValue(), 3}};
-    track().center = path == "mapping/rotation" ? 0 : (lo + hi) / 2;
-    track().amplitude = path == "mapping/rotation" ? 180 : (hi - lo) / 2;
+    track().center = path == "spatial/rotation" ? 0 : (lo + hi) / 2;
+    track().amplitude = path == "spatial/rotation" ? 180 : (hi - lo) / 2;
     fillParams(); // the check mark
     fill();
     changed();
@@ -1112,7 +1112,7 @@ TimelineWindow::TimelineWindow(Engine *engine, QUndoStack *undo, QWidget *parent
                 if (!m_engine->layer(i)->isViewport) layer = m_engine->layer(i)->id;
         }
         t.layer = layer;
-        t.param = layer ? QStringLiteral("opacity") : QStringLiteral("level");
+        t.param = layer ? QStringLiteral("opacity") : QStringLiteral("opacity");
         double v = 1;
         m_engine->animParamValue(t.layer, t.param, &v);
         t.keys = {AnimKey{0, v, 3}};
