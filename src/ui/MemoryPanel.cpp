@@ -813,7 +813,7 @@ void MemoryPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject 
     flag(parent, QStringLiteral("Visible"), {"visible"});
     flag(parent, QStringLiteral("Locked"), {"locked"});
     num(parent, QStringLiteral("Opacity"), {"opacity"}, 0, 1, 100, 0, QStringLiteral(" %"), 0.01);
-    choice(parent, QStringLiteral("Blend"), {"blend"}, {"normal", "add", "screen", "multiply", "subtract", "difference"},
+    choice(parent, QStringLiteral("Blend Mode"), {"blend"}, {"normal", "add", "screen", "multiply", "subtract", "difference"},
            {QStringLiteral("Normal"), QStringLiteral("Add"), QStringLiteral("Screen"), QStringLiteral("Multiply"), QStringLiteral("Subtract"),
             QStringLiteral("Difference")});
     if (hasSound) {
@@ -1132,13 +1132,13 @@ void MemoryPanel::setCompositionIncluded(int i, bool included)
     emit edited();
 }
 
-// The composition in the memory: its level, the sound's volume and mute (a memory stored before they were kept:
+// The composition in the memory: its opacity and the sound volume (a memory stored before they were kept:
 // nothing, the recall leaves them)
 void MemoryPanel::fillComposition(const QJsonObject &c)
 {
     auto *top = new QTreeWidgetItem(m_layers, {QStringLiteral("Composition"),
                                                c.isEmpty() ? QStringLiteral("—")
-                                                           : QStringLiteral("%1%").arg(std::lround(c.value("level").toDouble(1) * 100))});
+                                                           : QStringLiteral("%1%").arg(std::lround(c.value("opacity").toDouble(1) * 100))});
     top->setData(0, KeyRole, QStringLiteral("composition"));
     QFont bold = top->font(0);
     bold.setBold(true);
@@ -1165,14 +1165,8 @@ void MemoryPanel::fillComposition(const QJsonObject &c)
         f.timeKey = key;
         addField(top, f, c.value(key))->setToolTip(0, tip);
     };
-    num(QStringLiteral("Level"), QStringLiteral("level"), 1, QStringLiteral("The composition fader (the blackout stays apart)"));
-    num(QStringLiteral("Volume"), QStringLiteral("volume"), 2, QStringLiteral("Master volume of the sound"));
-    MemField mute;
-    mute.kind = MemField::Bool;
-    mute.row = -1;
-    mute.path = {QStringLiteral("muted")};
-    mute.label = QStringLiteral("Mute");
-    addField(top, mute, c.value("muted"));
+    num(QStringLiteral("Opacity"), QStringLiteral("opacity"), 1, QStringLiteral("The composition fader (the blackout stays apart)"));
+    num(QStringLiteral("Volume"), QStringLiteral("volume"), 2, QStringLiteral("Volume of the composition sound"));
     top->setExpanded(m_expanded.contains(QStringLiteral("composition")));
 }
 

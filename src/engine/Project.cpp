@@ -138,8 +138,7 @@ void Engine::clearProject()
         m_recallTotal = 0;
         for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
         m_transitions.clear();
-        m_audio->setMasterVolume(1.0f);
-        m_audio->setMuted(false);
+        m_audio->setVolume(1.0f);
         m_publishDirty = true; // the publishers of the viewports that went are stopped
     }
     for (auto &l : old) {
@@ -416,7 +415,8 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         Lock lk(&m_mutex);
         root["app"] = "Fulskrin";
         root["formatVersion"] = 1;
-        root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()}};
+        root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()},
+                                    {"fps", renderSettings().frameRate}};
         QJsonArray layers;
         for (const auto &l : m_layers) layers.append(layerToJson(*l, dir));
         root["layers"] = layers;
@@ -424,7 +424,7 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         for (const QString &p : m_binItems)
             bin.append(QJsonObject{{"path", p}, {"relativePath", QDir(dir).relativeFilePath(p)}});
         root["bin"] = bin;
-        root["audio"] = QJsonObject{{"volume", double(m_audio->masterVolume())}, {"muted", m_audio->muted()}};
+        root["audio"] = QJsonObject{{"volume", double(m_audio->volume())}};
         QJsonArray mems;
         for (const Memory &m : m_memories) mems.append(memoryToJson(m, dir));
         root["memories"] = mems;
@@ -464,8 +464,11 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     clearProject();
     const QJsonObject comp = root.value("composition").toObject();
     setCompositionSize(QSize(comp.value("width").toInt(1920), comp.value("height").toInt(1080)));
-    // Rendering is the machine's (Settings): a "render" saved by earlier versions in the project is ignored
-    setRenderSettings(RenderSettings());
+    {
+        RenderSettings rs;
+        rs.frameRate = comp.value("fps").toDouble(-1); // -1: the machine's default
+        setRenderSettings(rs);
+    }
     const QString dir = QFileInfo(path).absolutePath();
     QStringList warnings;
     const QJsonArray layers = root.value("layers").toArray();
@@ -487,8 +490,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     for (const QJsonValue &v : root.value("bin").toArray()) bin << resolvePath(v.toObject(), dir);
     addBinItems(bin);
     const QJsonObject audio = root.value("audio").toObject();
-    m_audio->setMasterVolume(float(std::clamp(audio.value("volume").toDouble(1.0), 0.0, 2.0)));
-    m_audio->setMuted(audio.value("muted").toBool(false));
+    m_audio->setVolume(float(std::clamp(audio.value("volume").toDouble(1.0), 0.0, 2.0)));
     {
         Lock lk(&m_mutex);
         for (const QJsonValue &v : root.value("memories").toArray()) {

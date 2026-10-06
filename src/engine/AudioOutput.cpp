@@ -148,7 +148,7 @@ void AudioOutput::render(float *out, int frames)
     const double lat = latency();
     for (const auto &s : m_streams) s->mix(out, frames, lat);
 
-    const float goal = m_muted ? 0.0f : std::max(0.0f, m_masterVolume.load());
+    const float goal = std::max(0.0f, m_volume.load());
     const float ramp = 1.0f / (0.01f * kSampleRate);
     const float fadeGoal = m_fadeTarget.load(), fadeStep = m_fadeStep.load();
     float fade = m_fadeLevel.load();

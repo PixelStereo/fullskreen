@@ -4,7 +4,7 @@
 #include "LayerInspector.h"
 #include "LayerTable.h"
 #include "MappingView.h"
-#include "MasterPanel.h" // CompositionPanel
+#include "CompositionPanel.h" // CompositionPanel
 #include "MediaBin.h"
 #include "MemoryPanel.h"
 #include "SequencePanel.h"
@@ -83,10 +83,10 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     m_view = new MappingView(m_engine);
     m_view->setUndoStack(m_undo);
     m_inspector = new LayerInspector(m_engine, m_undo);
-    m_master = new CompositionPanel(m_engine);
+    m_composition = new CompositionPanel(m_engine);
     m_tabs = new QTabWidget;
     m_tabs->addTab(scrolled(m_inspector), QStringLiteral("Layer"));
-    m_tabs->addTab(scrolled(m_master), QStringLiteral("Composition"));
+    m_tabs->addTab(scrolled(m_composition), QStringLiteral("Composition"));
     m_settings = new SettingsPanel(m_engine);
     m_tabs->addTab(scrolled(m_settings), QStringLiteral("Settings"));
     connect(m_settings, &SettingsPanel::playModeChanged, this,
@@ -242,15 +242,15 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(&m_inspectorTimer, &QTimer::timeout, m_inspector, &LayerInspector::rebuild);
 
     // --- Composition
-    connect(m_master, &CompositionPanel::blackoutChanged, this, [this](bool on) {
+    connect(m_composition, &CompositionPanel::blackoutChanged, this, [this](bool on) {
         QSignalBlocker b(m_blackoutAction);
         m_blackoutAction->setChecked(on);
     });
-    connect(m_master, &CompositionPanel::compositionEdited, this, &MainWindow::markDirty);
+    connect(m_composition, &CompositionPanel::compositionEdited, this, &MainWindow::markDirty);
     connect(m_settings, &SettingsPanel::renderDefaultsChanged, this, [this] {
         m_engine->setRenderDefaults(SettingsPanel::renderDefaults());
     });
-    connect(m_master, &CompositionPanel::audioEdited, this, &MainWindow::markDirty);
+    connect(m_composition, &CompositionPanel::audioEdited, this, &MainWindow::markDirty);
 
     // --- General sync
     connect(m_view, &MappingView::layerPicked, this, &MainWindow::selectLayer);
@@ -417,7 +417,7 @@ bool MainWindow::handleControlKey(int key, Qt::KeyboardModifiers mods)
 {
     const bool ctrl = mods & Qt::ControlModifier;
     const bool shift = mods & Qt::ShiftModifier;
-    if (ctrl && key == Qt::Key_B) setBlackout(!m_master->isBlackout());
+    if (ctrl && key == Qt::Key_B) setBlackout(!m_composition->isBlackout());
     else if (ctrl && shift && key == Qt::Key_F) toggleAllOutputs(1);
     else if (ctrl && key == Qt::Key_F) toggleAllOutputs(2);
     else if (!ctrl && shift && key == Qt::Key_Space) sequenceBack();
@@ -428,7 +428,7 @@ bool MainWindow::handleControlKey(int key, Qt::KeyboardModifiers mods)
 
 void MainWindow::setBlackout(bool on)
 {
-    m_master->setBlackout(on);
+    m_composition->setBlackout(on);
     QSignalBlocker b(m_blackoutAction);
     m_blackoutAction->setChecked(on);
 }
@@ -1261,7 +1261,7 @@ void MainWindow::startOsc()
         connect(m_osc, &OscServer::edited, this, [this] {
             markDirty();
             refreshLayerList();
-            m_master->syncFromEngine();
+            m_composition->syncFromEngine();
             m_inspectorTimer.start(); // the inspector follows (not during a gesture: it is rebuilt a bit later)
         });
         m_oscThread->start();
@@ -1343,7 +1343,7 @@ void MainWindow::statusTick()
 {
     m_engine->acknowledgeFrame(); // safety net: the preview cannot stay frozen
     m_inspector->refreshDynamic();
-    m_master->refreshStatus();
+    m_composition->refreshStatus();
     refreshLayerList(); // playback positions (in-place update)
     const int pct = int(std::lround(m_engine->outputLevel() * 100));
     const QSize c = m_engine->compositionSize();
@@ -1442,7 +1442,7 @@ void MainWindow::afterProjectLoaded(const QJsonObject &ui)
     m_undo->clear();
     m_autosaveDone = false;
     m_modesBefore.clear();
-    m_master->syncFromEngine();
+    m_composition->syncFromEngine();
     m_bin->refresh();
     selectLayer(qBound(-1, ui.value("selectedLayer").toInt(0), m_engine->layerCount() - 1));
     updateTitle();

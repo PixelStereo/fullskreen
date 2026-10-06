@@ -362,7 +362,7 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     grid->onRename = [this](int row) { startRename(row); };
     m_table = grid;
     m_table->setHorizontalHeaderLabels({QString(), QString(), QStringLiteral("Layer"), QStringLiteral("Fx"),
-                                        QStringLiteral("Opacity"), QStringLiteral("Blend"), QStringLiteral("Playback")});
+                                        QStringLiteral("Opacity"), QStringLiteral("Blend Mode"), QStringLiteral("Playback")});
     m_table->setToolTip(QStringLiteral("Top layer is drawn on top · drop a media onto a layer to load it · "
                                        "drag layers onto a group · double-click a name to rename · "
                                        "the viewports, at the top, are windows onto the composition"));

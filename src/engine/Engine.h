@@ -8,7 +8,7 @@
 //  - manual (no start()): renderFrame() is called by the thread that owns the engine (tests, command-line rendering).
 //
 // Concurrency:
-//  - composition data (layers, parameters, mapping, master) is protected by mutex();
+//  - composition data (layers, parameters, mapping, composition) is protected by mutex();
 //    the UI takes Engine::Lock before reading or writing a Layer directly;
 //  - anything touching OpenGL (shader compilation, texture release…) goes through runGl(),
 //    which runs it on the render thread. These tasks never take the lock: it is safe to wait
@@ -113,7 +113,7 @@ public:
         PartRoi = 1 << 1,         // part of the source picture used
         PartColor = 1 << 2,       // balance, added / removed colors and their switches
         PartSpatial = 1 << 3,     // mapping: corners and mesh
-        PartEffects = 1 << 4,     // ISF chain and its master switch
+        PartEffects = 1 << 4,     // ISF chain and its enable switch
         PartCompositing = 1 << 5, // opacity, blend mode
         PartAll = PartSource | PartRoi | PartColor | PartSpatial | PartEffects | PartCompositing,
     };
@@ -149,7 +149,7 @@ public:
     // Mode given to a video or a sound when it is loaded into a layer (preference)
     void setDefaultPlayMode(PlayMode m) { m_defaultPlayMode = m; }
 
-    // --- Rendering: frame rate and antialiasing. A project chooses them (Master), or takes the machine's
+    // --- Rendering: frame rate and antialiasing. A project chooses them (Composition tab), or takes the machine's
     // defaults (Settings): -1 in a project means "the default".
     struct RenderSettings {
         double frameRate = -1; // frames per second; 0: the refresh rate of the screen
@@ -203,7 +203,7 @@ public:
         double fade = 1.0;  // seconds
         QImage thumbnail;   // output at the time it was stored
         QJsonArray layers;  // layerJson of the layers, with "included" (false: left alone by the recall)
-        // The composition: its level, the sound's master volume and mute, with "included" and "timing" as a layer's
+        // The composition: its opacity and the sound volume, with "included" and "timing" as a layer's
         // (empty: a memory stored before it was kept, left alone by the recall)
         QJsonObject composition;
     };
@@ -423,10 +423,8 @@ public:
     bool startAudio(const QString &device, QString *err, bool nullDevice = false); // empty = system default
     void stopAudio();
     AudioOutput &audioOutput() { return *m_audio; }
-    float audioVolume() const { return m_audio->masterVolume(); }
+    float audioVolume() const { return m_audio->volume(); }
     void setAudioVolume(float v); // stops a memory's fade of the volume
-    bool audioMuted() const { return m_audio->muted(); }
-    void setAudioMuted(bool m) { m_audio->setMuted(m); }
 
     // --- Output publishing (NDI, OMT, Syphon, Spout): each viewport publishes its own picture
     void setPublishSettings(quint64 viewport, const PublishSettings &s);
@@ -435,10 +433,10 @@ public:
     // Tests: receives the read-back frames (send thread)
     void setTestTap(std::function<void(const CpuFrame &)> fn);
 
-    // --- Master fader: level 0..1 reached in `seconds` seconds (picture only)
-    void fadeMaster(double target, double seconds);
-    double masterLevel() const { return m_masterLevel.load(); }
-    double masterTarget() const;
+    // --- Composition opacity: 0..1 reached in `seconds` seconds (picture only)
+    void fadeCompositionOpacity(double target, double seconds);
+    double compositionOpacity() const { return m_compositionOpacity.load(); }
+    double compositionOpacityTarget() const;
     // Blackout: fades the picture and the sound out (and back in) in `seconds` seconds
     void setBlackout(bool on, double seconds);
     void setBlackout(bool on) { setBlackout(on, blackoutFade()); }
@@ -446,7 +444,7 @@ public:
     double blackoutLevel() const { return m_blackLevel.load(); }
     void setBlackoutFade(double seconds);  // default fade duration
     double blackoutFade() const;
-    double outputLevel() const { return masterLevel() * blackoutLevel(); }
+    double outputLevel() const { return compositionOpacity() * blackoutLevel(); }
 
     // --- Source preview (roi editor): a downscaled copy of a layer's source picture (before roi),
     // read back by the render thread every few frames while requested.
@@ -604,14 +602,14 @@ private:
     std::vector<float> m_meshScratch;
     std::vector<uint8_t> m_renderMark; // render pass: layer already rendered this frame (reused, no allocation)
 
-    std::atomic<double> m_masterLevel{1.0};
-    double m_masterTarget = 1.0, m_masterSpeed = 0.0; // units per second (0 = immediate)
+    std::atomic<double> m_compositionOpacity{1.0};
+    double m_compositionOpacityTarget = 1.0, m_compositionOpacitySpeed = 0.0; // units per second (0 = immediate)
     struct CompositionFade {
-        double levelElapsed = 0, volumeElapsed = 0; // each on its own clock: two memories can drive them
-        bool level = false, volume = false;
-        double levelFrom = 1, levelTo = 1, levelDur = 0, volumeDur = 0;
+        double opacityElapsed = 0, volumeElapsed = 0; // each on its own clock: two memories can drive them
+        bool opacity = false, volume = false;
+        double opacityFrom = 1, opacityTo = 1, opacityDur = 0, volumeDur = 0;
         float volumeFrom = 1, volumeTo = 1;
-        int levelCurve = 0, volumeCurve = 0;
+        int opacityCurve = 0, volumeCurve = 0;
     } m_compFade;
     std::atomic<double> m_blackLevel{1.0};
     double m_blackTarget = 1.0, m_blackSpeed = 0.0, m_blackFade = 1.0;

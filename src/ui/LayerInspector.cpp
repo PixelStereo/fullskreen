@@ -1171,17 +1171,17 @@ QWidget *LayerInspector::buildColor(const LayerSnapshot &s)
     auto *outer = new QVBoxLayout(g);
     outer->setContentsMargins(0, 0, 0, 0);
     // Switch of the whole section: the values are kept, they are simply not applied
-    auto *master = new FlagBox(QStringLiteral("Color"));
-    master->setChecked(s.color.enabled);
-    master->setStyleSheet("font-weight:bold;");
-    master->setToolTip(QStringLiteral("Apply the color of this layer.\nOff: every value is kept, the picture is left alone."));
-    outer->addWidget(master);
+    auto *colorOn = new FlagBox(QStringLiteral("Color"));
+    colorOn->setChecked(s.color.enabled);
+    colorOn->setStyleSheet("font-weight:bold;");
+    colorOn->setToolTip(QStringLiteral("Apply the color of this layer.\nOff: every value is kept, the picture is left alone."));
+    outer->addWidget(colorOn);
     auto *body = new QWidget; // everything the switch above turns off
     auto *v = new QVBoxLayout(body);
     v->setContentsMargins(0, 0, 0, 0);
     body->setEnabled(s.color.enabled);
     outer->addWidget(body);
-    connect(master, &QCheckBox::toggled, this, [this, body](bool on) {
+    connect(colorOn, &QCheckBox::toggled, this, [this, body](bool on) {
         body->setEnabled(on);
         setProp(cmd::SetLayerProp::ColorOn, on);
     });
@@ -1360,7 +1360,7 @@ QWidget *LayerInspector::buildCompositing(const LayerSnapshot &s)
                         BlendMode::Difference})
         blend->addItem(blendModeName(m), int(m));
     blend->setCurrentIndex(blend->findData(int(s.blend)));
-    form->addRow(new ResetLabel(QStringLiteral("Blend"), [blend] { blend->setCurrentIndex(0); }), blend);
+    form->addRow(new ResetLabel(QStringLiteral("Blend Mode"), [blend] { blend->setCurrentIndex(0); }), blend);
     connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this, blend](int i) { setProp(cmd::SetLayerProp::Blend, blend->itemData(i).toInt()); });
 

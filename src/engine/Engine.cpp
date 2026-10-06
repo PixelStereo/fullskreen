@@ -1,5 +1,5 @@
 // Engine: life of the engine itself — OpenGL context and render thread, the runGl() task protocol,
-// the output window, the composition size, and the master / blackout fades.
+// the output window, the composition size, and the composition opacity / blackout fades.
 // The rest of its methods live in Layers.cpp, Render.cpp, Project.cpp, Media.cpp and Memories.cpp.
 #include "EngineInternal.h"
 
@@ -563,7 +563,7 @@ bool Engine::presentViewports()
 GLuint Engine::outputTexture() const { return m_output[m_published.load()].tex; }
 
 // ---------------------------------------------------------------------------
-// Composition size, master and blackout, source preview
+// Composition size, opacity and blackout, source preview
 // ---------------------------------------------------------------------------
 QSize Engine::compositionSize() const
 {
@@ -582,10 +582,10 @@ void Engine::setCompositionSize(QSize s)
     emit compositionSizeChanged(s);
 }
 
-double Engine::masterTarget() const
+double Engine::compositionOpacityTarget() const
 {
     Lock lk(&m_mutex);
-    return m_masterTarget;
+    return m_compositionOpacityTarget;
 }
 
 void Engine::setAudioVolume(float v)
@@ -594,15 +594,15 @@ void Engine::setAudioVolume(float v)
         Lock lk(&m_mutex);
         m_compFade.volume = false;
     }
-    m_audio->setMasterVolume(v);
+    m_audio->setVolume(v);
 }
 
-void Engine::fadeMaster(double target, double seconds)
+void Engine::fadeCompositionOpacity(double target, double seconds)
 {
     Lock lk(&m_mutex);
-    m_compFade.level = false; // the fader takes over from a memory's fade
-    m_masterTarget = std::clamp(target, 0.0, 1.0);
-    m_masterSpeed = seconds > 0.0 ? 1.0 / seconds : 0.0;
+    m_compFade.opacity = false; // the fader takes over from a memory's fade
+    m_compositionOpacityTarget = std::clamp(target, 0.0, 1.0);
+    m_compositionOpacitySpeed = seconds > 0.0 ? 1.0 / seconds : 0.0;
 }
 
 void Engine::setBlackout(bool on, double seconds)

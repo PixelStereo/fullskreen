@@ -159,7 +159,7 @@ struct TextSource {
 struct Layer {
     // Identity and structure. A group is a layer without source whose picture is the composite of its members;
     // members immediately follow their group in the layer list, and a group can hold other groups.
-    // Layers and groups live in the composition: one pixel space, set in the Master.
+    // Layers and groups live in the composition: one pixel space, set in the Composition tab.
     // A viewport is a window onto that space with its own size in pixels, sent to a screen (and published).
     // It holds nothing: it shows the part of the composition its Spatial places it on, with its own ROI,
     // color, effects and opacity. Viewports come first in the list and are never inside a group.
@@ -242,7 +242,7 @@ struct Layer {
     RenderTarget fxTarget[2];
 
     RenderTarget groupTarget; // group: composite of its members; viewport: what it sees, at its own size
-    // Viewport: the picture its window shows (master level and blackout applied), double buffered so the
+    // Viewport: the picture its window shows (composition opacity and blackout applied), double buffered so the
     // interface and the publishers read the last finished frame
     RenderTarget vpOut[2];
     int vpBack = 1;

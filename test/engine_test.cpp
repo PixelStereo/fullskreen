@@ -406,7 +406,7 @@ int main(int argc, char **argv)
         e.setLayerImage(l, tmp + "/redblue.png", &err);
         e.setBlackout(true, 0);
         CHECK(e.blackout() && qGray(render().pixel(8, 16)) < 2 && e.audioOutput().fadeLevel() == 0.0f);
-        e.fadeMaster(1.0, 0); // the master fader does not end the blackout
+        e.fadeCompositionOpacity(1.0, 0); // the master fader does not end the blackout
         CHECK(qGray(render().pixel(8, 16)) < 2);
         e.setBlackout(false, 0);
         CHECK(!e.blackout() && render().pixel(8, 16) != qRgb(0, 0, 0) && e.audioOutput().fadeLevel() == 1.0f);
@@ -450,12 +450,12 @@ int main(int argc, char **argv)
         CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
         CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
         CHECK(server.handleMessage({L + "/source/roi/left", "f", {0.25}}) && std::abs(e.layer(V + 1)->roi.left() - 0.25) < 1e-9);
-        CHECK(server.handleMessage({L + "/effects/FlipCrop/flipH", "T", {true}}));
+        CHECK(server.handleMessage({L + "/effects/FlipCrop/fliph", "T", {true}}));
         CHECK(e.layer(V + 1)->effects[0]->inputs()[1].bValue || e.layer(V + 1)->effects[0]->inputs()[2].bValue);
-        CHECK(server.handleMessage({L + "/effects/enabled", "F", {false}}) && !e.layer(V + 1)->effectsEnabled);
+        CHECK(server.handleMessage({L + "/effects/enable", "F", {false}}) && !e.layer(V + 1)->effectsEnabled);
         CHECK(server.handleMessage({"/layers/G/opacity", "i", {0}}) && e.layer(V + 0)->opacity == 0.0f);
-        CHECK(server.handleMessage({"/master/blackout", "T", {true}}) && e.blackout());
-        server.handleMessage({"/master/blackout", "i", {0}});
+        CHECK(server.handleMessage({"/composition/blackout", "T", {true}}) && e.blackout());
+        server.handleMessage({"/composition/blackout", "i", {0}});
         CHECK(!e.blackout());
         // Locked group: its member refuses edits, visibility still works
         CHECK(server.handleMessage({"/layers/G/locked", "T", {true}}) && e.isLocked(V + 1));
@@ -475,7 +475,41 @@ int main(int argc, char **argv)
                                    .toObject()["opacity"].toObject();
         CHECK(op.value("TYPE").toString() == "f" && op.value("ACCESS").toInt() == 3 &&
               op.value("RANGE").toArray().at(0).toObject().value("MAX").toDouble() == 1.0);
-        CHECK(root["CONTENTS"].toObject()["master"].toObject()["CONTENTS"].toObject().contains("blackout"));
+        const QJsonObject compo = root["CONTENTS"].toObject()["composition"].toObject()["CONTENTS"].toObject();
+        CHECK(!root["CONTENTS"].toObject().contains("master"));
+        for (const char *k : {"opacity", "volume", "blackout", "width", "height", "fps"}) CHECK(compo.contains(k));
+        CHECK(!compo.contains("mute") && compo["blackout"].toObject()["CONTENTS"].toObject().contains("fade"));
+        CHECK(server.handleMessage({"/composition/opacity", "f", {0.4}}) && std::abs(e.compositionOpacityTarget() - 0.4) < 1e-3);
+        e.fadeCompositionOpacity(1.0, 0);
+        CHECK(server.handleMessage({"/composition/fps", "f", {30.0}}) && e.effectiveRender().frameRate == 30.0);
+        e.setRenderSettings(Engine::RenderSettings());
+        // Hierarchy, lowercase, and an "enable" child for every switch, over the whole tree
+        {
+            int bad = 0, nodes = 0;
+            std::function<void(const QJsonObject &, const QString &)> walk = [&](const QJsonObject &n, const QString &parent) {
+                const QJsonObject c = n.value("CONTENTS").toObject();
+                for (auto it = c.begin(); it != c.end(); ++it) {
+                    ++nodes;
+                    const QString seg = it.key();
+                    const bool userName = parent == "layers" || parent == "viewports" || parent == "effects" || parent == "params";
+                    if (!userName && seg != seg.toLower()) { ++bad; qWarning("not lowercase: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString())); }
+                    if (!userName && (seg.endsWith("enabled") || seg.endsWith("Enabled") || seg.endsWith("On") || seg == "master")) {
+                        ++bad;
+                        qWarning("switch not named enable: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString()));
+                    }
+                    walk(it.value().toObject(), userName ? QStringLiteral("*") : seg);
+                }
+            };
+            walk(root, QString());
+            CHECK(nodes > 50 && bad == 0);
+            const QString LF = "/layers/G/layers/Front_wall";
+            CHECK(server.handleMessage({LF + "/color/tint/enable", "T", {true}}) && e.layer(V + 1)->color.tintOn);
+            CHECK(server.handleMessage({LF + "/color/mask/invert", "T", {true}}) && e.layer(V + 1)->color.maskInvert);
+            CHECK(server.handleMessage({LF + "/blend_mode", "s", {QStringLiteral("add")}}) && e.layer(V + 1)->blend == BlendMode::Add);
+            CHECK(server.handleMessage({LF + "/spatial/rotation", "f", {30.0}}) &&
+                  std::abs(e.layer(V + 1)->mapping.angle(e.compositionSize()) - 30.0) < 0.01);
+            e.layer(V + 1)->blend = BlendMode::Normal;
+        }
         const QJsonObject host = QJsonDocument::fromJson(server.httpGet("/?HOST_INFO", &status)).object();
         CHECK(host.value("OSC_PORT").toInt() == server.oscPort() && host.value("EXTENSIONS").toObject().value("LISTEN").toBool());
 
@@ -735,28 +769,26 @@ int main(int argc, char **argv)
                 CHECK(X()->text.size == 1000 && X()->text.lineHeight > 0);
                 e.removeLayer(e.indexOfId(xid));
             }
-            // The composition in a memory: its level and the sound's volume fade on their times, mute at once
+            // The composition in a memory: its opacity and the sound's volume fade on their times
             {
-                e.fadeMaster(1.0, 0);
+                e.fadeCompositionOpacity(1.0, 0);
                 e.setAudioVolume(1.0f);
-                e.setAudioMuted(false);
                 QJsonObject c = e.captureComposition();
-                CHECK(c.value("included").toBool() && c.value("level").toDouble() == 1.0 && c.contains("volume"));
-                c["level"] = 0.0;
+                CHECK(c.value("included").toBool() && c.value("opacity").toDouble() == 1.0 && c.contains("volume") && !c.contains("muted"));
+                c["opacity"] = 0.0;
                 c["volume"] = 0.5;
-                c["muted"] = true;
                 c["timing"] = QJsonObject{{"volume", 0}};
                 e.applyComposition(c, 1.0);
-                CHECK(std::abs(e.audioVolume() - 0.5f) < 1e-6 && e.audioMuted() && e.masterTarget() > 0.99);
+                CHECK(std::abs(e.audioVolume() - 0.5f) < 1e-6 && e.compositionOpacityTarget() > 0.99);
                 e.advanceFades(0.5);
-                CHECK(e.masterTarget() > 0.05 && e.masterTarget() < 0.95);
+                CHECK(e.compositionOpacityTarget() > 0.05 && e.compositionOpacityTarget() < 0.95);
                 e.advanceFades(0.6);
-                CHECK(e.masterTarget() == 0.0);
+                CHECK(e.compositionOpacityTarget() == 0.0);
                 // Left out: nothing moves
                 c["included"] = false;
-                c["level"] = 1.0;
+                c["opacity"] = 1.0;
                 e.applyComposition(c, 0.0);
-                CHECK(e.masterTarget() == 0.0);
+                CHECK(e.compositionOpacityTarget() == 0.0);
                 // Saved with the project
                 Engine::Memory mc;
                 mc.name = "Comp";
@@ -765,9 +797,8 @@ int main(int argc, char **argv)
                 CHECK(e.saveProject(tmp + "/comp.fulskrin", {}, &err));
                 CHECK(readJson(tmp + "/comp.fulskrin").value("memories").toArray().at(mi).toObject().value("composition") == c);
                 e.removeMemory(mi);
-                e.fadeMaster(1.0, 0);
+                e.fadeCompositionOpacity(1.0, 0);
                 e.setAudioVolume(1.0f);
-                e.setAudioMuted(false);
             }
             // Soft edge (crop) and per-viewport opacity: stored, recalled, and faded
             {
@@ -958,23 +989,23 @@ int main(int argc, char **argv)
 
             // The composition: the level and the volume each on their own clock
             {
-                e.fadeMaster(1.0, 0);
+                e.fadeCompositionOpacity(1.0, 0);
                 e.setAudioVolume(1.0f);
                 Engine::Memory lv, vol;
                 lv.fade = vol.fade = 2.0;
-                lv.composition = QJsonObject{{"included", true}, {"level", 0.0}};
+                lv.composition = QJsonObject{{"included", true}, {"opacity", 0.0}};
                 vol.composition = QJsonObject{{"included", true}, {"volume", 0.0}};
                 const int ml = e.addMemory(lv), mv = e.addMemory(vol);
                 e.recallMemory(ml);
                 e.advanceFades(1.0);
-                CHECK(near(e.masterTarget(), 0.5));
+                CHECK(near(e.compositionOpacityTarget(), 0.5));
                 e.recallMemory(mv); // the volume only: the level goes on
                 e.advanceFades(1.0);
-                CHECK(near(e.masterTarget(), 0.0) && near(e.audioVolume(), 0.5));
+                CHECK(near(e.compositionOpacityTarget(), 0.0) && near(e.audioVolume(), 0.5));
                 e.advanceFades(2.0);
                 e.removeMemory(mv);
                 e.removeMemory(ml);
-                e.fadeMaster(1.0, 0);
+                e.fadeCompositionOpacity(1.0, 0);
                 e.setAudioVolume(1.0f);
             }
 
@@ -1169,14 +1200,14 @@ int main(int argc, char **argv)
             {
                 Engine::Animation lv;
                 Engine::AnimTrack t;
-                t.param = "level";
+                t.param = "opacity";
                 t.keys = {{0, 0.3, 0}};
                 lv.tracks = {t};
                 const quint64 lid = e.animation(e.addAnimation(lv)).id;
                 e.controlAnimation(lid, A::Seek, 0);
-                CHECK(near(e.masterTarget(), 0.3));
+                CHECK(near(e.compositionOpacityTarget(), 0.3));
                 e.removeAnimation(e.indexOfAnimation(lid));
-                e.fadeMaster(1.0, 0);
+                e.fadeCompositionOpacity(1.0, 0);
             }
             CHECK(!e.animatableParams(tid).empty() && e.animatableParams(0).size() == 2);
             // Steps driving it: Play (its time, when it ends), Seek, Stop
@@ -1565,7 +1596,7 @@ int main(int argc, char **argv)
     // 4d''. Soft edge: the picture fades out towards the sides it is set on
     {
         e.newProject();
-        e.fadeMaster(1.0, 0);
+        e.fadeCompositionOpacity(1.0, 0);
         e.setBlackout(false, 0);
         e.setCompositionSize(QSize(40, 40));
         QImage white(40, 40, QImage::Format_RGB32);
@@ -1621,7 +1652,7 @@ int main(int argc, char **argv)
     // 4d'. Blend modes that take away: Subtract and Difference (against what is drawn below)
     {
         e.newProject();
-        e.fadeMaster(1.0, 0);
+        e.fadeCompositionOpacity(1.0, 0);
         e.setBlackout(false, 0);
         e.setCompositionSize(QSize(16, 16));
         QImage up(16, 16, QImage::Format_RGB32), down(16, 16, QImage::Format_RGB32);
@@ -1666,7 +1697,7 @@ int main(int argc, char **argv)
     // 4d-bis. Color depth: the render targets follow the project's setting
     {
         e.newProject();
-        e.fadeMaster(1.0, 0);
+        e.fadeCompositionOpacity(1.0, 0);
         e.setBlackout(false, 0);
         e.setCompositionSize(QSize(16, 16));
         QImage col(16, 16, QImage::Format_RGB32);
@@ -1711,7 +1742,7 @@ int main(int argc, char **argv)
     // 4e. Viewports: windows onto one composition, routing, groups inside groups
     {
         e.newProject();
-        e.fadeMaster(1.0, 0);
+        e.fadeCompositionOpacity(1.0, 0);
         e.setBlackout(false, 0);
         e.setCompositionSize(QSize(64, 16));
         const int v1 = e.viewports().first();
@@ -1902,7 +1933,7 @@ int main(int argc, char **argv)
     // 4g. Antialiasing: multisampled edges, mipmaps for pictures drawn smaller; the project's choice or the default
     {
         e.newProject();
-        e.fadeMaster(1.0, 0);
+        e.fadeCompositionOpacity(1.0, 0);
         e.setBlackout(false, 0);
         e.setCompositionSize(QSize(64, 64));
         e.setViewportSize(e.viewports().first(), QSize(64, 64));
@@ -1969,14 +2000,14 @@ int main(int argc, char **argv)
         e.setRenderSettings(rs);
         const auto [lo, hi] = spread();
         CHECK(lo > 90 && hi < 165); // grey everywhere
-        // Not saved with the project: the machine's choice applies to every project
+        // The frame rate is the project's (composition/fps); samples, mipmaps and depth are the machine's
         rs = Engine::RenderSettings{30, 8, 1};
         e.setRenderSettings(rs);
         CHECK(e.saveProject(tmp + "/render.fulskrin", {}, &err));
         e.newProject();
         CHECK(e.renderSettings().frameRate < 0 && e.renderSettings().samples < 0); // a new project: the defaults
         CHECK(e.loadProject(tmp + "/render.fulskrin", nullptr, &err));
-        CHECK(e.renderSettings().frameRate < 0 && e.renderSettings().samples < 0 && e.renderSettings().mipmaps < 0);
+        CHECK(e.renderSettings().frameRate == 30 && e.renderSettings().samples < 0 && e.renderSettings().mipmaps < 0);
         e.setRenderSettings({});
     }
 
@@ -2048,7 +2079,7 @@ int main(int argc, char **argv)
                 e.removeLayer(e.layerCount() - 1);
                 e.removeLayer(V + 0);
             }
-            e.fadeMaster(ops % 2 ? 1.0 : 0.5, 0.1);
+            e.fadeCompositionOpacity(ops % 2 ? 1.0 : 0.5, 0.1);
             ++ops;
         }
         std::printf("       %d rounds of concurrent changes\n", ops);
@@ -2070,24 +2101,24 @@ int main(int argc, char **argv)
         e.newProject();
         int c = e.addLayer("white");
         e.setLayerIsf(c, root + "/../isf/generators/SolidColor.fs", &err);
-        e.fadeMaster(1.0, 0);
+        e.fadeCompositionOpacity(1.0, 0);
         CHECK(waitFrames(4));
         QImage lit = e.grabOutput();
         CHECK(!lit.isNull() && qGray(lit.pixel(lit.width() / 2, lit.height() / 2)) > 240);
-        e.fadeMaster(0.0, 0);
+        e.fadeCompositionOpacity(0.0, 0);
         CHECK(waitFrames(4));
         QImage dark = e.grabOutput();
         CHECK(!dark.isNull() && qGray(dark.pixel(dark.width() / 2, dark.height() / 2)) < 2);
-        e.fadeMaster(1.0, 1.0); // fade back up in 1 s
+        e.fadeCompositionOpacity(1.0, 1.0); // fade back up in 1 s
         QThread::msleep(500);
-        const double mid = e.masterLevel();
-        std::printf("       master level at mid-fade: %.2f\n", mid);
+        const double mid = e.compositionOpacity();
+        std::printf("       composition opacity at mid-fade: %.2f\n", mid);
         CHECK(mid > 0.25 && mid < 0.75);
     }
     // Color switches: a parameter that is off keeps its value but is not applied
     {
         e.newProject();
-        e.fadeMaster(1.0, 0);
+        e.fadeCompositionOpacity(1.0, 0);
         const int w = e.addLayer("white");
         e.setLayerIsf(w, root + "/../isf/generators/SolidColor.fs", &err);
         CHECK(waitFrames(4));
@@ -2141,7 +2172,7 @@ int main(int argc, char **argv)
     // 6. Publishing: GPU readback -> send thread (BGRA, rows top to bottom)
     {
         e.newProject();
-        e.fadeMaster(1.0, 0);
+        e.fadeCompositionOpacity(1.0, 0);
         e.setCompositionSize(QSize(64, 32));
         e.setViewportSize(e.viewports().first(), QSize(64, 32)); // what is published is the viewport's picture
         QImage img(64, 32, QImage::Format_RGBA8888);
