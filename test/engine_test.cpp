@@ -451,7 +451,7 @@ int main(int argc, char **argv)
         CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
         CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
         CHECK(server.handleMessage({L + "/source/roi/left", "f", {0.25}}) && std::abs(e.layer(V + 1)->roi.left() - 0.25) < 1e-9);
-        CHECK(server.handleMessage({L + "/effects/FlipCrop/flipH", "T", {true}}));
+        CHECK(server.handleMessage({L + "/effects/FlipCrop/params/flipH", "T", {true}}));
         CHECK(e.layer(V + 1)->effects[0]->inputs()[1].bValue || e.layer(V + 1)->effects[0]->inputs()[2].bValue);
         CHECK(server.handleMessage({L + "/effects/enable", "F", {false}}) && !e.layer(V + 1)->effectsEnabled);
         CHECK(server.handleMessage({"/layers/G/opacity", "i", {0}}) && e.layer(V + 0)->opacity == 0.0f);
@@ -492,13 +492,13 @@ int main(int argc, char **argv)
                 for (auto it = c.begin(); it != c.end(); ++it) {
                     ++nodes;
                     const QString seg = it.key();
-                    const bool userName = parent == "layers" || parent == "viewports" || parent == "effects" || parent == "*fx"; // names: layers, viewports, effects, shader parameters
+                    const bool userName = parent == "layers" || parent == "viewports" || parent == "effects" || parent == "params"; // names: layers, viewports, effects, shader parameters
                     if (!userName && seg != seg.toLower()) { ++bad; qWarning("not lowercase: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString())); }
                     if (!userName && (seg.endsWith("enabled") || seg.endsWith("Enabled") || seg.endsWith("On") || seg == "master")) {
                         ++bad;
                         qWarning("switch not named enable: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString()));
                     }
-                    walk(it.value().toObject(), userName ? (parent == "effects" ? QStringLiteral("*fx") : QStringLiteral("*")) : seg);
+                    walk(it.value().toObject(), userName ? QStringLiteral("*") : seg);
                 }
             };
             walk(root, QString());
@@ -620,7 +620,7 @@ int main(int argc, char **argv)
         e.newProject();
     }
 
-    // 4e. Memories: capture, recall (instant and with a fade), recreation, lock, save / load
+    // 4e. Snapshots: capture, recall (instant and with a fade), recreation, lock, save / load
     {
         e.newProject();
         e.setCompositionSize(QSize(64, 32));
@@ -630,33 +630,33 @@ int main(int argc, char **argv)
         e.setLayerIsf(b, isf + "/generators/SolidColor.fs", &err);
         e.layer(V + 0)->opacity = 0.8f;
         e.layer(V + 1)->visible = false;
-        Engine::Memory m;
+        Engine::Snapshot m;
         m.name = "Look 1";
         m.fade = 0;
         m.layers = e.captureLayers();
         m.thumbnail = QImage(16, 9, QImage::Format_RGB32);
         m.thumbnail.fill(Qt::red);
-        CHECK(e.addMemory(m) == 0 && e.memoryCount() == 1);
+        CHECK(e.addSnapshot(m) == 0 && e.snapshotCount() == 1);
         // Change things, then recall
         e.layer(V + 0)->opacity = 0.2f;
         e.layer(V + 0)->color.temp = 1000;
         e.layer(V + 0)->mapping.setCorner(0, QPointF(0.3, 0.3));
         e.layer(V + 1)->visible = true;
         e.addEffect(V + 0, isf + "/effects/FlipCrop.fs", &err);
-        e.recallMemory(0);
+        e.recallSnapshot(0);
         CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6 && e.layer(V + 0)->color.temp == 0.0f);
         CHECK(e.layer(V + 0)->mapping.corners[0] == QPointF(0, 0) || e.layer(V + 0)->mapping.corners[0].y() > 0.0);
         CHECK(e.layer(V + 0)->effects.empty() && !e.layer(V + 1)->visible);
         // With a fade: halfway between, then the target; a layer becoming visible fades in from 0
-        Engine::Memory m2 = m;
+        Engine::Snapshot m2 = m;
         m2.name = "Look 2";
         m2.fade = 0.4;
         e.layer(V + 0)->opacity = 0.0f;
         e.layer(V + 1)->visible = true;
         m2.layers = e.captureLayers();
-        e.addMemory(m2);
-        e.recallMemory(0); // back to look 1, at once
-        e.recallMemory(1);
+        e.addSnapshot(m2);
+        e.recallSnapshot(0); // back to look 1, at once
+        e.recallSnapshot(1);
         CHECK(e.isFading() && e.layer(V + 1)->visible && e.layer(V + 1)->opacity < 0.05f);
         QElapsedTimer ft;
         ft.start();
@@ -671,19 +671,19 @@ int main(int argc, char **argv)
         e.removeLayer(V + 1);
         e.layer(V + 0)->locked = true;
         e.layer(V + 0)->opacity = 0.5f;
-        e.recallMemory(0);
+        e.recallSnapshot(0);
         CHECK(e.layerCount() == V + 2 && e.layer(V + 1)->name == "B" && std::abs(e.layer(V + 0)->opacity - 0.5f) < 1e-6);
         e.layer(V + 0)->locked = false;
         // Undo of a recall
         {
             QUndoStack undo;
             e.layer(V + 0)->opacity = 0.33f;
-            undo.push(new cmd::RecallMemory(&e, 0));
+            undo.push(new cmd::RecallSnapshot(&e, 0));
             CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6);
             undo.undo();
             CHECK(std::abs(e.layer(V + 0)->opacity - 0.33f) < 1e-6);
         }
-        // Each value on its own time: opacity cut, temperature 2 s, the others on the memory's fade (1 s)
+        // Each value on its own time: opacity cut, temperature 2 s, the others on the snapshot's fade (1 s)
         {
             const int ti = e.addLayer("Timed", e.layerCount());
             const quint64 tid = e.layerId(ti);
@@ -708,7 +708,7 @@ int main(int argc, char **argv)
             state["visible"] = false;
             e.applyLayers(QJsonArray{state}, 1.0);
             CHECK(!L()->visible && L()->opacity == 1.0f);
-            // A time of its own with no memory fade at all
+            // A time of its own with no snapshot fade at all
             L()->visible = true;
             L()->color.temp = 0;
             e.applyLayers(QJsonArray{state.value("visible").toBool() ? state : [&] { QJsonObject x = state; x["visible"] = true; return x; }()}, 0.0);
@@ -716,9 +716,9 @@ int main(int argc, char **argv)
             e.advanceFades(2.0);
             CHECK(std::abs(L()->color.temp - 1000) < 1e-3 && !e.isFading());
             CHECK(Engine::timingKey({"source", "roi", "2"}, {}) == "source/roi" && Engine::timingKey({"color", "add", "1"}, {}) == "color/add" &&
-                  Engine::timingKey({"effects", "0", "params", "radius"}, QJsonObject{{"effects", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "effects/Blur/radius" &&
+                  Engine::timingKey({"effects", "0", "params", "radius"}, QJsonObject{{"effects", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "effects/Blur/params/radius" &&
                   Engine::timingKey({"source", "speed"}, {}) == "source/speed" && Engine::timingKey({"source", "file"}, {}).isEmpty());
-            // Text generator: the memory's text is typed over its time (erased back to what both share, then
+            // Text generator: the snapshot's text is typed over its time (erased back to what both share, then
             // typed); its style moves on its own times
             {
                 const int xi = e.addLayer("Words", e.layerCount());
@@ -760,7 +760,7 @@ int main(int argc, char **argv)
                 e.advanceFades(3.0);
                 CHECK(Engine::timingKey({"source", "color", "2"}, {}) == "source/text/color" &&
                       Engine::timingKey({"source", "content"}, {}) == "source/text/content" &&
-                      Engine::timingKey({"source", "params", "size"}, {}) == "source/size");
+                      Engine::timingKey({"source", "params", "size"}, {}) == "source/params/size");
                 // Kept in range when read from a file
                 src["size"] = 100000;
                 src["line_height"] = -3;
@@ -770,7 +770,7 @@ int main(int argc, char **argv)
                 CHECK(X()->text.size == 1000 && X()->text.lineHeight > 0);
                 e.removeLayer(e.indexOfId(xid));
             }
-            // The composition in a memory: its opacity and the sound's volume fade on their times
+            // The composition in a snapshot: its opacity and the sound's volume fade on their times
             {
                 e.fadeCompositionOpacity(1.0, 0);
                 e.setAudioVolume(1.0f);
@@ -791,13 +791,13 @@ int main(int argc, char **argv)
                 e.applyComposition(c, 0.0);
                 CHECK(e.compositionOpacityTarget() == 0.0);
                 // Saved with the project
-                Engine::Memory mc;
+                Engine::Snapshot mc;
                 mc.name = "Comp";
                 mc.composition = c;
-                const int mi = e.addMemory(mc);
+                const int mi = e.addSnapshot(mc);
                 CHECK(e.saveProject(tmp + "/comp.fulskrin", {}, &err));
-                CHECK(readJson(tmp + "/comp.fulskrin").value("memories").toArray().at(mi).toObject().value("composition") == c);
-                // Every key of a project is lowercase snake_case (parameter names of shaders and the times of a memory aside)
+                CHECK(readJson(tmp + "/comp.fulskrin").value("snapshots").toArray().at(mi).toObject().value("composition") == c);
+                // Every key of a project is lowercase snake_case (parameter names of shaders and the times of a snapshot aside)
                 {
                     int bad = 0;
                     std::function<void(const QJsonValue &)> walk = [&](const QJsonValue &v) {
@@ -815,7 +815,7 @@ int main(int argc, char **argv)
                     walk(readJson(tmp + "/comp.fulskrin"));
                     CHECK(bad == 0);
                 }
-                e.removeMemory(mi);
+                e.removeSnapshot(mi);
                 e.fadeCompositionOpacity(1.0, 0);
                 e.setAudioVolume(1.0f);
             }
@@ -845,7 +845,7 @@ int main(int argc, char **argv)
             }
             e.removeLayer(e.indexOfId(tid));
         }
-        // Another source by a memory: the outgoing one stays, invisible, and a transition mixes the two
+        // Another source by a snapshot: the outgoing one stays, invisible, and a transition mixes the two
         {
             for (const auto &[name, rgb] : {std::pair<QString, QRgb>{"red", qRgb(255, 0, 0)}, {"blue", qRgb(0, 0, 255)}}) {
                 QImage im(32, 16, QImage::Format_RGB32);
@@ -856,7 +856,7 @@ int main(int argc, char **argv)
             const quint64 tid = e.layerId(ti);
             CHECK(e.setLayerImage(ti, tmp + "/red.png", &err));
             e.layer(ti)->mapping.resetCorners();
-            e.layer(ti)->roi = QRectF(0, 0, 0.5, 1); // the memory's ROI: the incoming source gets there over the time
+            e.layer(ti)->roi = QRectF(0, 0, 0.5, 1); // the snapshot's ROI: the incoming source gets there over the time
             QJsonObject red = e.layerJson(ti);
             e.layer(ti)->roi = QRectF(0, 0, 1, 1);
             red["included"] = true;
@@ -903,42 +903,42 @@ int main(int argc, char **argv)
             CHECK(!e.isTransitioning(tid) && center().red() > 250);
             // A transition running when the layer goes: it goes with it
             blue["timing"] = QJsonObject{{"source/file", 2.0}};
-            e.applyLayers(QJsonArray{blue}, 0.0); // its own time even with no memory fade
+            e.applyLayers(QJsonArray{blue}, 0.0); // its own time even with no snapshot fade
             CHECK(e.isTransitioning(tid));
             e.removeLayer(e.indexOfId(tid));
             CHECK(!e.isTransitioning(tid));
             e.setFadesManual(false);
         }
         // Saved with the project
-        CHECK(e.saveProject(tmp + "/memories.fulskrin", {}, &err));
-        CHECK(e.loadProject(tmp + "/memories.fulskrin", nullptr, &err));
-        CHECK(e.memoryCount() == 2 && e.memory(1).name == "Look 2" && std::abs(e.memory(1).fade - 0.4) < 1e-9);
-        CHECK(e.memory(0).thumbnail.width() == 16 && e.memory(0).layers.size() == 2);
-        e.recallMemory(0);
+        CHECK(e.saveProject(tmp + "/snapshots.fulskrin", {}, &err));
+        CHECK(e.loadProject(tmp + "/snapshots.fulskrin", nullptr, &err));
+        CHECK(e.snapshotCount() == 2 && e.snapshot(1).name == "Look 2" && std::abs(e.snapshot(1).fade - 0.4) < 1e-9);
+        CHECK(e.snapshot(0).thumbnail.width() == 16 && e.snapshot(0).layers.size() == 2);
+        e.recallSnapshot(0);
         CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6);
-        // Memories have ids of their own, kept by edits and by the project
-        CHECK(e.memory(0).id && e.memory(1).id && e.memory(0).id != e.memory(1).id);
+        // Snapshots have ids of their own, kept by edits and by the project
+        CHECK(e.snapshot(0).id && e.snapshot(1).id && e.snapshot(0).id != e.snapshot(1).id);
         {
-            const quint64 id0 = e.memory(0).id;
-            Engine::Memory m = e.memory(0);
+            const quint64 id0 = e.snapshot(0).id;
+            Engine::Snapshot m = e.snapshot(0);
             m.id = 999;
-            e.setMemory(0, m);
-            CHECK(e.memory(0).id == id0 && e.indexOfMemory(id0) == 0 && e.indexOfMemory(12345) == -1);
-            e.addMemory(e.memory(1)); // a copy: another id
-            CHECK(e.memory(2).id != e.memory(1).id);
-            e.removeMemory(2);
+            e.setSnapshot(0, m);
+            CHECK(e.snapshot(0).id == id0 && e.indexOfSnapshot(id0) == 0 && e.indexOfSnapshot(12345) == -1);
+            e.addSnapshot(e.snapshot(1)); // a copy: another id
+            CHECK(e.snapshot(2).id != e.snapshot(1).id);
+            e.removeSnapshot(2);
         }
-        // Sequences: steps recalling memories, GO / GO BACK, loop, saved with the project
+        // Sequences: steps recalling snapshots, GO / GO BACK, loop, saved with the project
         {
             Engine::Sequence seq;
             seq.name = "Show";
-            seq.steps = {{e.memory(1).id, "Act 1"}, {e.memory(0).id, "Act 2"}, {987654, "gone"}};
+            seq.steps = {{e.snapshot(1).id, "Act 1"}, {e.snapshot(0).id, "Act 2"}, {987654, "gone"}};
             CHECK(e.addSequence(seq) == 0 && e.currentSequence() == 0 && e.sequencePosition() == -1);
             CHECK(e.sequenceNext() == 0 && e.sequencePrevious() == -1);
             e.layer(V + 0)->opacity = 0.1f;
-            CHECK(e.sequenceGo() && e.sequencePosition() == 0); // memory 1 ("Look 2"): layer 0 at 0, with its fade
-            CHECK(e.sequenceGo() && e.sequencePosition() == 1 && std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6); // memory 0, at once
-            CHECK(e.sequenceGo() && e.sequencePosition() == 2); // its memory is gone: the position moves, nothing else
+            CHECK(e.sequenceGo() && e.sequencePosition() == 0); // snapshot 1 ("Look 2"): layer 0 at 0, with its fade
+            CHECK(e.sequenceGo() && e.sequencePosition() == 1 && std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6); // snapshot 0, at once
+            CHECK(e.sequenceGo() && e.sequencePosition() == 2); // its snapshot is gone: the position moves, nothing else
             CHECK(e.sequenceNext() == -1 && !e.sequenceGo()); // the end, no loop
             seq.loop = true;
             e.setSequence(0, seq);
@@ -955,12 +955,12 @@ int main(int argc, char **argv)
             CHECK(e.loadProject(tmp + "/sequences.fulskrin", nullptr, &err));
             CHECK(e.sequenceCount() == 2 && e.currentSequence() == 1 && e.sequence(0).loop &&
                   e.sequence(0).steps.size() == 3 && e.sequence(0).steps[0].text == "Act 1" &&
-                  e.sequence(0).steps[0].memory == e.memory(1).id);
+                  e.sequence(0).steps[0].snapshot == e.snapshot(1).id);
             e.removeSequence(1);
             e.removeSequence(0);
             CHECK(e.sequenceCount() == 0 && e.currentSequence() == -1 && !e.sequenceGo());
         }
-        // Memories run side by side: a recall takes over only the values it holds, from where they are
+        // Snapshots run side by side: a recall takes over only the values it holds, from where they are
         {
             e.setFadesManual(true);
             const int ai = e.addLayer("Side A", V);
@@ -976,9 +976,9 @@ int main(int argc, char **argv)
                     e.layer(e.indexOfId(id))->visible = true;
                 }
             }
-            // A memory holding one layer (the others are known, left alone)
+            // A snapshot holding one layer (the others are known, left alone)
             auto memWith = [&](quint64 id, double opacity, double fade) {
-                Engine::Memory m;
+                Engine::Snapshot m;
                 m.name = "Side";
                 m.fade = fade;
                 for (const QJsonValue &v : e.captureLayers()) {
@@ -988,19 +988,19 @@ int main(int argc, char **argv)
                     if (me) o["opacity"] = opacity;
                     m.layers.append(o);
                 }
-                return e.addMemory(m);
+                return e.addSnapshot(m);
             };
             const int mA1 = memWith(ia, 1.0, 2.0), mB1 = memWith(ib, 1.0, 2.0), mA0 = memWith(ia, 0.0, 2.0);
-            e.recallMemory(mA1);
+            e.recallSnapshot(mA1);
             e.advanceFades(1.0);
             CHECK(near(op(ia), 0.5)); // eased: half way at half the time
-            e.recallMemory(mB1);       // another layer: A goes on
+            e.recallSnapshot(mB1);       // another layer: A goes on
             e.advanceFades(1.0);
             CHECK(near(op(ia), 1.0) && near(op(ib), 0.5));
-            e.recallMemory(mA0); // A again: this one takes it over
+            e.recallSnapshot(mA0); // A again: this one takes it over
             e.advanceFades(1.0);
             CHECK(near(op(ia), 0.5) && near(op(ib), 1.0));
-            e.recallMemory(mA1); // in the middle of a fade: from where it is
+            e.recallSnapshot(mA1); // in the middle of a fade: from where it is
             e.advanceFades(1.0);
             CHECK(near(op(ia), 0.75));
             e.advanceFades(5.0);
@@ -1010,28 +1010,28 @@ int main(int argc, char **argv)
             {
                 e.fadeCompositionOpacity(1.0, 0);
                 e.setAudioVolume(1.0f);
-                Engine::Memory lv, vol;
+                Engine::Snapshot lv, vol;
                 lv.fade = vol.fade = 2.0;
                 lv.composition = QJsonObject{{"included", true}, {"opacity", 0.0}};
                 vol.composition = QJsonObject{{"included", true}, {"volume", 0.0}};
-                const int ml = e.addMemory(lv), mv = e.addMemory(vol);
-                e.recallMemory(ml);
+                const int ml = e.addSnapshot(lv), mv = e.addSnapshot(vol);
+                e.recallSnapshot(ml);
                 e.advanceFades(1.0);
                 CHECK(near(e.compositionOpacityTarget(), 0.5));
-                e.recallMemory(mv); // the volume only: the level goes on
+                e.recallSnapshot(mv); // the volume only: the level goes on
                 e.advanceFades(1.0);
                 CHECK(near(e.compositionOpacityTarget(), 0.0) && near(e.audioVolume(), 0.5));
                 e.advanceFades(2.0);
-                e.removeMemory(mv);
-                e.removeMemory(ml);
+                e.removeSnapshot(mv);
+                e.removeSnapshot(ml);
                 e.fadeCompositionOpacity(1.0, 0);
                 e.setAudioVolume(1.0f);
             }
 
-            // A step's action is its memory's longest time
-            CHECK(near(e.memoryDuration(e.memory(mA1).id), 2.0) && e.memoryDuration(987654) == 0);
+            // A step's action is its snapshot's longest time
+            CHECK(near(e.snapshotDuration(e.snapshot(mA1).id), 2.0) && e.snapshotDuration(987654) == 0);
             {
-                Engine::Memory m = e.memory(mB1);
+                Engine::Snapshot m = e.snapshot(mB1);
                 QJsonArray ls = m.layers;
                 for (int k = 0; k < ls.size(); ++k) {
                     QJsonObject o = ls[k].toObject();
@@ -1039,9 +1039,9 @@ int main(int argc, char **argv)
                     ls[k] = o;
                 }
                 m.layers = ls;
-                e.setMemory(mB1, m);
-                CHECK(near(e.memoryDuration(m.id), 5.0));
-                m.layers = e.memory(mA1).layers; // back to the memory's fade (2 s)
+                e.setSnapshot(mB1, m);
+                CHECK(near(e.snapshotDuration(m.id), 5.0));
+                m.layers = e.snapshot(mA1).layers; // back to the snapshot's fade (2 s)
                 for (int k = 0; k < m.layers.size(); ++k) {
                     QJsonObject o = m.layers[k].toObject();
                     const bool me = o.value("id").toString().toULongLong() == ib;
@@ -1049,26 +1049,26 @@ int main(int argc, char **argv)
                     o["opacity"] = 1.0;
                     m.layers[k] = o;
                 }
-                e.setMemory(mB1, m);
+                e.setSnapshot(mB1, m);
             }
 
             // Pre-wait, post-wait, follow / auto-follow / wait
             std::vector<int> fired;
             e.setRecaller([&](int mi) {
                 fired.push_back(mi);
-                e.recallMemory(mi);
+                e.recallSnapshot(mi);
             });
             Engine::Sequence seq;
             seq.name = "Waits";
             Engine::SequenceStep s0, s1, s2;
-            s0.memory = e.memory(mA1).id;
+            s0.snapshot = e.snapshot(mA1).id;
             s0.preWait = 1.0;
             s0.postWait = 0.5;
             s0.next = Engine::StepContinue::Follow; // the next GO 0.5 s after this one is triggered
-            s1.memory = e.memory(mB1).id;
+            s1.snapshot = e.snapshot(mB1).id;
             s1.postWait = 0.5;
             s1.next = Engine::StepContinue::AutoFollow; // the next GO 0.5 s after its 2 s action
-            s2.memory = e.memory(mA0).id;               // Wait
+            s2.snapshot = e.snapshot(mA0).id;               // Wait
             seq.steps = {s0, s1, s2};
             e.setCurrentSequence(e.addSequence(seq));
             CHECK(e.sequenceGo() && e.sequencePosition() == 0 && fired.empty()); // in its pre-wait
@@ -1121,7 +1121,7 @@ int main(int argc, char **argv)
             }
             e.setRecaller(nullptr);
             e.removeSequence(e.currentSequence());
-            for (int mi : {mA0, mB1, mA1}) e.removeMemory(mi); // the last first
+            for (int mi : {mA0, mB1, mA1}) e.removeSnapshot(mi); // the last first
             e.removeLayer(e.indexOfId(ia));
             e.removeLayer(e.indexOfId(ib));
             e.setFadesManual(false);
@@ -1428,7 +1428,7 @@ int main(int argc, char **argv)
                 if (ck >= 0) e.removeAnimation(ck);
                 const Engine::Sequence w = e.sequence(e.currentSequence());
                 CHECK(w.steps.size() == 4 && w.steps[3].action == A::Speed && near(w.steps[3].speed, 0.75) &&
-                      w.steps[0].timeline == aid && w.steps[0].memory == 0 &&
+                      w.steps[0].timeline == aid && w.steps[0].snapshot == 0 &&
                       w.steps[0].action == A::Play && w.steps[1].action == A::Seek && near(w.steps[1].seekTime, 1.0) &&
                       w.steps[2].action == A::Stop);
             }
@@ -1437,17 +1437,17 @@ int main(int argc, char **argv)
             e.removeLayer(e.indexOfId(tid));
             e.setFadesManual(false);
         }
-        // A recall shows what was stored: a layer the memory does not know fades out and is hidden
+        // A recall shows what was stored: a layer the snapshot does not know fades out and is hidden
         {
             const int xi = e.addLayer("Extra", V);
             const quint64 xid = e.layerId(xi);
             e.layer(xi)->opacity = 0.7f;
-            Engine::Memory m = e.memory(0);
+            Engine::Snapshot m = e.snapshot(0);
             const double keptFade = m.fade;
             m.fade = 0.5;
-            e.setMemory(0, m);
+            e.setSnapshot(0, m);
             e.setFadesManual(true);
-            e.recallMemory(0);
+            e.recallSnapshot(0);
             CHECK(e.layer(e.indexOfId(xid))->visible);
             e.advanceFades(0.25);
             CHECK(e.layer(e.indexOfId(xid))->opacity < 0.7f && e.layer(e.indexOfId(xid))->opacity > 0.0f);
@@ -1455,18 +1455,18 @@ int main(int argc, char **argv)
             CHECK(!e.layer(e.indexOfId(xid))->visible && std::abs(e.layer(e.indexOfId(xid))->opacity - 0.7f) < 1e-6);
             // Applying states (undo of a recall) leaves the others alone
             e.layer(e.indexOfId(xid))->visible = true;
-            e.applyLayers(e.memory(0).layers, 0);
+            e.applyLayers(e.snapshot(0).layers, 0);
             CHECK(e.layer(e.indexOfId(xid))->visible);
             e.setFadesManual(false);
             e.removeLayer(e.indexOfId(xid));
             m.fade = keptFade;
-            e.setMemory(0, m);
+            e.setSnapshot(0, m);
         }
 
-        // The inspector edits what a memory holds (its layers' JSON): the recall then applies the new values,
+        // The inspector edits what a snapshot holds (its layers' JSON): the recall then applies the new values,
         // and the composition does not move until it is recalled.
         {
-            Engine::Memory edited = e.memory(0);
+            Engine::Snapshot edited = e.snapshot(0);
             QJsonObject l0 = edited.layers[0].toObject();
             l0["opacity"] = 0.25;
             l0["blend_mode"] = "screen";
@@ -1480,10 +1480,10 @@ int main(int argc, char **argv)
             edited.layers[0] = l0;
             edited.layers[1] = l1;
             e.layer(V + 0)->opacity = 0.8f;
-            e.setMemory(0, edited);
-            CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6); // editing a memory does not touch the layers
-            CHECK(std::abs(e.memory(0).layers[0].toObject().value("opacity").toDouble() - 0.25) < 1e-9);
-            e.recallMemory(0);
+            e.setSnapshot(0, edited);
+            CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6); // editing a snapshot does not touch the layers
+            CHECK(std::abs(e.snapshot(0).layers[0].toObject().value("opacity").toDouble() - 0.25) < 1e-9);
+            e.recallSnapshot(0);
             CHECK(std::abs(e.layer(V + 0)->opacity - 0.25f) < 1e-6 && e.layer(V + 0)->blend == BlendMode::Screen);
             CHECK(e.layer(V + 1)->visible);
             const IsfInstance *gen = e.layer(V + 1)->generator.get();
@@ -1492,12 +1492,12 @@ int main(int argc, char **argv)
                 if (in.name == "color") r = in.cValue[0];
             CHECK(std::abs(r - 0.25) < 1e-6);
             // Still edited after a save / load round trip
-            CHECK(e.saveProject(tmp + "/memories.fulskrin", {}, &err));
-            CHECK(e.loadProject(tmp + "/memories.fulskrin", nullptr, &err));
-            CHECK(std::abs(e.memory(0).layers[0].toObject().value("opacity").toDouble() - 0.25) < 1e-9);
+            CHECK(e.saveProject(tmp + "/snapshots.fulskrin", {}, &err));
+            CHECK(e.loadProject(tmp + "/snapshots.fulskrin", nullptr, &err));
+            CHECK(std::abs(e.snapshot(0).layers[0].toObject().value("opacity").toDouble() - 0.25) < 1e-9);
         }
         e.newProject();
-        CHECK(e.memoryCount() == 0);
+        CHECK(e.snapshotCount() == 0);
     }
 
     // 4f. Effect masks: an effect applies where another layer's picture is white
@@ -1587,7 +1587,7 @@ int main(int argc, char **argv)
         l = at(0.25), r = at(0.75);
         CHECK(l.red() > 250 && r.red() > 250);
         e.layer(e.indexOfId(lid))->color.enabled = true;
-        // Saved, read back, recalled by a memory
+        // Saved, read back, recalled by a snapshot
         const QJsonObject json = e.layerJson(e.indexOfId(lid));
         CHECK(json.value("color").toObject().value("mask").toString() == QString::number(maskId)
               && json.value("color").toObject().value("mask_invert").toBool());
@@ -1829,7 +1829,7 @@ int main(int argc, char **argv)
             e.setViewportWindow(vp1, nullptr);
             e.setViewportWindow(vp2, nullptr);
         }
-        // Publishing follows a viewport changed without going through setPublishSettings (undo, memories, load)
+        // Publishing follows a viewport changed without going through setPublishSettings (undo, snapshots, load)
         {
             Engine::Lock lk(&e.mutex());
             e.layer(e.indexOfId(vp2))->vpPublish[PublishKind::Syphon].enabled = true;
@@ -1890,9 +1890,9 @@ int main(int argc, char **argv)
         // Removing a group: its contents go up one level only
         e.removeLayer(e.indexOfId(inner));
         CHECK(e.layer(e.indexOfId(lid))->parent == outer);
-        // Memories leave the viewports alone, but recall the routing of the layers
+        // Snapshots leave the viewports alone, but recall the routing of the layers
         e.setOpacityIn(e.indexOfId(outer), vp2, 0.0f);
-        Engine::Memory mem;
+        Engine::Snapshot mem;
         mem.layers = e.captureLayers();
         bool hasViewport = false;
         for (const QJsonValue &v : mem.layers) hasViewport |= v.toObject().value("viewport").toBool();

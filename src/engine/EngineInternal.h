@@ -1,6 +1,6 @@
 #pragma once
 // Shared by the Engine translation units (Engine.cpp, Layers.cpp, Render.cpp, Project.cpp, Media.cpp,
-// Memories.cpp): the holder of detached resources, and the few helpers more than one of them needs.
+// Snapshots.cpp): the holder of detached resources, and the few helpers more than one of them needs.
 // Nothing here is part of the engine's API — Engine.h is.
 
 #include "Engine.h"
@@ -15,7 +15,7 @@ inline constexpr int kMeshSubdiv = 40;
 // The Text generator's settings in a layer state (Project.cpp)
 QJsonObject textJson(const TextSource &t);
 void readTextJson(TextSource &t, const QJsonObject &o); // onto the current values, then kept in range
-// An easing of the memories' fades (0 linear, 1 in, 2 out, 3 in-out, 4 in cubic, 5 out cubic) at t in 0..1
+// An easing of the snapshots' fades (0 linear, 1 in, 2 out, 3 in-out, 4 in cubic, 5 out cubic) at t in 0..1
 double easeCurve(double t, int curve);
 // Keys of a timeline's loop mode in a project ("once", "loop", "pingpong")
 QString animLoopKey(Engine::AnimLoop l);

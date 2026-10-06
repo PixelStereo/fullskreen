@@ -11,7 +11,7 @@ class LayerTable;
 class MediaBin;
 class CompositionPanel;
 class SettingsPanel;
-class MemoryPanel;
+class SnapshotPanel;
 class SequenceBar;
 class SequenceWindow;
 class TimelineWindow;
@@ -111,7 +111,7 @@ private:
     MediaBin *m_bin = nullptr;
     CompositionPanel *m_composition = nullptr;
     SettingsPanel *m_settings = nullptr;
-    MemoryPanel *m_memories = nullptr;
+    SnapshotPanel *m_snapshots = nullptr;
     SequenceBar *m_seqBar = nullptr;
     SequenceWindow *m_seqWindow = nullptr;
     TimelineWindow *m_timelineWindow = nullptr;

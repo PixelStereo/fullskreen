@@ -298,20 +298,20 @@ SetStructure::SetStructure(Engine *e, const LayerTree &before, const LayerTree &
     setText(text);
 }
 
-RecallMemory::RecallMemory(Engine *e, int memory) : m_e(e), m_memory(memory)
+RecallSnapshot::RecallSnapshot(Engine *e, int snapshot) : m_e(e), m_snapshot(snapshot)
 {
     m_before = e->captureLayers();
     m_beforeComposition = e->captureComposition();
-    setText(QStringLiteral("Recall \"%1\"").arg(e->memory(memory).name));
+    setText(QStringLiteral("Recall \"%1\"").arg(e->snapshot(snapshot).name));
 }
 
-void RecallMemory::redo()
+void RecallSnapshot::redo()
 {
     if (m_first) {
         m_first = false;
-        m_e->recallMemory(m_memory);
+        m_e->recallSnapshot(m_snapshot);
     } else {
-        const Engine::Memory m = m_e->memory(m_memory);
+        const Engine::Snapshot m = m_e->snapshot(m_snapshot);
         if (!m.layers.isEmpty()) m_e->applyLayers(m.layers, 0, true);
         m_e->applyComposition(m.composition, 0);
     }

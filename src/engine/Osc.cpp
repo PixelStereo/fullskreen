@@ -336,7 +336,7 @@ QString OscNamespace::signature() const
         for (const auto &fx : l->effects) isf(fx.get());
         s += '\n';
     }
-    for (int i = 0; i < m_e->memoryCount(); ++i) s += QStringLiteral("memory:") + m_e->memory(i).name + '\n';
+    for (int i = 0; i < m_e->snapshotCount(); ++i) s += QStringLiteral("snapshot:") + m_e->snapshot(i).name + '\n';
     for (int i = 0; i < m_e->animationCount(); ++i) s += QStringLiteral("timeline:") + m_e->animation(i).name + '\n';
     return s;
 }
@@ -468,30 +468,30 @@ void OscNamespace::build()
         };
     }
 
-    // --- Memories: recalled by number (1 = first) or from their own node
+    // --- Snapshots: recalled by number (1 = first) or from their own node
     {
-        OscNode &n = add("/memories/recall", "i", 2, "Recall");
-        n.range = {minMax(1, std::max(1, e->memoryCount()))};
+        OscNode &n = add("/snapshots/recall", "i", 2, "Recall");
+        n.range = {minMax(1, std::max(1, e->snapshotCount()))};
         n.set = [e](const QVariantList &a) {
             const int i = int(std::lround(num(a.value(0)))) - 1;
-            if (i < 0 || i >= e->memoryCount()) return false;
-            e->recallMemory(i);
+            if (i < 0 || i >= e->snapshotCount()) return false;
+            e->recallSnapshot(i);
             return true;
         };
-        OscNode &c = add("/memories/count", "i", 1, "Count");
-        c.get = [e] { return QVariantList{e->memoryCount()}; };
-        m_nodes["/memories"].description = "Memories";
-        for (int i = 0; i < e->memoryCount(); ++i) {
-            const QString base = QStringLiteral("/memories/%1").arg(i + 1);
+        OscNode &c = add("/snapshots/count", "i", 1, "Count");
+        c.get = [e] { return QVariantList{e->snapshotCount()}; };
+        m_nodes["/snapshots"].description = "Snapshots";
+        for (int i = 0; i < e->snapshotCount(); ++i) {
+            const QString base = QStringLiteral("/snapshots/%1").arg(i + 1);
             OscNode &r = add(base + "/recall", "N", 2, "Recall");
             r.set = [e, i](const QVariantList &) {
-                if (i >= e->memoryCount()) return false;
-                e->recallMemory(i);
+                if (i >= e->snapshotCount()) return false;
+                e->recallSnapshot(i);
                 return true;
             };
             OscNode &nm = add(base + "/name", "s", 1, "Name");
-            nm.get = [e, i] { return QVariantList{e->memory(i).name}; };
-            m_nodes[base].description = e->memory(i).name.isEmpty() ? QString::number(i + 1) : e->memory(i).name;
+            nm.get = [e, i] { return QVariantList{e->snapshot(i).name}; };
+            m_nodes[base].description = e->snapshot(i).name.isEmpty() ? QString::number(i + 1) : e->snapshot(i).name;
         }
     }
 
@@ -748,14 +748,14 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
         picture = l->hasPicture();
         generator = l->generator && l->generator->isValid();
         // Generator parameters
-        if (generator) L.isfParams(P + "/source", -1, *l->generator);
+        if (generator) L.isfParams(P + "/source/params", -1, *l->generator);
         QStringList fxNames;
         for (const auto &x : l->effects) fxNames << x->name();
         const QStringList segs = osc::uniqueSegments(fxNames);
         for (int k = 0; k < int(l->effects.size()); ++k) {
             const QString seg = segs[k];
             effects.emplace_back(k, seg);
-            if (l->effects[size_t(k)]->isValid()) L.isfParams(P + "/effects/" + seg, k, *l->effects[size_t(k)]);
+            if (l->effects[size_t(k)]->isValid()) L.isfParams(P + "/effects/" + seg + "/params", k, *l->effects[size_t(k)]);
         }
     }
 
@@ -1272,7 +1272,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     if (isGroup) add(P + "/layers", QString(), 0, "Layers");
     // Readable names of the containers
     static const std::pair<const char *, const char *> kNames[] = {
-        {"/source", "Source"}, {"/source/roi", "ROI"}, {"/color", "Color"},
+        {"/source", "Source"}, {"/source/roi", "ROI"}, {"/source/params", "Parameters"}, {"/color", "Color"},
         {"/spatial", "Spatial"}, {"/spatial/corners", "Corners"}, {"/spatial/soft_edge", "Soft Edge"}, {"/source/text", "Text"}, {"/effects", "Effects"}};
     for (const auto &[suffix, name] : kNames) {
         auto it = m_nodes.find(P + suffix);

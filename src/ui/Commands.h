@@ -147,11 +147,11 @@ private:
     LayerTree m_before, m_after;
 };
 
-// Memory recalled: the layers' states before, then the memory's (with its fade the first time)
-class RecallMemory : public QUndoCommand
+// Snapshot recalled: the layers' states before, then the snapshot's (with its fade the first time)
+class RecallSnapshot : public QUndoCommand
 {
 public:
-    RecallMemory(Engine *e, int memory);
+    RecallSnapshot(Engine *e, int snapshot);
     void undo() override
     {
         m_e->applyLayers(m_before, 0);
@@ -161,7 +161,7 @@ public:
 
 private:
     Engine *m_e;
-    int m_memory;
+    int m_snapshot;
     QJsonArray m_before;
     QJsonObject m_beforeComposition;
     bool m_first = true;

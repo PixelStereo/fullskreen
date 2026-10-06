@@ -1,4 +1,4 @@
-// Sequences: ordered steps recalling memories, played with GO / GO BACK (the cue list of a show).
+// Sequences: ordered steps recalling snapshots, played with GO / GO BACK (the cue list of a show).
 #include <limits>
 #include "EngineInternal.h"
 
@@ -128,11 +128,11 @@ int Engine::sequencePrevious() const
 // ---------------------------------------------------------------------------
 // Playing: pre-wait, action, post-wait, and what follows
 
-double Engine::memoryDuration(quint64 id) const
+double Engine::snapshotDuration(quint64 id) const
 {
     Lock lk(&m_mutex);
-    const Memory *m = nullptr;
-    for (const Memory &x : m_memories)
+    const Snapshot *m = nullptr;
+    for (const Snapshot &x : m_snapshots)
         if (x.id == id) m = &x;
     if (!m) return 0;
     double d = 0;
@@ -152,7 +152,7 @@ double Engine::memoryDuration(quint64 id) const
 
 double Engine::stepDuration(const SequenceStep &st) const
 {
-    if (!st.timeline) return memoryDuration(st.memory);
+    if (!st.timeline) return snapshotDuration(st.snapshot);
     if (st.action != AnimAction::Play) return 0;
     Lock lk(&m_mutex);
     for (const Animation &a : m_animations) {
@@ -186,7 +186,7 @@ static Engine::StepRun runOf(const Engine::SequenceStep &st, int k, bool chain)
     Engine::StepRun r;
     r.step = k;
     r.target = st;
-    r.memory = st.timeline ? 0 : st.memory;
+    r.snapshot = st.timeline ? 0 : st.snapshot;
     r.preWait = chain ? std::max(0.0, st.preWait) : 0.0;
     r.postWait = std::max(0.0, st.postWait);
     r.next = chain ? st.next : Engine::StepContinue::Wait;
@@ -215,7 +215,7 @@ bool Engine::sequenceGoTo(int step, bool chain)
         StepRun r = runOf(st, step, chain);
         r.duration = stepDuration(st); // the lock is recursive
         m_runs.push_back(r);
-        m_sequencePosition = step; // the playhead moves at the GO, the memory comes after the pre-wait
+        m_sequencePosition = step; // the playhead moves at the GO, the snapshot comes after the pre-wait
     }
     advanceSequence(0); // what has no pre-wait: now
     emit sequencePositionChanged();
@@ -267,7 +267,7 @@ void Engine::startSequenceTimer()
     }
 }
 
-// Each step on its way moves on by dt: its memory once its pre-wait is over, the next step's GO when its
+// Each step on its way moves on by dt: its snapshot once its pre-wait is over, the next step's GO when its
 // continuation says so (the time beyond it carried over, so that chained waits do not drift). A step is
 // forgotten once its action is over and nothing more comes from it.
 void Engine::advanceSequence(double dt)
@@ -314,17 +314,17 @@ void Engine::advanceSequence(double dt)
                                         }),
                          m_runs.end());
         }
-        // The memories and timelines, in the order of their GO (outside the lock: a recall loads, and may go
+        // The snapshots and timelines, in the order of their GO (outside the lock: a recall loads, and may go
         // through the interface's undo stack)
         for (const SequenceStep &st : fire) {
             if (st.timeline) {
                 controlAnimation(st.timeline, st.action, st.action == AnimAction::Speed ? st.speed : st.seekTime, st.loop, st.repeat);
                 continue;
             }
-            const int mi = indexOfMemory(st.memory);
-            if (mi < 0) continue; // a step without its memory (gone): the position moves, nothing else
+            const int mi = indexOfSnapshot(st.snapshot);
+            if (mi < 0) continue; // a step without its snapshot (gone): the position moves, nothing else
             if (m_recaller) m_recaller(mi);
-            else recallMemory(mi);
+            else recallSnapshot(mi);
         }
         {
             Lock lk(&m_mutex); // the Plays are issued: their steps follow the timelines from now on
@@ -363,7 +363,7 @@ QJsonArray Engine::sequencesToJson() const
                     if (st.repeat > 0) o["repeat"] = st.repeat;
                 }
             } else {
-                o["memory"] = QString::number(st.memory);
+                o["snapshot"] = QString::number(st.snapshot);
             }
             if (!st.text.isEmpty()) o["text"] = st.text;
             if (st.preWait > 0) o["pre_wait"] = st.preWait;
@@ -387,7 +387,7 @@ void Engine::sequencesFromJson(const QJsonArray &a, int current)
         for (const QJsonValue &sv : o.value("steps").toArray()) {
             const QJsonObject so = sv.toObject();
             SequenceStep st;
-            st.memory = so.value("memory").toString().toULongLong();
+            st.snapshot = so.value("snapshot").toString().toULongLong();
             st.timeline = so.value("timeline").toString().toULongLong();
             if (st.timeline) {
                 const QString a = so.value("action").toString();
@@ -398,7 +398,7 @@ void Engine::sequencesFromJson(const QJsonArray &a, int current)
                 st.seekTime = std::max(0.0, so.value("time").toDouble(0));
                 st.loop = animLoopFromKey(so.value("loop").toString());
                 st.repeat = std::clamp(so.value("repeat").toInt(0), 0, 100000);
-                st.memory = 0;
+                st.snapshot = 0;
             }
             st.text = so.value("text").toString();
             st.preWait = std::clamp(so.value("pre_wait").toDouble(0), 0.0, 3600.0);

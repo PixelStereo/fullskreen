@@ -9,7 +9,7 @@
 #include <QSaveFile>
 #include <cmath>
 
-// The Text generator in a layer state: colors as [r, g, b, a] (0..1, so that a memory's panel edits and fades them
+// The Text generator in a layer state: colors as [r, g, b, a] (0..1, so that a snapshot's panel edits and fades them
 // like the shaders' colors), alignment as words.
 static QJsonArray colorJson(const QColor &c) { return QJsonArray{c.redF(), c.greenF(), c.blueF(), c.alphaF()}; }
 static QColor colorFromJson(const QJsonValue &v, const QColor &fallback)
@@ -110,13 +110,13 @@ void Engine::newProject()
     clearProject();
     ensureViewport(); // a new project shows its composition through one viewport
     emit layersChanged();
-    emit memoriesChanged();
+    emit snapshotsChanged();
     emit animationsChanged();
     emit sequencesChanged();
     emit sequencePositionChanged();
 }
 
-// Empties everything (layers, viewports, memories, media bin)
+// Empties everything (layers, viewports, snapshots, media bin)
 void Engine::clearProject()
 {
     std::vector<std::unique_ptr<Layer>> old;
@@ -125,8 +125,8 @@ void Engine::clearProject()
         old.swap(m_layers);
         m_projectPath.clear();
         m_binItems.clear();
-        m_memories.clear();
-        m_nextMemoryId = 1;
+        m_snapshots.clear();
+        m_nextSnapshotId = 1;
         m_render = RenderSettings(); // the machine's defaults
         m_sequences.clear();
         m_currentSequence = m_sequencePosition = -1;
@@ -134,7 +134,7 @@ void Engine::clearProject()
         m_animations.clear();
         m_nextAnimationId = 1;
         m_fades.clear();
-        m_recalledMemory = 0;
+        m_recalledSnapshot = 0;
         m_recallTotal = 0;
         for (auto &[id, t] : m_transitions) retireTransition(std::move(t));
         m_transitions.clear();
@@ -150,7 +150,7 @@ void Engine::clearProject()
     }
     setCompositionSize(QSize(1920, 1080));
     emit layersChanged();
-    emit memoriesChanged();
+    emit snapshotsChanged();
     emit animationsChanged();
 }
 
@@ -190,7 +190,7 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         o["output_mode"] = l.vpMode;
         o["publish"] = l.vpPublish.toJson();
     }
-    // Always save viewport opacity (even if empty) so memories preserve per-viewport visibility settings
+    // Always save viewport opacity (even if empty) so snapshots preserve per-viewport visibility settings
     QJsonObject vo;
     for (const auto &[v, a] : l.viewportOpacity) vo[QString::number(v)] = double(a);
     o["viewports"] = vo;
@@ -426,8 +426,8 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         root["bin"] = bin;
         root["audio"] = QJsonObject{{"volume", double(m_audio->volume())}};
         QJsonArray mems;
-        for (const Memory &m : m_memories) mems.append(memoryToJson(m, dir));
-        root["memories"] = mems;
+        for (const Snapshot &m : m_snapshots) mems.append(snapshotToJson(m, dir));
+        root["snapshots"] = mems;
         root["timelines"] = animationsToJson();
         root["sequences"] = sequencesToJson();
         root["current_sequence"] = m_currentSequence;
@@ -493,20 +493,20 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     m_audio->setVolume(float(std::clamp(audio.value("volume").toDouble(1.0), 0.0, 2.0)));
     {
         Lock lk(&m_mutex);
-        for (const QJsonValue &v : root.value("memories").toArray()) {
-            Memory m = memoryFromJson(v.toObject(), dir);
+        for (const QJsonValue &v : root.value("snapshots").toArray()) {
+            Snapshot m = snapshotFromJson(v.toObject(), dir);
             bool taken = !m.id;
-            for (const Memory &o : m_memories) taken = taken || o.id == m.id;
+            for (const Snapshot &o : m_snapshots) taken = taken || o.id == m.id;
             if (taken) m.id = 0; // given below, after the saved ones
-            m_memories.push_back(m);
+            m_snapshots.push_back(m);
         }
-        for (const Memory &m : m_memories) m_nextMemoryId = std::max(m_nextMemoryId, m.id + 1);
-        for (Memory &m : m_memories)
-            if (!m.id) m.id = m_nextMemoryId++;
+        for (const Snapshot &m : m_snapshots) m_nextSnapshotId = std::max(m_nextSnapshotId, m.id + 1);
+        for (Snapshot &m : m_snapshots)
+            if (!m.id) m.id = m_nextSnapshotId++;
         animationsFromJson(root.value("timelines").toArray());
         sequencesFromJson(root.value("sequences").toArray(), root.value("current_sequence").toInt(0));
     }
-    emit memoriesChanged();
+    emit snapshotsChanged();
     emit animationsChanged();
     emit sequencesChanged();
     emit sequencePositionChanged();

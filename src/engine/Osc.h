@@ -10,7 +10,7 @@
 //    OSC messages accepted as binary frames.
 //
 // Everything is hierarchical and lowercase (layer, group and ISF names aside); a parameter that switches something
-// on or off is the child "enable" of what it switches (color/tint/enable, effects/<fx>/enable).
+// on or off is the child "enable" of what it switches (color/tint/enable, effects/<fx>/enable); the parameters of a shader are under params/.
 // Layers are addressed by name, groups contain their members: /layers/<group>/layers/<layer>/opacity.
 // Names are made OSC-safe (spaces and reserved characters become '_') and unique among siblings ("_2").
 // A locked layer refuses every write except visible, locked and the transport (play, restart, position).
@@ -53,7 +53,7 @@ bool match(const QString &pattern, const QString &address);
 // Name usable as one segment of an OSC address
 QString safeName(const QString &name);
 // The segment of each effect of a layer (names made safe; a repeated name gets _2, _3…): the same in OSC addresses,
-// timeline parameters and memory times
+// timeline parameters and snapshot times
 QStringList uniqueSegments(const QStringList &names);
 
 } // namespace osc

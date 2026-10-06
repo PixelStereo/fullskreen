@@ -164,7 +164,7 @@ public:
     RenderSettings effectiveRender() const; // what is used: the project's, or the defaults
     void setScreenRefreshRate(double hz);   // of the main screen (the pace without a window shown)
     double screenRefreshRate() const;
-    // Transition used when a memory gives a layer another source, for the layers that do not choose one
+    // Transition used when a snapshot gives a layer another source, for the layers that do not choose one
     // (ISF transition; empty: a crossfade)
     void setDefaultTransition(const QString &path);
     QString defaultTransition() const;
@@ -196,32 +196,32 @@ public:
     bool setIsfImageInput(IsfInstance *inst, int input, const QString &path, QString *err = nullptr);
     bool reloadIsf(IsfInstance *inst); // reloads from disk (live editing)
 
-    // --- Memories (cues, as in MadMapper): snapshots of the layers, recalled with a fade
-    struct Memory {
-        quint64 id = 0;     // stable (sequences refer to it); given by addMemory
+    // --- Snapshots (cues, as in MadMapper): snapshots of the layers, recalled with a fade
+    struct Snapshot {
+        quint64 id = 0;     // stable (sequences refer to it); given by addSnapshot
         QString name;
         double fade = 1.0;  // seconds
         QImage thumbnail;   // output at the time it was stored
         QJsonArray layers;  // layerJson of the layers, with "included" (false: left alone by the recall)
         // The composition: its opacity and the sound volume, with "included" and "timing" as a layer's
-        // (empty: a memory stored before it was kept, left alone by the recall)
+        // (empty: a snapshot stored before it was kept, left alone by the recall)
         QJsonObject composition;
     };
     QJsonObject captureComposition() const;
     void applyComposition(const QJsonObject &c, double fade); // the recall's part for the composition
-    int memoryCount() const;
-    Memory memory(int i) const;
-    void setMemory(int i, const Memory &m);
-    int addMemory(const Memory &m, int at = -1);
-    void removeMemory(int i);
+    int snapshotCount() const;
+    Snapshot snapshot(int i) const;
+    void setSnapshot(int i, const Snapshot &m);
+    int addSnapshot(const Snapshot &m, int at = -1);
+    void removeSnapshot(int i);
     QJsonArray captureLayers() const; // state of every layer, all included
     // Applies layer states (those not excluded): opacity, volume, roi, color, mapping and ISF numbers fade in
     // `fade` seconds, or in the time a state gives them ("timing": key → seconds, 0 a cut); sources and effect chains change at once; a layer that became visible fades in from 0,
     // one that becomes hidden fades out; layers removed since are recreated. Other layers are left alone, or with
-    // hideOthers (a memory's recall: the picture as it was stored) faded out and hidden — not the viewports, not
+    // hideOthers (a snapshot's recall: the picture as it was stored) faded out and hidden — not the viewports, not
     // the layers the state holds but leaves out ("included": false), not the locked ones.
     void applyLayers(const QJsonArray &layers, double fade, bool hideOthers = false);
-    int indexOfMemory(quint64 id) const; // -1: none
+    int indexOfSnapshot(quint64 id) const; // -1: none
 
     // --- Timelines: values of the layers (and of the composition) drawn over time, played on their own clock,
     // outside the sequences — the sequences only drive their transport (play, pause, stop, rewind, seek, loop).
@@ -230,7 +230,7 @@ public:
     // A timeline has a duration and tracks, each driving one number: a curve (keys over the duration, each
     // eased towards the next one — the pattern repeats when the timeline loops) or an oscillator (a wave of its
     // own period, on the time played so that it goes on without a jump across the loops). Values are absolute.
-    // While a timeline plays, its values are set every frame after the memories' fades: they win over them.
+    // While a timeline plays, its values are set every frame after the snapshots' fades: they win over them.
     // Paused or stopped, it leaves its values where they are. Several timelines play side by side.
     enum class AnimWave { Sine = 0, Triangle = 1, Saw = 2, Square = 3 };
     enum class AnimLoop { Once = 0, Loop = 1, PingPong = 2 };
@@ -246,7 +246,7 @@ public:
     };
     struct AnimTrack {
         quint64 layer = 0; // the layer driven (its id; 0: the composition)
-        QString param;     // the number (see animatableParams): "opacity", "spatial/rotation", "effects/<fx>/<param>"… (the OSC address inside the layer)
+        QString param;     // the number (see animatableParams): "opacity", "spatial/rotation", "effects/<fx>/params/<name>"… (the OSC address inside the layer)
         bool enabled = true;
         bool oscillator = false;
         std::vector<AnimKey> keys; // curve: sorted by time
@@ -297,11 +297,11 @@ public:
     bool animParamValue(quint64 layer, const QString &path, double *value) const;
     void stepAnimations(double dt); // the timelines playing move on and set their values (lock held)
 
-    // --- Sequences: ordered steps, each recalling a memory or driving a timeline (and carrying a text for the
+    // --- Sequences: ordered steps, each recalling a snapshot or driving a timeline (and carrying a text for the
     // operator), played by GO / GO BACK. Several sequences; one is current. Saved with the project; the position is not.
     //
-    // A step waits its pre-wait after its GO, then recalls its memory, whose fade is the step's action (its
-    // duration: the memory's longest time) — or acts on its timeline (Play: the time it plays, when it ends,
+    // A step waits its pre-wait after its GO, then recalls its snapshot, whose fade is the step's action (its
+    // duration: the snapshot's longest time) — or acts on its timeline (Play: the time it plays, when it ends,
     // followed as it goes: a speed or a loop mode changed meanwhile, by a step or by OSC, is taken into account,
     // and a frozen timeline (speed 0) is waited for until it moves on and ends; the other actions take no time).
     // What comes next (as in QLab):
@@ -309,10 +309,10 @@ public:
     //  - Follow: the next step gets its GO once this one was triggered (pre-wait over), after the post-wait,
     //    without waiting for the action to end;
     //  - AutoFollow: the next step gets its GO once the action is over, after the post-wait.
-    // A memory recalled does not stop the ones still running: only the values it holds itself are taken over.
+    // A snapshot recalled does not stop the ones still running: only the values it holds itself are taken over.
     enum class StepContinue { Wait = 0, Follow = 1, AutoFollow = 2 };
     struct SequenceStep {
-        quint64 memory = 0;   // its id (0: none yet)
+        quint64 snapshot = 0;   // its id (0: none yet)
         QString text;
         quint64 timeline = 0; // or a timeline's (an animation's) id, driven by `action`
         AnimAction action = AnimAction::Play;
@@ -326,8 +326,8 @@ public:
     // A step on its way: since its GO, through its pre-wait, its action, and until the next step's GO
     struct StepRun {
         int step = -1;
-        SequenceStep target; // what it does (its memory, or its timeline and action)
-        quint64 memory = 0;
+        SequenceStep target; // what it does (its snapshot, or its timeline and action)
+        quint64 snapshot = 0;
         double elapsed = 0; // since its GO
         double preWait = 0, duration = 0, postWait = 0;
         StepContinue next = StepContinue::Wait;
@@ -360,7 +360,7 @@ public:
     void setSequencePosition(int step);   // without recalling (the interface recalls, undoable)
     int sequenceNext() const;             // the step GO plays (-1: none — the end, without loop)
     int sequencePrevious() const;         // the step GO BACK plays (-1: none)
-    // GO / a given step: its pre-wait, then its memory, then what follows (chain = false: at once, and nothing
+    // GO / a given step: its pre-wait, then its snapshot, then what follows (chain = false: at once, and nothing
     // follows). GO BACK: the previous step at once, the waits still running are stopped.
     bool sequenceGo();
     bool sequenceBack();
@@ -369,30 +369,30 @@ public:
     std::vector<StepRun> sequenceRuns() const; // the steps of the current sequence on their way
     bool sequenceRunning() const;
     void advanceSequence(double dt);         // moves the waits on (a timer does, except with setFadesManual)
-    // The memory a step recalls goes through this (the interface: its undo stack); recallMemory by default
-    void setRecaller(std::function<void(int memoryIndex)> f) { m_recaller = std::move(f); }
-    // A memory's action: its longest time (the fade, and the times of its own values)
-    double memoryDuration(quint64 id) const;
-    // A step's action: its memory's, or the time its timeline will play (Play on a timeline that ends; else 0;
+    // The snapshot a step recalls goes through this (the interface: its undo stack); recallSnapshot by default
+    void setRecaller(std::function<void(int snapshotIndex)> f) { m_recaller = std::move(f); }
+    // A snapshot's action: its longest time (the fade, and the times of its own values)
+    double snapshotDuration(quint64 id) const;
+    // A step's action: its snapshot's, or the time its timeline will play (Play on a timeline that ends; else 0;
     // infinity: its timeline is frozen, speed 0, and plays on when its speed is raised)
     double stepDuration(const SequenceStep &st) const;
     double animationRemaining(quint64 id) const; // real seconds a timeline playing has left (infinity: not moving)
-    void recallMemory(int i); // with its fade
+    void recallSnapshot(int i); // with its fade
     bool isFading() const;
-    // The memory recalled last, and where its fade is (its longest time: values with times of their own included)
+    // The snapshot recalled last, and where its fade is (its longest time: values with times of their own included)
     struct RecallProgress {
-        quint64 memory = 0;          // 0: none recalled since the project was opened
+        quint64 snapshot = 0;          // 0: none recalled since the project was opened
         double elapsed = 0, total = 0;
-        bool running() const { return memory && total > 0 && elapsed < total; }
+        bool running() const { return snapshot && total > 0 && elapsed < total; }
         double fraction() const { return total > 0 ? std::min(1.0, elapsed / total) : 1.0; }
     };
     RecallProgress recallProgress() const;
-    void stepCompositionFade(double dt); // a memory's fade of the level and the volume (lock held)
-    void stepTypewriters(double dt); // the texts memories gave are typed on (lock held)
+    void stepCompositionFade(double dt); // a snapshot's fade of the level and the volume (lock held)
+    void stepTypewriters(double dt); // the texts snapshots gave are typed on (lock held)
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
     void setFadesManual(bool on) { m_fadesManual = on; } // tests: only advanceFades moves them, not the frames
-    // Key under which a memory stores the time of a stored value (its path in the layer state), empty for a value
-    // that does not fade: "opacity", "source/roi", "color/temp", "spatial", "effects/<fx>/<param>"…
+    // Key under which a snapshot stores the time of a stored value (its path in the layer state), empty for a value
+    // that does not fade: "opacity", "source/roi", "color/temp", "spatial", "effects/<fx>/params/<name>"…
     static QString timingKey(const QStringList &path, const QJsonObject &layer);
 
     // --- External media (media bin)
@@ -424,7 +424,7 @@ public:
     void stopAudio();
     AudioOutput &audioOutput() { return *m_audio; }
     float audioVolume() const { return m_audio->volume(); }
-    void setAudioVolume(float v); // stops a memory's fade of the volume
+    void setAudioVolume(float v); // stops a snapshot's fade of the volume
 
     // --- Output publishing (NDI, OMT, Syphon, Spout): each viewport publishes its own picture
     void setPublishSettings(quint64 viewport, const PublishSettings &s);
@@ -483,11 +483,11 @@ public:
 signals:
     void layersChanged();
     void compositionSizeChanged(QSize size);
-    void memoriesChanged();
+    void snapshotsChanged();
     void sequencesChanged();        // their contents
     void sequencePositionChanged(); // current sequence or step
     void animationsChanged();       // the timelines' contents (not their transport)
-    void memoryRecalled(int index);
+    void snapshotRecalled(int index);
     void frameRendered(); // emitted from the render thread, at most once per frame displayed by the UI
 
 public:
@@ -525,9 +525,9 @@ private:
     void renderViewport(Layer &v, const std::vector<Layer *> &shown, const IsfRenderContext &rc);
     void composite();
     void readSourcePreview();
-    void stepFade(double dt); // memory fades (render thread, lock held)
-    QJsonObject memoryToJson(const Memory &m, const QString &projectDir) const;
-    Memory memoryFromJson(const QJsonObject &o, const QString &projectDir) const;
+    void stepFade(double dt); // snapshot fades (render thread, lock held)
+    QJsonObject snapshotToJson(const Snapshot &m, const QString &projectDir) const;
+    Snapshot snapshotFromJson(const QJsonObject &o, const QString &projectDir) const;
     void normalizeLocked(); // restores the structure invariants (lock held)
     quint64 newIdLocked();
     void clearProject();
@@ -605,7 +605,7 @@ private:
     std::atomic<double> m_compositionOpacity{1.0};
     double m_compositionOpacityTarget = 1.0, m_compositionOpacitySpeed = 0.0; // units per second (0 = immediate)
     struct CompositionFade {
-        double opacityElapsed = 0, volumeElapsed = 0; // each on its own clock: two memories can drive them
+        double opacityElapsed = 0, volumeElapsed = 0; // each on its own clock: two snapshots can drive them
         bool opacity = false, volume = false;
         double opacityFrom = 1, opacityTo = 1, opacityDur = 0, volumeDur = 0;
         float volumeFrom = 1, volumeTo = 1;
@@ -630,10 +630,10 @@ private:
     std::unique_ptr<AudioOutput> m_audio;
     PlayMode m_defaultPlayMode = PlayMode::Loop;
     int m_defaultColorModels = 1;
-    std::vector<Memory> m_memories;
+    std::vector<Snapshot> m_snapshots;
     struct FadeJob;
     std::vector<std::shared_ptr<FadeJob>> m_fades;
-    // A memory gives a layer another source: the outgoing one keeps playing, invisible, and the two pictures
+    // A snapshot gives a layer another source: the outgoing one keeps playing, invisible, and the two pictures
     // are mixed by an ISF transition into the layer's picture (before its mapping) until it is over
     struct SourceTransition {
         std::unique_ptr<Layer> from; // the outgoing source, with its own ROI, color and effects
@@ -650,9 +650,9 @@ private:
     void renderTransition(Layer &l, SourceTransition &t, const IsfRenderContext &rc);
     void retireTransition(std::unique_ptr<SourceTransition> t);           // sound now, OpenGL on the render thread
     double m_fadeElapsed = 0; // seconds since the last recall
-    quint64 m_recalledMemory = 0;
+    quint64 m_recalledSnapshot = 0;
     double m_recallTotal = 0;
-    quint64 m_nextMemoryId = 1;
+    quint64 m_nextSnapshotId = 1;
     RenderSettings m_render, m_renderDefaults{0, 0, 0};
     double m_screenHz = 60;
     std::vector<Animation> m_animations;

@@ -404,18 +404,18 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
         }
         return false;
     }
-    // ISF: source/<name>[/<x|y|r|g|b|a>], effects/<fx>/<name>[/…] (fx: its segment, as in the OSC address)
+    // ISF: source/params/<name>[/<x|y|r|g|b|a>], effects/<fx>/params/<name>[/…] (fx: its segment, as in the OSC address)
     IsfInstance *inst = nullptr;
     int at = 0;
-    if (a == "source" && p.size() >= 2) {
+    if (a == "source" && p.size() >= 3 && p[1] == "params") {
         inst = l.generator.get();
-        at = 1;
-    } else if (a == "effects" && p.size() >= 3) {
+        at = 2;
+    } else if (a == "effects" && p.size() >= 4 && p[2] == "params") {
         QStringList names;
         for (const auto &x : l.effects) names << x->name();
         const int k = osc::uniqueSegments(names).indexOf(p[1]);
         if (k >= 0) inst = l.effects[size_t(k)].get();
-        at = 2;
+        at = 3;
     }
     if (!inst) return false;
     IsfInput *in = inst->input(p[at]);
@@ -563,12 +563,12 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
             }
         }
     };
-    isf(l->generator.get(), QStringLiteral("source/"), QStringLiteral("Source"));
+    isf(l->generator.get(), QStringLiteral("source/params/"), QStringLiteral("Source"));
     QStringList fxNames;
     for (const auto &x : l->effects) fxNames << x->name();
     const QStringList fxSegs = osc::uniqueSegments(fxNames);
     for (size_t k = 0; k < l->effects.size(); ++k)
-        isf(l->effects[k].get(), QStringLiteral("effects/%1/").arg(fxSegs[int(k)]), QStringLiteral("Effects › %1").arg(l->effects[k]->name()));
+        isf(l->effects[k].get(), QStringLiteral("effects/%1/params/").arg(fxSegs[int(k)]), QStringLiteral("Effects › %1").arg(l->effects[k]->name()));
     return out;
 }
 

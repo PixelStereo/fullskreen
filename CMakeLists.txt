@@ -58,7 +58,7 @@ add_library(fulskrin_engine STATIC
   src/engine/MiniaudioImpl.cpp
   src/engine/Osc.cpp
   src/engine/Zeroconf.cpp
-  src/engine/Memories.cpp
+  src/engine/Snapshots.cpp
   src/engine/Sequences.cpp
   src/engine/Animations.cpp
 )
@@ -178,7 +178,7 @@ set(APP_SOURCES
   src/ui/CompositionPanel.cpp
   src/ui/ViewportOutput.cpp
   src/ui/SettingsPanel.cpp
-  src/ui/MemoryPanel.cpp
+  src/ui/SnapshotPanel.cpp
   src/ui/SequencePanel.cpp
   src/ui/TimelinePanel.cpp
   src/ui/Widgets.cpp

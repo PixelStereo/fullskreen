@@ -15,7 +15,7 @@ class ParamPanel : public QWidget
 public:
     ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QWidget *parent = nullptr);
 
-    // Shows the current values (a memory fading them, OSC), except in the field being edited
+    // Shows the current values (a snapshot fading them, OSC), except in the field being edited
     void refresh();
 
 signals:

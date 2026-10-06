@@ -16,11 +16,11 @@ Built with Qt 6, FFmpeg, and OpenGL 3.3. Cross-platform: macOS, Windows, Linux.
 
 **Effects** — ISF 1.3+ shader chain per layer. Includes generators (TestPattern, Plasma, Gradient, Clouds), color correction, blur, trails, kaleidoscope, soft edges. Load your own from `~/Library/Graphics/ISF` or bundled folder.
 
-**Memory system** — Save and recall layer states (cues). Every parameter fades smoothly to its stored value over a configurable duration. Undo/redo throughout.
+**Snapshot system** — Save and recall layer states (cues). Every parameter fades smoothly to its stored value over a configurable duration. Undo/redo throughout.
 
-**Sequences** — Cue lists of memories played with GO (button, Space, OSC). Each step has a pre-wait, a post-wait and a continuation, as in QLab: *Wait* (the next step waits for GO), *Follow* (the next step goes once this one is triggered, plus its post-wait), *Auto-follow* (the next step goes once this one's fade is over, plus its post-wait). The waits and fades are drawn filling up as they run. Memories run side by side: a memory recalled takes over only the values it holds, the others keep fading. A step recalls a memory or drives a timeline: drag either onto it.
+**Sequences** — Cue lists of snapshots played with GO (button, Space, OSC). Each step has a pre-wait, a post-wait and a continuation, as in QLab: *Wait* (the next step waits for GO), *Follow* (the next step goes once this one is triggered, plus its post-wait), *Auto-follow* (the next step goes once this one's fade is over, plus its post-wait). The waits and fades are drawn filling up as they run. Snapshots run side by side: a snapshot recalled takes over only the values it holds, the others keep fading. A step recalls a snapshot or drives a timeline: drag either onto it.
 
-**Timelines** — Numbers of the layers (and of the composition) animated over time, outside the sequences: opacity, volume, speed, ROI, color, spatial position, scale and rotation, text settings, every ISF parameter. Each track is a *curve* (keys clicked, dragged or drawn freehand, eased from one to the next or held) or an *oscillator* (sine, triangle, saw, square; period, phase, center, amplitude). A timeline has a duration and loops once, endlessly or a number of times, forwards or ping-pong; the curves repeat their pattern, the oscillators run on without a jump. Several play side by side. The sequences drive their transport — a timeline dropped on a step plays it, and the step can pause, stop, rewind, seek or change its loop instead — so a timeline can keep turning while the next memories come, and stop many steps later. While a timeline plays, its values win over the memories' fades.
+**Timelines** — Numbers of the layers (and of the composition) animated over time, outside the sequences: opacity, volume, speed, ROI, color, spatial position, scale and rotation, text settings, every ISF parameter. Each track is a *curve* (keys clicked, dragged or drawn freehand, eased from one to the next or held) or an *oscillator* (sine, triangle, saw, square; period, phase, center, amplitude). A timeline has a duration and loops once, endlessly or a number of times, forwards or ping-pong; the curves repeat their pattern, the oscillators run on without a jump. Several play side by side. The sequences drive their transport — a timeline dropped on a step plays it, and the step can pause, stop, rewind, seek or change its loop instead — so a timeline can keep turning while the next snapshots come, and stop many steps later. While a timeline plays, its values win over the snapshots' fades.
 
 **Sound** — Each layer plays its audio with volume, mute, and sync to playback (including speed). Mixed to stereo, meters included.
 
@@ -121,7 +121,7 @@ cmake -S . -B build && cmake --build build -j
 - Camera, texture, or network inputs (Syphon/Spout/NDI/OMT receive)
 - Nested groups
 - ISF audio inputs (treated as black)
-- Transitions between memories
+- Transitions between snapshots
 
 **Publishing:**
 - NDI and OMT send a GPU readback (one frame latency, CPU-intensive in 4K)
