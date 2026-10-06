@@ -536,6 +536,7 @@ void MediaBin::contextMenu(const QPoint &pos)
         const bool isf = it->data(0, IsfRole).toBool();
         QAction *a = menu.addAction(QStringLiteral("Load into Selected Layer"), this, [this, p] { emit useAsSourceRequested(p); });
         a->setEnabled(!missing);
+        menu.addAction(QStringLiteral("Load into New Layer"), this, [this, p] { emit loadIntoNewLayerRequested(p); })->setEnabled(!missing);
         QMenu *into = menu.addMenu(QStringLiteral("Load into Layer"));
         {
             // Every layer of the composition, groups shown (disabled: they have no source) with their layers indented

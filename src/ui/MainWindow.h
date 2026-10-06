@@ -68,6 +68,7 @@ private:
     static QString autosavePath();
     void afterProjectLoaded(const QJsonObject &ui);
 
+    void loadIntoNewLayer(const QString &path);          // right-click in the media bin
     bool loadIntoLayer(int layer, const QString &path); // media, ISF generator or ISF effect (undoable)
     void loadDropped(int layer, const QStringList &paths);
     void addEmptyLayer();
