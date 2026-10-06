@@ -1,10 +1,11 @@
-#include "MasterPanel.h"
+#include "CompositionPanel.h"
 #include "SettingsPanel.h"
 #include "Widgets.h"
 #include "Engine.h"
 
 #include <QCheckBox>
 #include <algorithm>
+#include <QAbstractItemView>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -55,7 +56,7 @@ CompositionPanel::CompositionPanel(Engine *engine, QWidget *parent) : QWidget(pa
 
 QWidget *CompositionPanel::buildCompositionLevel()
 {
-    auto *g = new QGroupBox(QStringLiteral("Composition Level"));
+    auto *g = new QGroupBox(QStringLiteral("Opacity"));
     auto *v = new QVBoxLayout(g);
     auto *row = new QHBoxLayout;
     m_composition = new SliderField;
@@ -66,7 +67,7 @@ QWidget *CompositionPanel::buildCompositionLevel()
     m_composition->setTicks(10);
     m_composition->setSnaps({0, 100});
     m_composition->setValue(100);
-    m_composition->setToolTip(QStringLiteral("Composition output level"));
+    m_composition->setToolTip(QStringLiteral("Composition opacity"));
     m_compositionLabel = new QLabel(QStringLiteral("out 100%"));
     m_compositionLabel->setToolTip(QStringLiteral("What goes out now (the fader, and the blackout over it)"));
     m_compositionLabel->setMinimumWidth(64);
@@ -95,7 +96,7 @@ QWidget *CompositionPanel::buildCompositionLevel()
 
     // The fader sets the picture's level; the blackout (picture and sound) is applied on top of it.
     connect(m_composition, &SliderField::valueEdited, this, [this](double val) {
-        if (!m_syncing) m_engine->fadeMaster(val / 100.0, 0.05);
+        if (!m_syncing) m_engine->fadeCompositionOpacity(val / 100.0, 0.05);
     });
     connect(m_blackout, &QPushButton::toggled, this, [this](bool on) {
         if (!m_syncing) m_engine->setBlackout(on, fadeTime());
@@ -148,14 +149,12 @@ QWidget *CompositionPanel::buildAudio()
     m_audioVolume->setTicks(8);
     m_audioVolume->setSnaps({0, 100});
     m_audioVolume->setValue(100);
-    m_audioVolume->setToolTip(QStringLiteral("Master volume (100% = unity gain)"));
+    m_audioVolume->setToolTip(QStringLiteral("Volume (100% = unity gain)"));
     m_audioVolumeLabel = new QLabel(volumeText(100));
     m_audioVolumeLabel->setMinimumWidth(64);
     m_audioVolumeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_audioMute = new FlagBox(QStringLiteral("Mute"));
     volRow->addWidget(m_audioVolume, 1);
     volRow->addWidget(m_audioVolumeLabel);
-    volRow->addWidget(m_audioMute);
     v->addLayout(volRow);
 
     for (int c = 0; c < 2; ++c) {
@@ -174,11 +173,6 @@ QWidget *CompositionPanel::buildAudio()
         m_audioVolumeLabel->setText(volumeText(pct));
         if (m_syncing) return;
         m_engine->setAudioVolume(pct / 100.0f);
-        emit audioEdited();
-    });
-    connect(m_audioMute, &QCheckBox::toggled, this, [this](bool on) {
-        if (m_syncing) return;
-        m_engine->setAudioMuted(on);
         emit audioEdited();
     });
     m_meterTimer.setInterval(33);
@@ -222,6 +216,11 @@ QWidget *CompositionPanel::buildComposition()
     size->addWidget(m_height);
     form->addRow(QStringLiteral("Preset"), m_preset);
     form->addRow(QStringLiteral("Size"), size);
+    m_rate = new QComboBox;
+    m_rate->addItem(QStringLiteral("Machine default"), -1.0);
+    for (double r : renderChoice::frameRates()) m_rate->addItem(renderChoice::frameRateName(r), r);
+    m_rate->setToolTip(QStringLiteral("Frame rate of the render (Machine default: the choice made in Settings)"));
+    form->addRow(QStringLiteral("Frame rate"), m_rate);
     form->addRow(note(QStringLiteral("The pixel space every layer lives in. Each viewport shows a part of it, "
                                      "placed by its Spatial tab: three 1920 × 1080 projectors side by side "
                                      "make a 5760 × 1080 composition. Mapping is relative: it follows size changes.")));
@@ -234,6 +233,13 @@ QWidget *CompositionPanel::buildComposition()
         m_height->setValue(s.height());
         m_syncing = false;
         applyComposition();
+    });
+    connect(m_rate, qOverload<int>(&QComboBox::activated), this, [this](int i) {
+        if (m_syncing) return;
+        Engine::RenderSettings rs = m_engine->renderSettings();
+        rs.frameRate = m_rate->itemData(i).toDouble();
+        m_engine->setRenderSettings(rs);
+        emit compositionEdited();
     });
     connect(m_width, qOverload<int>(&QSpinBox::valueChanged), this, [this] { applyComposition(); });
     connect(m_height, qOverload<int>(&QSpinBox::valueChanged), this, [this] { applyComposition(); });
@@ -256,18 +262,29 @@ void CompositionPanel::syncFromEngine()
     m_width->setValue(c.width());
     m_height->setValue(c.height());
     m_preset->setCurrentIndex(qMax(0, m_preset->findData(c)));
+    syncRate();
     m_audioVolume->setValue(std::lround(m_engine->audioVolume() * 100));
     m_audioVolumeLabel->setText(volumeText(int(m_audioVolume->value())));
-    m_audioMute->setChecked(m_engine->audioMuted());
     m_syncing = false;
     refreshStatus();
+}
+
+void CompositionPanel::syncRate()
+{
+    const double fps = m_engine->renderSettings().frameRate;
+    int i = m_rate->findData(fps);
+    if (i < 0) { // a rate set by OSC that the list does not have
+        m_rate->addItem(QStringLiteral("%1 fps").arg(fps, 0, 'g', 6), fps);
+        i = m_rate->count() - 1;
+    }
+    if (m_rate->currentIndex() != i) m_rate->setCurrentIndex(i);
 }
 
 void CompositionPanel::refreshStatus()
 {
     // Fader, blackout, fade time and sound follow the changes made elsewhere (OSC)
     m_syncing = true;
-    const int fader = int(std::lround(m_engine->masterTarget() * 100));
+    const int fader = int(std::lround(m_engine->compositionOpacityTarget() * 100));
     if (!m_composition->isDragging() && fader != int(std::lround(m_composition->value()))) m_composition->setValue(fader);
     if (m_blackout->isChecked() != m_engine->blackout()) m_blackout->setChecked(m_engine->blackout());
     if (!m_fade->hasFocus() && std::abs(m_fade->value() - m_engine->blackoutFade()) > 1e-6) m_fade->setValue(m_engine->blackoutFade());
@@ -276,13 +293,17 @@ void CompositionPanel::refreshStatus()
         m_audioVolume->setValue(vol);
         m_audioVolumeLabel->setText(volumeText(vol));
     }
-    if (m_audioMute->isChecked() != m_engine->audioMuted()) m_audioMute->setChecked(m_engine->audioMuted());
     m_syncing = false;
 
     const int pct = int(std::lround(m_engine->outputLevel() * 100));
     m_compositionLabel->setText(QStringLiteral("out %1%").arg(pct)); // the fader, and the blackout over it
     m_compositionLabel->setStyleSheet(pct == 0 ? "color:#ff5a4f; font-weight:bold;" : "");
 
+    if (!m_rate->view()->isVisible()) {
+        m_syncing = true;
+        syncRate();
+        m_syncing = false;
+    }
     const QSize c = m_engine->compositionSize();
     if (!m_width->hasFocus() && !m_height->hasFocus() && (c.width() != m_width->value() || c.height() != m_height->value())) {
         m_syncing = true;

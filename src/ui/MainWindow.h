@@ -109,7 +109,7 @@ private:
     LayerInspector *m_inspector = nullptr;
     LayerTable *m_layerTable = nullptr;
     MediaBin *m_bin = nullptr;
-    CompositionPanel *m_master = nullptr;
+    CompositionPanel *m_composition = nullptr;
     SettingsPanel *m_settings = nullptr;
     MemoryPanel *m_memories = nullptr;
     SequenceBar *m_seqBar = nullptr;

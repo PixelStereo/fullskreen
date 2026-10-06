@@ -290,7 +290,7 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
     of->addRow(m_oscStatus);
     of->addRow(note(QStringLiteral(
         "Announced by zeroconf (_oscjson._tcp, _osc._udp): OSCQuery clients (score, Chataigne, Vezér…) find it "
-        "by themselves. Addresses: /master/…, /composition/…, /layers/&lt;name&gt;/… "
+        "by themselves. Addresses: /composition/…, /layers/&lt;name&gt;/… "
         "(groups: /layers/&lt;group&gt;/layers/&lt;name&gt;/…). The whole tree: http://&lt;this machine&gt;:&lt;OSCQuery port&gt;/")));
     oscPage->addWidget(osc);
     audioPage->addWidget(buildAudio());
@@ -307,7 +307,7 @@ SettingsPanel::SettingsPanel(Engine *engine, QWidget *parent) : QWidget(parent),
     connect(m_queryPort, qOverload<int>(&QSpinBox::valueChanged), this, apply);
 }
 
-// Audio: the sound card of this machine (the master volume is the composition's)
+// Audio: the sound card of this machine (the volume is the composition's)
 QWidget *SettingsPanel::buildAudio()
 {
     auto *g = new QGroupBox(QStringLiteral("Audio Output"));
@@ -325,7 +325,7 @@ QWidget *SettingsPanel::buildAudio()
     v->addLayout(devRow);
     m_audioState = note(QString());
     v->addWidget(m_audioState);
-    v->addWidget(note(QStringLiteral("Saved on this machine. The master volume and mute are in the Composition tab.")));
+    v->addWidget(note(QStringLiteral("Saved on this machine. The volume and the blackout are in the Composition tab.")));
     connect(rescan, &QToolButton::clicked, this, [this] { fillAudioDevices(); });
     connect(m_audioDevice, qOverload<int>(&QComboBox::activated), this, [this](int) {
         const QString name = m_audioDevice->currentData().toString();

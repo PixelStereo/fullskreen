@@ -69,7 +69,7 @@ echo "fullscreen: pixels changed in the layers area: $(same 07_dragged 08_fullsc
 xdotool key ctrl+f; sleep 2; shot 09_restored
 echo "back: pixels changed in the layers area: $(same 07_dragged 09_restored "$(roi 0 760 900 150)")"
 
-# --- Master: blackout with fade, measured in the preview
+# --- Composition: blackout with fade, measured in the preview
 at 1265 34; xdotool click 1; sleep 1
 at 1322 120; xdotool click 1; sleep 2; shot 10_blackout
 echo "preview after Blackout: $(lum 10_blackout "$PREVIEW")"

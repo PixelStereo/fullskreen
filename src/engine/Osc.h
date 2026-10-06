@@ -1,5 +1,5 @@
 #pragma once
-// OSC control and OSCQuery publication of the whole namespace (master, composition, layers and groups,
+// OSC control and OSCQuery publication of the whole namespace (composition, layers and groups,
 // sources, transport, ISF parameters, color, spatial, effects).
 //
 //  - OSC over UDP (messages and bundles, address patterns with * ? [] {}): writes values;
@@ -9,6 +9,8 @@
 //  - WebSocket on the HTTP port: LISTEN / IGNORE commands, value updates sent as binary OSC messages,
 //    OSC messages accepted as binary frames.
 //
+// Everything is hierarchical and lowercase (layer, group and ISF names aside); a parameter that switches something
+// on or off is the child "enable" of what it switches (color/tint/enable, effects/<fx>/enable).
 // Layers are addressed by name, groups contain their members: /layers/<group>/layers/<layer>/opacity.
 // Names are made OSC-safe (spaces and reserved characters become '_') and unique among siblings ("_2").
 // A locked layer refuses every write except visible, locked and the transport (play, restart, position).

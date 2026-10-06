@@ -492,7 +492,7 @@ Engine::RecallProgress Engine::recallProgress() const
     RecallProgress r;
     r.memory = m_recalledMemory;
     r.total = m_recallTotal;
-    r.elapsed = m_fades.empty() && m_transitions.empty() && !m_compFade.level && !m_compFade.volume ? m_recallTotal
+    r.elapsed = m_fades.empty() && m_transitions.empty() && !m_compFade.opacity && !m_compFade.volume ? m_recallTotal
                                                                                                   : m_fadeElapsed;
     return r;
 }
@@ -506,9 +506,8 @@ bool Engine::isFading() const
 QJsonObject Engine::captureComposition() const
 {
     return QJsonObject{{"included", true},
-                       {"level", masterTarget()},
-                       {"volume", double(audioVolume())},
-                       {"muted", audioMuted()}};
+                       {"opacity", compositionOpacityTarget()},
+                       {"volume", double(audioVolume())}};
 }
 
 void Engine::applyComposition(const QJsonObject &c, double fade)
@@ -520,28 +519,27 @@ void Engine::applyComposition(const QJsonObject &c, double fade)
         return v.isDouble() ? std::clamp(v.toDouble(), 0.0, 600.0) : std::max(0.0, fade);
     };
     auto curve = [&](const QString &key) { return int(easingCurveFromKey(timing.value(key + "/curve").toString())); };
-    if (c.contains("muted")) setAudioMuted(c.value("muted").toBool());
-    const bool hasLevel = c.contains("level"), hasVolume = c.contains("volume");
-    const double level = std::clamp(c.value("level").toDouble(1), 0.0, 1.0);
+    const bool hasOpacity = c.contains("opacity"), hasVolume = c.contains("volume");
+    const double opacity = std::clamp(c.value("opacity").toDouble(1), 0.0, 1.0);
     const float volume = float(std::clamp(c.value("volume").toDouble(1), 0.0, 2.0));
-    const double levelDur = time(QStringLiteral("level")), volumeDur = time(QStringLiteral("volume"));
-    if (hasLevel && levelDur <= 0) fadeMaster(level, 0);
+    const double opacityDur = time(QStringLiteral("opacity")), volumeDur = time(QStringLiteral("volume"));
+    if (hasOpacity && opacityDur <= 0) fadeCompositionOpacity(opacity, 0);
     if (hasVolume && volumeDur <= 0) setAudioVolume(volume);
     // A value the memory holds stops the fade another memory gives it; the other one goes on
     Lock lk(&m_mutex);
     CompositionFade &f = m_compFade;
-    if (hasLevel) {
-        f.level = levelDur > 0;
-        f.levelElapsed = 0;
-        f.levelFrom = m_masterLevel.load();
-        f.levelTo = level;
-        f.levelDur = levelDur;
-        f.levelCurve = curve(QStringLiteral("level"));
+    if (hasOpacity) {
+        f.opacity = opacityDur > 0;
+        f.opacityElapsed = 0;
+        f.opacityFrom = m_compositionOpacity.load();
+        f.opacityTo = opacity;
+        f.opacityDur = opacityDur;
+        f.opacityCurve = curve(QStringLiteral("opacity"));
     }
     if (hasVolume) {
         f.volume = volumeDur > 0;
         f.volumeElapsed = 0;
-        f.volumeFrom = m_audio->masterVolume();
+        f.volumeFrom = m_audio->volume();
         f.volumeTo = volume;
         f.volumeDur = volumeDur;
         f.volumeCurve = curve(QStringLiteral("volume"));
@@ -552,17 +550,17 @@ void Engine::stepCompositionFade(double dt)
 {
     CompositionFade &f = m_compFade;
     dt = std::max(0.0, dt);
-    if (f.level) {
-        f.levelElapsed += dt;
-        const double p = progress(f.levelElapsed, f.levelDur, EasingCurve(f.levelCurve));
-        m_masterTarget = mixd(f.levelFrom, f.levelTo, p);
-        m_masterSpeed = 0; // the frame takes it as it is
-        if (f.levelElapsed >= f.levelDur) f.level = false;
+    if (f.opacity) {
+        f.opacityElapsed += dt;
+        const double p = progress(f.opacityElapsed, f.opacityDur, EasingCurve(f.opacityCurve));
+        m_compositionOpacityTarget = mixd(f.opacityFrom, f.opacityTo, p);
+        m_compositionOpacitySpeed = 0; // the frame takes it as it is
+        if (f.opacityElapsed >= f.opacityDur) f.opacity = false;
     }
     if (f.volume) {
         f.volumeElapsed += dt;
         const double p = progress(f.volumeElapsed, f.volumeDur, EasingCurve(f.volumeCurve));
-        m_audio->setMasterVolume(mixf(f.volumeFrom, f.volumeTo, p));
+        m_audio->setVolume(mixf(f.volumeFrom, f.volumeTo, p));
         if (f.volumeElapsed >= f.volumeDur) f.volume = false;
     }
 }
@@ -580,7 +578,7 @@ void Engine::recallMemory(int i)
         for (const auto &job : m_fades)
             if (job->elapsed <= 0) total = std::max(total, job->times.longest()); // this recall's, not the older ones
         for (const auto &[id, t] : m_transitions) total = std::max(total, t->duration - t->elapsed);
-        if (m_compFade.level && m_compFade.levelElapsed <= 0) total = std::max(total, m_compFade.levelDur);
+        if (m_compFade.opacity && m_compFade.opacityElapsed <= 0) total = std::max(total, m_compFade.opacityDur);
         if (m_compFade.volume && m_compFade.volumeElapsed <= 0) total = std::max(total, m_compFade.volumeDur);
         m_recallTotal = total;
     }

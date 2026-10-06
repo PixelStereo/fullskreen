@@ -175,7 +175,7 @@ set(APP_SOURCES
   src/ui/Commands.cpp
   src/ui/LayerTable.cpp
   src/ui/MediaBin.cpp
-  src/ui/MasterPanel.cpp
+  src/ui/CompositionPanel.cpp
   src/ui/ViewportOutput.cpp
   src/ui/SettingsPanel.cpp
   src/ui/MemoryPanel.cpp

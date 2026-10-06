@@ -78,7 +78,7 @@ cmake -S . -B build && cmake --build build -j
 - Per-layer: ROI crop, color balance, effects chain (ISF), spatial transform
 - Per-viewport: opacity + routing (which outputs show this layer)
 - Per-output: homography + mesh warp + soft edge feathering (per-side width & power)
-- Final composite: blend modes, master level, publishing (Syphon/Spout/NDI/OMT)
+- Final composite: blend modes, composition opacity, publishing (Syphon/Spout/NDI/OMT)
 
 **Audio:**
 - FFmpeg decode + resampling on dedicated thread

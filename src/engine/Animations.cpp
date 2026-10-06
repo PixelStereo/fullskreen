@@ -440,13 +440,13 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
 bool Engine::setAnimParam(quint64 layer, const QString &path, double v)
 {
     if (!layer) {
-        if (path == "level") {
-            m_masterTarget = std::clamp(v, 0.0, 1.0);
-            m_masterSpeed = 0;
+        if (path == "opacity") {
+            m_compositionOpacityTarget = std::clamp(v, 0.0, 1.0);
+            m_compositionOpacitySpeed = 0;
             return true;
         }
         if (path == "volume") {
-            m_audio->setMasterVolume(float(std::clamp(v, 0.0, 2.0)));
+            m_audio->setVolume(float(std::clamp(v, 0.0, 2.0)));
             return true;
         }
         return false;
@@ -463,8 +463,8 @@ bool Engine::animParamValue(quint64 layer, const QString &path, double *value) c
 {
     Lock lk(&m_mutex);
     if (!layer) {
-        if (path == "level") *value = m_masterTarget;
-        else if (path == "volume") *value = m_audio->masterVolume();
+        if (path == "opacity") *value = m_compositionOpacityTarget;
+        else if (path == "volume") *value = m_audio->volume();
         else return false;
         return true;
     }
@@ -479,7 +479,7 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
     std::vector<AnimParam> out;
     auto add = [&](const QString &path, const QString &label, double lo, double hi) { out.push_back({path, label, lo, hi}); };
     if (!layer) {
-        add("level", "Level", 0, 1);
+        add("opacity", "Opacity", 0, 1);
         add("volume", "Volume", 0, 2);
         return out;
     }

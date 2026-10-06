@@ -1,6 +1,6 @@
 #pragma once
 // Audio output: one device (miniaudio), stereo float at a fixed sample rate.
-// The device callback mixes every registered AudioStream, applies the master volume and feeds the meters.
+// The device callback mixes every registered AudioStream, applies the composition volume and feeds the meters.
 
 #include <QString>
 #include <QStringList>
@@ -35,10 +35,8 @@ public:
     void addStream(const std::shared_ptr<AudioStream> &s);
     void removeStream(const AudioStream *s);
 
-    void setMasterVolume(float v) { m_masterVolume = v; }
-    float masterVolume() const { return m_masterVolume.load(); }
-    void setMuted(bool m) { m_muted = m; }
-    bool muted() const { return m_muted.load(); }
+    void setVolume(float v) { m_volume = v; }
+    float volume() const { return m_volume.load(); }
     // Blackout: the mix fades to `target` (0..1) in `seconds` seconds, ramped in the audio thread
     void fadeTo(float target, double seconds);
     float fadeLevel() const { return m_fadeLevel.load(); }
@@ -57,9 +55,8 @@ private:
     std::mutex m_streamsMutex;
     std::vector<std::shared_ptr<AudioStream>> m_streams;
     std::function<void(const float *, int)> m_tap;
-    std::atomic<float> m_masterVolume{1.0f};
-    std::atomic<bool> m_muted{false};
-    float m_gain = 1.0f; // ramped master gain (audio thread)
+    std::atomic<float> m_volume{1.0f};
+    float m_gain = 1.0f; // ramped composition gain (audio thread)
     std::atomic<float> m_fadeTarget{1.0f}, m_fadeStep{1.0f}; // blackout: target and step per sample
     std::atomic<float> m_fadeLevel{1.0f};
     std::atomic<float> m_peak[2] = {0.0f, 0.0f};

@@ -619,16 +619,16 @@ void Engine::bindMesh(Layer &l)
     bindMeshBuffer(l.meshVbo);
 }
 
-// The whole composition, for the interface preview, then each viewport's output. The master level and the
+// The whole composition, for the interface preview, then each viewport's output. The composition opacity and the
 // blackout are applied to both, into double buffers read by the interface, the windows and the publishers.
 void Engine::composite()
 {
     auto f = gl();
-    const double master = m_masterLevel.load() * m_blackLevel.load();
-    auto applyMaster = [&] {
-        if (master >= 0.999) return;
+    const double comp = m_compositionOpacity.load() * m_blackLevel.load();
+    auto applyOpacity = [&] {
+        if (comp >= 0.999) return;
         f->glEnable(GL_BLEND);
-        const float m = float(master);
+        const float m = float(comp);
         f->glBlendColor(m, m, m, 1.0f);
         f->glBlendFunc(GL_ZERO, GL_CONSTANT_COLOR);
         f->glUseProgram(m_blitProgram);
@@ -646,7 +646,7 @@ void Engine::composite()
         if (!l->parent && !l->isViewport) top.push_back(l.get());
     compositeLayers(out, top, QRectF(0, 0, 1, 1), QColor(0, 0, 0, 255));
     out.bind();
-    applyMaster();
+    applyOpacity();
 
     for (auto &lp : m_layers) {
         Layer &v = *lp;
@@ -674,7 +674,7 @@ void Engine::composite()
             f->glBindVertexArray(0);
         }
         o.bind();
-        applyMaster();
+        applyOpacity();
     }
     f->glBindVertexArray(0);
 }
@@ -707,15 +707,15 @@ void Engine::frame(double dt)
     }
     setRenderBits(effectiveRender().depth);
 
-    // Master
-    double lvl = m_masterLevel.load();
-    if (m_masterSpeed <= 0.0) {
-        lvl = m_masterTarget;
+    // Composition opacity
+    double lvl = m_compositionOpacity.load();
+    if (m_compositionOpacitySpeed <= 0.0) {
+        lvl = m_compositionOpacityTarget;
     } else {
-        const double step = dt * m_masterSpeed;
-        lvl = lvl < m_masterTarget ? std::min(m_masterTarget, lvl + step) : std::max(m_masterTarget, lvl - step);
+        const double step = dt * m_compositionOpacitySpeed;
+        lvl = lvl < m_compositionOpacityTarget ? std::min(m_compositionOpacityTarget, lvl + step) : std::max(m_compositionOpacityTarget, lvl - step);
     }
-    m_masterLevel = lvl;
+    m_compositionOpacity = lvl;
     double black = m_blackLevel.load();
     if (m_blackSpeed <= 0.0) {
         black = m_blackTarget;

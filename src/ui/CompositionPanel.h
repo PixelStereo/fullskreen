@@ -15,7 +15,7 @@ class QCheckBox;
 class QLineEdit;
 class QProgressBar;
 
-// "Composition" tab, the project as a whole: its level and blackout (all viewports at once), the sound's master
+// "Composition" tab, the project as a whole: its opacity and blackout (all viewports at once), the sound
 // volume, and its size — the pixel space the layers live in and the viewports are placed on. The machine's choices
 // (rendering, sound card) are in Settings.
 class CompositionPanel : public QWidget
@@ -35,7 +35,7 @@ public:
 signals:
     void blackoutChanged(bool on);
     void compositionEdited();
-    void audioEdited(); // composition volume / mute (saved in the project)
+    void audioEdited(); // composition volume (saved in the project)
 
 private:
     QWidget *buildCompositionLevel();
@@ -43,6 +43,7 @@ private:
     QWidget *buildAudio();
     void refreshMeters();
     void applyComposition();
+    void syncRate();
 
     Engine *m_engine;
     SliderField *m_composition = nullptr;
@@ -53,7 +54,7 @@ private:
     QSpinBox *m_width = nullptr, *m_height = nullptr;
     SliderField *m_audioVolume = nullptr;
     QLabel *m_audioVolumeLabel = nullptr;
-    QCheckBox *m_audioMute = nullptr;
+    QComboBox *m_rate = nullptr;
     QProgressBar *m_meter[2] = {};
     QTimer m_meterTimer;
     bool m_syncing = false;
