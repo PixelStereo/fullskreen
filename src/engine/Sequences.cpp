@@ -159,8 +159,9 @@ double Engine::stepDuration(const SequenceStep &st) const
         if (a.id != st.timeline) continue;
         const double len = a.length();
         if (!std::isfinite(len)) return 0; // endless: nothing to wait for
-        if (a.speed <= 1e-9) return std::numeric_limits<double>::infinity(); // frozen: waits for its speed
-        return (a.state == AnimState::Stopped ? len : std::max(0.0, len - a.clock)) / a.speed; // in real seconds
+        const double v = a.speed * timeScale();
+        if (v <= 1e-9) return std::numeric_limits<double>::infinity(); // frozen: waits for its speed
+        return (a.state == AnimState::Stopped ? len : std::max(0.0, len - a.clock)) / v; // in real seconds
     }
     return 0;
 }
@@ -174,8 +175,9 @@ double Engine::animationRemaining(quint64 id) const
         if (a.id != id) continue;
         const double len = a.length();
         if (a.state == AnimState::Stopped || !std::isfinite(len)) return 0;
-        if (a.state == AnimState::Paused || a.speed <= 1e-9) return std::numeric_limits<double>::infinity();
-        return std::max(0.0, len - a.clock) / a.speed;
+        const double v = a.speed * timeScale();
+        if (a.state == AnimState::Paused || v <= 1e-9) return std::numeric_limits<double>::infinity();
+        return std::max(0.0, len - a.clock) / v;
     }
     return 0;
 }
@@ -254,7 +256,7 @@ void Engine::startSequenceTimer()
         m_sequenceTimer->setTimerType(Qt::PreciseTimer);
         m_sequenceTimer->setInterval(5);
         connect(m_sequenceTimer, &QTimer::timeout, this, [this] {
-            const double dt = m_sequenceClock.nsecsElapsed() * 1e-9;
+            const double dt = m_sequenceClock.nsecsElapsed() * 1e-9 * timeScale();
             m_sequenceClock.restart();
             advanceSequence(dt);
             Lock lk(&m_mutex);

@@ -156,6 +156,14 @@ struct TextSource {
     }
 };
 
+// The pace of all time in the software: the composition's speed (0..10), 0 while paused. Media playheads,
+// shaders' TIME, timelines, snapshot fades and sequences all move at this multiple of real time.
+inline std::atomic<double> &timeScale()
+{
+    static std::atomic<double> k{1.0};
+    return k;
+}
+
 struct Layer {
     // Identity and structure. A group is a layer without source whose picture is the composite of its members;
     // members immediately follow their group in the layer list, and a group can hold other groups.

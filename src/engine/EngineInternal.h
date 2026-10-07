@@ -55,7 +55,7 @@ inline void reposition(Layer &l, double position, int dir)
         l.video->setTimeline(l.timeline());
         l.video->seek(0);
     }
-    if (l.audio) l.audio->setTransport(0, l.playing, std::abs(l.speed), l.timeline(), l.timelineId, l.audioGain());
+    if (l.audio) l.audio->setTransport(0, l.playing, std::abs(l.speed) * timeScale(), l.timeline(), l.timelineId, l.audioGain());
 }
 
 // A media starts at its in point — its out point when the speed is negative.

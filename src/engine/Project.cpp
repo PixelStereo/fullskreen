@@ -128,6 +128,9 @@ void Engine::clearProject()
         m_snapshots.clear();
         m_nextSnapshotId = 1;
         m_render = RenderSettings(); // the machine's defaults
+        m_paused = false;
+        m_compositionSpeed = 1.0;
+        updateTimeScale();
         m_sequences.clear();
         m_currentSequence = m_sequencePosition = -1;
         m_runs.clear();
@@ -420,7 +423,7 @@ bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QStrin
         root["app"] = "Fulskrin";
         root["format_version"] = 1;
         root["composition"] = QJsonObject{{"width", m_compSize.width()}, {"height", m_compSize.height()},
-                                    {"fps", renderSettings().frameRate}};
+                                    {"fps", renderSettings().frameRate}, {"speed", m_compositionSpeed.load()}};
         QJsonArray layers;
         for (const auto &l : m_layers) layers.append(layerToJson(*l, dir));
         root["layers"] = layers;
@@ -468,6 +471,7 @@ bool Engine::loadProject(const QString &path, QJsonObject *uiState, QString *err
     clearProject();
     const QJsonObject comp = root.value("composition").toObject();
     setCompositionSize(QSize(comp.value("width").toInt(1920), comp.value("height").toInt(1080)));
+    setCompositionSpeed(comp.value("speed").toDouble(1.0));
     {
         RenderSettings rs;
         rs.frameRate = comp.value("fps").toDouble(-1); // -1: the machine's default

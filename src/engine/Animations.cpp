@@ -478,6 +478,10 @@ bool Engine::setAnimParam(quint64 layer, const QString &path, double v)
             m_audio->setVolume(float(std::clamp(v, 0.0, 2.0)));
             return true;
         }
+        if (path == "speed") {
+            setCompositionSpeed(v);
+            return true;
+        }
         return false;
     }
     for (auto &l : m_layers)
@@ -494,6 +498,7 @@ bool Engine::animParamValue(quint64 layer, const QString &path, double *value) c
     if (!layer) {
         if (path == "opacity") *value = m_compositionOpacityTarget;
         else if (path == "volume") *value = m_audio->volume();
+        else if (path == "speed") *value = m_compositionSpeed.load();
         else return false;
         return true;
     }
@@ -510,6 +515,7 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
     if (!layer) {
         add("opacity", "Opacity", 0, 1);
         add("volume", "Volume", 0, 2);
+        add("speed", "Speed", 0, 10);
         return out;
     }
     const Layer *l = nullptr;

@@ -94,6 +94,34 @@ QWidget *CompositionPanel::buildCompositionLevel()
     row2->addWidget(m_fade);
     v->addLayout(row2);
 
+    // Speed of everything that moves in time (media, shaders, timelines, fades, sequences); Pause holds it at 0
+    auto *row3 = new QHBoxLayout;
+    m_pause = new QPushButton(QStringLiteral("Pause"));
+    m_pause->setCheckable(true);
+    m_pause->setMinimumHeight(34);
+    m_pause->setToolTip(QStringLiteral("Stops everything that moves in time (speed 0) / back to the current speed"));
+    m_pause->setStyleSheet("QPushButton { font-weight:bold; } QPushButton:checked { background:#b8860b; color:white; }");
+    m_speed = new SliderField;
+    m_speed->setRange(0, 10);
+    m_speed->setDecimals(2);
+    m_speed->setSuffix(QStringLiteral(" ×"));
+    m_speed->setSingleStep(0.05);
+    m_speed->setTicks(10);
+    m_speed->setSnaps({1});
+    m_speed->setValue(1);
+    m_speed->setToolTip(QStringLiteral("Composition speed: a coefficient on every speed (media, shaders' TIME, timelines, fades, sequences). "
+                                       "0 stops them, 1 is normal"));
+    row3->addWidget(m_pause);
+    row3->addWidget(new QLabel(QStringLiteral("Speed")));
+    row3->addWidget(m_speed, 1);
+    v->addLayout(row3);
+    connect(m_pause, &QPushButton::toggled, this, [this](bool on) {
+        if (!m_syncing) m_engine->setPaused(on);
+    });
+    connect(m_speed, &SliderField::valueEdited, this, [this](double val) {
+        if (!m_syncing) m_engine->setCompositionSpeed(val);
+    });
+
     // The fader sets the picture's level; the blackout (picture and sound) is applied on top of it.
     connect(m_composition, &SliderField::valueEdited, this, [this](double val) {
         if (!m_syncing) m_engine->fadeCompositionOpacity(val / 100.0, 0.05);
@@ -287,6 +315,8 @@ void CompositionPanel::refreshStatus()
     const int fader = int(std::lround(m_engine->compositionOpacityTarget() * 100));
     if (!m_composition->isDragging() && fader != int(std::lround(m_composition->value()))) m_composition->setValue(fader);
     if (m_blackout->isChecked() != m_engine->blackout()) m_blackout->setChecked(m_engine->blackout());
+    if (m_pause->isChecked() != m_engine->paused()) m_pause->setChecked(m_engine->paused());
+    if (!m_speed->isDragging() && std::abs(m_speed->value() - m_engine->compositionSpeed()) > 1e-6) m_speed->setValue(m_engine->compositionSpeed());
     if (!m_fade->hasFocus() && std::abs(m_fade->value() - m_engine->blackoutFade()) > 1e-6) m_fade->setValue(m_engine->blackoutFade());
     const int vol = int(std::lround(m_engine->audioVolume() * 100));
     if (!m_audioVolume->isDragging() && vol != int(std::lround(m_audioVolume->value()))) {
