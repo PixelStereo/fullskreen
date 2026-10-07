@@ -297,7 +297,7 @@ SnapshotPanel::SnapshotPanel(Engine *engine, QUndoStack *undo, QWidget *parent)
     m_fade->setSuffix(QStringLiteral(" s"));
     m_fade->setKeyboardTracking(false);
     m_fade->setToolTip(QStringLiteral("Fade: the values set to Follow get to the snapshot's in this time; sources and "
-                                      "effect chains change at once (a new source comes in with its transition)"));
+                                      "FX chains change at once (a new source comes in with its transition)"));
     auto *fadeRow = new QHBoxLayout;
     fadeRow->addWidget(new ResetLabel(QStringLiteral("Fade"), [this] { m_fade->setValue(1.0); }));
     fadeRow->addWidget(m_fade, 1);
@@ -990,17 +990,17 @@ void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObjec
         expand(sec);
     }
 
-    const QJsonArray effects = o.value("effects").toArray();
-    QTreeWidgetItem *fxSec = section(parent, QStringLiteral("Effects (%1)").arg(effects.size()), QStringLiteral("effects"));
-    flag(fxSec, QStringLiteral("Enable"), {"effects_enable"});
+    const QJsonArray effects = o.value("fx").toArray();
+    QTreeWidgetItem *fxSec = section(parent, QStringLiteral("FX (%1)").arg(effects.size()), QStringLiteral("fx"));
+    flag(fxSec, QStringLiteral("Enable"), {"fx_enable"});
     for (int k = 0; k < effects.size(); ++k) {
         const QJsonObject fx = effects[k].toObject();
         QTreeWidgetItem *one = section(fxSec, QStringLiteral("%1. %2").arg(k + 1).arg(QFileInfo(fx.value("path").toString()).completeBaseName()),
                                        QStringLiteral("fx%1").arg(k));
         one->setToolTip(0, fx.value("path").toString());
-        flag(one, QStringLiteral("Enable"), {"effects", QString::number(k), "enable"});
-        num(one, QStringLiteral("Speed"), {"effects", QString::number(k), "speed"}, 0, 10, 1, 2, QStringLiteral(" ×"), 0.05);
-        isfParams(one, {"effects", QString::number(k), "params"}, k);
+        flag(one, QStringLiteral("Enable"), {"fx", QString::number(k), "enable"});
+        num(one, QStringLiteral("Speed"), {"fx", QString::number(k), "speed"}, 0, 10, 1, 2, QStringLiteral(" ×"), 0.05);
+        isfParams(one, {"fx", QString::number(k), "params"}, k);
         expand(one);
     }
     expand(fxSec);

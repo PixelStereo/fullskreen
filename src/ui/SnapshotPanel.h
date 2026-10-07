@@ -25,7 +25,7 @@ struct MemField {
     enum Kind { Info, Bool, Number, Choice };
     Kind kind = Info;
     int row = 0;          // index of the layer in the snapshot (-1: the snapshot's composition)
-    QStringList path;     // inside the layer object, e.g. {"source", "speed"} or {"effects", "0", "params", "radius"}
+    QStringList path;     // inside the layer object, e.g. {"source", "speed"} or {"fx", "0", "params", "radius"}
     double min = 0, max = 1, step = 0.01, scale = 1; // scale: displayed value = stored × scale (percentages)
     int decimals = 2;
     QString suffix;

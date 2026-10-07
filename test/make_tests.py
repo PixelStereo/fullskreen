@@ -6,7 +6,7 @@ os.makedirs(os.path.join(root, 'projects'), exist_ok=True)
 
 def layer(name, source, effects=(), mapping=None, blend='normal', opacity=1.0):
     l = {"name": name, "enable": True, "opacity": opacity, "blend_mode": blend, "source": source,
-         "effects": list(effects)}
+         "fx": list(effects)}
     if mapping: l["spatial"] = mapping
     return l
 

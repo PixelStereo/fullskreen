@@ -8,9 +8,9 @@ Built with Qt 6, FFmpeg, and OpenGL 3.3. Cross-platform: macOS, Windows, Linux.
 
 **Spatial control** — 4-corner perspective warping + deformable mesh (up to 32×32 points) for projection onto complex surfaces.
 
-**Composition** — Unlimited layers with opacity, blend modes (Normal, Add, Screen, Multiply), and per-viewport routing. Group layers and nest effects.
+**Composition** — Unlimited layers with opacity, blend modes (Normal, Add, Screen, Multiply), and per-viewport routing. Group layers and nest them.
 
-**Sources** — Video (any FFmpeg codec, with sound), stills, live ISF generators, audio files, or other layers (pre- or post-effects).
+**Sources** — Video (any FFmpeg codec, with sound), stills, live ISF generators, audio files, or other layers (pre- or post-FX).
 
 **Color** — Temperature, tint, and RGB/HSL controls. Add light, remove color, all toggleable and reversible.
 
@@ -75,7 +75,7 @@ cmake -S . -B build && cmake --build build -j
 **Rendering Pipeline:**
 - Dedicated OpenGL thread with vertical sync
 - GPU → interface live preview
-- Per-layer: ROI crop, color balance, effects chain (ISF), spatial transform
+- Per-layer: ROI crop, color balance, FX chain (ISF), spatial transform
 - Per-viewport: opacity + routing (which outputs show this layer)
 - Per-output: homography + mesh warp + soft edge feathering (per-side width & power)
 - Final composite: blend modes, composition opacity, publishing (Syphon/Spout/NDI/OMT)

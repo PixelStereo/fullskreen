@@ -70,7 +70,7 @@ int main(int argc, char *argv[])
             Layer *l = engine.layer(i);
             if (!l->error.isEmpty()) qWarning("Layer %s: %s", qPrintable(l->name), qPrintable(l->error));
             for (auto &fx : l->effects)
-                if (!fx->error().isEmpty()) qWarning("Effect %s: %s", qPrintable(fx->name()), qPrintable(fx->error()));
+                if (!fx->error().isEmpty()) qWarning("FX %s: %s", qPrintable(fx->name()), qPrintable(fx->error()));
         }
         for (int v : engine.viewports()) {
             const quint64 id = engine.layerId(v);
