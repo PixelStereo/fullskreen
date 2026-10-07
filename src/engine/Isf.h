@@ -132,6 +132,9 @@ public:
     bool isValid() const { return m_program != 0; }
     bool isFilter() const { return m_isFilter; }
     bool enabled = true;
+    // Pace of TIME and TIMEDELTA (1: real time, 0: stopped): it scales the step, so TIME goes on from where it is
+    // and the picture does not jump when it changes
+    double speed = 1.0;
     // Effect in a chain: where it applies, from the picture of another layer — fully on white, not at all on
     // black (or transparent), in proportion in between; the layer's picture is stretched over this one's.
     quint64 maskLayer = 0; // 0: everywhere

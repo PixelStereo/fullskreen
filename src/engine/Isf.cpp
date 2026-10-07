@@ -330,6 +330,7 @@ void IsfInstance::setImageTexture(const QString &name, GLuint tex, int w, int h)
 void IsfInstance::readState(const QJsonObject &o)
 {
     enabled = o.value("enable").toBool(true);
+    speed = std::clamp(o.value("speed").toDouble(1.0), 0.0, 10.0);
     maskLayer = o.value("mask").toString().toULongLong();
     maskInvert = o.value("mask_invert").toBool(false);
 }
@@ -655,11 +656,12 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
         return;
     }
 
-    m_time += rc.dt;
+    const double dt = rc.dt * speed;
+    m_time += dt;
     f->glUseProgram(m_program);
     f->glDisable(GL_BLEND);
     if (m_locTime >= 0) f->glUniform1f(m_locTime, float(m_time));
-    if (m_locTimeDelta >= 0) f->glUniform1f(m_locTimeDelta, float(rc.dt));
+    if (m_locTimeDelta >= 0) f->glUniform1f(m_locTimeDelta, float(dt));
     if (m_locFrameIndex >= 0) f->glUniform1i(m_locFrameIndex, m_frameIndex);
     if (m_locDate >= 0) {
         QDateTime now = QDateTime::currentDateTime();
@@ -761,6 +763,7 @@ QJsonObject IsfInstance::save(const QString &projectDir) const
     o["path"] = m_path;
     if (!projectDir.isEmpty()) o["relative_path"] = QDir(projectDir).relativeFilePath(m_path);
     o["enable"] = enabled;
+    if (speed != 1.0) o["speed"] = speed;
     if (maskLayer) o["mask"] = QString::number(maskLayer); // ids are strings: JSON numbers are doubles
     if (maskInvert) o["mask_invert"] = true;
     QJsonObject params;

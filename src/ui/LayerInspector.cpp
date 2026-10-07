@@ -1745,11 +1745,14 @@ QWidget *LayerInspector::buildEffects(const LayerValues &s)
         });
         picker->popup(add->mapToGlobal(QPoint(0, add->height())));
     });
+    auto *rescan = toolButton(QStringLiteral("↻"), QStringLiteral("Rescan ISF Library (shaders added in the Finder)"));
+    connect(rescan, &QToolButton::clicked, this, &LayerInspector::rescanLibraryRequested);
     auto *remove = toolButton(QStringLiteral("−"), QStringLiteral("Remove Effect"));
     auto *up = toolButton(QStringLiteral("▲"), QStringLiteral("Move Up (applied earlier)"));
     auto *down = toolButton(QStringLiteral("▼"), QStringLiteral("Move Down (applied later)"));
     auto *reload = toolButton(QStringLiteral("⟳"), QStringLiteral("Reload shader from disk"));
     bar->addWidget(add, 1);
+    bar->addWidget(rescan);
     bar->addWidget(remove);
     bar->addWidget(up);
     bar->addWidget(down);

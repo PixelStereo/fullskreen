@@ -377,7 +377,11 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             gen = layer(index)->generator.get();
         }
         const QJsonObject params = src.value("params").toObject();
-        if (gen) runGl([gen, params, projectDir] { gen->restoreParams(params, projectDir); });
+        const double speed = std::clamp(src.value("speed").toDouble(1.0), 0.0, 10.0);
+        if (gen) runGl([gen, params, projectDir, speed] {
+            gen->restoreParams(params, projectDir);
+            gen->speed = speed;
+        });
     } else if (type == "text") {
         Lock lk(&m_mutex);
         Layer *l = layer(index);
