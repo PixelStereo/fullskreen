@@ -66,10 +66,10 @@ inline void startMedia(Layer &l)
     reposition(l, l.dir < 0 ? t.hi() : t.lo(), l.dir);
 }
 
-// ROI of a saved source object (the whole picture when it is absent or degenerate)
-inline QRectF roiFromJson(const QJsonObject &src)
+// ROI of a saved layer object (the whole picture when it is absent or degenerate)
+inline QRectF roiFromJson(const QJsonObject &layer)
 {
-    const QJsonArray c = src.value("roi").toArray();
+    const QJsonArray c = layer.value("roi").toArray();
     if (c.size() != 4) return Layer::fullRoi();
     const QRectF r = QRectF(QPointF(c[0].toDouble(), c[1].toDouble()), QPointF(c[2].toDouble(), c[3].toDouble()))
                          .normalized() & Layer::fullRoi();

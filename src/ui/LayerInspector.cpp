@@ -410,6 +410,7 @@ void LayerInspector::rebuild()
                                        "QTabBar::tab:disabled { color:#55555a; }")
                             .arg(theme::css()));
     tabs->addTab(page(buildSource(s)), QStringLiteral("Source"));
+    tabs->addTab(page(buildRoi(s)), QStringLiteral("ROI"));
     tabs->addTab(page(buildColor(s)), QStringLiteral("Color"));
     tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
     tabs->addTab(page(buildEffects(s)), QStringLiteral("Effects"));
@@ -452,7 +453,6 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
                                     .arg(s.vpSize.height()));
         info->setWordWrap(true);
         v->addWidget(info);
-        v->addWidget(buildRoi(s));
         return g;
     }
     if (s.isGroup) {
@@ -462,7 +462,6 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
                                     .arg(s.members));
         info->setWordWrap(true);
         v->addWidget(info);
-        v->addWidget(buildRoi(s));
         return g;
     }
 
@@ -1093,7 +1092,6 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
     }
-    if (s.type == SourceType::Video || s.type == SourceType::Image || s.type == SourceType::Isf || s.type == SourceType::Text) v->addWidget(buildRoi(s));
     return g;
 }
 

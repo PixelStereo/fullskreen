@@ -392,7 +392,7 @@ public:
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
     void setFadesManual(bool on) { m_fadesManual = on; } // tests: only advanceFades moves them, not the frames
     // Key under which a snapshot stores the time of a stored value (its path in the layer state), empty for a value
-    // that does not fade: "opacity", "source/roi", "color/temp", "spatial", "effect/<fx>/param/<name>"…
+    // that does not fade: "opacity", "roi/left", "color/temp", "spatial", "effect/<fx>/param/<name>"…
     static QString timingKey(const QStringList &path, const QJsonObject &layer);
 
     // --- External media (media bin)

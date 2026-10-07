@@ -702,7 +702,7 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
         auto *note = new QLabel(QStringLiteral("CUT: at once · FOLLOW: the snapshot's fade (%1 s) · TIME: this value "
                                                "only, in its own time%2")
                                     .arg(m.fade, 0, 'f', 1)
-                                    .arg(f.timeKey == "source/roi" || f.timeKey == "spatial" || f.timeKey.startsWith("color/") ||
+                                    .arg(f.timeKey == "roi" || f.timeKey == "spatial" || f.timeKey.startsWith("color/") ||
                                                      (f.timeKey.startsWith("source/text/") && f.timeKey.endsWith("/color"))
                                              ? QStringLiteral(" (shared by the whole %1)").arg(f.timeKey.section('/', -1))
                                              : QString()));
@@ -932,11 +932,11 @@ void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObjec
         expand(sec);
     }
 
-    if (jsonAt(o, {"source", "roi"}).toArray().size() == 4) {
+    if (jsonAt(o, {"roi"}).toArray().size() == 4) {
         QTreeWidgetItem *sec = section(parent, QStringLiteral("ROI"), QStringLiteral("roi"));
         static const char *kSides[] = {"Left", "Top", "Right", "Bottom"};
         for (int c = 0; c < 4; ++c)
-            num(sec, QString::fromLatin1(kSides[c]), {"source", "roi", QString::number(c)}, 0, 1, 100, 1,
+            num(sec, QString::fromLatin1(kSides[c]), {"roi", QString::number(c)}, 0, 1, 100, 1,
                 QStringLiteral(" %"), 0.01);
         expand(sec);
     }

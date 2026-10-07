@@ -504,8 +504,9 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
     // loaded); the target keeps its identity and whatever the paste does not carry.
     if (parts & PartSource) {
         QJsonObject merged = layerJson(i), src = o.value("source").toObject();
-        if (!(parts & PartRoi)) src["roi"] = merged.value("source").toObject().value("roi");
         merged["source"] = src;
+        if (!(parts & PartRoi)) merged["roi"] = layerJson(i).value("roi");
+        else merged["roi"] = o.value("roi");
         if (parts & PartColor) merged["color"] = o.value("color");
         if (parts & PartSpatial) merged["spatial"] = o.value("spatial");
         if (parts & PartEffects) {
@@ -526,7 +527,7 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
         Layer *l = layer(i);
         if (!l) return false;
         if (parts & PartEffects) l->effectsEnabled = o.value("effects_enable").toBool(true);
-        if (parts & PartRoi) l->roi = roiFromJson(o.value("source").toObject());
+        if (parts & PartRoi) l->roi = roiFromJson(o);
         if (parts & PartColor) colorFromJson(l->color, o.value("color").toObject());
         if (parts & PartSpatial) l->mapping.fromJson(o.value("spatial").toObject());
         if (parts & PartCompositing) {

@@ -258,9 +258,9 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
         if (!projectDir.isEmpty()) src["relative_path"] = QDir(projectDir).relativeFilePath(l.sourcePath);
     }
     const QRectF c = l.roi;
-    src["roi"] = QJsonArray{c.left(), c.top(), c.right(), c.bottom()};
     if (!l.transition.isEmpty()) src["transition"] = l.transition;
     o["source"] = src;
+    o["roi"] = QJsonArray{c.left(), c.top(), c.right(), c.bottom()};
     auto rgb = [](const float v[3]) { return QJsonArray{v[0], v[1], v[2]}; };
     o["color"] = QJsonObject{{"temp", l.color.temp},        {"tint", l.color.tint},
                              {"add", rgb(l.color.add)},    {"remove", rgb(l.color.remove)},
@@ -325,7 +325,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             m_nextId = std::max(m_nextId, id + 1);
         }
         l->parent = o.value("parent").toString().toULongLong();
-        l->roi = roiFromJson(o.value("source").toObject());
+        l->roi = roiFromJson(o);
         colorFromJson(l->color, o.value("color").toObject());
         name = l->name;
     }

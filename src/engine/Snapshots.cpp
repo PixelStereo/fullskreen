@@ -326,7 +326,7 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     LayerTimes d;
     d.opacity = time(QStringLiteral("opacity"));
     d.volume = time(QStringLiteral("source/volume"));
-    d.roi = time(QStringLiteral("source/roi"));
+    d.roi = time(QStringLiteral("roi"));
     d.temp = time(QStringLiteral("color/temp"));
     d.tint = time(QStringLiteral("color/tint"));
     d.add = time(QStringLiteral("color/add"));
@@ -346,7 +346,7 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     // Read easing curves for each parameter
     d.opacityCurve = curve(QStringLiteral("opacity"));
     d.volumeCurve = curve(QStringLiteral("source/volume"));
-    d.roiCurve = curve(QStringLiteral("source/roi"));
+    d.roiCurve = curve(QStringLiteral("roi"));
     d.colorCurve = curve(QStringLiteral("color/temp")); // use temp for all color parameters
     d.mappingCurve = curve(QStringLiteral("spatial"));
     d.softEdgeCurve = curve(QStringLiteral("spatial/soft_edge"));
@@ -377,11 +377,11 @@ QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
     if (a == "opacity") return a;
     if (a == "viewports") return QStringLiteral("viewport");
     if (a == "spatial") return path.size() >= 2 && path[1] == "soft_edge" ? QStringLiteral("spatial/soft_edge") : QStringLiteral("spatial");
+    if (a == "roi") return QStringLiteral("roi");
     if (a == "volume") return QStringLiteral("source/volume");
     if (a == "source" && path.size() >= 2) {
         for (int k = 0; k < TextNumCount; ++k)
             if (path[1] == QLatin1String(kTextNumKeys[k])) return QString::fromLatin1(kTextTimeKeys[k]); // Text generator
-        if (path[1] == "roi") return QStringLiteral("source/roi");
         if (path[1] == "speed" || path[1] == "in" || path[1] == "out") return QStringLiteral("source/") + path[1];
         if (path[1] == "params" && path.size() >= 3) return QStringLiteral("source/param/") + path[2];
     }
@@ -719,7 +719,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         to = job->from;
         to.opacity = float(o.value("opacity").toDouble(to.opacity));
         to.volume = float(std::clamp(o.value("volume").toDouble(to.volume), 0.0, 2.0));
-        const QJsonArray roi = src.value("roi").toArray();
+        const QJsonArray roi = o.value("roi").toArray();
         if (roi.size() == 4)
             to.roi = QRectF(QPointF(roi[0].toDouble(), roi[1].toDouble()), QPointF(roi[2].toDouble(), roi[3].toDouble()));
         const QJsonObject color = o.value("color").toObject();

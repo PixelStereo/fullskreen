@@ -837,7 +837,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
         static const char *kSides[] = {"left", "top", "right", "bottom"};
         static const char *kSideNames[] = {"Left", "Top", "Right", "Bottom"};
         for (int side = 0; side < 4; ++side) {
-            OscNode &n = L.method(P + "/source/roi/" + kSides[side], "f", 3, kSideNames[side],
+            OscNode &n = L.method(P + "/roi/" + kSides[side], "f", 3, kSideNames[side],
                                   [side](Layer &l) {
                                       const QRectF c = l.roi;
                                       const double v[4] = {c.left(), c.top(), c.right(), c.bottom()};
@@ -1272,7 +1272,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     if (isGroup) add(P + "/layer", QString(), 0, "Layers");
     // Readable names of the containers
     static const std::pair<const char *, const char *> kNames[] = {
-        {"/source", "Source"}, {"/source/roi", "ROI"}, {"/source/param", "Parameters"}, {"/color", "Color"},
+        {"/source", "Source"}, {"/roi", "ROI"}, {"/source/param", "Parameters"}, {"/color", "Color"},
         {"/spatial", "Spatial"}, {"/spatial/corner", "Corners"}, {"/spatial/soft_edge", "Soft Edge"}, {"/source/text", "Text"}, {"/effect", "Effects"}};
     for (const auto &[suffix, name] : kNames) {
         auto it = m_nodes.find(P + suffix);
