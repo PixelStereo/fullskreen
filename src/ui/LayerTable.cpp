@@ -529,9 +529,9 @@ void LayerTable::updateRow(int r, const Row &row)
                                        : QColor(230, 230, 233));
     // Effects: their number, the names on hover
     QTableWidgetItem *fx = text(ColEffects, row.effectCount ? QString::number(row.effectCount) : QStringLiteral("—"),
-                                row.effectCount ? (row.effectsOn ? QString() : QStringLiteral("Effects off\n")) +
+                                row.effectCount ? (row.effectsOn ? QString() : QStringLiteral("FX off\n")) +
                                                       row.effects.split(QStringLiteral(" › ")).join('\n')
-                                                : QStringLiteral("No effects"));
+                                                : QStringLiteral("No FX"));
     fx->setTextAlignment(Qt::AlignCenter);
     fx->setForeground(row.effectsOn ? QColor(255, 200, 140) : QColor(110, 110, 115));
     text(ColBlend, row.noPicture || row.viewport ? QStringLiteral("—") : row.blend);

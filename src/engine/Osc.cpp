@@ -773,7 +773,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
         for (int k = 0; k < int(l->effects.size()); ++k) {
             const QString seg = segs[k];
             effects.emplace_back(k, seg);
-            if (l->effects[size_t(k)]->isValid()) L.isfParams(P + "/effect/" + seg + "/param", k, *l->effects[size_t(k)]);
+            if (l->effects[size_t(k)]->isValid()) L.isfParams(P + "/fx/" + seg + "/param", k, *l->effects[size_t(k)]);
         }
     }
 
@@ -1041,14 +1041,14 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
         }
 
         // Effects
-        L.method(P + "/effect/enable", "T", 3, "Effects Enable",
+        L.method(P + "/fx/enable", "T", 3, "FX Enable",
                  [](Layer &l) { return QVariantList{l.effectsEnabled}; }, L.edit([](Layer &l, const QVariantList &a) {
                      l.effectsEnabled = truth(a.value(0));
                      return true;
                  }));
         for (const auto &[k, seg] : effects) {
             const int slot = k;
-            L.method(P + "/effect/" + seg + "/enable", "T", 3, "Enable",
+            L.method(P + "/fx/" + seg + "/enable", "T", 3, "Enable",
                      [slot](Layer &l) {
                          return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->enabled} : QVariantList();
                      },
@@ -1058,7 +1058,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                          return true;
                      }));
             {
-                OscNode &sp = L.method(P + "/effect/" + seg + "/speed", "f", 3, "Speed (1 = normal)",
+                OscNode &sp = L.method(P + "/fx/" + seg + "/speed", "f", 3, "Speed (1 = normal)",
                                        [slot](Layer &l) {
                                            return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->speed} : QVariantList();
                                        },
@@ -1071,7 +1071,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                 sp.clip = "both";
             }
             // Mask: a layer by its name ("" for none), and whether it is inverted
-            L.method(P + "/effect/" + seg + "/mask", "s", 3, "Mask",
+            L.method(P + "/fx/" + seg + "/mask", "s", 3, "Mask",
                      [e, slot](Layer &l) {
                          const Layer *m = slot < int(l.effects.size()) && l.effects[size_t(slot)]->maskLayer
                                               ? e->layer(e->indexOfId(l.effects[size_t(slot)]->maskLayer))
@@ -1096,7 +1096,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                          if (!name.isEmpty() && !id) return false;
                          return e->setEffectMask(idx, slot, id, invert);
                      });
-            L.method(P + "/effect/" + seg + "/mask/tap", "s", 3, "Mask Tap",
+            L.method(P + "/fx/" + seg + "/mask/tap", "s", 3, "Mask Tap",
                      [slot](Layer &l) {
                          return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->maskPreFx ? "prefx" : "postfx"}
                                                              : QVariantList();
@@ -1107,7 +1107,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                          return e->setEffectMaskTap(idx, slot, k == "prefx");
                      })
                 .range = {vals({"prefx", "postfx"})};
-            L.method(P + "/effect/" + seg + "/mask/invert", "T", 3, "Invert Mask",
+            L.method(P + "/fx/" + seg + "/mask/invert", "T", 3, "Invert Mask",
                      [slot](Layer &l) {
                          return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->maskInvert} : QVariantList();
                      },
@@ -1327,13 +1327,13 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     // Readable names of the containers
     static const std::pair<const char *, const char *> kNames[] = {
         {"/source", "Source"}, {"/roi", "ROI"}, {"/source/param", "Parameters"}, {"/color", "Color"},
-        {"/spatial", "Spatial"}, {"/spatial/corner", "Corners"}, {"/spatial/soft_edge", "Soft Edge"}, {"/source/text", "Text"}, {"/effect", "Effects"}};
+        {"/spatial", "Spatial"}, {"/spatial/corner", "Corners"}, {"/spatial/soft_edge", "Soft Edge"}, {"/source/text", "Text"}, {"/fx", "FX"}};
     for (const auto &[suffix, name] : kNames) {
         auto it = m_nodes.find(P + suffix);
         if (it != m_nodes.end()) it->second.description = name;
     }
     for (const auto &[k, seg] : effects) {
-        auto it = m_nodes.find(P + "/effect/" + seg);
+        auto it = m_nodes.find(P + "/fx/" + seg);
         if (it != m_nodes.end() && it->second.description.isEmpty()) it->second.description = seg;
     }
 }

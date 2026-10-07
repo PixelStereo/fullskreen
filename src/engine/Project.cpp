@@ -278,8 +278,8 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     }
     QJsonArray fx;
     for (const auto &e : l.effects) fx.append(e->save(projectDir));
-    o["effects"] = fx;
-    o["effects_enable"] = l.effectsEnabled;
+    o["fx"] = fx;
+    o["fx_enable"] = l.effectsEnabled;
     o["color_models"] = l.colorModels;
     o["spatial"] = l.mapping.toJson();
     return o;
@@ -313,7 +313,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         const QJsonObject vo = o.value("viewports").toObject();
         for (auto it = vo.begin(); it != vo.end(); ++it)
             l->viewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
-        l->effectsEnabled = o.value("effects_enable").toBool(true);
+        l->effectsEnabled = o.value("fx_enable").toBool(true);
         {
             const QString t = o.value("source").toObject().value("transition").toString();
             l->transition = t.isEmpty() ? QString() : resolvePath(QJsonObject{{"path", t}}, projectDir);
@@ -393,7 +393,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         readTextJson(l->text, src);
     }
 
-    for (const QJsonValue &v : o.value("effects").toArray()) {
+    for (const QJsonValue &v : o.value("fx").toArray()) {
         const QJsonObject e = v.toObject();
         const QString p = resolvePath(e, projectDir);
         const int fi = addEffect(index, p, &err);

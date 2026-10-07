@@ -510,8 +510,8 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
         if (parts & PartColor) merged["color"] = o.value("color");
         if (parts & PartSpatial) merged["spatial"] = o.value("spatial");
         if (parts & PartEffects) {
-            merged["effects"] = o.value("effects");
-            merged["effects_enable"] = o.value("effects_enable");
+            merged["fx"] = o.value("fx");
+            merged["fx_enable"] = o.value("fx_enable");
         }
         if (parts & PartCompositing)
             for (const char *k : {"opacity", "blend_mode"}) merged[QLatin1String(k)] = o.value(QLatin1String(k));
@@ -521,12 +521,12 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
     }
 
     // Everything else is set in place: the media goes on playing.
-    if (parts & PartEffects) setEffectsJson(i, o.value("effects").toArray());
+    if (parts & PartEffects) setEffectsJson(i, o.value("fx").toArray());
     {
         Lock lk(&m_mutex);
         Layer *l = layer(i);
         if (!l) return false;
-        if (parts & PartEffects) l->effectsEnabled = o.value("effects_enable").toBool(true);
+        if (parts & PartEffects) l->effectsEnabled = o.value("fx_enable").toBool(true);
         if (parts & PartRoi) l->roi = roiFromJson(o);
         if (parts & PartColor) colorFromJson(l->color, o.value("color").toObject());
         if (parts & PartSpatial) l->mapping.fromJson(o.value("spatial").toObject());
@@ -772,7 +772,7 @@ bool Engine::setEffectMask(int layerIndex, int effect, quint64 maskId, bool inve
             const int mi = indexOfId(maskId);
             if (mi < 0) return fail(QStringLiteral("That layer no longer exists."));
             if (m_layers[size_t(mi)]->isViewport) return fail(QStringLiteral("A viewport cannot be a mask."));
-            if (maskId == l->id) return fail(QStringLiteral("A layer cannot mask its own effects."));
+            if (maskId == l->id) return fail(QStringLiteral("A layer cannot mask its own FX."));
             if (layerDependsOn(maskId, l->id))
                 return fail(QStringLiteral("\"%1\" already uses this layer: the picture would feed back on itself.")
                                 .arg(m_layers[size_t(mi)]->name));

@@ -123,7 +123,7 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     m_tree->setColumnWidth(2, 56);
     m_tree->setTextElideMode(Qt::ElideMiddle);
     m_tree->setToolTip(QStringLiteral("Drag an item onto a layer (layer list, or the Source tab of the layer) to load it.\n"
-                                      "ISF effects dragged onto a layer join its effect chain.\n"
+                                      "ISF FX dragged onto a layer join its FX chain.\n"
                                       "Double-click: load into the selected layer."));
     tree->onDrop = [this](const QStringList &p) { importFiles(p); };
     m_videos = new QTreeWidgetItem(m_tree, {QStringLiteral("Videos")});

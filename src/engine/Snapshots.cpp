@@ -382,8 +382,8 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     for (const auto &x : l.effects) fxNames << x->name();
     const QStringList fxSegs = osc::uniqueSegments(fxNames);
     for (size_t k = 0; k < l.effects.size(); ++k) {
-        d.isf.push_back(params(l.effects[k].get(), QStringLiteral("effect/%1/param/").arg(fxSegs[int(k)])));
-        const QString key = QStringLiteral("effect/%1/speed").arg(fxSegs[int(k)]);
+        d.isf.push_back(params(l.effects[k].get(), QStringLiteral("fx/%1/param/").arg(fxSegs[int(k)])));
+        const QString key = QStringLiteral("fx/%1/speed").arg(fxSegs[int(k)]);
         d.fxSpeed.push_back(time(key));
         d.fxSpeedCurves.push_back(curve(key));
     }
@@ -409,21 +409,21 @@ QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
     }
     if (a == "color" && path.size() >= 2 && (path[1] == "temp" || path[1] == "tint" || path[1] == "add" || path[1] == "remove"))
         return QStringLiteral("color/") + path[1];
-    if (a == "effects" && path.size() == 3 && path[2] == "speed") {
+    if (a == "fx" && path.size() == 3 && path[2] == "speed") {
         QStringList names;
-        for (const QJsonValue &v : layer.value("effects").toArray())
+        for (const QJsonValue &v : layer.value("fx").toArray())
             names << QFileInfo(v.toObject().value("path").toString()).completeBaseName();
         const int k = path[1].toInt();
         if (k < 0 || k >= names.size()) return {};
-        return QStringLiteral("effect/%1/speed").arg(osc::uniqueSegments(names).at(k));
+        return QStringLiteral("fx/%1/speed").arg(osc::uniqueSegments(names).at(k));
     }
-    if (a == "effects" && path.size() >= 4 && path[2] == "params") {
+    if (a == "fx" && path.size() >= 4 && path[2] == "params") {
         QStringList names;
-        for (const QJsonValue &v : layer.value("effects").toArray())
+        for (const QJsonValue &v : layer.value("fx").toArray())
             names << QFileInfo(v.toObject().value("path").toString()).completeBaseName();
         const int k = path[1].toInt();
         if (k < 0 || k >= names.size()) return {};
-        return QStringLiteral("effect/%1/param/%2").arg(osc::uniqueSegments(names).at(k), path[3]);
+        return QStringLiteral("fx/%1/param/%2").arg(osc::uniqueSegments(names).at(k), path[3]);
     }
     return {};
 }
@@ -703,8 +703,8 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             jobs.push_back(job);
             continue;
         }
-        if (effectPaths(cur.value("effects").toArray()) != effectPaths(o.value("effects").toArray()))
-            setEffectsJson(idx, o.value("effects").toArray()); // another chain: at once
+        if (effectPaths(cur.value("fx").toArray()) != effectPaths(o.value("fx").toArray()))
+            setEffectsJson(idx, o.value("fx").toArray()); // another chain: at once
         if (src.contains("play_mode")) {
             setLayerPlayMode(idx, playModeFromKey(src.value("play_mode").toString()));
             setLayerInOut(idx, src.value("in").toDouble(0), src.value("out").toDouble(-1));
@@ -715,7 +715,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         if (!l) continue;
         l->name = o.value("name").toString(l->name);
         l->blend = blendModeFromKey(o.value("blend_mode").toString(blendModeKey(l->blend)));
-        l->effectsEnabled = o.value("effects_enable").toBool(l->effectsEnabled);
+        l->effectsEnabled = o.value("fx_enable").toBool(l->effectsEnabled);
         l->muted = o.value("muted").toBool(l->muted);
         // Which viewports it is drawn in: a snapshot can send a layer to another projector. Read into the
         // fade's target (not onto the layer) so it moves there from the current values
@@ -723,7 +723,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         const QJsonObject vo = o.value("viewports").toObject();
         for (auto it = vo.begin(); it != vo.end(); ++it)
             targetViewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
-        const QJsonArray fx = o.value("effects").toArray();
+        const QJsonArray fx = o.value("fx").toArray();
         std::vector<double> fxSpeedBefore;
         for (const auto &e : l->effects) fxSpeedBefore.push_back(e->speed);
         for (size_t k = 0; k < l->effects.size() && int(k) < fx.size(); ++k) {
@@ -1037,8 +1037,8 @@ QJsonObject Engine::snapshotToJson(const Snapshot &m, const QString &dir) const
         };
         o["source"] = rel(o.value("source").toObject());
         QJsonArray fx;
-        for (const QJsonValue &e : o.value("effects").toArray()) fx.append(rel(e.toObject()));
-        o["effects"] = fx;
+        for (const QJsonValue &e : o.value("fx").toArray()) fx.append(rel(e.toObject()));
+        o["fx"] = fx;
         layers.append(o);
     }
     QJsonObject out{{"id", QString::number(m.id)}, {"name", m.name}, {"fade", m.fade}, {"layers", layers}};
@@ -1072,8 +1072,8 @@ Engine::Snapshot Engine::snapshotFromJson(const QJsonObject &o, const QString &d
         if (src.value("type").toString() != "none") src = resolve(src);
         l["source"] = src;
         QJsonArray fx;
-        for (const QJsonValue &e : l.value("effects").toArray()) fx.append(resolve(e.toObject()));
-        l["effects"] = fx;
+        for (const QJsonValue &e : l.value("fx").toArray()) fx.append(resolve(e.toObject()));
+        l["fx"] = fx;
         m.layers.append(l);
     }
     return m;

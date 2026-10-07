@@ -218,12 +218,12 @@ int main(int argc, char **argv)
             bool fxFound = false;
             QString fxPath;
             for (const auto &p : e.animatableParams(e.layerId(g)))
-                if (p.path.startsWith("effect/") && p.path.endsWith("/speed")) fxFound = true, fxPath = p.path;
+                if (p.path.startsWith("fx/") && p.path.endsWith("/speed")) fxFound = true, fxPath = p.path;
             CHECK(fxFound);
-            CHECK(Engine::timingKey({"effects", "0", "speed"}, e.layerJson(g)) == fxPath);
+            CHECK(Engine::timingKey({"fx", "0", "speed"}, e.layerJson(g)) == fxPath);
             CHECK(Engine::timingKey({"source", "speed"}, e.layerJson(g)) == "source/speed");
             CHECK(e.layerJson(g).value("source").toObject().contains("speed"));
-            CHECK(e.layerJson(g).value("effects").toArray().at(0).toObject().contains("speed"));
+            CHECK(e.layerJson(g).value("fx").toArray().at(0).toObject().contains("speed"));
             e.removeEffect(g, fxi);
             CHECK(e.saveProject(tmp + "/speed.fulskrin", {}, &err));
             e.newProject();
@@ -256,7 +256,7 @@ int main(int argc, char **argv)
         // Effects
         const QJsonArray fxBefore = e.effectsJson(V + 0);
         e.addEffect(V + 0, root + "/../isf/effects/Hue.fs", &err);
-        undo.push(new cmd::SetEffects(&e, V + 0, fxBefore, "effect"));
+        undo.push(new cmd::SetEffects(&e, V + 0, fxBefore, "fx"));
         CHECK(e.layer(V + 0)->effects.size() == 1);
         undo.undo();
         CHECK(e.layer(V + 0)->effects.empty());
@@ -502,9 +502,9 @@ int main(int argc, char **argv)
         CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
         CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
         CHECK(server.handleMessage({L + "/roi/left", "f", {0.25}}) && std::abs(e.layer(V + 1)->roi.left() - 0.25) < 1e-9);
-        CHECK(server.handleMessage({L + "/effect/FlipCrop/param/flipH", "T", {true}}));
+        CHECK(server.handleMessage({L + "/fx/FlipCrop/param/flipH", "T", {true}}));
         CHECK(e.layer(V + 1)->effects[0]->inputs()[1].bValue || e.layer(V + 1)->effects[0]->inputs()[2].bValue);
-        CHECK(server.handleMessage({L + "/effect/enable", "F", {false}}) && !e.layer(V + 1)->effectsEnabled);
+        CHECK(server.handleMessage({L + "/fx/enable", "F", {false}}) && !e.layer(V + 1)->effectsEnabled);
         CHECK(server.handleMessage({"/layer/G/opacity", "i", {0}}) && e.layer(V + 0)->opacity == 0.0f);
         CHECK(server.handleMessage({"/composition/blackout", "T", {true}}) && e.blackout());
         server.handleMessage({"/composition/blackout", "i", {0}});
@@ -543,7 +543,7 @@ int main(int argc, char **argv)
                 for (auto it = c.begin(); it != c.end(); ++it) {
                     ++nodes;
                     const QString seg = it.key();
-                    const bool userName = parent == "layer" || parent == "viewport" || parent == "effect" || parent == "param"; // names: layers, viewports, effects, shader parameters
+                    const bool userName = parent == "layer" || parent == "viewport" || parent == "fx" || parent == "param"; // names: layers, viewports, effects, shader parameters
                     if (!userName && seg != seg.toLower()) { ++bad; qWarning("not lowercase: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString())); }
                     if (!userName && seg.endsWith("s") && seg != "fps") { ++bad; qWarning("plural: %s", qPrintable(it.value().toObject().value("FULL_PATH").toString())); }
                     if (!userName && (seg.endsWith("enabled") || seg.endsWith("Enabled") || seg.endsWith("On") || seg == "master")) {
@@ -768,7 +768,7 @@ int main(int argc, char **argv)
             e.advanceFades(2.0);
             CHECK(std::abs(L()->color.temp - 1000) < 1e-3 && !e.isFading());
             CHECK(Engine::timingKey({"roi", "2"}, {}) == "roi" && Engine::timingKey({"color", "add", "1"}, {}) == "color/add" &&
-                  Engine::timingKey({"effects", "0", "params", "radius"}, QJsonObject{{"effects", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "effect/Blur/param/radius" &&
+                  Engine::timingKey({"fx", "0", "params", "radius"}, QJsonObject{{"fx", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "fx/Blur/param/radius" &&
                   Engine::timingKey({"source", "speed"}, {}) == "source/speed" && Engine::timingKey({"source", "file"}, {}).isEmpty());
             // Text generator: the snapshot's text is typed over its time (erased back to what both share, then
             // typed); its style moves on its own times
@@ -1607,11 +1607,11 @@ int main(int argc, char **argv)
         CHECK(e.setEffectMask(e.indexOfId(lid), 0, maskId, true, &err));
         l = at(0.25), r = at(0.75);
         CHECK(l.red() > 250 && r.red() < 5); // inverted
-        CHECK(e.layerJson(e.indexOfId(lid)).value("effects").toArray().at(0).toObject().value("mask").toString() ==
+        CHECK(e.layerJson(e.indexOfId(lid)).value("fx").toArray().at(0).toObject().value("mask").toString() ==
               QString::number(maskId));
         // Mask picture before or after the mask layer's effects (no effect on the mask here: same picture)
         CHECK(e.setEffectMaskTap(e.indexOfId(lid), 0, true));
-        CHECK(e.layerJson(e.indexOfId(lid)).value("effects").toArray().at(0).toObject().value("mask_tap").toString() == "prefx");
+        CHECK(e.layerJson(e.indexOfId(lid)).value("fx").toArray().at(0).toObject().value("mask_tap").toString() == "prefx");
         l = at(0.25);
         CHECK(l.red() > 250 && at(0.75).red() < 5);
         CHECK(e.setEffectMaskTap(e.indexOfId(lid), 0, false));

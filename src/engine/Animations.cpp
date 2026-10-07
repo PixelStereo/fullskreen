@@ -407,7 +407,7 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
         }
         return false;
     }
-    if (a == "effect" && p.size() == 3 && p[2] == "speed") { // an effect's time
+    if (a == "fx" && p.size() == 3 && p[2] == "speed") { // an effect's time
         QStringList names;
         for (const auto &x : l.effects) names << x->name();
         const int k = osc::uniqueSegments(names).indexOf(p[1]);
@@ -420,7 +420,7 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
     if (a == "source" && p.size() >= 3 && p[1] == "param") {
         inst = l.generator.get();
         at = 2;
-    } else if (a == "effect" && p.size() >= 4 && p[2] == "param") {
+    } else if (a == "fx" && p.size() >= 4 && p[2] == "param") {
         QStringList names;
         for (const auto &x : l.effects) names << x->name();
         const int k = osc::uniqueSegments(names).indexOf(p[1]);
@@ -586,8 +586,8 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
     for (const auto &x : l->effects) fxNames << x->name();
     const QStringList fxSegs = osc::uniqueSegments(fxNames);
     for (size_t k = 0; k < l->effects.size(); ++k) {
-        add(QStringLiteral("effect/%1/speed").arg(fxSegs[int(k)]), QStringLiteral("Effect › %1 › Speed").arg(l->effects[k]->name()), 0, 10);
-        isf(l->effects[k].get(), QStringLiteral("effect/%1/param/").arg(fxSegs[int(k)]), QStringLiteral("Effect › %1").arg(l->effects[k]->name()));
+        add(QStringLiteral("fx/%1/speed").arg(fxSegs[int(k)]), QStringLiteral("FX › %1 › Speed").arg(l->effects[k]->name()), 0, 10);
+        isf(l->effects[k].get(), QStringLiteral("fx/%1/param/").arg(fxSegs[int(k)]), QStringLiteral("FX › %1").arg(l->effects[k]->name()));
     }
     return out;
 }

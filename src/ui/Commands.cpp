@@ -84,7 +84,7 @@ static QString propText(SetLayerProp::Prop p)
     case SetLayerProp::InPoint: return QStringLiteral("Set In Point");
     case SetLayerProp::OutPoint: return QStringLiteral("Set Out Point");
     case SetLayerProp::Locked: return QStringLiteral("Lock / Unlock Layer");
-    case SetLayerProp::EffectsEnabled: return QStringLiteral("Enable / Disable Effects");
+    case SetLayerProp::EffectsEnabled: return QStringLiteral("Enable / Disable FX");
     case SetLayerProp::ColorAdd: return QStringLiteral("Change Added Color");
     case SetLayerProp::ColorRemove: return QStringLiteral("Change Removed Color");
     case SetLayerProp::Roi: return QStringLiteral("Change ROI");

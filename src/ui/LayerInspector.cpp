@@ -413,7 +413,7 @@ void LayerInspector::rebuild()
     tabs->addTab(page(buildRoi(s)), QStringLiteral("ROI"));
     tabs->addTab(page(buildColor(s)), QStringLiteral("Color"));
     tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
-    tabs->addTab(page(buildEffects(s)), QStringLiteral("Effects"));
+    tabs->addTab(page(buildEffects(s)), QStringLiteral("FX"));
     tabs->addTab(page(buildCompositing(s)), QStringLiteral("Compositing"));
     m_output = nullptr;
     if (s.isViewport) { // its size, screen and publishing
@@ -719,8 +719,8 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         tap->addItem(QStringLiteral("Post-FX"), int(LayerTap::PostFx));
         tap->setCurrentIndex(s.sourceTap == LayerTap::PreFx ? 0 : 1);
         tap->setToolTip(QStringLiteral("Where the picture is taken in that layer:\n"
-                                       "Pre-FX — after its ROI and color, before its effects\n"
-                                       "Post-FX — after its effects"));
+                                       "Pre-FX — after its ROI and color, before its FX\n"
+                                       "Post-FX — after its FX"));
         tap->setEnabled(s.type == SourceType::Layer);
         row->addWidget(pick, 1);
         row->addWidget(tap, 0);
@@ -1716,9 +1716,9 @@ QWidget *LayerInspector::buildEffects(const LayerValues &s)
     auto *v = new QVBoxLayout(g);
 
     // General switch of the chain
-    auto *all = new FlagBox(QStringLiteral("Effects Enable"));
+    auto *all = new FlagBox(QStringLiteral("FX Enable"));
     all->setChecked(s.effectsEnabled);
-    all->setToolTip(QStringLiteral("Turns the whole effect chain on or off (each effect keeps its own switch)"));
+    all->setToolTip(QStringLiteral("Turns the whole FX chain on or off (each FX keeps its own switch)"));
     all->setStyleSheet("QCheckBox { font-weight:bold; }");
     v->addWidget(all);
     connect(all, &QCheckBox::toggled, this, [this](bool on) {
@@ -1727,15 +1727,15 @@ QWidget *LayerInspector::buildEffects(const LayerValues &s)
     });
 
     auto *bar = new QHBoxLayout;
-    auto *add = new QPushButton(QStringLiteral("Add Effect…"));
-    add->setToolTip(QStringLiteral("Search the ISF library and add an effect to the chain"));
+    auto *add = new QPushButton(QStringLiteral("Add FX…"));
+    add->setToolTip(QStringLiteral("Search the ISF library and add an FX to the chain"));
     connect(add, &QPushButton::clicked, this, [this, add] {
         QList<SearchPicker::Item> items;
         for (const IsfEntry &e : m_engine->library().filters())
             items.append({e.name, e.categories.value(0), e.description, e.path});
         auto *picker = new SearchPicker(items, this);
         connect(picker, &SearchPicker::picked, this, [this](const QString &p) {
-            editEffects(QStringLiteral("Add Effect %1").arg(QFileInfo(p).completeBaseName()), [this, p] {
+            editEffects(QStringLiteral("Add FX %1").arg(QFileInfo(p).completeBaseName()), [this, p] {
                 QString err;
                 m_selectedEffect = m_engine->addEffect(m_layer, p, &err);
             });
@@ -1745,7 +1745,7 @@ QWidget *LayerInspector::buildEffects(const LayerValues &s)
     });
     auto *rescan = toolButton(QStringLiteral("↻"), QStringLiteral("Rescan ISF Library (shaders added in the Finder)"));
     connect(rescan, &QToolButton::clicked, this, &LayerInspector::rescanLibraryRequested);
-    auto *remove = toolButton(QStringLiteral("−"), QStringLiteral("Remove Effect"));
+    auto *remove = toolButton(QStringLiteral("−"), QStringLiteral("Remove FX"));
     auto *up = toolButton(QStringLiteral("▲"), QStringLiteral("Move Up (applied earlier)"));
     auto *down = toolButton(QStringLiteral("▼"), QStringLiteral("Move Down (applied later)"));
     auto *reload = toolButton(QStringLiteral("⟳"), QStringLiteral("Reload shader from disk"));
@@ -1758,7 +1758,7 @@ QWidget *LayerInspector::buildEffects(const LayerValues &s)
     v->addLayout(bar);
 
     if (s.effects.empty()) {
-        auto *none = new QLabel(QStringLiteral("No effects. Effects are applied in list order."));
+        auto *none = new QLabel(QStringLiteral("No FX. FX are applied in list order."));
         none->setWordWrap(true);
         none->setStyleSheet("color:#888;");
         v->addWidget(none);
@@ -1786,7 +1786,7 @@ QWidget *LayerInspector::buildEffects(const LayerValues &s)
     connect(list, &QListWidget::itemChanged, this, [this, list](QListWidgetItem *it) {
         const int r = list->row(it);
         const bool on = it->checkState() == Qt::Checked;
-        editEffects(on ? QStringLiteral("Enable Effect") : QStringLiteral("Disable Effect"), [this, r, on] {
+        editEffects(on ? QStringLiteral("Enable FX") : QStringLiteral("Disable FX"), [this, r, on] {
             Engine::Lock lk(&m_engine->mutex());
             Layer *ly = m_engine->layer(m_layer);
             if (ly && r >= 0 && r < int(ly->effects.size())) ly->effects[size_t(r)]->enabled = on;
@@ -1802,19 +1802,19 @@ QWidget *LayerInspector::buildEffects(const LayerValues &s)
         }
     });
     connect(remove, &QToolButton::clicked, this, [this] {
-        editEffects(QStringLiteral("Remove Effect"), [this] { m_engine->removeEffect(m_layer, m_selectedEffect); });
+        editEffects(QStringLiteral("Remove FX"), [this] { m_engine->removeEffect(m_layer, m_selectedEffect); });
         rebuild();
     });
     connect(up, &QToolButton::clicked, this, [this] {
         if (m_selectedEffect <= 0) return;
-        editEffects(QStringLiteral("Reorder Effects"),
+        editEffects(QStringLiteral("Reorder FX"),
                     [this] { m_engine->moveEffect(m_layer, m_selectedEffect, m_selectedEffect - 1); });
         --m_selectedEffect;
         rebuild();
     });
     connect(down, &QToolButton::clicked, this, [this, count] {
         if (m_selectedEffect >= count - 1) return;
-        editEffects(QStringLiteral("Reorder Effects"),
+        editEffects(QStringLiteral("Reorder FX"),
                     [this] { m_engine->moveEffect(m_layer, m_selectedEffect, m_selectedEffect + 1); });
         ++m_selectedEffect;
         rebuild();
@@ -1882,7 +1882,7 @@ void LayerInspector::showEffectParams()
         auto *row = new QHBoxLayout;
         auto *label = new ResetLabel(QStringLiteral("Mask"), [this] {
             const int k = m_selectedEffect;
-            editEffects(QStringLiteral("Remove Effect Mask"), [this, k] { m_engine->setEffectMask(m_layer, k, 0, false); });
+            editEffects(QStringLiteral("Remove FX Mask"), [this, k] { m_engine->setEffectMask(m_layer, k, 0, false); });
             QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection); // the list shows ◐
         });
         auto *pick = new QComboBox;
@@ -1897,7 +1897,7 @@ void LayerInspector::showEffectParams()
             current = pick->count() - 1;
         }
         pick->setCurrentIndex(current);
-        pick->setToolTip(QStringLiteral("Where this effect applies: fully where the chosen layer's picture is white, not at "
+        pick->setToolTip(QStringLiteral("Where this FX applies: fully where the chosen layer's picture is white, not at "
                                         "all where it is black or transparent, in proportion in between. That picture is "
                                         "stretched over this layer's, before the mapping. The layer can stay hidden."));
         auto *inv = new FlagBox(QStringLiteral("Invert"));
@@ -1911,20 +1911,20 @@ void LayerInspector::showEffectParams()
         tap->addItem(QStringLiteral("Post-FX"), false);
         tap->setCurrentIndex(maskPre ? 0 : 1);
         tap->setEnabled(maskId != 0);
-        tap->setToolTip(QStringLiteral("The mask's picture: before or after the mask layer's own effects"));
+        tap->setToolTip(QStringLiteral("The mask's picture: before or after the mask layer's own FX"));
         row->addWidget(tap);
         lay->addLayout(row);
         connect(tap, &QComboBox::activated, this, [this, tap](int i) {
             const bool pre = tap->itemData(i).toBool();
             const int k = m_selectedEffect;
-            editEffects(QStringLiteral("Set Effect Mask Tap"), [&] { m_engine->setEffectMaskTap(m_layer, k, pre); });
+            editEffects(QStringLiteral("Set FX Mask Tap"), [&] { m_engine->setEffectMaskTap(m_layer, k, pre); });
         });
         connect(pick, &QComboBox::activated, this, [this, pick, inv](int i) {
             const quint64 id = pick->itemData(i).toULongLong();
             const int k = m_selectedEffect;
             QString err;
             bool ok = true;
-            editEffects(id ? QStringLiteral("Set Effect Mask") : QStringLiteral("Remove Effect Mask"),
+            editEffects(id ? QStringLiteral("Set FX Mask") : QStringLiteral("Remove FX Mask"),
                         [&] { ok = m_engine->setEffectMask(m_layer, k, id, inv->isChecked(), &err); });
             if (!ok && !err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Mask"), err);
             QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
@@ -1932,7 +1932,7 @@ void LayerInspector::showEffectParams()
         connect(inv, &QCheckBox::toggled, this, [this, pick](bool on) {
             const quint64 id = pick->currentData().toULongLong();
             const int k = m_selectedEffect;
-            editEffects(QStringLiteral("Invert Effect Mask"), [&] { m_engine->setEffectMask(m_layer, k, id, on); });
+            editEffects(QStringLiteral("Invert FX Mask"), [&] { m_engine->setEffectMask(m_layer, k, id, on); });
         });
     }
     if (valid) {

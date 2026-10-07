@@ -901,7 +901,7 @@ bool MainWindow::loadIntoLayer(int i, const QString &path)
         if (h.isFilter) { // an ISF effect joins the layer's (or the group's) effect chain
             const QJsonArray before = m_engine->effectsJson(i);
             m_engine->addEffect(i, path);
-            m_undo->push(new cmd::SetEffects(m_engine, i, before, QStringLiteral("Add Effect %1").arg(fi.completeBaseName())));
+            m_undo->push(new cmd::SetEffects(m_engine, i, before, QStringLiteral("Add FX %1").arg(fi.completeBaseName())));
             selectLayer(i);
             refreshAll();
             return true;
@@ -1133,7 +1133,7 @@ void MainWindow::layerContextMenu(int row, const QPoint &globalPos)
         add(QStringLiteral("ROI"), Engine::PartRoi, QStringLiteral("ROI"));
         add(QStringLiteral("Color"), Engine::PartColor, QStringLiteral("Color"));
         add(QStringLiteral("Spatial"), Engine::PartSpatial, QStringLiteral("Spatial"));
-        add(QStringLiteral("Effects"), Engine::PartEffects, QStringLiteral("Effects"));
+        add(QStringLiteral("FX"), Engine::PartEffects, QStringLiteral("FX"));
         add(QStringLiteral("Compositing"), Engine::PartCompositing, QStringLiteral("Compositing"));
     }
     menu.addSeparator();
@@ -1402,7 +1402,7 @@ void MainWindow::rescanLibrary()
     m_settings->setTransitions(m_engine->library().transitions(), m_engine->defaultTransition());
     m_bin->refresh();
     m_inspector->rebuild();
-    statusBar()->showMessage(QStringLiteral("ISF Library: %1 generators, %2 effects")
+    statusBar()->showMessage(QStringLiteral("ISF Library: %1 generators, %2 FX")
                                  .arg(m_engine->library().generators().size())
                                  .arg(m_engine->library().filters().size()),
                              5000);

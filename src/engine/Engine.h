@@ -247,7 +247,7 @@ public:
     };
     struct AnimTrack {
         quint64 layer = 0; // the layer driven (its id; 0: the composition)
-        QString param;     // the number (see animatableParams): "opacity", "spatial/rotation", "effect/<fx>/param/<name>"… (the OSC address inside the layer)
+        QString param;     // the number (see animatableParams): "opacity", "spatial/rotation", "fx/<fx>/param/<name>"… (the OSC address inside the layer)
         bool enabled = true;
         bool oscillator = false;
         std::vector<AnimKey> keys; // curve: sorted by time
@@ -393,7 +393,7 @@ public:
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
     void setFadesManual(bool on) { m_fadesManual = on; } // tests: only advanceFades moves them, not the frames
     // Key under which a snapshot stores the time of a stored value (its path in the layer state), empty for a value
-    // that does not fade: "opacity", "roi/left", "color/temp", "spatial", "effect/<fx>/param/<name>"…
+    // that does not fade: "opacity", "roi/left", "color/temp", "spatial", "fx/<fx>/param/<name>"…
     static QString timingKey(const QStringList &path, const QJsonObject &layer);
 
     // --- External media (media bin)
@@ -403,7 +403,7 @@ public:
         bool audio = false;      // audio file (neither: image)
         bool missing = false;
         bool imported = false;   // added to the media bin by the user
-        QStringList users;       // "Layer" or "Layer › Effect"
+        QStringList users;       // "Layer" or "Layer › FX"
     };
     std::vector<MediaRef> mediaUsage() const;
     QStringList binItems() const;
