@@ -49,6 +49,8 @@ private:
     SliderField *m_composition = nullptr;
     QLabel *m_compositionLabel = nullptr;
     QPushButton *m_blackout = nullptr;
+    QPushButton *m_pause = nullptr;
+    SliderField *m_speed = nullptr;
     QDoubleSpinBox *m_fade = nullptr;
     QComboBox *m_preset = nullptr;
     QSpinBox *m_width = nullptr, *m_height = nullptr;

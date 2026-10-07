@@ -137,7 +137,7 @@ void Engine::updateSource(Layer &l, double dt)
     if ((l.type != SourceType::Video && l.type != SourceType::Audio) || !l.hasTransport()) return;
     if (l.playing) {
         // Real time (not the clamped animation step): after a render stall, picture and sound stay together.
-        l.clock += m_realDt * std::abs(l.speed);
+        l.clock += m_realDt * std::abs(l.speed) * timeScale();
         if (l.atEnd()) { // One-shot / Stop: end of the media (the end, or the start when playing backwards)
             l.clock = l.timeline().firstLeg().clockEnd();
             l.playing = false;
@@ -145,7 +145,7 @@ void Engine::updateSource(Layer &l, double dt)
         }
     }
     if (l.audio)
-        l.audio->setTransport(l.clock, l.playing, std::abs(l.speed), l.timeline(), l.timelineId, l.audioGain(), m_frameStampNs);
+        l.audio->setTransport(l.clock, l.playing, std::abs(l.speed) * timeScale(), l.timeline(), l.timelineId, l.audioGain(), m_frameStampNs);
     if (!l.video) return;
     if (!l.videoTex) l.videoTex = std::make_unique<VideoTexture>();
     l.videoTex->feed(*l.video); // upload buffers the decoder writes its next frames into
@@ -726,7 +726,7 @@ void Engine::frame(double dt)
     m_blackLevel = black;
 
     IsfRenderContext rc;
-    rc.dt = dt;
+    rc.dt = dt * timeScale();
     rc.blackTex = m_blackTex;
     rc.drawQuad = [this] { drawQuad(); };
     rc.blit = [this](GLuint t, const RenderTarget &rt) { blit(t, rt); };
@@ -741,11 +741,12 @@ void Engine::frame(double dt)
         }
     }
     if (!m_fadesManual) {
-        stepFade(m_realDt);
-        stepTransitions(m_realDt);
-        stepTypewriters(m_realDt);
-        stepCompositionFade(m_realDt);
-        stepAnimations(m_realDt); // after the fades: a timeline playing wins over them
+        const double k = timeScale(); // paused or slowed: the fades, transitions and timelines move at that pace
+        stepFade(m_realDt * k);
+        stepTransitions(m_realDt * k);
+        stepTypewriters(m_realDt * k);
+        stepCompositionFade(m_realDt); // the output level keeps its real time: a blackout works while paused
+        stepAnimations(m_realDt * k); // after the fades: a timeline playing wins over them
     }
     markNeeded();
     for (auto &l : m_layers) updateSource(*l, dt);

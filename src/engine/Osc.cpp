@@ -417,6 +417,24 @@ void OscNamespace::build()
         };
     }
     {
+        // Speed of all time (media, shaders, timelines, fades, sequences), and the pause that holds it at 0
+        OscNode &n = add("/composition/speed", "f", 3, "Speed (0 = stopped, 1 = normal)");
+        n.range = {minMax(0, 10)};
+        n.clip = "both";
+        n.get = [e] { return QVariantList{e->compositionSpeed()}; };
+        n.set = [e](const QVariantList &a) {
+            if (a.isEmpty()) return false;
+            e->setCompositionSpeed(num(a[0]));
+            return true;
+        };
+        OscNode &p = add("/composition/pause", "T", 3, "Pause (speed 0 until released)");
+        p.get = [e] { return QVariantList{e->paused()}; };
+        p.set = [e](const QVariantList &a) {
+            e->setPaused(truth(a.value(0)));
+            return true;
+        };
+    }
+    {
         OscNode &n = add("/composition/blackout", "T", 3, "Blackout (picture and sound)");
         n.get = [e] { return QVariantList{e->blackout()}; };
         n.set = [e](const QVariantList &a) {

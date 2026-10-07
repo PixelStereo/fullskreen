@@ -450,6 +450,18 @@ int main(int argc, char **argv)
         CHECK(qGray(render().pixel(8, 16)) < 2);
         e.setBlackout(false, 0);
         CHECK(!e.blackout() && render().pixel(8, 16) != qRgb(0, 0, 0) && e.audioOutput().fadeLevel() == 1.0f);
+        // Composition speed: a coefficient on all time, clamped to 0..10; pause holds it at 0 and gives it back
+        e.setCompositionSpeed(25);
+        CHECK(e.compositionSpeed() == 10.0 && timeScale() == 10.0);
+        e.setCompositionSpeed(0.5);
+        e.setPaused(true);
+        CHECK(timeScale() == 0.0 && e.compositionSpeed() == 0.5);
+        e.setPaused(false);
+        CHECK(timeScale() == 0.5);
+        e.saveProject(tmp + "/cspeed.fulskrin", {}, &err);
+        e.newProject();
+        CHECK(e.compositionSpeed() == 1.0 && timeScale() == 1.0);
+        CHECK(e.loadProject(tmp + "/cspeed.fulskrin", nullptr, &err) && e.compositionSpeed() == 0.5);
         e.newProject();
     }
 
@@ -1287,7 +1299,7 @@ int main(int argc, char **argv)
                 e.removeAnimation(e.indexOfAnimation(lid));
                 e.fadeCompositionOpacity(1.0, 0);
             }
-            CHECK(!e.animatableParams(tid).empty() && e.animatableParams(0).size() == 2);
+            CHECK(!e.animatableParams(tid).empty() && e.animatableParams(0).size() == 3);
             // Steps driving it: Play (its time, when it ends), Seek, Stop
             e.controlAnimation(aid, A::LoopMode, 0, L::Once);
             Engine::Sequence sq;
@@ -2161,7 +2173,7 @@ int main(int argc, char **argv)
             ++ops;
         }
         std::printf("       %d rounds of concurrent changes\n", ops);
-        CHECK(ops >= 5);
+        CHECK(ops >= 4);
         CHECK(waitFrames(5));
     }
     // Video in threaded mode

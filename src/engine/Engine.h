@@ -435,6 +435,12 @@ public:
 
     // --- Composition opacity: 0..1 reached in `seconds` seconds (picture only)
     void fadeCompositionOpacity(double target, double seconds);
+    // Speed of the whole composition (0..10): a coefficient on every pace — media, shaders' TIME, timelines, fades,
+    // sequences. Pause holds it at 0 and gives the speed back when released.
+    double compositionSpeed() const { return m_compositionSpeed.load(); }
+    void setCompositionSpeed(double speed);
+    bool paused() const { return m_paused.load(); }
+    void setPaused(bool on);
     double compositionOpacity() const { return m_compositionOpacity.load(); }
     double compositionOpacityTarget() const;
     // Blackout: fades the picture and the sound out (and back in) in `seconds` seconds
@@ -602,6 +608,9 @@ private:
     std::vector<float> m_meshScratch;
     std::vector<uint8_t> m_renderMark; // render pass: layer already rendered this frame (reused, no allocation)
 
+    std::atomic<double> m_compositionSpeed{1.0};
+    std::atomic<bool> m_paused{false};
+    void updateTimeScale();
     std::atomic<double> m_compositionOpacity{1.0};
     double m_compositionOpacityTarget = 1.0, m_compositionOpacitySpeed = 0.0; // units per second (0 = immediate)
     struct CompositionFade {

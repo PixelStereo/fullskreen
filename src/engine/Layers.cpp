@@ -80,7 +80,7 @@ void Engine::attachAudio(Layer &l, std::shared_ptr<AudioStream> s)
     releaseAudio(*m_audio, l.audio);
     l.audio = std::move(s);
     if (!l.audio) return;
-    l.audio->setTransport(l.clock, l.playing, std::abs(l.speed), l.timeline(), l.timelineId, l.audioGain());
+    l.audio->setTransport(l.clock, l.playing, std::abs(l.speed) * timeScale(), l.timeline(), l.timelineId, l.audioGain());
     m_audio->addStream(l.audio);
 }
 
