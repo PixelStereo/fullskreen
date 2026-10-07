@@ -872,6 +872,25 @@ int main(int argc, char **argv)
             }
             e.removeLayer(e.indexOfId(tid));
         }
+        // ISF speed (generator and effect) fades between snapshots instead of jumping
+        {
+            const int gi = e.addLayer("Pace", e.layerCount());
+            const quint64 gid = e.layerId(gi);
+            auto G = [&] { return e.layer(e.indexOfId(gid)); };
+            CHECK(e.setLayerIsf(gi, QStringLiteral(TEST_DIR) + "/../isf/generators/TestPattern.fs", &err));
+            G()->visible = true;
+            G()->generator->speed = 3.0;
+            QJsonObject st = e.layerJson(e.indexOfId(gid));
+            st.remove("timing");
+            G()->generator->speed = 1.0;
+            e.applyLayers(QJsonArray{st}, 1.0);
+            CHECK(std::abs(G()->generator->speed - 1.0) < 1e-9); // starts from where it is
+            e.advanceFades(0.5);
+            CHECK(G()->generator->speed > 1.05 && G()->generator->speed < 2.95);
+            e.advanceFades(0.6);
+            CHECK(std::abs(G()->generator->speed - 3.0) < 1e-9);
+            e.removeLayer(e.indexOfId(gid));
+        }
         // Another source by a snapshot: the outgoing one stays, invisible, and a transition mixes the two
         {
             for (const auto &[name, rgb] : {std::pair<QString, QRgb>{"red", qRgb(255, 0, 0)}, {"blue", qRgb(0, 0, 255)}}) {
