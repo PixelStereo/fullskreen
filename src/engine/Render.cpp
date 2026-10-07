@@ -425,14 +425,15 @@ void Engine::processLayer(Layer &l, GLuint tex, int w, int h, bool premultiplied
             fx->render(rc, tex, w, h, dst, w, h);
             // Through its mask: the effect where the mask is white, the input where it is black
             const Layer *mask = fx->maskLayer ? layer(indexOfId(fx->maskLayer)) : nullptr;
-            if (mask && mask->finalTex && mask != &l) {
+            const GLuint maskTex = !mask ? 0 : fx->maskPreFx && mask->preFxTex ? mask->preFxTex : mask->finalTex;
+            if (mask && maskTex && mask != &l) {
                 RenderTarget &mixed = l.maskTarget[ping];
                 mixed.ensure(w, h);
                 mixed.bind();
                 auto f = gl();
                 f->glDisable(GL_BLEND);
                 f->glUseProgram(m_maskProgram);
-                const GLuint texs[3] = {tex, dst.tex, mask->finalTex};
+                const GLuint texs[3] = {tex, dst.tex, maskTex};
                 const GLint locs[3] = {m_maskInLoc, m_maskFxLoc, m_maskMaskLoc};
                 for (int k = 0; k < 3; ++k) {
                     f->glActiveTexture(GL_TEXTURE0 + k);

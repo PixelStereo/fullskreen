@@ -1078,6 +1078,17 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                          if (!name.isEmpty() && !id) return false;
                          return e->setEffectMask(idx, slot, id, invert);
                      });
+            L.method(P + "/effect/" + seg + "/mask/tap", "s", 3, "Mask Tap",
+                     [slot](Layer &l) {
+                         return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->maskPreFx ? "prefx" : "postfx"}
+                                                             : QVariantList();
+                     },
+                     [e, slot](int idx, const QVariantList &a) {
+                         const QString k = a.value(0).toString().toLower();
+                         if (k != "prefx" && k != "postfx") return false;
+                         return e->setEffectMaskTap(idx, slot, k == "prefx");
+                     })
+                .range = {vals({"prefx", "postfx"})};
             L.method(P + "/effect/" + seg + "/mask/invert", "T", 3, "Invert Mask",
                      [slot](Layer &l) {
                          return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->maskInvert} : QVariantList();

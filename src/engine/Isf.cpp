@@ -333,6 +333,7 @@ void IsfInstance::readState(const QJsonObject &o)
     speed = std::clamp(o.value("speed").toDouble(1.0), 0.0, 10.0);
     maskLayer = o.value("mask").toString().toULongLong();
     maskInvert = o.value("mask_invert").toBool(false);
+    maskPreFx = o.value("mask_tap").toString() == "prefx";
 }
 
 IsfInstance::~IsfInstance()
@@ -766,6 +767,7 @@ QJsonObject IsfInstance::save(const QString &projectDir) const
     o["speed"] = speed;
     if (maskLayer) o["mask"] = QString::number(maskLayer); // ids are strings: JSON numbers are doubles
     if (maskInvert) o["mask_invert"] = true;
+    if (maskLayer) o["mask_tap"] = maskPreFx ? "prefx" : "postfx";
     QJsonObject params;
     for (const IsfInput &in : m_inputs) {
         switch (in.type) {

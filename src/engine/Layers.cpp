@@ -746,6 +746,18 @@ bool Engine::setColorMask(int layerIndex, quint64 maskId, bool invert, QString *
     return true;
 }
 
+bool Engine::setEffectMaskTap(int layerIndex, int effect, bool preFx)
+{
+    {
+        Lock lk(&m_mutex);
+        Layer *l = layer(layerIndex);
+        if (!l || effect < 0 || effect >= int(l->effects.size())) return false;
+        l->effects[size_t(effect)]->maskPreFx = preFx;
+    }
+    emit layersChanged();
+    return true;
+}
+
 bool Engine::setEffectMask(int layerIndex, int effect, quint64 maskId, bool invert, QString *err)
 {
     auto fail = [err](const QString &m) {

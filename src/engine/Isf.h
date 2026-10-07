@@ -139,6 +139,7 @@ public:
     // black (or transparent), in proportion in between; the layer's picture is stretched over this one's.
     quint64 maskLayer = 0; // 0: everywhere
     bool maskInvert = false;
+    bool maskPreFx = false; // the mask is the layer's picture before its own effects (false: after them)
     // enabled, mask and invert, from a saved effect (its params are restored by restoreParams)
     void readState(const QJsonObject &o);
 
