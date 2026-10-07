@@ -1853,7 +1853,7 @@ void LayerInspector::showEffectParams()
     QString name, error;
     bool valid = false;
     quint64 maskId = 0, selfId = 0;
-    bool invert = false;
+    bool invert = false, maskPre = false;
     std::vector<std::pair<quint64, QString>> masks; // layers that can mask it (no viewport, no feedback)
     {
         Engine::Lock lk(&m_engine->mutex());
@@ -1866,6 +1866,7 @@ void LayerInspector::showEffectParams()
         valid = fx->isValid();
         maskId = fx->maskLayer;
         invert = fx->maskInvert;
+        maskPre = fx->maskPreFx;
         selfId = l->id;
         for (int k = 0; k < m_engine->layerCount(); ++k) {
             const Layer *o = m_engine->layer(k);
@@ -1905,7 +1906,19 @@ void LayerInspector::showEffectParams()
         row->addWidget(label);
         row->addWidget(pick, 1);
         row->addWidget(inv);
+        auto *tap = new QComboBox;
+        tap->addItem(QStringLiteral("Pre-FX"), true);
+        tap->addItem(QStringLiteral("Post-FX"), false);
+        tap->setCurrentIndex(maskPre ? 0 : 1);
+        tap->setEnabled(maskId != 0);
+        tap->setToolTip(QStringLiteral("The mask's picture: before or after the mask layer's own effects"));
+        row->addWidget(tap);
         lay->addLayout(row);
+        connect(tap, &QComboBox::activated, this, [this, tap](int i) {
+            const bool pre = tap->itemData(i).toBool();
+            const int k = m_selectedEffect;
+            editEffects(QStringLiteral("Set Effect Mask Tap"), [&] { m_engine->setEffectMaskTap(m_layer, k, pre); });
+        });
         connect(pick, &QComboBox::activated, this, [this, pick, inv](int i) {
             const quint64 id = pick->itemData(i).toULongLong();
             const int k = m_selectedEffect;

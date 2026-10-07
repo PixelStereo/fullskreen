@@ -1609,6 +1609,12 @@ int main(int argc, char **argv)
         CHECK(l.red() > 250 && r.red() < 5); // inverted
         CHECK(e.layerJson(e.indexOfId(lid)).value("effects").toArray().at(0).toObject().value("mask").toString() ==
               QString::number(maskId));
+        // Mask picture before or after the mask layer's effects (no effect on the mask here: same picture)
+        CHECK(e.setEffectMaskTap(e.indexOfId(lid), 0, true));
+        CHECK(e.layerJson(e.indexOfId(lid)).value("effects").toArray().at(0).toObject().value("mask_tap").toString() == "prefx");
+        l = at(0.25);
+        CHECK(l.red() > 250 && at(0.75).red() < 5);
+        CHECK(e.setEffectMaskTap(e.indexOfId(lid), 0, false));
         // Grey: in proportion
         CHECK(e.setLayerImage(e.indexOfId(maskId), tmp + "/mgrey.png", &err));
         CHECK(e.setEffectMask(e.indexOfId(lid), 0, maskId, false, &err));
