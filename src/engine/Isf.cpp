@@ -763,7 +763,7 @@ QJsonObject IsfInstance::save(const QString &projectDir) const
     o["path"] = m_path;
     if (!projectDir.isEmpty()) o["relative_path"] = QDir(projectDir).relativeFilePath(m_path);
     o["enable"] = enabled;
-    if (speed != 1.0) o["speed"] = speed;
+    o["speed"] = speed;
     if (maskLayer) o["mask"] = QString::number(maskLayer); // ids are strings: JSON numbers are doubles
     if (maskInvert) o["mask_invert"] = true;
     QJsonObject params;

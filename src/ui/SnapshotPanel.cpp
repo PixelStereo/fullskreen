@@ -890,6 +890,8 @@ void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObjec
         if (type == "isf") {
             num(sec, QStringLiteral("Width"), {"source", "width"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
             num(sec, QStringLiteral("Height"), {"source", "height"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
+            num(sec, QStringLiteral("Speed"), {"source", "speed"}, 0, 10, 1, 2, QStringLiteral(" ×"), 0.05)
+                ->setToolTip(1, QStringLiteral("Pace of TIME in the shader"));
             isfParams(sec, {"source", "params"}, -1);
         }
         if (type == "text") {
@@ -997,6 +999,7 @@ void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObjec
                                        QStringLiteral("fx%1").arg(k));
         one->setToolTip(0, fx.value("path").toString());
         flag(one, QStringLiteral("Enable"), {"effects", QString::number(k), "enable"});
+        num(one, QStringLiteral("Speed"), {"effects", QString::number(k), "speed"}, 0, 10, 1, 2, QStringLiteral(" ×"), 0.05);
         isfParams(one, {"effects", QString::number(k), "params"}, k);
         expand(one);
     }
