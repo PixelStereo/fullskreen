@@ -257,6 +257,8 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
     connect(m_view, &MappingView::layerPicked, this, &MainWindow::selectLayer);
     connect(m_inspector, &LayerInspector::layerChanged, this, &MainWindow::refreshLayerList);
     connect(m_inspector, &LayerInspector::projectEdited, this, &MainWindow::markDirty);
+    connect(m_inspector, &LayerInspector::rescanLibraryRequested, this, &MainWindow::rescanLibrary,
+            Qt::QueuedConnection); // the rebuild destroys the button that emitted it
     connect(m_inspector, &LayerInspector::kindChanged, this, [this](const QString &k) { m_tabs->setTabText(0, k); });
     connect(m_inspector, &LayerInspector::mappingChanged, m_view, qOverload<>(&QWidget::update));
     connect(m_inspector, &LayerInspector::fileDropped, this, [this](const QString &p) { loadIntoLayer(m_inspector->layerIndex(), p); });

@@ -35,6 +35,24 @@ private:
     qint64 m_time;
 };
 
+// Speed of the time of an ISF instance (generator or effect; merges continuous moves)
+class SetIsfSpeed : public QUndoCommand
+{
+public:
+    SetIsfSpeed(Engine *e, int layer, int slot, double before, double after);
+    void undo() override { apply(m_before); }
+    void redo() override { apply(m_after); }
+    int id() const override { return 9301; }
+    bool mergeWith(const QUndoCommand *other) override;
+
+private:
+    void apply(double v);
+    Engine *m_e;
+    int m_layer, m_slot;
+    double m_before, m_after;
+    qint64 m_time;
+};
+
 // Simple layer property
 class SetLayerProp : public QUndoCommand
 {

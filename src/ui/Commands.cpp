@@ -47,6 +47,27 @@ bool SetParam::mergeWith(const QUndoCommand *other)
     return true;
 }
 
+SetIsfSpeed::SetIsfSpeed(Engine *e, int layer, int slot, double before, double after)
+    : m_e(e), m_layer(layer), m_slot(slot), m_before(before), m_after(after), m_time(nowMs())
+{
+    setText(QStringLiteral("Change Speed"));
+}
+
+void SetIsfSpeed::apply(double v)
+{
+    Engine::Lock lk(&m_e->mutex());
+    if (IsfInstance *inst = resolveIsf(m_e, m_layer, m_slot)) inst->speed = v;
+}
+
+bool SetIsfSpeed::mergeWith(const QUndoCommand *other)
+{
+    auto *o = static_cast<const SetIsfSpeed *>(other);
+    if (o->m_layer != m_layer || o->m_slot != m_slot || o->m_time - m_time > kMergeWindowMs) return false;
+    m_after = o->m_after;
+    m_time = o->m_time;
+    return true;
+}
+
 // --- SetLayerProp -----------------------------------------------------------
 
 static QString propText(SetLayerProp::Prop p)
