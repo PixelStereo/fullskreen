@@ -13,7 +13,7 @@
 // on or off is the child "enable" of what it switches (color/tint/enable, effect/<fx>/enable); the parameters of a shader are under param/.
 // Layers are addressed by name, groups contain their members: /layer/<group>/layer/<layer>/opacity.
 // Names are made OSC-safe (spaces and reserved characters become '_') and unique among siblings ("_2").
-// A locked layer refuses every write except visible, locked and the transport (play, restart, position).
+// A locked layer refuses every write except enable, locked and the transport (play, restart, position).
 // Writes do not go through the undo stack (show control); edited() tells the interface to refresh.
 // When layers, sources or effects change, WebSocket clients receive PATH_CHANGED and fetch the tree again.
 // The server is announced by zeroconf (_oscjson._tcp for OSCQuery, _osc._udp for OSC).

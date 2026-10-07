@@ -65,7 +65,7 @@ struct LayerValues {
     int colorModels = 1;
     double aspect = 16.0 / 9.0; // source picture (before roi)
     QString name, sourcePath, error;
-    bool visible = true;
+    bool enabled = true;
     float opacity = 1;
     BlendMode blend = BlendMode::Normal;
     SourceType type = SourceType::None;
@@ -119,7 +119,7 @@ struct LayerValues {
         s.name = l->name;
         s.sourcePath = l->sourcePath;
         s.error = l->error;
-        s.visible = l->visible;
+        s.enabled = l->enabled;
         s.opacity = l->opacity;
         s.blend = l->blend;
         s.type = l->type;
@@ -290,7 +290,7 @@ void LayerInspector::setLayer(int index)
 void LayerInspector::setProp(int prop, const QVariant &value)
 {
     const auto p = cmd::SetLayerProp::Prop(prop);
-    if (p != cmd::SetLayerProp::Visible && p != cmd::SetLayerProp::Locked && m_engine->isLocked(m_layer)) return;
+    if (p != cmd::SetLayerProp::Enabled && p != cmd::SetLayerProp::Locked && m_engine->isLocked(m_layer)) return;
     const QVariant before = cmd::SetLayerProp::read(m_engine, m_layer, p);
     if (!before.isValid() || before == value) return;
     m_undo->push(new cmd::SetLayerProp(m_engine, m_layer, p, before, value));
@@ -361,8 +361,8 @@ void LayerInspector::rebuild()
     auto *name = new QLineEdit(s.name);
     name->setStyleSheet("font-weight:bold; font-size:14px;");
     name->setToolTip(kind + QStringLiteral(" name"));
-    auto *vis = new FlagBox(QStringLiteral("Visible"));
-    vis->setChecked(s.visible);
+    auto *vis = new FlagBox(QStringLiteral("Enable"));
+    vis->setChecked(s.enabled);
     vis->setProperty("allowLocked", true);
     auto *lock = new QToolButton;
     lock->setCheckable(true);
@@ -393,7 +393,7 @@ void LayerInspector::rebuild()
         emit layerChanged();
     });
     connect(vis, &QCheckBox::toggled, this, [this](bool on) {
-        setProp(cmd::SetLayerProp::Visible, on);
+        setProp(cmd::SetLayerProp::Enabled, on);
         emit layerChanged();
     });
 

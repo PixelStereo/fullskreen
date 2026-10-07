@@ -198,7 +198,7 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     for (const auto &[v, a] : l.viewportOpacity) vo[QString::number(v)] = double(a);
     o["viewports"] = vo;
     o["name"] = l.name;
-    o["visible"] = l.visible;
+    o["enable"] = l.enabled;
     o["locked"] = l.locked;
     o["opacity"] = l.opacity;
     o["blend_mode"] = blendModeKey(l.blend);
@@ -293,7 +293,7 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         Layer *l = layer(index);
         if (!l) return;
         l->name = o.value("name").toString(l->name);
-        l->visible = o.value("visible").toBool(true);
+        l->enabled = o.value("enable").toBool(true);
         l->opacity = float(o.value("opacity").toDouble(1.0));
         l->blend = blendModeFromKey(o.value("blend_mode").toString());
         l->volume = float(std::clamp(o.value("volume").toDouble(1.0), 0.0, 2.0));

@@ -186,7 +186,7 @@ void Engine::markNeeded()
             const auto g = groupNeeded.find(l.parent);
             inShown = g != groupNeeded.end() && g->second;
         }
-        l.needed = l.isViewport || l.referenced || l.id == m_previewId || (l.visible && inShown);
+        l.needed = l.isViewport || l.referenced || l.id == m_previewId || (l.enabled && inShown);
         if (l.isGroup) groupNeeded[l.id] = l.needed;
     }
     for (auto &[id, t] : m_transitions) t->from->needed = true;
@@ -470,7 +470,7 @@ void Engine::renderGroup(Layer &g, const std::vector<Layer *> &members, const Is
 void Engine::renderViewport(Layer &v, const std::vector<Layer *> &shown, const IsfRenderContext &rc)
 {
     v.finalTex = v.rawTex = v.preFxTex = 0;
-    if (!v.visible) return;
+    if (!v.enabled) return;
     const QSize size = v.viewportSize();
     v.groupTarget.ensure(size.width(), size.height());
     compositeLayers(v.groupTarget, shown, v.mapping.bounds(), QColor(0, 0, 0, 0), v.id);
@@ -527,7 +527,7 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
     for (int i = int(layers.size()) - 1; i >= 0; --i) {
         Layer &l = *layers[size_t(i)];
         const float opacity = viewport ? l.opacity * l.opacityIn(viewport) : l.opacity;
-        if (!l.visible || !l.finalTex || opacity <= 0.0f) continue;
+        if (!l.enabled || !l.finalTex || opacity <= 0.0f) continue;
         const bool diff = l.blend == BlendMode::Difference;
         if (diff) {
             // Copy what is drawn so far (resolved if antialiased), then draw the layer against the copy
@@ -736,8 +736,8 @@ void Engine::frame(double dt)
         std::map<quint64, bool> shown; // group id → visible, groups above included
         for (auto &l : m_layers) {
             const auto up = l->parent ? shown.find(l->parent) : shown.end();
-            l->parentVisible = up == shown.end() || up->second;
-            if (l->isGroup) shown[l->id] = l->parentVisible && l->visible;
+            l->parentEnabled = up == shown.end() || up->second;
+            if (l->isGroup) shown[l->id] = l->parentEnabled && l->enabled;
         }
     }
     if (!m_fadesManual) {

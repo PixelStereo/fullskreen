@@ -491,7 +491,7 @@ void SnapshotPanel::showInspector(int i)
     for (int row = 0; row < m.layers.size(); ++row) {
         const QJsonObject o = m.layers[row].toObject();
         auto *it = new QTreeWidgetItem(m_layers, {(o.contains("parent") ? QStringLiteral("    ") : QString()) + o.value("name").toString(),
-                                                  (o.value("visible").toBool(true) ? QStringLiteral("✓ ") : QStringLiteral("— ")) +
+                                                  (o.value("enable").toBool(true) ? QStringLiteral("✓ ") : QStringLiteral("— ")) +
                                                       QStringLiteral("%1%").arg(std::lround(o.value("opacity").toDouble(1) * 100))});
         it->setData(0, IdRole, o.value("id").toString().toULongLong());
         it->setData(0, KeyRole, QStringLiteral("L") + o.value("id").toString());
@@ -810,7 +810,7 @@ void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObjec
         return it;
     };
 
-    flag(parent, QStringLiteral("Visible"), {"visible"});
+    flag(parent, QStringLiteral("Visible"), {"enable"});
     flag(parent, QStringLiteral("Locked"), {"locked"});
     num(parent, QStringLiteral("Opacity"), {"opacity"}, 0, 1, 100, 0, QStringLiteral(" %"), 0.01);
     choice(parent, QStringLiteral("Blend Mode"), {"blend_mode"}, {"normal", "add", "screen", "multiply", "subtract", "difference"},

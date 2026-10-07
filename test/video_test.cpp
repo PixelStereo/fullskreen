@@ -718,7 +718,7 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         }
         {
             Engine::Lock lk(&e.mutex());
-            e.layer(i)->visible = false;
+            e.layer(i)->enabled = false;
         }
         e.renderFrame();
         const quint64 hidden = e.videoFramesShown(i);
@@ -729,7 +729,7 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp)
         VCHECK(e.videoFramesShown(i) == hidden);
         {
             Engine::Lock lk(&e.mutex());
-            e.layer(i)->visible = true;
+            e.layer(i)->enabled = true;
         }
         e.renderFrame();
         VCHECK(e.videoFramesShown(i) == hidden + 1);
