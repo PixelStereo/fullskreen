@@ -212,6 +212,19 @@ int main(int argc, char **argv)
             bool found = false;
             for (const auto &p : e.animatableParams(e.layerId(g))) found |= (p.path == "source/speed");
             CHECK(found);
+            // The timeline menu and the snapshot timing offer the speed of an effect too
+            const int fxi = e.addEffect(g, QStringLiteral(TEST_DIR) + "/isf/Offset.fs", &err);
+            CHECK(fxi >= 0);
+            bool fxFound = false;
+            QString fxPath;
+            for (const auto &p : e.animatableParams(e.layerId(g)))
+                if (p.path.startsWith("effect/") && p.path.endsWith("/speed")) fxFound = true, fxPath = p.path;
+            CHECK(fxFound);
+            CHECK(Engine::timingKey({"effects", "0", "speed"}, e.layerJson(g)) == fxPath);
+            CHECK(Engine::timingKey({"source", "speed"}, e.layerJson(g)) == "source/speed");
+            CHECK(e.layerJson(g).value("source").toObject().contains("speed"));
+            CHECK(e.layerJson(g).value("effects").toArray().at(0).toObject().contains("speed"));
+            e.removeEffect(g, fxi);
             CHECK(e.saveProject(tmp + "/speed.fulskrin", {}, &err));
             e.newProject();
             CHECK(e.loadProject(tmp + "/speed.fulskrin", nullptr, &err));
