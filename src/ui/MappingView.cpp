@@ -501,7 +501,7 @@ void MappingView::paintScene()
         for (int i = 0; i < m_engine->layerCount(); ++i) {
             if (i == m_layer) continue;
             Layer *l = m_engine->layer(i);
-            if (l->isViewport || !l->visible || !hasPicture(l)) continue;
+            if (l->isViewport || !l->enabled || !hasPicture(l)) continue;
             auto pts = outline(l->mapping, 16);
             for (QPointF &q : pts) q = outOf(i, q);
             for (size_t k = 0; k < pts.size(); ++k)
@@ -702,7 +702,7 @@ MappingView::SnapTargets MappingView::snapTargets() const
             box(l->mapping.bounds(), true);
             continue;
         }
-        if (!l->visible || isViewport(m_layer)) continue; // a viewport is caught by the composition and the others
+        if (!l->enabled || isViewport(m_layer)) continue; // a viewport is caught by the composition and the others
         const Mapping &m = l->mapping;
         const QPointF c[4] = {outOf(i, m.map(0, 0)), outOf(i, m.map(1, 0)), outOf(i, m.map(1, 1)), outOf(i, m.map(0, 1))};
         t.points.insert(t.points.end(), c, c + 4);
@@ -828,7 +828,7 @@ void MappingView::mousePressEvent(QMouseEvent *e)
         std::function<void(int)> add = [&](int i) {
             const Layer *l = m_engine->layer(i);
             if (l->isGroup) {
-                if (!l->visible) return;
+                if (!l->enabled) return;
                 for (int k = i + 1; k < n; ++k)
                     if (m_engine->layer(k)->parent == l->id) add(k);
             }
@@ -839,7 +839,7 @@ void MappingView::mousePressEvent(QMouseEvent *e)
             if (!l->parent && !l->isViewport) add(i);
         }
         for (int i : order) {
-            if (m_engine->layer(i)->visible && insideLayer(i, p)) {
+            if (m_engine->layer(i)->enabled && insideLayer(i, p)) {
                 const bool pickedLocked = m_engine->isLocked(i);
                 lk.unlock();
                 emit layerPicked(i);

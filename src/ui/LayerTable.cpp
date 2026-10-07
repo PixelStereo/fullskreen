@@ -366,7 +366,7 @@ LayerTable::LayerTable(QWidget *parent) : QWidget(parent)
     m_table->setToolTip(QStringLiteral("Top layer is drawn on top · drop a media onto a layer to load it · "
                                        "drag layers onto a group · double-click a name to rename · "
                                        "the viewports, at the top, are windows onto the composition"));
-    m_table->horizontalHeaderItem(ColVisible)->setToolTip(QStringLiteral("Visible"));
+    m_table->horizontalHeaderItem(ColVisible)->setToolTip(QStringLiteral("Enable"));
     m_table->horizontalHeaderItem(ColLock)->setToolTip(QStringLiteral("Locked: no edit allowed"));
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -497,8 +497,8 @@ void LayerTable::updateRow(int r, const Row &row)
         vis->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
         m_table->setItem(r, ColVisible, vis);
     }
-    vis->setCheckState(row.visible ? Qt::Checked : Qt::Unchecked);
-    vis->setToolTip(QStringLiteral("Visible"));
+    vis->setCheckState(row.enabled ? Qt::Checked : Qt::Unchecked);
+    vis->setToolTip(QStringLiteral("Enable"));
 
     QTableWidgetItem *lock = m_table->item(r, ColLock);
     if (!lock) {

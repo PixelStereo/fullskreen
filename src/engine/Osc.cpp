@@ -803,9 +803,9 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
              }));
     L.method(P + "/type", "s", 1, "Type", [](Layer &l) { return QVariantList{sourceTypeKey(l)}; }, nullptr).range =
         {vals({"none", "video", "image", "isf", "audio", "layer", "group", "viewport"})};
-    L.method(P + "/visible", "T", 3, "Visible", [](Layer &l) { return QVariantList{l.visible}; },
+    L.method(P + "/enable", "T", 3, "Enable", [](Layer &l) { return QVariantList{l.enabled}; },
              L.edit([](Layer &l, const QVariantList &a) {
-                 l.visible = truth(a.value(0));
+                 l.enabled = truth(a.value(0));
                  return true;
              }),
              true);

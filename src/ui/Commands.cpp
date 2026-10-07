@@ -74,7 +74,7 @@ static QString propText(SetLayerProp::Prop p)
 {
     switch (p) {
     case SetLayerProp::Name: return QStringLiteral("Rename Layer");
-    case SetLayerProp::Visible: return QStringLiteral("Change Visibility");
+    case SetLayerProp::Enabled: return QStringLiteral("Change Enable");
     case SetLayerProp::Opacity: return QStringLiteral("Change Opacity");
     case SetLayerProp::Blend: return QStringLiteral("Change Blend Mode");
     case SetLayerProp::Speed: return QStringLiteral("Change Speed");
@@ -113,7 +113,7 @@ QVariant SetLayerProp::read(Engine *e, int layer, Prop prop)
     if (!l) return {};
     switch (prop) {
     case Name: return l->name;
-    case Visible: return l->visible;
+    case Enabled: return l->enabled;
     case Opacity: return double(l->opacity);
     case Blend: return int(l->blend);
     case Speed: return l->speed;
@@ -180,7 +180,7 @@ void SetLayerProp::apply(const QVariant &v)
     if (!l) return;
     switch (m_prop) {
     case Name: l->name = v.toString(); break;
-    case Visible: l->visible = v.toBool(); break;
+    case Enabled: l->enabled = v.toBool(); break;
     case Opacity: l->opacity = float(v.toDouble()); break;
     case Blend: l->blend = BlendMode(v.toInt()); break;
     case Speed: l->speed = v.toDouble(); break;

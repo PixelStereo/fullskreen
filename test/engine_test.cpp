@@ -381,10 +381,10 @@ int main(int argc, char **argv)
         img = render();
         CHECK(px(img, 56, 16).blue() < 5 && px(img, 8, 16).red() > 250);
         e.layer(V + 0)->color = ColorAdjust();
-        e.layer(V + 0)->visible = false;
+        e.layer(V + 0)->enabled = false;
         img = render();
-        CHECK(qGray(img.pixel(8, 16)) < 3 && !e.layer(V + 1)->parentVisible);
-        e.layer(V + 0)->visible = true;
+        CHECK(qGray(img.pixel(8, 16)) < 3 && !e.layer(V + 1)->parentEnabled);
+        e.layer(V + 0)->enabled = true;
         // Source preview: the group's composite, at the requested size
         e.requestSourcePreview(gid, 32);
         for (int k = 0; k < 8; ++k) e.renderFrame();
@@ -500,7 +500,7 @@ int main(int argc, char **argv)
         // Locked group: its member refuses edits, visibility still works
         CHECK(server.handleMessage({"/layer/G/locked", "T", {true}}) && e.isLocked(V + 1));
         CHECK(!server.handleMessage({L + "/opacity", "f", {0.9}}) && std::abs(e.layer(V + 1)->opacity - 0.5f) < 1e-6);
-        CHECK(server.handleMessage({L + "/visible", "F", {false}}) && !e.layer(V + 1)->visible);
+        CHECK(server.handleMessage({L + "/enable", "F", {false}}) && !e.layer(V + 1)->enabled);
         server.handleMessage({"/layer/G/locked", "F", {false}});
         // Renaming changes the address
         CHECK(server.handleMessage({L + "/name", "s", {QStringLiteral("Front wall")}}) && e.layer(V + 1)->name == "Front wall");
@@ -669,7 +669,7 @@ int main(int argc, char **argv)
         const int b = e.addLayer("B", V + 1);
         e.setLayerIsf(b, isf + "/generators/SolidColor.fs", &err);
         e.layer(V + 0)->opacity = 0.8f;
-        e.layer(V + 1)->visible = false;
+        e.layer(V + 1)->enabled = false;
         Engine::Snapshot m;
         m.name = "Look 1";
         m.fade = 0;
@@ -681,23 +681,23 @@ int main(int argc, char **argv)
         e.layer(V + 0)->opacity = 0.2f;
         e.layer(V + 0)->color.temp = 1000;
         e.layer(V + 0)->mapping.setCorner(0, QPointF(0.3, 0.3));
-        e.layer(V + 1)->visible = true;
+        e.layer(V + 1)->enabled = true;
         e.addEffect(V + 0, isf + "/effects/FlipCrop.fs", &err);
         e.recallSnapshot(0);
         CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6 && e.layer(V + 0)->color.temp == 0.0f);
         CHECK(e.layer(V + 0)->mapping.corners[0] == QPointF(0, 0) || e.layer(V + 0)->mapping.corners[0].y() > 0.0);
-        CHECK(e.layer(V + 0)->effects.empty() && !e.layer(V + 1)->visible);
+        CHECK(e.layer(V + 0)->effects.empty() && !e.layer(V + 1)->enabled);
         // With a fade: halfway between, then the target; a layer becoming visible fades in from 0
         Engine::Snapshot m2 = m;
         m2.name = "Look 2";
         m2.fade = 0.4;
         e.layer(V + 0)->opacity = 0.0f;
-        e.layer(V + 1)->visible = true;
+        e.layer(V + 1)->enabled = true;
         m2.layers = e.captureLayers();
         e.addSnapshot(m2);
         e.recallSnapshot(0); // back to look 1, at once
         e.recallSnapshot(1);
-        CHECK(e.isFading() && e.layer(V + 1)->visible && e.layer(V + 1)->opacity < 0.05f);
+        CHECK(e.isFading() && e.layer(V + 1)->enabled && e.layer(V + 1)->opacity < 0.05f);
         QElapsedTimer ft;
         ft.start();
         bool sawMiddle = false;
@@ -745,13 +745,13 @@ int main(int argc, char **argv)
             e.advanceFades(1.0);
             CHECK(std::abs(L()->color.temp - 1000) < 1e-3 && !e.isFading());
             // Hidden by a cut while the rest fades: at once
-            state["visible"] = false;
+            state["enable"] = false;
             e.applyLayers(QJsonArray{state}, 1.0);
-            CHECK(!L()->visible && L()->opacity == 1.0f);
+            CHECK(!L()->enabled && L()->opacity == 1.0f);
             // A time of its own with no snapshot fade at all
-            L()->visible = true;
+            L()->enabled = true;
             L()->color.temp = 0;
-            e.applyLayers(QJsonArray{state.value("visible").toBool() ? state : [&] { QJsonObject x = state; x["visible"] = true; return x; }()}, 0.0);
+            e.applyLayers(QJsonArray{state.value("enable").toBool() ? state : [&] { QJsonObject x = state; x["enable"] = true; return x; }()}, 0.0);
             CHECK(L()->color.temp < 1 && e.isFading());
             e.advanceFades(2.0);
             CHECK(std::abs(L()->color.temp - 1000) < 1e-3 && !e.isFading());
@@ -862,7 +862,7 @@ int main(int argc, char **argv)
             // Soft edge (crop) and per-viewport opacity: stored, recalled, and faded
             {
                 const quint64 vp = 4242;
-                L()->visible = true;
+                L()->enabled = true;
                 L()->mapping.soft.enabled = true;
                 L()->mapping.soft.width[0] = 0.4;
                 L()->viewportOpacity[vp] = 0.2f;
@@ -891,7 +891,7 @@ int main(int argc, char **argv)
             const quint64 gid = e.layerId(gi);
             auto G = [&] { return e.layer(e.indexOfId(gid)); };
             CHECK(e.setLayerIsf(gi, QStringLiteral(TEST_DIR) + "/../isf/generators/TestPattern.fs", &err));
-            G()->visible = true;
+            G()->enabled = true;
             G()->generator->speed = 3.0;
             QJsonObject st = e.layerJson(e.indexOfId(gid));
             st.remove("timing");
@@ -940,9 +940,9 @@ int main(int argc, char **argv)
             CHECK(!e.isTransitioning(tid) && c.red() > 250 && c.blue() < 5 && e.layer(e.indexOfId(tid))->transitionGain == 1.0f);
             CHECK(std::abs(e.layer(e.indexOfId(tid))->roi.width() - 0.5) < 1e-6);
             // An ISF transition chosen for the layer: fade out, fade in — halfway, only what is beneath shows
-            e.layer(e.indexOfId(tid))->visible = false;
+            e.layer(e.indexOfId(tid))->enabled = false;
             const QColor under = center();
-            e.layer(e.indexOfId(tid))->visible = true;
+            e.layer(e.indexOfId(tid))->enabled = true;
             QJsonObject blue = e.layerJson(e.indexOfId(tid));
             blue["source"] = [&] {
                 QJsonObject src = blue.value("source").toObject();
@@ -1032,7 +1032,7 @@ int main(int argc, char **argv)
                 Engine::Lock lk(&e.mutex());
                 for (quint64 id : {ia, ib}) {
                     e.layer(e.indexOfId(id))->opacity = 0;
-                    e.layer(e.indexOfId(id))->visible = true;
+                    e.layer(e.indexOfId(id))->enabled = true;
                 }
             }
             // A snapshot holding one layer (the others are known, left alone)
@@ -1507,15 +1507,15 @@ int main(int argc, char **argv)
             e.setSnapshot(0, m);
             e.setFadesManual(true);
             e.recallSnapshot(0);
-            CHECK(e.layer(e.indexOfId(xid))->visible);
+            CHECK(e.layer(e.indexOfId(xid))->enabled);
             e.advanceFades(0.25);
             CHECK(e.layer(e.indexOfId(xid))->opacity < 0.7f && e.layer(e.indexOfId(xid))->opacity > 0.0f);
             e.advanceFades(0.3);
-            CHECK(!e.layer(e.indexOfId(xid))->visible && std::abs(e.layer(e.indexOfId(xid))->opacity - 0.7f) < 1e-6);
+            CHECK(!e.layer(e.indexOfId(xid))->enabled && std::abs(e.layer(e.indexOfId(xid))->opacity - 0.7f) < 1e-6);
             // Applying states (undo of a recall) leaves the others alone
-            e.layer(e.indexOfId(xid))->visible = true;
+            e.layer(e.indexOfId(xid))->enabled = true;
             e.applyLayers(e.snapshot(0).layers, 0);
-            CHECK(e.layer(e.indexOfId(xid))->visible);
+            CHECK(e.layer(e.indexOfId(xid))->enabled);
             e.setFadesManual(false);
             e.removeLayer(e.indexOfId(xid));
             m.fade = keptFade;
@@ -1535,7 +1535,7 @@ int main(int argc, char **argv)
             params["color"] = QJsonArray{0.25, 0.5, 0.75, 1.0}; // SolidColor
             src["params"] = params;
             l1["source"] = src;
-            l1["visible"] = true;
+            l1["enable"] = true;
             edited.layers[0] = l0;
             edited.layers[1] = l1;
             e.layer(V + 0)->opacity = 0.8f;
@@ -1544,7 +1544,7 @@ int main(int argc, char **argv)
             CHECK(std::abs(e.snapshot(0).layers[0].toObject().value("opacity").toDouble() - 0.25) < 1e-9);
             e.recallSnapshot(0);
             CHECK(std::abs(e.layer(V + 0)->opacity - 0.25f) < 1e-6 && e.layer(V + 0)->blend == BlendMode::Screen);
-            CHECK(e.layer(V + 1)->visible);
+            CHECK(e.layer(V + 1)->enabled);
             const IsfInstance *gen = e.layer(V + 1)->generator.get();
             double r = -1;
             for (const IsfInput &in : gen->inputs())
@@ -1576,7 +1576,7 @@ int main(int argc, char **argv)
         grey.save(tmp + "/mgrey.png");
         const int mi = e.addLayer("MaskSrc", V);
         CHECK(e.setLayerImage(mi, tmp + "/mhalf.png", &err));
-        e.layer(mi)->visible = false; // a hidden layer still masks
+        e.layer(mi)->enabled = false; // a hidden layer still masks
         const quint64 maskId = e.layerId(mi);
         const int li = e.addLayer("Masked", V);
         CHECK(e.setLayerImage(li, tmp + "/mred.png", &err));
@@ -1620,7 +1620,7 @@ int main(int argc, char **argv)
     {
         const int mi = e.addLayer("ColorMaskSrc", V);
         CHECK(e.setLayerImage(mi, tmp + "/mhalf.png", &err));
-        e.layer(mi)->visible = false;
+        e.layer(mi)->enabled = false;
         const quint64 maskId = e.layerId(mi);
         const int li = e.addLayer("Colored", V);
         CHECK(e.setLayerImage(li, tmp + "/mred.png", &err));
@@ -1980,16 +1980,16 @@ int main(int argc, char **argv)
             e.setStructure(tree::intoGroup(e.structure(), {in2}, outer));
             e.setStructure(tree::intoGroup(e.structure(), {lid}, in2));
             Engine::Lock lk(&e.mutex());
-            e.layer(e.indexOfId(outer))->visible = false;
+            e.layer(e.indexOfId(outer))->enabled = false;
         }
         e.renderFrame();
-        CHECK(!e.layer(e.indexOfId(lid))->parentVisible);
+        CHECK(!e.layer(e.indexOfId(lid))->parentEnabled);
         {
             Engine::Lock lk(&e.mutex());
-            e.layer(e.indexOfId(outer))->visible = true;
+            e.layer(e.indexOfId(outer))->enabled = true;
         }
         e.renderFrame();
-        CHECK(e.layer(e.indexOfId(lid))->parentVisible);
+        CHECK(e.layer(e.indexOfId(lid))->parentEnabled);
         // Undoing the deletion of the first viewport puts it back first
         {
             const QJsonObject first = e.layerJson(0);
@@ -2467,12 +2467,12 @@ int main(int argc, char **argv)
         e.setLayerMuted(a, false);
         {
             Engine::Lock lk(&e.mutex());
-            e.layer(a)->visible = false; // layer off = no sound either
+            e.layer(a)->enabled = false; // layer off = no sound either
         }
         CHECK(silent());
         {
             Engine::Lock lk(&e.mutex());
-            e.layer(a)->visible = true;
+            e.layer(a)->enabled = true;
         }
         e.setAudioVolume(0.0f); // master
         CHECK(silent());
@@ -2945,7 +2945,7 @@ int main(int argc, char **argv)
         CHECK(e.setLayerSourceLayer(B(), idG, LayerTap::PostFx, &err));
         {
             Engine::Lock lk(&e.mutex());
-            e.layer(e.indexOfId(idG))->visible = false;
+            e.layer(e.indexOfId(idG))->enabled = false;
         }
         e.renderFrame();
         {

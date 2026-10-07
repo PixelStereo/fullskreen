@@ -57,7 +57,7 @@ private:
 class SetLayerProp : public QUndoCommand
 {
 public:
-    enum Prop { Name, Visible, Opacity, Blend, Speed, Mode, Volume, Muted, InPoint, OutPoint,
+    enum Prop { Name, Enabled, Opacity, Blend, Speed, Mode, Volume, Muted, InPoint, OutPoint,
                 ColorOn, TempOn, TintOn, AddOn, RemoveOn, Locked, EffectsEnabled,
                 ColorAdd, ColorRemove, Roi, Temp, Tint, Transition, ColorMask, ColorMaskInvert };
     SetLayerProp(Engine *e, int layer, Prop prop, const QVariant &before, const QVariant &after);

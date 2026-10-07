@@ -691,7 +691,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             job->id = id;
             job->to = numbersOf(*l);
             job->from = job->to;
-            job->from.opacity = old.visible ? old.opacity : 0.0f;
+            job->from.opacity = old.enabled ? old.opacity : 0.0f;
             job->from.volume = old.volume;
             job->from.roi = old.roi;
             job->from.color = old.color;
@@ -820,11 +820,11 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             readParams(l->effects[k].get(), fx[int(k)].toObject().value("params").toObject(), to.isf[k + 1]);
 
         // Visibility: shown at once and faded in from 0, or faded out then hidden
-        const bool visible = o.value("visible").toBool(true);
-        if (visible && !l->visible) {
-            l->visible = true;
+        const bool visible = o.value("enable").toBool(true);
+        if (visible && !l->enabled) {
+            l->enabled = true;
             job->from.opacity = 0;
-        } else if (!visible && l->visible) {
+        } else if (!visible && l->enabled) {
             job->hideAtEnd = true;
             job->finalOpacity = to.opacity;
             to.opacity = 0;
@@ -832,14 +832,14 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         if (job->times.longest() <= 0) {
             setNumbers(*l, to, job->owned);
             if (job->hideAtEnd) {
-                l->visible = false;
+                l->enabled = false;
                 l->opacity = job->finalOpacity;
             }
         } else {
             // Bools and lists reach their target at once; the numbers start from where they are (a cut: there)
             setNumbers(*l, mixNumbers(job->from, to, job->times, 0), job->owned);
             if (job->hideAtEnd && job->times.opacity <= 0) { // hidden by a cut
-                l->visible = false;
+                l->enabled = false;
                 l->opacity = job->finalOpacity;
                 job->hideAtEnd = false;
                 job->from.opacity = job->to.opacity = job->finalOpacity;
@@ -853,10 +853,10 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
     if (hideOthers)
         for (auto &lp : m_layers) {
             Layer &l = *lp;
-            if (l.isViewport || named.contains(l.id) || !l.visible || isLocked(indexOfId(l.id))) continue;
+            if (l.isViewport || named.contains(l.id) || !l.enabled || isLocked(indexOfId(l.id))) continue;
             takeOver(l.id, OwnOpacity); // only its opacity: what other snapshots fade on it goes on
             if (fade <= 0) {
-                l.visible = false;
+                l.enabled = false;
                 continue;
             }
             auto job = std::make_shared<FadeJob>();
@@ -892,7 +892,7 @@ void Engine::stepFade(double dt)
         }
         setNumbers(*l, mixNumbers(job.from, job.to, job.times, job.elapsed), job.owned);
         if (job.hideAtEnd && job.elapsed >= job.times.opacity) {
-            l->visible = false;
+            l->enabled = false;
             l->opacity = job.finalOpacity;
             job.hideAtEnd = false;
             job.from.opacity = job.to.opacity = job.finalOpacity; // stays as stored while the rest moves on
@@ -998,8 +998,8 @@ void Engine::stepTransitions(double dt)
         const float p = float(progress(t.elapsed, t.duration));
         l->transitionGain = p;
         t.from->transitionGain = 1.0f - p;
-        t.from->visible = l->visible; // heard as the layer is
-        t.from->parentVisible = l->parentVisible;
+        t.from->enabled = l->enabled; // heard as the layer is
+        t.from->parentEnabled = l->parentEnabled;
         ++it;
     }
 }

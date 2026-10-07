@@ -180,9 +180,9 @@ struct Layer {
     int colorModels = 1;    // models shown by the Color tab for this layer (interface state, saved)
 
     QString name;
-    bool visible = true;
+    bool enabled = true; // off: the layer is not rendered, not heard, not shown
     bool locked = false;          // no edit allowed (the visibility and the transport stay available)
-    bool parentVisible = true;    // the group containing the layer is visible (updated every frame)
+    bool parentEnabled = true;    // the group containing the layer is visible (updated every frame)
     float opacity = 1.0f;
     BlendMode blend = BlendMode::Normal;
 
@@ -270,7 +270,7 @@ struct Layer {
 
     bool hasTransport() const { return video || audio; }
     double duration() const { return video ? video->duration() : audio ? audio->duration() : 0.0; }
-    float audioGain() const { return visible && parentVisible && !muted && !ended ? volume * transitionGain : 0.0f; }
+    float audioGain() const { return enabled && parentEnabled && !muted && !ended ? volume * transitionGain : 0.0f; }
     bool repeats() const { return mode == PlayMode::Loop || mode == PlayMode::PingPong; }
     Timeline timeline() const
     {

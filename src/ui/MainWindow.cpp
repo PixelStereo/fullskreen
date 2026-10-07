@@ -169,9 +169,9 @@ MainWindow::MainWindow(Engine *engine, QWidget *parent) : QMainWindow(parent), m
         m_lastSelected = r;
     });
     connect(m_layerTable, &LayerTable::visibilityToggled, this, [this](int row, bool on) {
-        const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Visible);
+        const QVariant before = cmd::SetLayerProp::read(m_engine, row, cmd::SetLayerProp::Enabled);
         if (before.isValid() && before.toBool() != on)
-            m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Visible, before, on));
+            m_undo->push(new cmd::SetLayerProp(m_engine, row, cmd::SetLayerProp::Enabled, before, on));
         if (row == m_inspector->layerIndex()) m_inspectorTimer.start();
     });
     connect(m_layerTable, &LayerTable::opacityEdited, this, [this](int row, double v) {
@@ -766,7 +766,7 @@ void MainWindow::refreshLayerList()
                 r.hidden = r.hidden || g->collapsed;
                 up = g->parent;
             }
-            r.visible = l->visible;
+            r.enabled = l->enabled;
             r.opacity = l->opacity;
             r.blend = blendModeName(l->blend);
             r.error = !l->error.isEmpty();
