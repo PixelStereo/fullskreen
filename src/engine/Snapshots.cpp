@@ -773,6 +773,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         if (src.contains("play_mode")) job->owned |= OwnSpeed | OwnInOut;
         if (l->type == SourceType::Text && src.value("type").toString() == "text") job->owned |= kOwnText;
         takeOver(id, job->owned);
+        if (l->generator) l->generator->speed = std::clamp(src.value("speed").toDouble(1.0), 0.0, 10.0);
         if (!to.isf.empty()) readParams(l->generator.get(), src.value("params").toObject(), to.isf[0]);
         for (size_t k = 0; k < l->effects.size() && k + 1 < to.isf.size() && int(k) < fx.size(); ++k)
             readParams(l->effects[k].get(), fx[int(k)].toObject().value("params").toObject(), to.isf[k + 1]);

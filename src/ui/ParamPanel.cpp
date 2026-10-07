@@ -71,6 +71,34 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
         form->addRow(d);
     }
 
+    // Speed of TIME, for every shader (TIME goes on from where it is: no jump)
+    {
+        double speed = 1.0;
+        {
+            Engine::Lock lk(&engine->mutex());
+            if (IsfInstance *inst = cmd::resolveIsf(engine, layer, slot)) speed = inst->speed;
+        }
+        m_speed = new SliderField;
+        m_speed->setRange(0, 10);
+        m_speed->setDecimals(2);
+        m_speed->setSingleStep(0.05);
+        m_speed->setTicks(10);
+        m_speed->setSnaps({1});
+        m_speed->setValue(speed);
+        m_speed->setToolTip(QStringLiteral("Speed of the shader's time (1 = normal, 0 = stopped)"));
+        connect(m_speed, &SliderField::valueEdited, this, [this](double v) {
+            double before = 1.0;
+            {
+                Engine::Lock lk(&m_engine->mutex());
+                IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
+                if (!inst) return;
+                before = inst->speed;
+            }
+            if (std::abs(before - v) > 1e-9) m_undo->push(new cmd::SetIsfSpeed(m_engine, m_layer, m_slot, before, v));
+        });
+        form->addRow(QStringLiteral("Speed"), m_speed);
+    }
+
     for (int idx = 0; idx < int(inputs.size()); ++idx) {
         const IsfInput &in = inputs[size_t(idx)];
         if (in.type == IsfInput::Image && in.isInputImage) continue;
@@ -298,14 +326,16 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
 
 void ParamPanel::refresh()
 {
-    if (m_followers.empty()) return;
     std::vector<IsfValue> values;
+    double speed = 1.0;
     {
         Engine::Lock lk(&m_engine->mutex());
         IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, m_slot);
         if (!inst) return;
+        speed = inst->speed;
         for (const IsfInput &in : inst->inputs()) values.push_back(in.value());
     }
+    if (m_speed && !m_speed->isDragging() && std::abs(m_speed->value() - speed) > 1e-6) m_speed->setValue(speed);
     for (const auto &[input, show] : m_followers)
         if (input < int(values.size())) show(values[size_t(input)]);
 }

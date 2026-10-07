@@ -199,6 +199,32 @@ int main(int argc, char **argv)
         undo.undo();
         CHECK(cmd::resolveIsf(&e, g, -1)->inputs()[0].fValue == v0.f);
         undo.redo();
+        // ISF speed: undoable, merged, saved and restored, exposed to timelines
+        {
+            CHECK(cmd::resolveIsf(&e, g, -1)->speed == 1.0);
+            const int n0 = undo.count();
+            undo.push(new cmd::SetIsfSpeed(&e, g, -1, 1.0, 2.0));
+            undo.push(new cmd::SetIsfSpeed(&e, g, -1, 2.0, 3.0));
+            CHECK(undo.count() == n0 + 1 && cmd::resolveIsf(&e, g, -1)->speed == 3.0);
+            undo.undo();
+            CHECK(cmd::resolveIsf(&e, g, -1)->speed == 1.0);
+            undo.redo();
+            bool found = false;
+            for (const auto &p : e.animatableParams(e.layerId(g))) found |= (p.path == "source/speed");
+            CHECK(found);
+            CHECK(e.saveProject(tmp + "/speed.fulskrin", {}, &err));
+            e.newProject();
+            CHECK(e.loadProject(tmp + "/speed.fulskrin", nullptr, &err));
+            CHECK(e.layerCount() == V + 1 && cmd::resolveIsf(&e, V + 0, -1)->speed == 3.0);
+            e.newProject();
+            g = e.addLayer("Test Pattern");
+            e.setLayerIsf(g, root + "/../isf/generators/TestPattern.fs", &err);
+            undo.clear();
+            undo.push(new cmd::AddLayer(&e, g, "add"));
+            v0 = cmd::resolveIsf(&e, g, -1)->inputs()[0].value();
+            v1 = v0; v2 = v0; v1.f = 20; v2.f = 30;
+            undo.push(new cmd::SetParam(&e, g, -1, 0, v0, v2, "divisions"));
+        }
         // Mapping
         Mapping before = cmd::SetMapping::read(&e, g), after = before;
         after.setCorner(0, QPointF(0.2, 0.2));

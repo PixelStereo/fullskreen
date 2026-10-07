@@ -48,6 +48,7 @@ signals:
     void mappingChanged(); // the mapping view must be redrawn
     void fileDropped(const QString &path); // media or ISF dropped on the Source tab: load it into the layer
     void setInOutRequested(bool in);       // in / out point at the current position
+    void rescanLibraryRequested();         // re-read the ISF folders (shaders added in the Finder)
     void projectEdited();                  // saved interface state of the layer changed (not undoable)
     void kindChanged(const QString &kind); // "Layer", "Group" or "Viewport": the title of the tab
 

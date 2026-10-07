@@ -5,6 +5,7 @@
 
 class Engine;
 class QUndoStack;
+class SliderField;
 struct IsfValue;
 
 // Parameter panel generated automatically from the INPUTS of an ISF shader.
@@ -27,5 +28,6 @@ private:
     Engine *m_engine;
     QUndoStack *m_undo;
     int m_layer, m_slot;
+    SliderField *m_speed = nullptr;
     std::vector<std::pair<int, std::function<void(const IsfValue &)>>> m_followers; // input, shows its value
 };

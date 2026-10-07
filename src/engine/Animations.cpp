@@ -342,7 +342,10 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
     }
     if (a == "source") {
         if (path == "source/volume") return num(l.volume, 0, 2);
-        if (path == "source/speed") return num(l.speed, -16, 16);
+        if (path == "source/speed") {
+            if (!l.hasTransport() && l.generator) return num(l.generator->speed, 0, 10); // the shader's time
+            return num(l.speed, -16, 16);
+        }
         if (p.value(1) == "text" && l.isText()) {
             TextSource &t = l.text;
             const QString sub = p.mid(2).join('/');
@@ -403,6 +406,13 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
             return true;
         }
         return false;
+    }
+    if (a == "effect" && p.size() == 3 && p[2] == "speed") { // an effect's time
+        QStringList names;
+        for (const auto &x : l.effects) names << x->name();
+        const int k = osc::uniqueSegments(names).indexOf(p[1]);
+        if (k < 0) return false;
+        return num(l.effects[size_t(k)]->speed, 0, 10);
     }
     // ISF: source/param/<name>[/<x|y|r|g|b|a>], effect/<fx>/param/<name>[/…] (fx: its segment, as in the OSC address)
     IsfInstance *inst = nullptr;
@@ -516,6 +526,8 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
     if (l->hasTransport()) {
         add("source/volume", "Source › Volume", 0, 2);
         add("source/speed", "Source › Speed", 0, 4);
+    } else if (l->generator && l->generator->isValid()) {
+        add("source/speed", "Source › Speed", 0, 10);
     }
     if (!l->isGroup) {
         add("roi/left", "ROI › Left", 0, 1);
@@ -567,8 +579,10 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
     QStringList fxNames;
     for (const auto &x : l->effects) fxNames << x->name();
     const QStringList fxSegs = osc::uniqueSegments(fxNames);
-    for (size_t k = 0; k < l->effects.size(); ++k)
+    for (size_t k = 0; k < l->effects.size(); ++k) {
+        add(QStringLiteral("effect/%1/speed").arg(fxSegs[int(k)]), QStringLiteral("Effect › %1 › Speed").arg(l->effects[k]->name()), 0, 10);
         isf(l->effects[k].get(), QStringLiteral("effect/%1/param/").arg(fxSegs[int(k)]), QStringLiteral("Effect › %1").arg(l->effects[k]->name()));
+    }
     return out;
 }
 

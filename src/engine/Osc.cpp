@@ -1039,6 +1039,19 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                          l.effects[size_t(slot)]->enabled = truth(a.value(0));
                          return true;
                      }));
+            {
+                OscNode &sp = L.method(P + "/effect/" + seg + "/speed", "f", 3, "Speed (1 = normal)",
+                                       [slot](Layer &l) {
+                                           return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->speed} : QVariantList();
+                                       },
+                                       L.edit([slot](Layer &l, const QVariantList &a) {
+                                           if (a.isEmpty() || slot >= int(l.effects.size())) return false;
+                                           l.effects[size_t(slot)]->speed = std::clamp(num(a[0]), 0.0, 10.0);
+                                           return true;
+                                       }));
+                sp.range = {minMax(0, 10)};
+                sp.clip = "both";
+            }
             // Mask: a layer by its name ("" for none), and whether it is inverted
             L.method(P + "/effect/" + seg + "/mask", "s", 3, "Mask",
                      [e, slot](Layer &l) {
@@ -1123,6 +1136,18 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      return e->setLayerTap(idx, layerTapFromKey(k));
                  })
             .range = {vals({"prefx", "postfx"})};
+    }
+    if (generator && !transport) {
+        // The pace of the shader's TIME (a media's speed is source/speed too)
+        OscNode &n = L.method(P + "/source/speed", "f", 3, "Speed (1 = normal)",
+                              [](Layer &l) { return QVariantList{l.generator ? l.generator->speed : 1.0}; },
+                              L.edit([](Layer &l, const QVariantList &a) {
+                                  if (a.isEmpty() || !l.generator) return false;
+                                  l.generator->speed = std::clamp(num(a[0]), 0.0, 10.0);
+                                  return true;
+                              }));
+        n.range = {minMax(0, 10)};
+        n.clip = "both";
     }
     if (text) {
         // Text generator
