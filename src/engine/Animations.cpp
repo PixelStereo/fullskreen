@@ -324,27 +324,27 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
     const QStringList p = path.split(QLatin1Char('/'));
     const QString &a = p.value(0);
     if (path == "opacity") return num(l.opacity, 0, 1);
+    if (a == "roi" && p.size() == 2) {
+        const int side = QStringList{"left", "top", "right", "bottom"}.indexOf(p[1]);
+        if (side < 0) return false;
+        double v[4] = {l.roi.left(), l.roi.top(), l.roi.right(), l.roi.bottom()};
+        if (get) *get = v[side];
+        if (set) {
+            v[side] = std::clamp(*set, 0.0, 1.0);
+            const double minSize = 0.002;
+            if (side == 0) v[0] = std::min(v[0], v[2] - minSize);
+            if (side == 2) v[2] = std::max(v[2], v[0] + minSize);
+            if (side == 1) v[1] = std::min(v[1], v[3] - minSize);
+            if (side == 3) v[3] = std::max(v[3], v[1] + minSize);
+            l.roi = QRectF(QPointF(v[0], v[1]), QPointF(v[2], v[3])) & Layer::fullRoi();
+        }
+        return true;
+    }
     if (a == "source") {
         if (path == "source/volume") return num(l.volume, 0, 2);
         if (path == "source/speed") {
             if (!l.hasTransport() && l.generator) return num(l.generator->speed, 0, 10); // the shader's time
             return num(l.speed, -16, 16);
-        }
-        if (a == "source" && p.value(1) == "roi" && p.size() == 3) {
-            const int side = QStringList{"left", "top", "right", "bottom"}.indexOf(p[2]);
-            if (side < 0) return false;
-            double v[4] = {l.roi.left(), l.roi.top(), l.roi.right(), l.roi.bottom()};
-            if (get) *get = v[side];
-            if (set) {
-                v[side] = std::clamp(*set, 0.0, 1.0);
-                const double minSize = 0.002;
-                if (side == 0) v[0] = std::min(v[0], v[2] - minSize);
-                if (side == 2) v[2] = std::max(v[2], v[0] + minSize);
-                if (side == 1) v[1] = std::min(v[1], v[3] - minSize);
-                if (side == 3) v[3] = std::max(v[3], v[1] + minSize);
-                l.roi = QRectF(QPointF(v[0], v[1]), QPointF(v[2], v[3])) & Layer::fullRoi();
-            }
-            return true;
         }
         if (p.value(1) == "text" && l.isText()) {
             TextSource &t = l.text;
@@ -530,10 +530,10 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
         add("source/speed", "Source › Speed", 0, 10);
     }
     if (!l->isGroup) {
-        add("source/roi/left", "Source › ROI Left", 0, 1);
-        add("source/roi/top", "Source › ROI Top", 0, 1);
-        add("source/roi/right", "Source › ROI Right", 0, 1);
-        add("source/roi/bottom", "Source › ROI Bottom", 0, 1);
+        add("roi/left", "ROI › Left", 0, 1);
+        add("roi/top", "ROI › Top", 0, 1);
+        add("roi/right", "ROI › Right", 0, 1);
+        add("roi/bottom", "ROI › Bottom", 0, 1);
     }
     add("color/temp", "Color › Temperature", -ColorAdjust::kTempRange, ColorAdjust::kTempRange);
     add("color/tint", "Color › Tint", -ColorAdjust::kTintRange, ColorAdjust::kTintRange);

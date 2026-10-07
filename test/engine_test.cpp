@@ -476,7 +476,7 @@ int main(int argc, char **argv)
         CHECK(server.handleMessage({L + "/color/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(V + 1)->color.add[2] - 0.3f) < 1e-6);
         CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
         CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
-        CHECK(server.handleMessage({L + "/source/roi/left", "f", {0.25}}) && std::abs(e.layer(V + 1)->roi.left() - 0.25) < 1e-9);
+        CHECK(server.handleMessage({L + "/roi/left", "f", {0.25}}) && std::abs(e.layer(V + 1)->roi.left() - 0.25) < 1e-9);
         CHECK(server.handleMessage({L + "/effect/FlipCrop/param/flipH", "T", {true}}));
         CHECK(e.layer(V + 1)->effects[0]->inputs()[1].bValue || e.layer(V + 1)->effects[0]->inputs()[2].bValue);
         CHECK(server.handleMessage({L + "/effect/enable", "F", {false}}) && !e.layer(V + 1)->effectsEnabled);
@@ -742,7 +742,7 @@ int main(int argc, char **argv)
             CHECK(L()->color.temp < 1 && e.isFading());
             e.advanceFades(2.0);
             CHECK(std::abs(L()->color.temp - 1000) < 1e-3 && !e.isFading());
-            CHECK(Engine::timingKey({"source", "roi", "2"}, {}) == "source/roi" && Engine::timingKey({"color", "add", "1"}, {}) == "color/add" &&
+            CHECK(Engine::timingKey({"roi", "2"}, {}) == "roi" && Engine::timingKey({"color", "add", "1"}, {}) == "color/add" &&
                   Engine::timingKey({"effects", "0", "params", "radius"}, QJsonObject{{"effects", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "effect/Blur/param/radius" &&
                   Engine::timingKey({"source", "speed"}, {}) == "source/speed" && Engine::timingKey({"source", "file"}, {}).isEmpty());
             // Text generator: the snapshot's text is typed over its time (erased back to what both share, then

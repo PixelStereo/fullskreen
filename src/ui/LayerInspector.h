@@ -70,7 +70,7 @@ private:
     QUndoStack *m_undo;
     int m_layer = -1;
     int m_selectedEffect = 0;
-    int m_subTab = 0; // Source / Color / Spatial / Effects / Compositing
+    int m_subTab = 0; // Source / ROI / Color / Spatial / Effects / Compositing
     quint64 m_layerId = 0;
     bool m_locked = false;
     QVBoxLayout *m_layout = nullptr;
