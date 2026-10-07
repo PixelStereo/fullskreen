@@ -93,7 +93,8 @@ struct LayerNumbers {
     std::vector<std::vector<IsfValue>> isf; // [0] generator, [1 + k] effect k
     std::map<quint64, float> viewportOpacity; // per-viewport opacity (0..1)
     SoftEdge soft; // crop feathering (width and power per side)
-    double speed = 1.0;
+    double speed = 1.0; // the media's playback speed, or the generator's (TIME pace) on a layer without transport
+    std::vector<double> fxSpeed; // TIME pace of each effect
     double inPoint = 0, outPoint = -1;
     TextNumbers text; // Text generator
 };
@@ -106,6 +107,7 @@ struct LayerTimes {
     double viewportOpacity = 0; // viewport opacity per-viewport
     double softEdge = 0; // soft edge width and power
     double speed = 0, inPoint = 0, outPoint = 0; // playback parameters
+    std::vector<double> fxSpeed; // as LayerNumbers::fxSpeed
     double text[TextNumCount] = {}; // Text generator (TextContent: the time the text is typed in)
     // Easing curves for each parameter (default: EaseInOut for all)
     EasingCurve opacityCurve = EasingCurve::EaseInOut, volumeCurve = EasingCurve::EaseInOut;
@@ -113,6 +115,7 @@ struct LayerTimes {
     EasingCurve mappingCurve = EasingCurve::EaseInOut, softEdgeCurve = EasingCurve::EaseInOut;
     EasingCurve viewportOpacityCurve = EasingCurve::EaseInOut;
     EasingCurve speedCurve = EasingCurve::EaseInOut, inOutCurve = EasingCurve::EaseInOut;
+    std::vector<EasingCurve> fxSpeedCurves;
     EasingCurve textCurve[TextNumCount] = {};
     std::vector<std::vector<EasingCurve>> isfCurves; // per-parameter curves
 
@@ -122,6 +125,7 @@ struct LayerTimes {
         for (double d : text) m = std::max(m, d);
         for (const auto &v : isf)
             for (double d : v) m = std::max(m, d);
+        for (double d : fxSpeed) m = std::max(m, d);
         return m;
     }
 };
@@ -157,7 +161,8 @@ static LayerNumbers numbersOf(const Layer &l)
     n.mapping = l.mapping;
     n.viewportOpacity = l.viewportOpacity;
     n.soft = l.mapping.soft;
-    n.speed = l.speed;
+    n.speed = !l.hasTransport() && l.generator ? l.generator->speed : l.speed;
+    for (const auto &fx : l.effects) n.fxSpeed.push_back(fx->speed);
     n.inPoint = l.inPoint;
     n.outPoint = l.outPoint;
     n.text = textNumbersOf(l.text);
@@ -194,7 +199,16 @@ static void setNumbers(Layer &l, const LayerNumbers &n, quint64 own = kOwnAll)
         l.mapping.revision = rev + 1;
     }
     if (own & OwnViewportOpacity) l.viewportOpacity = n.viewportOpacity;
-    if (own & OwnSpeed) l.speed = n.speed;
+    if (own & OwnSpeed) {
+        if (!l.hasTransport() && l.generator) {
+            l.generator->speed = std::clamp(n.speed, 0.0, 10.0);
+        } else {
+            const int dir = n.speed < 0 ? -1 : n.speed > 0 ? 1 : l.dir;
+            const double pos = l.position();
+            l.speed = n.speed;
+            if (dir != l.dir && l.hasTransport()) reposition(l, pos, dir); // the other way from the same place
+        }
+    }
     if (own & OwnInOut) {
         l.inPoint = n.inPoint;
         l.outPoint = n.outPoint;
@@ -210,6 +224,7 @@ static void setNumbers(Layer &l, const LayerNumbers &n, quint64 own = kOwnAll)
     if (has(TextOutlineColor)) l.text.outlineColor = n.text.outlineColor;
     if (has(TextShadowColor)) l.text.shadowColor = n.text.shadowColor;
     if (!(own & OwnIsf)) return;
+    for (size_t k = 0; k < l.effects.size() && k < n.fxSpeed.size(); ++k) l.effects[k]->speed = std::clamp(n.fxSpeed[k], 0.0, 10.0);
     auto apply = [](IsfInstance *inst, const std::vector<IsfValue> &v) {
         if (!inst) return;
         for (size_t k = 0; k < v.size() && k < inst->inputs().size(); ++k) inst->inputs()[k].setValue(v[k]);
@@ -282,6 +297,9 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, con
     // Playback speed and play range
     {
         n.speed = mixd(a.speed, b.speed, t(d.speed, d.speedCurve));
+        n.fxSpeed = b.fxSpeed;
+        for (size_t k = 0; k < n.fxSpeed.size() && k < a.fxSpeed.size() && k < d.fxSpeed.size(); ++k)
+            n.fxSpeed[k] = mixd(a.fxSpeed[k], b.fxSpeed[k], t(d.fxSpeed[k], d.fxSpeedCurves[k]));
         n.inPoint = mixd(a.inPoint, b.inPoint, t(d.inPoint, d.inOutCurve));
         n.outPoint = mixd(a.outPoint, b.outPoint, t(d.outPoint, d.inOutCurve));
     }
@@ -363,8 +381,12 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     QStringList fxNames;
     for (const auto &x : l.effects) fxNames << x->name();
     const QStringList fxSegs = osc::uniqueSegments(fxNames);
-    for (size_t k = 0; k < l.effects.size(); ++k)
+    for (size_t k = 0; k < l.effects.size(); ++k) {
         d.isf.push_back(params(l.effects[k].get(), QStringLiteral("effect/%1/param/").arg(fxSegs[int(k)])));
+        const QString key = QStringLiteral("effect/%1/speed").arg(fxSegs[int(k)]);
+        d.fxSpeed.push_back(time(key));
+        d.fxSpeedCurves.push_back(curve(key));
+    }
     return d;
 }
 
@@ -387,6 +409,14 @@ QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
     }
     if (a == "color" && path.size() >= 2 && (path[1] == "temp" || path[1] == "tint" || path[1] == "add" || path[1] == "remove"))
         return QStringLiteral("color/") + path[1];
+    if (a == "effects" && path.size() == 3 && path[2] == "speed") {
+        QStringList names;
+        for (const QJsonValue &v : layer.value("effects").toArray())
+            names << QFileInfo(v.toObject().value("path").toString()).completeBaseName();
+        const int k = path[1].toInt();
+        if (k < 0 || k >= names.size()) return {};
+        return QStringLiteral("effect/%1/speed").arg(osc::uniqueSegments(names).at(k));
+    }
     if (a == "effects" && path.size() >= 4 && path[2] == "params") {
         QStringList names;
         for (const QJsonValue &v : layer.value("effects").toArray())
@@ -677,7 +707,6 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             setEffectsJson(idx, o.value("effects").toArray()); // another chain: at once
         if (src.contains("play_mode")) {
             setLayerPlayMode(idx, playModeFromKey(src.value("play_mode").toString()));
-            setLayerSpeed(idx, src.value("speed").toDouble(1.0));
             setLayerInOut(idx, src.value("in").toDouble(0), src.value("out").toDouble(-1));
         }
 
@@ -695,8 +724,12 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         for (auto it = vo.begin(); it != vo.end(); ++it)
             targetViewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
         const QJsonArray fx = o.value("effects").toArray();
-        for (size_t k = 0; k < l->effects.size() && int(k) < fx.size(); ++k)
+        std::vector<double> fxSpeedBefore;
+        for (const auto &e : l->effects) fxSpeedBefore.push_back(e->speed);
+        for (size_t k = 0; k < l->effects.size() && int(k) < fx.size(); ++k) {
             l->effects[k]->readState(fx[int(k)].toObject()); // on, mask
+            l->effects[k]->speed = fxSpeedBefore[k];         // its pace fades with the other numbers
+        }
         // The color section's switches and mask: at once (only its numbers fade)
         const QJsonObject colorState = o.value("color").toObject();
         if (!colorState.isEmpty()) {
@@ -736,6 +769,14 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             to.soft = to.mapping.soft; // setNumbers applies `soft` over the mapping's: the snapshot's crop
         }
         to.viewportOpacity = targetViewportOpacity;
+        job->from.fxSpeed = fxSpeedBefore;
+        if (l->hasTransport()) {
+            if (src.contains("play_mode")) to.speed = src.value("speed").toDouble(1.0);
+        } else if (l->generator) {
+            to.speed = std::clamp(src.value("speed").toDouble(1.0), 0.0, 10.0);
+        }
+        for (size_t k = 0; k < to.fxSpeed.size() && int(k) < fx.size(); ++k)
+            to.fxSpeed[k] = std::clamp(fx[int(k)].toObject().value("speed").toDouble(1.0), 0.0, 10.0);
         if (l->type == SourceType::Text && src.value("type").toString() == "text") {
             // Text generator: its numbers move to the snapshot's, its switches and words are set at once, its
             // text is typed over its time
@@ -771,9 +812,9 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
         if (!color.isEmpty()) job->owned |= OwnColor;
         if (o.contains("spatial")) job->owned |= OwnMapping | OwnSoft;
         if (src.contains("play_mode")) job->owned |= OwnSpeed | OwnInOut;
+        if (!l->hasTransport() && l->generator) job->owned |= OwnSpeed;
         if (l->type == SourceType::Text && src.value("type").toString() == "text") job->owned |= kOwnText;
         takeOver(id, job->owned);
-        if (l->generator) l->generator->speed = std::clamp(src.value("speed").toDouble(1.0), 0.0, 10.0);
         if (!to.isf.empty()) readParams(l->generator.get(), src.value("params").toObject(), to.isf[0]);
         for (size_t k = 0; k < l->effects.size() && k + 1 < to.isf.size() && int(k) < fx.size(); ++k)
             readParams(l->effects[k].get(), fx[int(k)].toObject().value("params").toObject(), to.isf[k + 1]);
