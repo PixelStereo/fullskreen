@@ -465,6 +465,21 @@ int main(int argc, char **argv)
         e.newProject();
     }
 
+    // Media Bin: an ISF generator can be imported (kept in the project, not listed as a media)
+    {
+        e.newProject();
+        const QString gen = root + "/../isf/generators/TestPattern.fs";
+        e.addBinItems({gen});
+        bool inMedia = false;
+        for (const auto &r : e.mediaUsage()) inMedia |= r.path.endsWith("TestPattern.fs");
+        CHECK(Engine::isIsfFile(gen) && !Engine::isIsfFile("a.mp4") && !inMedia);
+        CHECK(e.saveProject(tmp + "/binisf.fulskrin", {}, &err));
+        e.newProject();
+        CHECK(e.binItems().isEmpty());
+        CHECK(e.loadProject(tmp + "/binisf.fulskrin", nullptr, &err) && e.binItems().size() == 1);
+        e.newProject();
+    }
+
     // 4d. OSC and OSCQuery
     {
         osc::Message m{"/a/b", "ifsTFNd", {7, 0.5, QStringLiteral("hey"), true, false, QVariant(), 2.25}};
