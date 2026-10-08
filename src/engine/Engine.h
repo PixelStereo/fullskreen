@@ -407,6 +407,7 @@ public:
     };
     std::vector<MediaRef> mediaUsage() const;
     QStringList binItems() const;
+    static bool isIsfFile(const QString &path); // .fs / .frag
     void addBinItems(const QStringList &paths);
     void removeBinItem(const QString &path);
     QList<int> layersUsingMedia(const QString &path) const;

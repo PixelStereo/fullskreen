@@ -29,6 +29,12 @@ bool Engine::isVideoFile(const QString &path) { return videoExtensions().contain
 
 bool Engine::isImageFile(const QString &path) { return imageExtensions().contains(QFileInfo(path).suffix().toLower()); }
 
+bool Engine::isIsfFile(const QString &path)
+{
+    const QString e = QFileInfo(path).suffix().toLower();
+    return e == "fs" || e == "frag";
+}
+
 std::vector<Engine::MediaRef> Engine::mediaUsage() const
 {
     std::vector<MediaRef> out;
@@ -67,7 +73,8 @@ std::vector<Engine::MediaRef> Engine::mediaUsage() const
             scan(l->generator.get(), l->name);
             for (const auto &fx : l->effects) scan(fx.get(), l->name + QStringLiteral(" › ") + fx->name());
         }
-        for (const QString &p : m_binItems) add(p, kindOf(p), QString(), true);
+        for (const QString &p : m_binItems)
+            if (!isIsfFile(p)) add(p, kindOf(p), QString(), true); // shaders imported to the bin are in ISF > Generators
     }
     for (MediaRef &r : out) r.missing = !QFileInfo::exists(r.path);
     return out;

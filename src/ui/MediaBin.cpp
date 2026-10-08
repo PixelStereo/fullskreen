@@ -16,6 +16,7 @@
 #include <QLabel>
 #include <QMap>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QPointer>
 #include <QProcess>
@@ -92,7 +93,7 @@ MediaBin::MediaBin(Engine *engine, QWidget *parent) : QWidget(parent), m_engine(
     head->addWidget(new QLabel(QStringLiteral("<b>Media Bin</b>")));
     head->addStretch();
     auto *import = new QPushButton(QStringLiteral("Import…"));
-    import->setToolTip(QStringLiteral("Add videos, images or sounds to the Media Bin"));
+    import->setToolTip(QStringLiteral("Add videos, images, sounds or ISF generators to the Media Bin"));
     head->addWidget(import);
     v->addLayout(head);
     m_search = new QLineEdit;
@@ -272,11 +273,22 @@ void MediaBin::refreshIsf()
     struct Gen {
         QString name, category, description;
         QStringList users;
-        bool inLibrary = false;
+        bool inLibrary = false, imported = false;
     };
     QMap<QString, Gen> gens;
     for (const IsfEntry &e : m_engine->library().generators())
         gens[QDir::cleanPath(e.path)] = {e.name, isfCategory(e.categories), e.description, {}, true};
+    for (const QString &p : m_engine->binItems()) { // generators dropped into the Media Bin
+        if (!Engine::isIsfFile(p)) continue;
+        Gen &g = gens[QDir::cleanPath(p)];
+        g.imported = true;
+        if (g.name.isEmpty()) {
+            const IsfInstance::Header h = IsfInstance::readHeader(p);
+            g.name = QFileInfo(p).completeBaseName();
+            g.category = isfCategory(h.categories);
+            g.description = h.description;
+        }
+    }
     {
         Engine::Lock lk(&m_engine->mutex());
         for (int i = 0; i < m_engine->layerCount(); ++i) {
@@ -328,9 +340,9 @@ void MediaBin::refreshIsf()
         }
         const bool missing = !QFileInfo::exists(g.key());
         it->setData(0, MissingRole, missing);
-        it->setData(0, UsedRole, true); // library shaders are not removed from the Media Bin
+        it->setData(0, UsedRole, g->inLibrary || !g->users.isEmpty()); // library shaders stay; imported ones can be removed
         it->setText(0, g->name);
-        it->setText(1, missing ? QStringLiteral("missing") : g->inLibrary ? QString() : QStringLiteral("outside library"));
+        it->setText(1, missing ? QStringLiteral("missing") : g->inLibrary ? QString() : g->imported ? QStringLiteral("imported") : QStringLiteral("outside library"));
         it->setText(2, g->users.isEmpty() ? QStringLiteral("—") : QString::number(g->users.size()));
         it->setTextAlignment(2, Qt::AlignCenter);
         const QString usedBy = g->users.isEmpty() ? QStringLiteral("Not used by any layer")
@@ -463,17 +475,28 @@ static bool isMedia(const QString &p) { return Engine::isVideoFile(p) || Engine:
 
 void MediaBin::importFiles(const QStringList &paths)
 {
-    QStringList ok;
+    QStringList ok, refused;
     for (const QString &p : paths) {
         QFileInfo fi(p);
         if (fi.isDir()) {
             // A dropped folder: import its videos, images and audio files (top level only)
             for (const QFileInfo &f : QDir(p).entryInfoList(QDir::Files, QDir::Name))
-                if (isMedia(f.filePath())) ok << f.absoluteFilePath();
+                if (isMedia(f.filePath()) || (Engine::isIsfFile(f.filePath()) && IsfInstance::readHeader(f.filePath()).ok &&
+                                              !IsfInstance::readHeader(f.filePath()).isFilter &&
+                                              !IsfInstance::readHeader(f.filePath()).isTransition))
+                    ok << f.absoluteFilePath();
         } else if (isMedia(p)) {
             ok << fi.absoluteFilePath();
+        } else if (Engine::isIsfFile(p)) { // an ISF generator from the Finder
+            const IsfInstance::Header h = IsfInstance::readHeader(p);
+            if (h.ok && !h.isFilter && !h.isTransition) ok << fi.absoluteFilePath();
+            else refused << fi.fileName();
         }
     }
+    if (!refused.isEmpty())
+        QMessageBox::information(this, QStringLiteral("Media Bin"),
+                                 QStringLiteral("Not a generator (effects and transitions are added from a layer's FX tab):\n") +
+                                     refused.join('\n'));
     if (ok.isEmpty()) return;
     m_engine->addBinItems(ok);
     refresh();
@@ -485,9 +508,10 @@ void MediaBin::importDialog()
     QSettings s;
     QStringList ext;
     for (const QString &e : Engine::videoExtensions() + Engine::imageExtensions() + Engine::audioExtensions()) ext << "*." + e;
+    ext << "*.fs";
     const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Import to Media Bin"),
                                                             s.value("dirs/video").toString(),
-                                                            QStringLiteral("Videos, Images and Audio (%1);;All Files (*)").arg(ext.join(' ')));
+                                                            QStringLiteral("Videos, Images, Audio and ISF generators (%1);;All Files (*)").arg(ext.join(' ')));
     if (files.isEmpty()) return;
     s.setValue("dirs/video", QFileInfo(files.first()).absolutePath());
     importFiles(files);
