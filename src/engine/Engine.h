@@ -527,7 +527,7 @@ private:
     void setSoftEdge(const SoftEdge &se, GLint widthLoc, GLint powerLoc);
     void compositeLayers(const RenderTarget &target, const std::vector<Layer *> &topToBottom,
                          const QRectF &view = QRectF(0, 0, 1, 1), QColor clear = QColor(0, 0, 0, 0),
-                         quint64 viewport = 0); // viewport: the one drawn for (its share of each layer's opacity)
+                         quint64 viewport = 0, double angle = 0); // angle (degrees): the view turned about its center; viewport: the one drawn for (its share of each layer's opacity)
     std::map<std::pair<int, int>, MsaaBuffer> m_msaa; // by size (render thread)
     int m_maxSamples = 0;
     void renderViewport(Layer &v, const std::vector<Layer *> &shown, const IsfRenderContext &rc);
@@ -593,6 +593,7 @@ private:
     GLsizei m_meshIndexCount = 0;
     GLuint m_diffProgram = 0, m_blitProgram = 0, m_compProgram = 0, m_presentProgram = 0, m_prepProgram = 0;
     GLint m_compSoftLoc = -1, m_compSoftPowLoc = -1, m_diffSoftLoc = -1, m_diffSoftPowLoc = -1;
+    GLint m_compRotLoc = -1, m_compAspLoc = -1, m_diffRotLoc = -1, m_diffAspLoc = -1;
     GLint m_diffTexLoc = -1, m_diffDstLoc = -1, m_diffOpacityLoc = -1, m_diffViewLoc = -1;
     RenderTarget m_dstCopy; // what is drawn so far, for Difference
     GLint m_blitTexLoc = -1, m_compTexLoc = -1, m_compOpacityLoc = -1, m_compViewLoc = -1, m_presentTexLoc = -1;

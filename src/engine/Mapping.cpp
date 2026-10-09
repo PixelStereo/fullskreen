@@ -51,6 +51,7 @@ void Mapping::resetCorners()
     corners[1] = {1, 0};
     corners[2] = {1, 1};
     corners[3] = {0, 1};
+    pivot = {0.5, 0.5};
     ++revision;
 }
 
@@ -247,6 +248,7 @@ QJsonObject Mapping::toJson() const
     o["mesh_mode"] = meshMode;
     // Always save soft edge (even if disabled) so snapshots preserve crop feathering settings
     o["soft_edge"] = soft.toJson();
+    o["pivot"] = QJsonArray{pivot.x(), pivot.y()};
     return o;
 }
 
@@ -265,6 +267,8 @@ void Mapping::fromJson(const QJsonObject &o)
     }
     meshMode = o.value("mesh_mode").toBool(false);
     soft.fromJson(o.value("soft_edge").toObject());
+    const QJsonArray pv = o.value("pivot").toArray();
+    pivot = pv.size() == 2 ? QPointF(pv[0].toDouble(0.5), pv[1].toDouble(0.5)) : QPointF(0.5, 0.5);
     ++revision;
 }
 
@@ -279,12 +283,56 @@ void Mapping::rotate(double degrees, QSize comp)
     if (std::abs(degrees) < 1e-9) return;
     const double W = std::max(1, comp.width()), H = std::max(1, comp.height());
     const double a = degrees * 3.14159265358979323846 / 180, c = std::cos(a), s = std::sin(a);
-    const QPointF o = bounds().center();
+    const QPointF o = pivotPoint();
     auto turn = [&](QPointF v) { // a vector in normalized units
         const double x = v.x() * W, y = v.y() * H;
         return QPointF((x * c - y * s) / W, (x * s + y * c) / H);
     };
     for (QPointF &p : corners) p = o + turn(p - o);
     for (QPointF &p : offsets) p = turn(p);
+    ++revision;
+}
+
+Mapping::Rect Mapping::rect(QSize comp) const
+{
+    const double W = std::max(1, comp.width()), H = std::max(1, comp.height());
+    auto px = [&](QPointF p) { return QPointF(p.x() * W, p.y() * H); };
+    Rect r;
+    r.center = (px(corners[0]) + px(corners[1]) + px(corners[2]) + px(corners[3])) / 4.0;
+    auto len = [](QPointF d) { return std::hypot(d.x(), d.y()); };
+    r.w = len(px(corners[1]) - px(corners[0]));
+    r.h = len(px(corners[3]) - px(corners[0]));
+    r.angle = angle(comp);
+    return r;
+}
+
+void Mapping::setRect(const Rect &r, QSize comp)
+{
+    const double W = std::max(1, comp.width()), H = std::max(1, comp.height());
+    const double a = r.angle * 3.14159265358979323846 / 180, c = std::cos(a), s = std::sin(a);
+    const double hw = r.w / 2, hh = r.h / 2;
+    static const int sx[4] = {-1, 1, 1, -1}, sy[4] = {-1, -1, 1, 1}; // top left, top right, bottom right, bottom left
+    for (int k = 0; k < 4; ++k) {
+        const double x = sx[k] * hw, y = sy[k] * hh;
+        corners[k] = QPointF((r.center.x() + x * c - y * s) / W, (r.center.y() + x * s + y * c) / H);
+    }
+    for (QPointF &o : offsets) o = QPointF();
+    ++revision;
+}
+
+// The pivot is fixed to the picture: (u, v) over the quad, read off the corners (exact for a rectangle or a parallelogram)
+QPointF Mapping::pivotPoint() const
+{
+    const QPointF top = corners[0] + (corners[1] - corners[0]) * pivot.x();
+    const QPointF bottom = corners[3] + (corners[2] - corners[3]) * pivot.x();
+    return top + (bottom - top) * pivot.y();
+}
+
+void Mapping::setPivotPoint(QPointF p)
+{
+    const QPointF e1 = corners[1] - corners[0], e2 = corners[3] - corners[0], d = p - corners[0];
+    const double det = e1.x() * e2.y() - e1.y() * e2.x();
+    if (std::abs(det) < 1e-12) return;
+    pivot = QPointF((d.x() * e2.y() - d.y() * e2.x()) / det, (e1.x() * d.y() - e1.y() * d.x()) / det);
     ++revision;
 }

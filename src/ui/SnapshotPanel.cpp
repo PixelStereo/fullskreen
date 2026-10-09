@@ -36,6 +36,13 @@ enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, KeyRole = Qt::UserRo
 enum Column { ColName, ColValue, ColTime };
 
 // How a value gets there at the recall
+// The time a snapshot gives a value; the pivot is a CUT unless said otherwise (the other values FOLLOW the fade)
+static QJsonValue timingValue(const QJsonObject &layer, const QString &key)
+{
+    const QJsonValue t = layer.value("timing").toObject().value(key);
+    return !t.isDouble() && key == QLatin1String("spatial/pivot") ? QJsonValue(0.0) : t;
+}
+
 static QString timeText(const QJsonValue &v)
 {
     if (!v.isDouble()) return QStringLiteral("Follow");
@@ -532,7 +539,7 @@ QTreeWidgetItem *SnapshotPanel::addField(QTreeWidgetItem *parent, const MemField
     m_fields.push_back(f);
     if (!f.timeKey.isEmpty()) {
         const Engine::Snapshot m = m_engine->snapshot(selected());
-        const QJsonValue t = rowObject(m, f.row).value("timing").toObject().value(f.timeKey);
+        const QJsonValue t = timingValue(rowObject(m, f.row), f.timeKey);
         it->setText(ColTime, timeText(t));
         it->setForeground(ColTime, t.isDouble() ? QColor(230, 230, 233) : QColor(130, 130, 136));
     }
@@ -554,7 +561,7 @@ void SnapshotPanel::refreshRows()
                 const QJsonObject o = rowObject(m, f.row);
                 c->setText(ColValue, f.kind == MemField::Info ? c->text(ColValue) : valueText(f, jsonAt(o, f.path)));
                 if (!f.timeKey.isEmpty()) {
-                    const QJsonValue t = o.value("timing").toObject().value(f.timeKey);
+                    const QJsonValue t = timingValue(o, f.timeKey);
                     c->setText(ColTime, timeText(t));
                     c->setForeground(ColTime, t.isDouble() ? QColor(230, 230, 233) : QColor(130, 130, 136));
                 }
@@ -669,7 +676,7 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
 
     // How it gets there
     if (!f.timeKey.isEmpty()) {
-        const QJsonValue t = o.value("timing").toObject().value(f.timeKey);
+        const QJsonValue t = timingValue(o, f.timeKey);
         auto *box = new QWidget;
         auto *bv = new QVBoxLayout(box);
         bv->setContentsMargins(0, 10, 0, 0);
@@ -702,7 +709,7 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
         auto *note = new QLabel(QStringLiteral("CUT: at once · FOLLOW: the snapshot's fade (%1 s) · TIME: this value "
                                                "only, in its own time%2")
                                     .arg(m.fade, 0, 'f', 1)
-                                    .arg(f.timeKey == "roi" || f.timeKey == "spatial" || f.timeKey.startsWith("color/") ||
+                                    .arg(f.timeKey == "roi" || f.timeKey == "spatial" || f.timeKey == "spatial/pivot" || f.timeKey.startsWith("color/") ||
                                                      (f.timeKey.startsWith("source/text/") && f.timeKey.endsWith("/color"))
                                              ? QStringLiteral(" (shared by the whole %1)").arg(f.timeKey.section('/', -1))
                                              : QString()));
@@ -986,6 +993,10 @@ void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObjec
                 num(pts, label + " Y", {"spatial", "offsets", QString::number(k), "1"}, -10, 10, 1, 4, QString(), 0.001);
             }
             expand(pts);
+        }
+        if (map.value("pivot").toArray().size() == 2) {
+            num(sec, QStringLiteral("Pivot X"), {"spatial", "pivot", "0"}, -10, 10, 1, 4, QString(), 0.001);
+            num(sec, QStringLiteral("Pivot Y"), {"spatial", "pivot", "1"}, -10, 10, 1, 4, QString(), 0.001);
         }
         expand(sec);
     }

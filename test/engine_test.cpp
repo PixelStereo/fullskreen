@@ -480,6 +480,62 @@ int main(int argc, char **argv)
         e.newProject();
     }
 
+    // Pivot: the center of the rotation, fixed to the picture
+    {
+        Mapping m;
+        const QSize comp(100, 50);
+        m.setCorner(0, QPointF(0.2, 0.2)), m.setCorner(1, QPointF(0.6, 0.2)), m.setCorner(2, QPointF(0.6, 0.6)),
+            m.setCorner(3, QPointF(0.2, 0.6));
+        CHECK((m.pivotPoint() - QPointF(0.4, 0.4)).manhattanLength() < 1e-9); // the middle by default
+        m.setPivotPoint(QPointF(0.2, 0.2)); // the top left corner
+        CHECK((m.pivot - QPointF(0, 0)).manhattanLength() < 1e-9);
+        m.rotate(90, comp);
+        CHECK((m.pivotPoint() - QPointF(0.2, 0.2)).manhattanLength() < 1e-9 && std::abs(m.angle(comp) - 90) < 1e-6);
+        CHECK((m.corners[0] - QPointF(0.2, 0.2)).manhattanLength() < 1e-9); // it did not move: it turned about that corner
+        Mapping back;
+        back.fromJson(m.toJson());
+        CHECK((back.pivot - m.pivot).manhattanLength() < 1e-9);
+        m.resetCorners();
+        CHECK((m.pivot - QPointF(0.5, 0.5)).manhattanLength() < 1e-9);
+    }
+
+    // A viewport can be turned: its region is a rectangle of the composition rotated about its center
+    {
+        e.newProject();
+        e.fadeCompositionOpacity(1.0, 0);
+        e.setBlackout(false, 0);
+        e.setCompositionSize(QSize(64, 32));
+        QImage rb(64, 32, QImage::Format_RGB32); // left half red, right half blue
+        for (int y = 0; y < 32; ++y)
+            for (int x = 0; x < 64; ++x) rb.setPixel(x, y, x < 32 ? qRgb(255, 0, 0) : qRgb(0, 0, 255));
+        rb.save(tmp + "/redblue_vp.png");
+        const int v1 = e.viewports().first();
+        e.setViewportSize(v1, QSize(32, 32));
+        const int li = e.addLayer("img");
+        CHECK(e.setLayerImage(li, tmp + "/redblue_vp.png", &err));
+        e.layer(li)->mapping.resetCorners();
+        const quint64 vid = e.layerId(v1);
+        auto shot = [&](double angle) {
+            {
+                Engine::Lock lk(&e.mutex());
+                Mapping &m = e.layer(e.indexOfId(vid))->mapping;
+                m.setRect({QPointF(32, 16), 32, 32, angle}, QSize(64, 32));
+            }
+            for (int k = 0; k < 3; ++k) e.renderFrame();
+            return e.grabViewport(vid);
+        };
+        QImage g = shot(0); // the middle square: red on its left, blue on its right
+        CHECK(g.size() == QSize(32, 32) && g.pixelColor(2, 2).red() > 250 && g.pixelColor(29, 2).blue() > 250);
+        g = shot(90); // turned a quarter: the halves are now top and bottom, the blue one on top
+        CHECK(g.pixelColor(2, 2).blue() > 250 && g.pixelColor(2, 29).red() > 250 && g.pixelColor(29, 2).blue() > 250);
+        {
+            Engine::Lock lk(&e.mutex());
+            const Mapping::Rect r = e.layer(e.indexOfId(vid))->mapping.rect(QSize(64, 32));
+            CHECK(std::abs(r.angle - 90) < 1e-6 && std::abs(r.w - 32) < 1e-6 && std::abs(r.center.x() - 32) < 1e-6);
+        }
+        e.newProject();
+    }
+
     // 4d. OSC and OSCQuery
     {
         osc::Message m{"/a/b", "ifsTFNd", {7, 0.5, QStringLiteral("hey"), true, false, QVariant(), 2.25}};
@@ -529,6 +585,29 @@ int main(int argc, char **argv)
         CHECK(!server.handleMessage({L + "/opacity", "f", {0.9}}) && std::abs(e.layer(V + 1)->opacity - 0.5f) < 1e-6);
         CHECK(server.handleMessage({L + "/enable", "F", {false}}) && !e.layer(V + 1)->enabled);
         server.handleMessage({"/layer/G/locked", "F", {false}});
+        // A viewport: position and size in composition pixels (no scale)
+        {
+            const int vi = e.indexOfId(e.mainViewportId());
+            const QString VP = "/viewport/" + osc::safeName(e.layer(vi)->name);
+            CHECK(server.handleMessage({VP + "/spatial/width", "f", {32}}) && server.handleMessage({VP + "/spatial/height", "f", {16}}));
+            CHECK(server.handleMessage({VP + "/spatial/position/x", "f", {10}}) && server.handleMessage({VP + "/spatial/position/y", "f", {8}}));
+            const QRectF bb = e.layer(vi)->mapping.bounds();
+            CHECK(std::abs(bb.width() * 64 - 32) < 1e-6 && std::abs(bb.height() * 32 - 16) < 1e-6);
+            CHECK(std::abs(bb.center().x() * 64 - 10) < 1e-6 && std::abs(bb.center().y() * 32 - 8) < 1e-6);
+            CHECK(!server.handleMessage({VP + "/spatial/scale", "ff", {50, 50}}));
+            CHECK(server.handleMessage({VP + "/spatial/pivot/x", "f", {0}}) && server.handleMessage({VP + "/spatial/pivot/y", "f", {0}}));
+            CHECK(server.handleMessage({VP + "/spatial/rotation", "f", {90}}));
+            {
+                const Mapping &pm = e.layer(vi)->mapping;
+                CHECK((pm.pivotPoint() - QPointF(0, 0)).manhattanLength() < 1e-6 && std::abs(pm.angle(e.compositionSize()) - 90) < 1e-6);
+            }
+            QStringList paths;
+            for (const auto &p : e.animatableParams(e.layerId(vi))) paths << p.path;
+            CHECK(paths.contains("spatial/width") && paths.contains("spatial/height") && paths.contains("spatial/position/x") &&
+                  !paths.contains("spatial/scale/x") && paths.contains("spatial/rotation") &&
+                  paths.contains("spatial/pivot/x") && paths.contains("spatial/pivot/y"));
+            e.layer(vi)->mapping.resetCorners();
+        }
         // Renaming changes the address
         CHECK(server.handleMessage({L + "/name", "s", {QStringLiteral("Front wall")}}) && e.layer(V + 1)->name == "Front wall");
         int status = 0;
@@ -785,6 +864,29 @@ int main(int argc, char **argv)
             CHECK(Engine::timingKey({"roi", "2"}, {}) == "roi" && Engine::timingKey({"color", "add", "1"}, {}) == "color/add" &&
                   Engine::timingKey({"fx", "0", "params", "radius"}, QJsonObject{{"fx", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "fx/Blur/param/radius" &&
                   Engine::timingKey({"source", "speed"}, {}) == "source/speed" && Engine::timingKey({"source", "file"}, {}).isEmpty());
+            // The pivot: a cut by default, with a time and a curve of its own when the snapshot gives them
+            {
+                CHECK(Engine::timingKey({"spatial", "pivot", "0"}, {}) == "spatial/pivot" &&
+                      Engine::timingKey({"spatial", "corners", "0", "0"}, {}) == "spatial");
+                QJsonObject ps = e.layerJson(e.indexOfId(tid));
+                QJsonObject sp = ps.value("spatial").toObject();
+                sp["pivot"] = QJsonArray{0.0, 0.0};
+                ps["spatial"] = sp;
+                ps.remove("timing");
+                L()->mapping.pivot = QPointF(0.5, 0.5);
+                e.applyLayers(QJsonArray{ps}, 1.0); // the fade is 1 s, the pivot ignores it
+                CHECK((L()->mapping.pivot - QPointF(0, 0)).manhattanLength() < 1e-9);
+                e.advanceFades(2.0);
+                ps["timing"] = QJsonObject{{"spatial/pivot", 2.0}};
+                sp["pivot"] = QJsonArray{1.0, 1.0};
+                ps["spatial"] = sp;
+                e.applyLayers(QJsonArray{ps}, 0.0);
+                CHECK((L()->mapping.pivot - QPointF(0, 0)).manhattanLength() < 1e-9 && e.isFading());
+                e.advanceFades(1.0);
+                CHECK(L()->mapping.pivot.x() > 0.05 && L()->mapping.pivot.x() < 0.95);
+                e.advanceFades(1.5);
+                CHECK((L()->mapping.pivot - QPointF(1, 1)).manhattanLength() < 1e-9 && !e.isFading());
+            }
             // Text generator: the snapshot's text is typed over its time (erased back to what both share, then
             // typed); its style moves on its own times
             {

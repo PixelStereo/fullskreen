@@ -98,6 +98,7 @@ private:
     QPointer<QProgressBar> m_meter;
     QPointer<QLabel> m_codecFact, m_pictureFact; // known once frames are decoded: kept up to date
     QPointer<ViewportOutputPanel> m_output;
-    QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY, m_rotation;
+    QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY, m_rotation, m_pivotX, m_pivotY;
     bool m_scaleLinked = true;
+    bool m_sizePx = false; // a viewport: width and height in composition pixels (a layer: scale in %)
 };

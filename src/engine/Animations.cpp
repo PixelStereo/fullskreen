@@ -382,7 +382,31 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
             if (set) m.rotate(wrapDegrees(*set - now), comp);
             return true;
         }
-        if (p.size() == 3 && (p[1] == "position" || p[1] == "scale") && (p[2] == "x" || p[2] == "y")) {
+        if (l.isViewport && ((p.size() == 2 && (p[1] == "width" || p[1] == "height")) ||
+                             (p.size() == 3 && p[1] == "position" && (p[2] == "x" || p[2] == "y")))) {
+            Mapping::Rect r = m.rect(comp); // a rectangle, upright or turned: pixels
+            double *v = p[1] == "width" ? &r.w : p[1] == "height" ? &r.h : p[2] == "x" ? &r.center.rx() : &r.center.ry();
+            if (get) *get = *v;
+            if (set) {
+                *v = p[1] == "position" ? std::clamp(*set, -4.0 * (p[2] == "x" ? comp.width() : comp.height()),
+                                                     5.0 * (p[2] == "x" ? comp.width() : comp.height()))
+                                        : std::clamp(*set, 1.0, 100000.0);
+                m.setRect(r, comp);
+            }
+            return true;
+        }
+        if (p.size() == 3 && p[1] == "pivot" && (p[2] == "x" || p[2] == "y")) { // center of the rotation, in pixels
+            const bool x = p[2] == "x";
+            QPointF pt = m.pivotPoint();
+            const double size = x ? comp.width() : comp.height();
+            if (get) *get = (x ? pt.x() : pt.y()) * size;
+            if (set) {
+                (x ? pt.rx() : pt.ry()) = std::clamp(*set, -4.0 * size, 5.0 * size) / size;
+                m.setPivotPoint(pt);
+            }
+            return true;
+        }
+        if (p.size() == 3 && (p[1] == "position" || (p[1] == "scale" && !l.isViewport)) && (p[2] == "x" || p[2] == "y")) {
             const bool x = p[2] == "x";
             QRectF b = m.bounds();
             const double size = x ? comp.width() : comp.height();
@@ -527,8 +551,15 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
     add("spatial/rotation", "Spatial › Rotation (°)", -180, 180);
     add("spatial/position/x", "Spatial › Position X", -4.0 * m_compSize.width(), 5.0 * m_compSize.width());
     add("spatial/position/y", "Spatial › Position Y", -4.0 * m_compSize.height(), 5.0 * m_compSize.height());
-    add("spatial/scale/x", "Spatial › Scale X (%)", 0.1, 2000);
-    add("spatial/scale/y", "Spatial › Scale Y (%)", 0.1, 2000);
+    add("spatial/pivot/x", "Spatial › Pivot X", -4.0 * m_compSize.width(), 5.0 * m_compSize.width());
+    add("spatial/pivot/y", "Spatial › Pivot Y", -4.0 * m_compSize.height(), 5.0 * m_compSize.height());
+    if (l->isViewport) { // an upright rectangle of the composition: its size in pixels
+        add("spatial/width", "Spatial › Width", 1, 100000);
+        add("spatial/height", "Spatial › Height", 1, 100000);
+    } else {
+        add("spatial/scale/x", "Spatial › Scale X (%)", 0.1, 2000);
+        add("spatial/scale/y", "Spatial › Scale Y (%)", 0.1, 2000);
+    }
     if (l->hasTransport()) {
         add("source/volume", "Source › Volume", 0, 2);
         add("source/speed", "Source › Speed", 0, 4);

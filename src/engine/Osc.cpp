@@ -960,6 +960,42 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
         }
 
         // Spatial: position (center, composition pixels), scale (% of the composition), corners (normalized)
+        if (isViewport) {
+            // A viewport is a rectangle of the composition (turned by spatial/rotation): its center and its size, in pixels
+            for (int axis = 0; axis < 2; ++axis) {
+                const bool x = axis == 0;
+                OscNode &pos = L.method(P + (x ? "/spatial/position/x" : "/spatial/position/y"), "f", 3, x ? "Position X" : "Position Y",
+                                        [e, x](Layer &l) {
+                                            const Mapping::Rect r = l.mapping.rect(e->compositionSize());
+                                            return QVariantList{x ? r.center.x() : r.center.y()};
+                                        },
+                                        L.edit([e, x](Layer &l, const QVariantList &a) {
+                                            if (a.isEmpty()) return false;
+                                            const QSize c = e->compositionSize();
+                                            Mapping::Rect r = l.mapping.rect(c);
+                                            (x ? r.center.rx() : r.center.ry()) = num(a[0]);
+                                            l.mapping.setRect(r, c);
+                                            return true;
+                                        }));
+                pos.range = {minMax(-4.0 * (x ? e->compositionSize().width() : e->compositionSize().height()),
+                                    5.0 * (x ? e->compositionSize().width() : e->compositionSize().height()))};
+                L.method(P + (x ? "/spatial/width" : "/spatial/height"), "f", 3, x ? "Width (px)" : "Height (px)",
+                         [e, x](Layer &l) {
+                             const Mapping::Rect r = l.mapping.rect(e->compositionSize());
+                             return QVariantList{x ? r.w : r.h};
+                         },
+                         L.edit([e, x](Layer &l, const QVariantList &a) {
+                             if (a.isEmpty()) return false;
+                             const QSize c = e->compositionSize();
+                             Mapping::Rect r = l.mapping.rect(c);
+                             (x ? r.w : r.h) = std::max(1.0, num(a[0]));
+                             l.mapping.setRect(r, c);
+                             return true;
+                         }))
+                    .range = {minMax(1, 100000)};
+            }
+        }
+        if (!isViewport)
         L.method(P + "/spatial/position", "ff", 3, "Position",
                  [e](Layer &l) {
                      const QSize c = e->compositionSize();
@@ -974,6 +1010,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      l.mapping.setBounds(b);
                      return true;
                  }));
+        if (!isViewport)
         L.method(P + "/spatial/scale", "ff", 3, "Scale",
                  [](Layer &l) {
                      const QRectF b = l.mapping.bounds();
@@ -1000,6 +1037,26 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      return true;
                  }))
             .range = {minMax(-360, 360)};
+        // Pivot: the center of the rotation, fixed to the picture, in composition pixels (default: the middle)
+        for (int axis = 0; axis < 2; ++axis) {
+            const bool x = axis == 0;
+            OscNode &pv = L.method(P + (x ? "/spatial/pivot/x" : "/spatial/pivot/y"), "f", 3, x ? "Pivot X" : "Pivot Y",
+                                   [e, x](Layer &l) {
+                                       const QSize c = e->compositionSize();
+                                       const QPointF p = l.mapping.pivotPoint();
+                                       return QVariantList{x ? p.x() * c.width() : p.y() * c.height()};
+                                   },
+                                   L.edit([e, x](Layer &l, const QVariantList &a) {
+                                       if (a.isEmpty()) return false;
+                                       const QSize c = e->compositionSize();
+                                       QPointF p = l.mapping.pivotPoint();
+                                       (x ? p.rx() : p.ry()) = num(a[0]) / (x ? c.width() : c.height());
+                                       l.mapping.setPivotPoint(p);
+                                       return true;
+                                   }));
+            pv.range = {minMax(-4.0 * (x ? e->compositionSize().width() : e->compositionSize().height()),
+                               5.0 * (x ? e->compositionSize().width() : e->compositionSize().height()))};
+        }
         static const char *kCorners[] = {"top_left", "top_right", "bottom_right", "bottom_left"};
         static const char *kCornerNames[] = {"Top Left", "Top Right", "Bottom Right", "Bottom Left"};
         for (int k = 0; k < 4; ++k)

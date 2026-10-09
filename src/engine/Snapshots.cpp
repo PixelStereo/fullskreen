@@ -103,6 +103,7 @@ struct LayerNumbers {
 // snapshot's fade; a snapshot can give any of them a time of its own ("timing" in its layer state).
 struct LayerTimes {
     double opacity = 0, volume = 0, roi = 0, temp = 0, tint = 0, add = 0, remove = 0, mapping = 0;
+    double pivot = 0; // the pivot of the rotation (a cut unless the snapshot says otherwise)
     std::vector<std::vector<double>> isf; // as LayerNumbers::isf
     double viewportOpacity = 0; // viewport opacity per-viewport
     double softEdge = 0; // soft edge width and power
@@ -112,7 +113,7 @@ struct LayerTimes {
     // Easing curves for each parameter (default: EaseInOut for all)
     EasingCurve opacityCurve = EasingCurve::EaseInOut, volumeCurve = EasingCurve::EaseInOut;
     EasingCurve roiCurve = EasingCurve::EaseInOut, colorCurve = EasingCurve::EaseInOut;
-    EasingCurve mappingCurve = EasingCurve::EaseInOut, softEdgeCurve = EasingCurve::EaseInOut;
+    EasingCurve mappingCurve = EasingCurve::EaseInOut, pivotCurve = EasingCurve::EaseInOut, softEdgeCurve = EasingCurve::EaseInOut;
     EasingCurve viewportOpacityCurve = EasingCurve::EaseInOut;
     EasingCurve speedCurve = EasingCurve::EaseInOut, inOutCurve = EasingCurve::EaseInOut;
     std::vector<EasingCurve> fxSpeedCurves;
@@ -121,7 +122,7 @@ struct LayerTimes {
 
     double longest() const
     {
-        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, viewportOpacity, softEdge, speed, inPoint, outPoint});
+        double m = std::max({opacity, volume, roi, temp, tint, add, remove, mapping, pivot, viewportOpacity, softEdge, speed, inPoint, outPoint});
         for (double d : text) m = std::max(m, d);
         for (const auto &v : isf)
             for (double d : v) m = std::max(m, d);
@@ -273,6 +274,7 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, con
         for (size_t k = 0; k < n.mapping.offsets.size() && k < a.mapping.offsets.size(); ++k)
             n.mapping.offsets[k] = mixp(a.mapping.offsets[k], b.mapping.offsets[k], tm);
     }
+    n.mapping.pivot = mixp(a.mapping.pivot, b.mapping.pivot, t(d.pivot, d.pivotCurve));
     // Soft edge: interpolate width and power per side
     {
         const double ts = t(d.softEdge, d.softEdgeCurve);
@@ -350,6 +352,7 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.add = time(QStringLiteral("color/add"));
     d.remove = time(QStringLiteral("color/remove"));
     d.mapping = time(QStringLiteral("spatial"));
+    d.pivot = timing.value(QStringLiteral("spatial/pivot")).isDouble() ? time(QStringLiteral("spatial/pivot")) : 0.0; // CUT by default
     d.viewportOpacity = time(QStringLiteral("viewport"));
     d.softEdge = time(QStringLiteral("spatial/soft_edge"));
     d.speed = time(QStringLiteral("source/speed"));
@@ -367,6 +370,7 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     d.roiCurve = curve(QStringLiteral("roi"));
     d.colorCurve = curve(QStringLiteral("color/temp")); // use temp for all color parameters
     d.mappingCurve = curve(QStringLiteral("spatial"));
+    d.pivotCurve = curve(QStringLiteral("spatial/pivot"));
     d.softEdgeCurve = curve(QStringLiteral("spatial/soft_edge"));
     d.viewportOpacityCurve = curve(QStringLiteral("viewport"));
     d.speedCurve = curve(QStringLiteral("source/speed"));
@@ -398,7 +402,8 @@ QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
     const QString &a = path[0];
     if (a == "opacity") return a;
     if (a == "viewports") return QStringLiteral("viewport");
-    if (a == "spatial") return path.size() >= 2 && path[1] == "soft_edge" ? QStringLiteral("spatial/soft_edge") : QStringLiteral("spatial");
+    if (a == "spatial" && path.size() >= 2 && (path[1] == "soft_edge" || path[1] == "pivot")) return QStringLiteral("spatial/") + path[1];
+    if (a == "spatial") return QStringLiteral("spatial");
     if (a == "roi") return QStringLiteral("roi");
     if (a == "volume") return QStringLiteral("source/volume");
     if (a == "source" && path.size() >= 2) {
