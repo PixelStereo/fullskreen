@@ -474,7 +474,12 @@ void Engine::renderViewport(Layer &v, const std::vector<Layer *> &shown, const I
     if (!v.enabled) return;
     const QSize size = v.viewportSize();
     v.groupTarget.ensure(size.width(), size.height());
-    compositeLayers(v.groupTarget, shown, v.mapping.bounds(), QColor(0, 0, 0, 0), v.id);
+    // Its region: a rectangle of the composition, upright or turned
+    const Mapping::Rect r = v.mapping.rect(m_compSize);
+    const double cw = std::max(1, m_compSize.width()), ch = std::max(1, m_compSize.height());
+    QRectF view(0, 0, r.w / cw, r.h / ch);
+    view.moveCenter(QPointF(r.center.x() / cw, r.center.y() / ch));
+    compositeLayers(v.groupTarget, shown, view, QColor(0, 0, 0, 0), v.id, r.angle);
     processLayer(v, v.groupTarget.tex, v.groupTarget.w, v.groupTarget.h, true, rc);
 }
 
@@ -494,7 +499,7 @@ void Engine::setSoftEdge(const SoftEdge &se, GLint widthLoc, GLint powerLoc)
 // Draws the layers into the target; `view` is the part of the composition the target shows
 // (normalized, origin top left: the whole composition by default)
 void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer *> &layers, const QRectF &view,
-                             QColor clear, quint64 viewport)
+                             QColor clear, quint64 viewport, double angle)
 {
     auto f = gl();
     const RenderSettings rs = effectiveRender();
@@ -520,6 +525,13 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
     const double rw = std::max(1e-6, view.width()), rh = std::max(1e-6, view.height());
     f->glUniform4f(m_compViewLoc, float(1.0 / rw), float(1.0 / rh), float((1.0 - 2.0 * view.left()) / rw - 1.0),
                    float(1.0 - (1.0 - 2.0 * view.top()) / rh));
+    // The view turned about its center (the viewport's region): the composition's vertices turn the other way
+    const double ang = angle * 3.14159265358979323846 / 180;
+    const float rotCos = float(std::cos(ang)), rotSin = float(std::sin(ang));
+    const float rotCx = float(view.center().x() * 2.0 - 1.0), rotCy = float(1.0 - view.center().y() * 2.0);
+    const float asp = float(double(m_compSize.width()) / std::max(1, m_compSize.height()));
+    f->glUniform4f(m_compRotLoc, rotCos, rotSin, rotCx, rotCy);
+    f->glUniform1f(m_compAspLoc, asp);
     f->glActiveTexture(GL_TEXTURE0);
     f->glBindVertexArray(m_meshVao);
 
@@ -544,6 +556,8 @@ void Engine::compositeLayers(const RenderTarget &target, const std::vector<Layer
             f->glUniform1i(m_diffDstLoc, 1);
             f->glUniform4f(m_diffViewLoc, float(1.0 / rw), float(1.0 / rh), float((1.0 - 2.0 * view.left()) / rw - 1.0),
                            float(1.0 - (1.0 - 2.0 * view.top()) / rh));
+            f->glUniform4f(m_diffRotLoc, rotCos, rotSin, rotCx, rotCy);
+            f->glUniform1f(m_diffAspLoc, asp);
             f->glUniform1f(m_diffOpacityLoc, opacity);
             setSoftEdge(l.mapping.soft, m_diffSoftLoc, m_diffSoftPowLoc);
             f->glActiveTexture(GL_TEXTURE1);

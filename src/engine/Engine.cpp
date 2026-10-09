@@ -142,7 +142,10 @@ bool Engine::initialize(QString *err)
     m_compProgram = compileProgram(
         "#version 330 core\nlayout(location=0) in vec2 a_pos; layout(location=1) in vec2 a_uv; out vec2 v_uv;\n"
         "uniform vec4 u_view;\n" // scale, offset: the part of the composition the target shows
-        "void main(){ v_uv = a_uv; gl_Position = vec4(a_pos*u_view.xy+u_view.zw,0.0,1.0); }\n",
+        "uniform vec4 u_rot; uniform float u_asp;\n" // that part turned: cos, sin, center (clip space); composition width / height
+        "void main(){ v_uv = a_uv; vec2 q = a_pos - u_rot.zw; q.x *= u_asp;\n"
+        "  q = vec2(u_rot.x*q.x - u_rot.y*q.y, u_rot.y*q.x + u_rot.x*q.y); q.x /= u_asp;\n"
+        "  gl_Position = vec4((q+u_rot.zw)*u_view.xy+u_view.zw,0.0,1.0); }\n",
         "#version 330 core\nuniform sampler2D u_tex; uniform float u_opacity; in vec2 v_uv; out vec4 o;\n"
         "uniform vec4 u_soft; uniform vec4 u_softPow;\n" // widths and powers: left, right, top, bottom (the picture's top is at v = 1)
         "float softEdge(vec2 uv){ float e = 1.0;\n"
@@ -157,7 +160,10 @@ bool Engine::initialize(QString *err)
     m_diffProgram = compileProgram(
         "#version 330 core\nlayout(location=0) in vec2 a_pos; layout(location=1) in vec2 a_uv; out vec2 v_uv;\n"
         "uniform vec4 u_view;\n"
-        "void main(){ v_uv = a_uv; gl_Position = vec4(a_pos*u_view.xy+u_view.zw,0.0,1.0); }\n",
+        "uniform vec4 u_rot; uniform float u_asp;\n"
+        "void main(){ v_uv = a_uv; vec2 q = a_pos - u_rot.zw; q.x *= u_asp;\n"
+        "  q = vec2(u_rot.x*q.x - u_rot.y*q.y, u_rot.y*q.x + u_rot.x*q.y); q.x /= u_asp;\n"
+        "  gl_Position = vec4((q+u_rot.zw)*u_view.xy+u_view.zw,0.0,1.0); }\n",
         "#version 330 core\nuniform sampler2D u_tex; uniform sampler2D u_dst; uniform float u_opacity; in vec2 v_uv; out vec4 o;\n"
         "uniform vec4 u_soft; uniform vec4 u_softPow;\n"
         "float softEdge(vec2 uv){ float e = 1.0;\n"
@@ -238,6 +244,10 @@ bool Engine::initialize(QString *err)
     m_diffOpacityLoc = f->glGetUniformLocation(m_diffProgram, "u_opacity");
     m_diffViewLoc = f->glGetUniformLocation(m_diffProgram, "u_view");
     m_compViewLoc = f->glGetUniformLocation(m_compProgram, "u_view");
+    m_compRotLoc = f->glGetUniformLocation(m_compProgram, "u_rot");
+    m_compAspLoc = f->glGetUniformLocation(m_compProgram, "u_asp");
+    m_diffRotLoc = f->glGetUniformLocation(m_diffProgram, "u_rot");
+    m_diffAspLoc = f->glGetUniformLocation(m_diffProgram, "u_asp");
 
     if (!m_videoConv.init(m_quadVao, &log)) {
         if (err) *err = log;

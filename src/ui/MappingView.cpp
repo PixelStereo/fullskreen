@@ -284,11 +284,16 @@ int MappingView::hitViewportFrame(QPointF p) const
     if (isViewport(m_layer)) order.push_back(m_layer);
     for (int i : m_engine->viewports())
         if (i != m_layer) order.push_back(i);
-    for (int i : order) {
-        const QRectF b = m_engine->layer(i)->mapping.bounds();
-        const QRectF r = QRectF(toWidget(b.topLeft()), toWidget(b.bottomRight())).normalized();
-        const QRectF outer = r.adjusted(-6, -6, 6, 6), inner = r.adjusted(6, 6, -6, -6);
-        if (outer.contains(p) && !(inner.isValid() && inner.contains(p))) return i;
+    for (int i : order) { // near one of the four sides of its frame (turned or not)
+        const Mapping &m = m_engine->layer(i)->mapping;
+        for (int k = 0; k < 4; ++k) {
+            const QPointF a = toWidget(m.corners[k]), b = toWidget(m.corners[(k + 1) % 4]);
+            const QPointF d = b - a;
+            const double len2 = d.x() * d.x() + d.y() * d.y();
+            const double t = len2 > 1e-9 ? std::clamp(QPointF::dotProduct(p - a, d) / len2, 0.0, 1.0) : 0.0;
+            const QPointF q = a + d * t;
+            if (std::hypot(p.x() - q.x(), p.y() - q.y()) <= 6) return i;
+        }
     }
     return -1;
 }
@@ -404,8 +409,9 @@ void MappingView::paintViewportNames()
         Engine::Lock lk(&m_engine->mutex());
         for (int i : m_engine->viewports()) {
             const Layer *l = m_engine->layer(i);
-            const QRectF b = l->mapping.bounds();
-            frames.push_back({QRectF(toWidget(b.topLeft()), toWidget(b.bottomRight())).normalized(), l->name});
+            QPolygonF poly;
+            for (const QPointF &c : l->mapping.corners) poly << toWidget(c);
+            frames.push_back({poly.boundingRect(), l->name});
         }
     }
     QPainter p(this);
@@ -485,12 +491,8 @@ void MappingView::paintScene()
         std::vector<float> frames;
         for (int i : m_engine->viewports()) {
             if (i == m_layer) continue;
-            const QRectF b = m_engine->layer(i)->mapping.bounds();
-            const QPointF a = toWidget(b.topLeft()), c = toWidget(b.bottomRight());
-            pushLine(frames, a, QPointF(c.x(), a.y()));
-            pushLine(frames, QPointF(c.x(), a.y()), c);
-            pushLine(frames, c, QPointF(a.x(), c.y()));
-            pushLine(frames, QPointF(a.x(), c.y()), a);
+            const Mapping &vm = m_engine->layer(i)->mapping;
+            for (int k = 0; k < 4; ++k) pushLine(frames, toWidget(vm.corners[k]), toWidget(vm.corners[(k + 1) % 4]));
         }
         m_draw.drawLines(frames, kViewport);
     }
@@ -518,12 +520,7 @@ void MappingView::paintScene()
     // A viewport: its frame, moved by dragging (no corners or mesh)
     if (isViewport(cur)) {
         std::vector<float> frame;
-        const QRectF b = m->bounds();
-        const QPointF a = toWidget(b.topLeft()), c = toWidget(b.bottomRight());
-        pushLine(frame, a, QPointF(c.x(), a.y()));
-        pushLine(frame, QPointF(c.x(), a.y()), c);
-        pushLine(frame, c, QPointF(a.x(), c.y()));
-        pushLine(frame, QPointF(a.x(), c.y()), a);
+        for (int k = 0; k < 4; ++k) pushLine(frame, toWidget(m->corners[k]), toWidget(m->corners[(k + 1) % 4]));
         m_draw.drawLines(frame, m_engine->isLocked(cur) ? QColor(230, 80, 70, 220) : kSelected);
         return;
     }

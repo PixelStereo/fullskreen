@@ -382,17 +382,16 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
             if (set) m.rotate(wrapDegrees(*set - now), comp);
             return true;
         }
-        if (l.isViewport && p.size() == 2 && (p[1] == "width" || p[1] == "height")) { // size in composition pixels
-            const bool x = p[1] == "width";
-            QRectF b = m.bounds();
-            const double size = x ? comp.width() : comp.height();
-            if (get) *get = (x ? b.width() : b.height()) * size;
+        if (l.isViewport && ((p.size() == 2 && (p[1] == "width" || p[1] == "height")) ||
+                             (p.size() == 3 && p[1] == "position" && (p[2] == "x" || p[2] == "y")))) {
+            Mapping::Rect r = m.rect(comp); // a rectangle, upright or turned: pixels
+            double *v = p[1] == "width" ? &r.w : p[1] == "height" ? &r.h : p[2] == "x" ? &r.center.rx() : &r.center.ry();
+            if (get) *get = *v;
             if (set) {
-                const QPointF c = b.center();
-                const double v = std::clamp(*set, 1.0, 100000.0) / size;
-                b.setSize(QSizeF(x ? v : b.width(), x ? b.height() : v));
-                b.moveCenter(c);
-                m.setBounds(b);
+                *v = p[1] == "position" ? std::clamp(*set, -4.0 * (p[2] == "x" ? comp.width() : comp.height()),
+                                                     5.0 * (p[2] == "x" ? comp.width() : comp.height()))
+                                        : std::clamp(*set, 1.0, 100000.0);
+                m.setRect(r, comp);
             }
             return true;
         }
@@ -538,7 +537,7 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
     if (!l) return out;
     // Labels: "<Category> › <Parameter>", the categories being the branches of the OSC address
     add("opacity", "Opacity", 0, 1);
-    if (!l->isViewport) add("spatial/rotation", "Spatial › Rotation (°)", -180, 180);
+    add("spatial/rotation", "Spatial › Rotation (°)", -180, 180);
     add("spatial/position/x", "Spatial › Position X", -4.0 * m_compSize.width(), 5.0 * m_compSize.width());
     add("spatial/position/y", "Spatial › Position Y", -4.0 * m_compSize.height(), 5.0 * m_compSize.height());
     if (l->isViewport) { // an upright rectangle of the composition: its size in pixels

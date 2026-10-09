@@ -1469,10 +1469,7 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         grid->addWidget(link, 1, 3);
         grid->addWidget(new QLabel(m_sizePx ? QStringLiteral("H") : QStringLiteral("Y")), 1, 4);
         grid->addWidget(m_scaleY, 1, 5);
-        if (s.isViewport) { // a viewport is an upright rectangle of the composition
-            delete m_rotation;
-            m_rotation = nullptr;
-        } else {
+        {
             m_rotation->setWrapping(true);
             m_rotation->setRange(-180, 180);
             auto *rotLabel = new ResetLabel(QStringLiteral("Rotation"), [this] { m_rotation->setValue(0); });
@@ -1506,13 +1503,40 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
                                    b.height() / comp.height()));
             }, true);
         };
-        connect(m_posX, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [applyBounds](double x) {
-            applyBounds(QStringLiteral("Position"), [x](QRectF b) { b.moveCenter(QPointF(x, b.center().y())); return b; });
+        // A viewport is a rectangle (turned or not): its center and size are read and written as such
+        auto applyRect = [this, comp](const QString &text, const std::function<void(Mapping::Rect &)> &fn) {
+            editMapping(text, [&](Mapping &m) {
+                Mapping::Rect r = m.rect(comp);
+                fn(r);
+                m.setRect(r, comp);
+            }, true);
+        };
+        connect(m_posX, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, applyBounds, applyRect](double x) {
+            if (m_sizePx) applyRect(QStringLiteral("Position"), [x](Mapping::Rect &r) { r.center.setX(x); });
+            else applyBounds(QStringLiteral("Position"), [x](QRectF b) { b.moveCenter(QPointF(x, b.center().y())); return b; });
         });
-        connect(m_posY, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [applyBounds](double y) {
-            applyBounds(QStringLiteral("Position"), [y](QRectF b) { b.moveCenter(QPointF(b.center().x(), y)); return b; });
+        connect(m_posY, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, applyBounds, applyRect](double y) {
+            if (m_sizePx) applyRect(QStringLiteral("Position"), [y](Mapping::Rect &r) { r.center.setY(y); });
+            else applyBounds(QStringLiteral("Position"), [y](QRectF b) { b.moveCenter(QPointF(b.center().x(), y)); return b; });
         });
-        auto scale = [this, applyBounds, comp](double sx, double sy, bool fromX) {
+        auto scale = [this, applyBounds, applyRect, comp](double sx, double sy, bool fromX) {
+            if (m_sizePx) {
+                applyRect(QStringLiteral("Size"), [&](Mapping::Rect &r) {
+                    double w = sx, h = sy;
+                    if (m_scaleLinked) { // the other side follows, keeping the aspect ratio
+                        if (fromX && r.w > 1e-9) h = r.h * w / r.w;
+                        if (!fromX && r.h > 1e-9) w = r.w * h / r.h;
+                    } else if (fromX) {
+                        h = r.h;
+                    } else {
+                        w = r.w;
+                    }
+                    r.w = std::max(1.0, w);
+                    r.h = std::max(1.0, h);
+                });
+                refreshSpatial();
+                return;
+            }
             applyBounds(QStringLiteral("Scale"), [&](QRectF b) {
                 const QPointF c = b.center();
                 double w = m_sizePx ? sx : sx / 100.0 * comp.width(), h = m_sizePx ? sy : sy / 100.0 * comp.height();
@@ -1554,11 +1578,10 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         connect(pixels, &QPushButton::clicked, this, [this, vs] {
             const QSize c = m_engine->compositionSize();
             editMapping(QStringLiteral("Pixel for Pixel"), [&](Mapping &m) {
-                QRectF b = m.bounds();
-                const QPointF center = b.center();
-                b.setSize(QSizeF(double(vs.width()) / c.width(), double(vs.height()) / c.height()));
-                b.moveCenter(center);
-                m.setBounds(b);
+                Mapping::Rect r = m.rect(c);
+                r.w = vs.width();
+                r.h = vs.height();
+                m.setRect(r, c);
             });
             refreshSpatial();
         });
@@ -1951,6 +1974,7 @@ void LayerInspector::refreshSpatial()
 {
     if (!m_posX) return;
     QRectF b;
+    Mapping::Rect rect;
     double angle = 0;
     const QSize comp = m_engine->compositionSize();
     {
@@ -1958,15 +1982,16 @@ void LayerInspector::refreshSpatial()
         Layer *l = m_engine->layer(m_layer);
         if (!l) return;
         b = l->mapping.bounds();
+        rect = l->mapping.rect(comp);
         angle = l->mapping.angle(comp);
     }
     if (m_rotation && !m_rotation->hasFocus() && std::abs(m_rotation->value() - angle) > 1e-6) {
         QSignalBlocker blk(m_rotation);
         m_rotation->setValue(angle);
     }
-    const double values[4] = {b.center().x() * comp.width(), b.center().y() * comp.height(),
-                              m_sizePx ? b.width() * comp.width() : b.width() * 100.0,
-                              m_sizePx ? b.height() * comp.height() : b.height() * 100.0};
+    const double values[4] = {m_sizePx ? rect.center.x() : b.center().x() * comp.width(),
+                              m_sizePx ? rect.center.y() : b.center().y() * comp.height(),
+                              m_sizePx ? rect.w : b.width() * 100.0, m_sizePx ? rect.h : b.height() * 100.0};
     QDoubleSpinBox *boxes[4] = {m_posX, m_posY, m_scaleX, m_scaleY};
     for (int k = 0; k < 4; ++k) {
         if (boxes[k]->hasFocus()) continue; // being edited

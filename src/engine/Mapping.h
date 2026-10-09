@@ -55,6 +55,14 @@ public:
     // Turns the whole shape (corners and mesh) around the middle of its bounds, in pixels of `comp`
     void rotate(double degrees, QSize comp);
 
+    // An upright-or-turned rectangle (a viewport's region): center and size in pixels of `comp`, angle in degrees
+    struct Rect {
+        QPointF center;
+        double w = 1, h = 1, angle = 0;
+    };
+    Rect rect(QSize comp) const;
+    void setRect(const Rect &r, QSize comp); // corners only: no mesh warp
+
     // Final position (homography + warp) for (u,v) in [0,1].
     QPointF map(double u, double v) const;
     // Inverse of map (Newton iterations from `guess`): (u,v) whose image is `p`

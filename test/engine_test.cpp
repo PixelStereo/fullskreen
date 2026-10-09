@@ -480,6 +480,43 @@ int main(int argc, char **argv)
         e.newProject();
     }
 
+    // A viewport can be turned: its region is a rectangle of the composition rotated about its center
+    {
+        e.newProject();
+        e.fadeCompositionOpacity(1.0, 0);
+        e.setBlackout(false, 0);
+        e.setCompositionSize(QSize(64, 32));
+        QImage rb(64, 32, QImage::Format_RGB32); // left half red, right half blue
+        for (int y = 0; y < 32; ++y)
+            for (int x = 0; x < 64; ++x) rb.setPixel(x, y, x < 32 ? qRgb(255, 0, 0) : qRgb(0, 0, 255));
+        rb.save(tmp + "/redblue_vp.png");
+        const int v1 = e.viewports().first();
+        e.setViewportSize(v1, QSize(32, 32));
+        const int li = e.addLayer("img");
+        CHECK(e.setLayerImage(li, tmp + "/redblue_vp.png", &err));
+        e.layer(li)->mapping.resetCorners();
+        const quint64 vid = e.layerId(v1);
+        auto shot = [&](double angle) {
+            {
+                Engine::Lock lk(&e.mutex());
+                Mapping &m = e.layer(e.indexOfId(vid))->mapping;
+                m.setRect({QPointF(32, 16), 32, 32, angle}, QSize(64, 32));
+            }
+            for (int k = 0; k < 3; ++k) e.renderFrame();
+            return e.grabViewport(vid);
+        };
+        QImage g = shot(0); // the middle square: red on its left, blue on its right
+        CHECK(g.size() == QSize(32, 32) && g.pixelColor(2, 2).red() > 250 && g.pixelColor(29, 2).blue() > 250);
+        g = shot(90); // turned a quarter: the halves are now top and bottom, the blue one on top
+        CHECK(g.pixelColor(2, 2).blue() > 250 && g.pixelColor(2, 29).red() > 250 && g.pixelColor(29, 2).blue() > 250);
+        {
+            Engine::Lock lk(&e.mutex());
+            const Mapping::Rect r = e.layer(e.indexOfId(vid))->mapping.rect(QSize(64, 32));
+            CHECK(std::abs(r.angle - 90) < 1e-6 && std::abs(r.w - 32) < 1e-6 && std::abs(r.center.x() - 32) < 1e-6);
+        }
+        e.newProject();
+    }
+
     // 4d. OSC and OSCQuery
     {
         osc::Message m{"/a/b", "ifsTFNd", {7, 0.5, QStringLiteral("hey"), true, false, QVariant(), 2.25}};
@@ -542,7 +579,7 @@ int main(int argc, char **argv)
             QStringList paths;
             for (const auto &p : e.animatableParams(e.layerId(vi))) paths << p.path;
             CHECK(paths.contains("spatial/width") && paths.contains("spatial/height") && paths.contains("spatial/position/x") &&
-                  !paths.contains("spatial/scale/x") && !paths.contains("spatial/rotation"));
+                  !paths.contains("spatial/scale/x") && paths.contains("spatial/rotation"));
             e.layer(vi)->mapping.resetCorners();
         }
         // Renaming changes the address

@@ -288,3 +288,30 @@ void Mapping::rotate(double degrees, QSize comp)
     for (QPointF &p : offsets) p = turn(p);
     ++revision;
 }
+
+Mapping::Rect Mapping::rect(QSize comp) const
+{
+    const double W = std::max(1, comp.width()), H = std::max(1, comp.height());
+    auto px = [&](QPointF p) { return QPointF(p.x() * W, p.y() * H); };
+    Rect r;
+    r.center = (px(corners[0]) + px(corners[1]) + px(corners[2]) + px(corners[3])) / 4.0;
+    auto len = [](QPointF d) { return std::hypot(d.x(), d.y()); };
+    r.w = len(px(corners[1]) - px(corners[0]));
+    r.h = len(px(corners[3]) - px(corners[0]));
+    r.angle = angle(comp);
+    return r;
+}
+
+void Mapping::setRect(const Rect &r, QSize comp)
+{
+    const double W = std::max(1, comp.width()), H = std::max(1, comp.height());
+    const double a = r.angle * 3.14159265358979323846 / 180, c = std::cos(a), s = std::sin(a);
+    const double hw = r.w / 2, hh = r.h / 2;
+    static const int sx[4] = {-1, 1, 1, -1}, sy[4] = {-1, -1, 1, 1}; // top left, top right, bottom right, bottom left
+    for (int k = 0; k < 4; ++k) {
+        const double x = sx[k] * hw, y = sy[k] * hh;
+        corners[k] = QPointF((r.center.x() + x * c - y * s) / W, (r.center.y() + x * s + y * c) / H);
+    }
+    for (QPointF &o : offsets) o = QPointF();
+    ++revision;
+}

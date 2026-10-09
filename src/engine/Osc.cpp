@@ -961,42 +961,35 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
 
         // Spatial: position (center, composition pixels), scale (% of the composition), corners (normalized)
         if (isViewport) {
-            // A viewport is an upright rectangle of the composition: its center and its size, in composition pixels
+            // A viewport is a rectangle of the composition (turned by spatial/rotation): its center and its size, in pixels
             for (int axis = 0; axis < 2; ++axis) {
                 const bool x = axis == 0;
                 OscNode &pos = L.method(P + (x ? "/spatial/position/x" : "/spatial/position/y"), "f", 3, x ? "Position X" : "Position Y",
                                         [e, x](Layer &l) {
-                                            const QSize c = e->compositionSize();
-                                            const QPointF p = l.mapping.bounds().center();
-                                            return QVariantList{x ? p.x() * c.width() : p.y() * c.height()};
+                                            const Mapping::Rect r = l.mapping.rect(e->compositionSize());
+                                            return QVariantList{x ? r.center.x() : r.center.y()};
                                         },
                                         L.edit([e, x](Layer &l, const QVariantList &a) {
                                             if (a.isEmpty()) return false;
                                             const QSize c = e->compositionSize();
-                                            QRectF b = l.mapping.bounds();
-                                            QPointF ctr = b.center();
-                                            (x ? ctr.rx() : ctr.ry()) = num(a[0]) / (x ? c.width() : c.height());
-                                            b.moveCenter(ctr);
-                                            l.mapping.setBounds(b);
+                                            Mapping::Rect r = l.mapping.rect(c);
+                                            (x ? r.center.rx() : r.center.ry()) = num(a[0]);
+                                            l.mapping.setRect(r, c);
                                             return true;
                                         }));
                 pos.range = {minMax(-4.0 * (x ? e->compositionSize().width() : e->compositionSize().height()),
                                     5.0 * (x ? e->compositionSize().width() : e->compositionSize().height()))};
                 L.method(P + (x ? "/spatial/width" : "/spatial/height"), "f", 3, x ? "Width (px)" : "Height (px)",
                          [e, x](Layer &l) {
-                             const QSize c = e->compositionSize();
-                             const QRectF b = l.mapping.bounds();
-                             return QVariantList{x ? b.width() * c.width() : b.height() * c.height()};
+                             const Mapping::Rect r = l.mapping.rect(e->compositionSize());
+                             return QVariantList{x ? r.w : r.h};
                          },
                          L.edit([e, x](Layer &l, const QVariantList &a) {
                              if (a.isEmpty()) return false;
                              const QSize c = e->compositionSize();
-                             QRectF b = l.mapping.bounds();
-                             const QPointF ctr = b.center();
-                             const double v = std::max(1.0, num(a[0])) / (x ? c.width() : c.height());
-                             b.setSize(QSizeF(x ? v : b.width(), x ? b.height() : v));
-                             b.moveCenter(ctr);
-                             l.mapping.setBounds(b);
+                             Mapping::Rect r = l.mapping.rect(c);
+                             (x ? r.w : r.h) = std::max(1.0, num(a[0]));
+                             l.mapping.setRect(r, c);
                              return true;
                          }))
                     .range = {minMax(1, 100000)};
