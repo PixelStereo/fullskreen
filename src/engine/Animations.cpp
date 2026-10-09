@@ -382,7 +382,21 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
             if (set) m.rotate(wrapDegrees(*set - now), comp);
             return true;
         }
-        if (p.size() == 3 && (p[1] == "position" || p[1] == "scale") && (p[2] == "x" || p[2] == "y")) {
+        if (l.isViewport && p.size() == 2 && (p[1] == "width" || p[1] == "height")) { // size in composition pixels
+            const bool x = p[1] == "width";
+            QRectF b = m.bounds();
+            const double size = x ? comp.width() : comp.height();
+            if (get) *get = (x ? b.width() : b.height()) * size;
+            if (set) {
+                const QPointF c = b.center();
+                const double v = std::clamp(*set, 1.0, 100000.0) / size;
+                b.setSize(QSizeF(x ? v : b.width(), x ? b.height() : v));
+                b.moveCenter(c);
+                m.setBounds(b);
+            }
+            return true;
+        }
+        if (p.size() == 3 && (p[1] == "position" || (p[1] == "scale" && !l.isViewport)) && (p[2] == "x" || p[2] == "y")) {
             const bool x = p[2] == "x";
             QRectF b = m.bounds();
             const double size = x ? comp.width() : comp.height();
@@ -524,11 +538,16 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
     if (!l) return out;
     // Labels: "<Category> › <Parameter>", the categories being the branches of the OSC address
     add("opacity", "Opacity", 0, 1);
-    add("spatial/rotation", "Spatial › Rotation (°)", -180, 180);
+    if (!l->isViewport) add("spatial/rotation", "Spatial › Rotation (°)", -180, 180);
     add("spatial/position/x", "Spatial › Position X", -4.0 * m_compSize.width(), 5.0 * m_compSize.width());
     add("spatial/position/y", "Spatial › Position Y", -4.0 * m_compSize.height(), 5.0 * m_compSize.height());
-    add("spatial/scale/x", "Spatial › Scale X (%)", 0.1, 2000);
-    add("spatial/scale/y", "Spatial › Scale Y (%)", 0.1, 2000);
+    if (l->isViewport) { // an upright rectangle of the composition: its size in pixels
+        add("spatial/width", "Spatial › Width", 1, 100000);
+        add("spatial/height", "Spatial › Height", 1, 100000);
+    } else {
+        add("spatial/scale/x", "Spatial › Scale X (%)", 0.1, 2000);
+        add("spatial/scale/y", "Spatial › Scale Y (%)", 0.1, 2000);
+    }
     if (l->hasTransport()) {
         add("source/volume", "Source › Volume", 0, 2);
         add("source/speed", "Source › Speed", 0, 4);

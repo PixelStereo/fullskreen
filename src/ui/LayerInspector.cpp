@@ -1429,30 +1429,33 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         };
         m_posX = spin(-100000, 100000, QStringLiteral(" px"), 1);
         m_posY = spin(-100000, 100000, QStringLiteral(" px"), 1);
-        m_scaleX = spin(0.1, 10000, QStringLiteral(" %"), 2);
-        m_scaleY = spin(0.1, 10000, QStringLiteral(" %"), 2);
+        m_sizePx = s.isViewport;
+        m_scaleX = m_sizePx ? spin(1, 100000, QStringLiteral(" px"), 1) : spin(0.1, 10000, QStringLiteral(" %"), 2);
+        m_scaleY = m_sizePx ? spin(1, 100000, QStringLiteral(" px"), 1) : spin(0.1, 10000, QStringLiteral(" %"), 2);
         m_rotation = spin(-360, 360, QStringLiteral("°"), 1);
         m_posX->setToolTip(QStringLiteral("Horizontal position of the layer's center, in composition pixels"));
         m_posY->setToolTip(QStringLiteral("Vertical position of the layer's center, in composition pixels"));
-        m_scaleX->setToolTip(QStringLiteral("Width of the layer, in % of the composition width"));
-        m_scaleY->setToolTip(QStringLiteral("Height of the layer, in % of the composition height"));
+        m_scaleX->setToolTip(m_sizePx ? QStringLiteral("Width of the region this viewport shows, in composition pixels")
+                                      : QStringLiteral("Width of the layer, in % of the composition width"));
+        m_scaleY->setToolTip(m_sizePx ? QStringLiteral("Height of the region this viewport shows, in composition pixels")
+                                      : QStringLiteral("Height of the layer, in % of the composition height"));
         m_rotation->setToolTip(QStringLiteral("Rotation of the layer, in degrees"));
         auto *link = new QToolButton;
         link->setCheckable(true);
         link->setChecked(m_scaleLinked);
         link->setText(QStringLiteral("⛓"));
-        link->setToolTip(QStringLiteral("Link width and height (keep the aspect ratio)"));
+        link->setToolTip(QStringLiteral("Linked: width and height keep the aspect ratio. Click to unlink them."));
         link->setStyleSheet(QStringLiteral("QToolButton:checked { background:%1; color:%2; }")
                                 .arg(theme::css(), theme::onAccent().name()));
         auto *posLabel = new ResetLabel(QStringLiteral("Position"), [this, comp] {
             m_posX->setValue(comp.width() / 2.0); // centered
             m_posY->setValue(comp.height() / 2.0);
         });
-        auto *scaleLabel = new ResetLabel(QStringLiteral("Scale"), [this] {
+        auto *scaleLabel = new ResetLabel(m_sizePx ? QStringLiteral("Size") : QStringLiteral("Scale"), [this, comp] {
             const bool linked = m_scaleLinked;
             m_scaleLinked = false;
-            m_scaleX->setValue(100.0);
-            m_scaleY->setValue(100.0);
+            m_scaleX->setValue(m_sizePx ? comp.width() : 100.0); // the whole composition
+            m_scaleY->setValue(m_sizePx ? comp.height() : 100.0);
             m_scaleLinked = linked;
         });
         grid->addWidget(posLabel, 0, 0);
@@ -1461,10 +1464,10 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         grid->addWidget(new QLabel(QStringLiteral("Y")), 0, 4);
         grid->addWidget(m_posY, 0, 5);
         grid->addWidget(scaleLabel, 1, 0);
-        grid->addWidget(new QLabel(QStringLiteral("X")), 1, 1);
+        grid->addWidget(new QLabel(m_sizePx ? QStringLiteral("W") : QStringLiteral("X")), 1, 1);
         grid->addWidget(m_scaleX, 1, 2);
         grid->addWidget(link, 1, 3);
-        grid->addWidget(new QLabel(QStringLiteral("Y")), 1, 4);
+        grid->addWidget(new QLabel(m_sizePx ? QStringLiteral("H") : QStringLiteral("Y")), 1, 4);
         grid->addWidget(m_scaleY, 1, 5);
         if (s.isViewport) { // a viewport is an upright rectangle of the composition
             delete m_rotation;
@@ -1512,7 +1515,7 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         auto scale = [this, applyBounds, comp](double sx, double sy, bool fromX) {
             applyBounds(QStringLiteral("Scale"), [&](QRectF b) {
                 const QPointF c = b.center();
-                double w = sx / 100.0 * comp.width(), h = sy / 100.0 * comp.height();
+                double w = m_sizePx ? sx : sx / 100.0 * comp.width(), h = m_sizePx ? sy : sy / 100.0 * comp.height();
                 if (m_scaleLinked) { // the other axis follows, keeping the aspect ratio
                     if (fromX && b.width() > 1e-9) h = b.height() * w / b.width();
                     if (!fromX && b.height() > 1e-9) w = b.width() * h / b.height();
@@ -1961,8 +1964,9 @@ void LayerInspector::refreshSpatial()
         QSignalBlocker blk(m_rotation);
         m_rotation->setValue(angle);
     }
-    const double values[4] = {b.center().x() * comp.width(), b.center().y() * comp.height(), b.width() * 100.0,
-                              b.height() * 100.0};
+    const double values[4] = {b.center().x() * comp.width(), b.center().y() * comp.height(),
+                              m_sizePx ? b.width() * comp.width() : b.width() * 100.0,
+                              m_sizePx ? b.height() * comp.height() : b.height() * 100.0};
     QDoubleSpinBox *boxes[4] = {m_posX, m_posY, m_scaleX, m_scaleY};
     for (int k = 0; k < 4; ++k) {
         if (boxes[k]->hasFocus()) continue; // being edited

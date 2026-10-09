@@ -100,4 +100,5 @@ private:
     QPointer<ViewportOutputPanel> m_output;
     QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY, m_rotation;
     bool m_scaleLinked = true;
+    bool m_sizePx = false; // a viewport: width and height in composition pixels (a layer: scale in %)
 };

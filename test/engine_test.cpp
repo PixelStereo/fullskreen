@@ -529,6 +529,22 @@ int main(int argc, char **argv)
         CHECK(!server.handleMessage({L + "/opacity", "f", {0.9}}) && std::abs(e.layer(V + 1)->opacity - 0.5f) < 1e-6);
         CHECK(server.handleMessage({L + "/enable", "F", {false}}) && !e.layer(V + 1)->enabled);
         server.handleMessage({"/layer/G/locked", "F", {false}});
+        // A viewport: position and size in composition pixels (no scale)
+        {
+            const int vi = e.indexOfId(e.mainViewportId());
+            const QString VP = "/viewport/" + osc::safeName(e.layer(vi)->name);
+            CHECK(server.handleMessage({VP + "/spatial/width", "f", {32}}) && server.handleMessage({VP + "/spatial/height", "f", {16}}));
+            CHECK(server.handleMessage({VP + "/spatial/position/x", "f", {10}}) && server.handleMessage({VP + "/spatial/position/y", "f", {8}}));
+            const QRectF bb = e.layer(vi)->mapping.bounds();
+            CHECK(std::abs(bb.width() * 64 - 32) < 1e-6 && std::abs(bb.height() * 32 - 16) < 1e-6);
+            CHECK(std::abs(bb.center().x() * 64 - 10) < 1e-6 && std::abs(bb.center().y() * 32 - 8) < 1e-6);
+            CHECK(!server.handleMessage({VP + "/spatial/scale", "ff", {50, 50}}));
+            QStringList paths;
+            for (const auto &p : e.animatableParams(e.layerId(vi))) paths << p.path;
+            CHECK(paths.contains("spatial/width") && paths.contains("spatial/height") && paths.contains("spatial/position/x") &&
+                  !paths.contains("spatial/scale/x") && !paths.contains("spatial/rotation"));
+            e.layer(vi)->mapping.resetCorners();
+        }
         // Renaming changes the address
         CHECK(server.handleMessage({L + "/name", "s", {QStringLiteral("Front wall")}}) && e.layer(V + 1)->name == "Front wall");
         int status = 0;
