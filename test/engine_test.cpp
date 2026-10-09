@@ -480,6 +480,25 @@ int main(int argc, char **argv)
         e.newProject();
     }
 
+    // Pivot: the center of the rotation, fixed to the picture
+    {
+        Mapping m;
+        const QSize comp(100, 50);
+        m.setCorner(0, QPointF(0.2, 0.2)), m.setCorner(1, QPointF(0.6, 0.2)), m.setCorner(2, QPointF(0.6, 0.6)),
+            m.setCorner(3, QPointF(0.2, 0.6));
+        CHECK((m.pivotPoint() - QPointF(0.4, 0.4)).manhattanLength() < 1e-9); // the middle by default
+        m.setPivotPoint(QPointF(0.2, 0.2)); // the top left corner
+        CHECK((m.pivot - QPointF(0, 0)).manhattanLength() < 1e-9);
+        m.rotate(90, comp);
+        CHECK((m.pivotPoint() - QPointF(0.2, 0.2)).manhattanLength() < 1e-9 && std::abs(m.angle(comp) - 90) < 1e-6);
+        CHECK((m.corners[0] - QPointF(0.2, 0.2)).manhattanLength() < 1e-9); // it did not move: it turned about that corner
+        Mapping back;
+        back.fromJson(m.toJson());
+        CHECK((back.pivot - m.pivot).manhattanLength() < 1e-9);
+        m.resetCorners();
+        CHECK((m.pivot - QPointF(0.5, 0.5)).manhattanLength() < 1e-9);
+    }
+
     // A viewport can be turned: its region is a rectangle of the composition rotated about its center
     {
         e.newProject();
@@ -576,10 +595,17 @@ int main(int argc, char **argv)
             CHECK(std::abs(bb.width() * 64 - 32) < 1e-6 && std::abs(bb.height() * 32 - 16) < 1e-6);
             CHECK(std::abs(bb.center().x() * 64 - 10) < 1e-6 && std::abs(bb.center().y() * 32 - 8) < 1e-6);
             CHECK(!server.handleMessage({VP + "/spatial/scale", "ff", {50, 50}}));
+            CHECK(server.handleMessage({VP + "/spatial/pivot/x", "f", {0}}) && server.handleMessage({VP + "/spatial/pivot/y", "f", {0}}));
+            CHECK(server.handleMessage({VP + "/spatial/rotation", "f", {90}}));
+            {
+                const Mapping &pm = e.layer(vi)->mapping;
+                CHECK((pm.pivotPoint() - QPointF(0, 0)).manhattanLength() < 1e-6 && std::abs(pm.angle(e.compositionSize()) - 90) < 1e-6);
+            }
             QStringList paths;
             for (const auto &p : e.animatableParams(e.layerId(vi))) paths << p.path;
             CHECK(paths.contains("spatial/width") && paths.contains("spatial/height") && paths.contains("spatial/position/x") &&
-                  !paths.contains("spatial/scale/x") && paths.contains("spatial/rotation"));
+                  !paths.contains("spatial/scale/x") && paths.contains("spatial/rotation") &&
+                  paths.contains("spatial/pivot/x") && paths.contains("spatial/pivot/y"));
             e.layer(vi)->mapping.resetCorners();
         }
         // Renaming changes the address

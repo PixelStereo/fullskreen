@@ -38,6 +38,7 @@ public:
     bool meshMode = false;                                 // editing mode in the UI
     unsigned revision = 1;                                 // incremented on every change
     SoftEdge soft;                                         // fades the picture towards its sides
+    QPointF pivot{0.5, 0.5};                               // center of the rotation, in the layer's own frame (0..1 over its picture)
 
     void resetMesh(int c, int r);
     void resetCorners();
@@ -50,9 +51,13 @@ public:
     // an axis-aligned scale + translation composes exactly with the homography).
     void setBounds(const QRectF &to);
 
+    // The pivot on the composition (normalized), and the other way round: moving it moves no picture
+    QPointF pivotPoint() const;
+    void setPivotPoint(QPointF p);
+
     // Angle of the top edge, in degrees, measured in pixels of a composition of size `comp`
     double angle(QSize comp) const;
-    // Turns the whole shape (corners and mesh) around the middle of its bounds, in pixels of `comp`
+    // Turns the whole shape (corners and mesh) around its pivot, in pixels of `comp`
     void rotate(double degrees, QSize comp);
 
     // An upright-or-turned rectangle (a viewport's region): center and size in pixels of `comp`, angle in degrees

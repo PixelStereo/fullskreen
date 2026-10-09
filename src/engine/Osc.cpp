@@ -1037,6 +1037,26 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      return true;
                  }))
             .range = {minMax(-360, 360)};
+        // Pivot: the center of the rotation, fixed to the picture, in composition pixels (default: the middle)
+        for (int axis = 0; axis < 2; ++axis) {
+            const bool x = axis == 0;
+            OscNode &pv = L.method(P + (x ? "/spatial/pivot/x" : "/spatial/pivot/y"), "f", 3, x ? "Pivot X" : "Pivot Y",
+                                   [e, x](Layer &l) {
+                                       const QSize c = e->compositionSize();
+                                       const QPointF p = l.mapping.pivotPoint();
+                                       return QVariantList{x ? p.x() * c.width() : p.y() * c.height()};
+                                   },
+                                   L.edit([e, x](Layer &l, const QVariantList &a) {
+                                       if (a.isEmpty()) return false;
+                                       const QSize c = e->compositionSize();
+                                       QPointF p = l.mapping.pivotPoint();
+                                       (x ? p.rx() : p.ry()) = num(a[0]) / (x ? c.width() : c.height());
+                                       l.mapping.setPivotPoint(p);
+                                       return true;
+                                   }));
+            pv.range = {minMax(-4.0 * (x ? e->compositionSize().width() : e->compositionSize().height()),
+                               5.0 * (x ? e->compositionSize().width() : e->compositionSize().height()))};
+        }
         static const char *kCorners[] = {"top_left", "top_right", "bottom_right", "bottom_left"};
         static const char *kCornerNames[] = {"Top Left", "Top Right", "Bottom Right", "Bottom Left"};
         for (int k = 0; k < 4; ++k)

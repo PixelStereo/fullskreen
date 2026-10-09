@@ -1476,6 +1476,22 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             grid->addWidget(rotLabel, 2, 0);
             grid->addWidget(m_rotation, 2, 2);
         }
+        m_pivotX = spin(-100000, 100000, QStringLiteral(" px"), 1);
+        m_pivotY = spin(-100000, 100000, QStringLiteral(" px"), 1);
+        m_pivotX->setToolTip(QStringLiteral("Horizontal center of the rotation, in composition pixels (moves with the layer)"));
+        m_pivotY->setToolTip(QStringLiteral("Vertical center of the rotation, in composition pixels (moves with the layer)"));
+        auto *pivotLabel = new ResetLabel(QStringLiteral("Pivot"), [this] {
+            editMapping(QStringLiteral("Pivot"), [](Mapping &m) {
+                m.pivot = QPointF(0.5, 0.5); // the middle of the picture
+                ++m.revision;
+            });
+            refreshSpatial();
+        });
+        grid->addWidget(pivotLabel, 3, 0);
+        grid->addWidget(new QLabel(QStringLiteral("X")), 3, 1);
+        grid->addWidget(m_pivotX, 3, 2);
+        grid->addWidget(new QLabel(QStringLiteral("Y")), 3, 4);
+        grid->addWidget(m_pivotY, 3, 5);
         grid->setColumnStretch(2, 1);
         grid->setColumnStretch(5, 1);
         v->addLayout(grid);
@@ -1493,6 +1509,15 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         }
 
         connect(link, &QToolButton::toggled, this, [this](bool on) { m_scaleLinked = on; });
+        auto setPivot = [this, comp](bool x, double v) {
+            editMapping(QStringLiteral("Pivot"), [&](Mapping &m) {
+                QPointF p = m.pivotPoint();
+                (x ? p.rx() : p.ry()) = v / (x ? comp.width() : comp.height());
+                m.setPivotPoint(p);
+            }, true);
+        };
+        connect(m_pivotX, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [setPivot](double v) { setPivot(true, v); });
+        connect(m_pivotY, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [setPivot](double v) { setPivot(false, v); });
         auto applyBounds = [this, comp](const QString &text, const std::function<QRectF(QRectF)> &fn) {
             editMapping(text, [&](Mapping &m) {
                 QRectF b = m.bounds();
@@ -1975,6 +2000,7 @@ void LayerInspector::refreshSpatial()
     if (!m_posX) return;
     QRectF b;
     Mapping::Rect rect;
+    QPointF pivot;
     double angle = 0;
     const QSize comp = m_engine->compositionSize();
     {
@@ -1983,6 +2009,7 @@ void LayerInspector::refreshSpatial()
         if (!l) return;
         b = l->mapping.bounds();
         rect = l->mapping.rect(comp);
+        pivot = l->mapping.pivotPoint();
         angle = l->mapping.angle(comp);
     }
     if (m_rotation && !m_rotation->hasFocus() && std::abs(m_rotation->value() - angle) > 1e-6) {
@@ -1992,12 +2019,13 @@ void LayerInspector::refreshSpatial()
     const double values[4] = {m_sizePx ? rect.center.x() : b.center().x() * comp.width(),
                               m_sizePx ? rect.center.y() : b.center().y() * comp.height(),
                               m_sizePx ? rect.w : b.width() * 100.0, m_sizePx ? rect.h : b.height() * 100.0};
-    QDoubleSpinBox *boxes[4] = {m_posX, m_posY, m_scaleX, m_scaleY};
-    for (int k = 0; k < 4; ++k) {
+    QDoubleSpinBox *boxes[6] = {m_posX, m_posY, m_scaleX, m_scaleY, m_pivotX, m_pivotY};
+    const double all[6] = {values[0], values[1], values[2], values[3], pivot.x() * comp.width(), pivot.y() * comp.height()};
+    for (int k = 0; k < 6; ++k) {
         if (boxes[k]->hasFocus()) continue; // being edited
-        if (std::abs(boxes[k]->value() - values[k]) < 1e-6) continue;
+        if (std::abs(boxes[k]->value() - all[k]) < 1e-6) continue;
         QSignalBlocker blk(boxes[k]);
-        boxes[k]->setValue(values[k]);
+        boxes[k]->setValue(all[k]);
     }
 }
 

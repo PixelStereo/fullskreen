@@ -395,6 +395,17 @@ static bool layerParam(Layer &l, const QString &path, double *get, const double 
             }
             return true;
         }
+        if (p.size() == 3 && p[1] == "pivot" && (p[2] == "x" || p[2] == "y")) { // center of the rotation, in pixels
+            const bool x = p[2] == "x";
+            QPointF pt = m.pivotPoint();
+            const double size = x ? comp.width() : comp.height();
+            if (get) *get = (x ? pt.x() : pt.y()) * size;
+            if (set) {
+                (x ? pt.rx() : pt.ry()) = std::clamp(*set, -4.0 * size, 5.0 * size) / size;
+                m.setPivotPoint(pt);
+            }
+            return true;
+        }
         if (p.size() == 3 && (p[1] == "position" || (p[1] == "scale" && !l.isViewport)) && (p[2] == "x" || p[2] == "y")) {
             const bool x = p[2] == "x";
             QRectF b = m.bounds();
@@ -540,6 +551,8 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
     add("spatial/rotation", "Spatial › Rotation (°)", -180, 180);
     add("spatial/position/x", "Spatial › Position X", -4.0 * m_compSize.width(), 5.0 * m_compSize.width());
     add("spatial/position/y", "Spatial › Position Y", -4.0 * m_compSize.height(), 5.0 * m_compSize.height());
+    add("spatial/pivot/x", "Spatial › Pivot X", -4.0 * m_compSize.width(), 5.0 * m_compSize.width());
+    add("spatial/pivot/y", "Spatial › Pivot Y", -4.0 * m_compSize.height(), 5.0 * m_compSize.height());
     if (l->isViewport) { // an upright rectangle of the composition: its size in pixels
         add("spatial/width", "Spatial › Width", 1, 100000);
         add("spatial/height", "Spatial › Height", 1, 100000);
