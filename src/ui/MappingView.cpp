@@ -517,11 +517,21 @@ void MappingView::paintScene()
     const int cur = m_layer;
     auto W = [&](QPointF p) { return toWidget(outOf(cur, p)); }; // canvas of the layer -> widget
 
+    // The pivot of the rotation: a small cross
+    auto drawPivot = [&](bool viewport) {
+        const QPointF c = viewport ? toWidget(m->pivotPoint()) : W(m->pivotPoint());
+        std::vector<float> cross;
+        pushLine(cross, c + QPointF(-6, 0), c + QPointF(6, 0));
+        pushLine(cross, c + QPointF(0, -6), c + QPointF(0, 6));
+        m_draw.drawLines(cross, QColor(255, 210, 60, 230));
+    };
+
     // A viewport: its frame, moved by dragging (no corners or mesh)
     if (isViewport(cur)) {
         std::vector<float> frame;
         for (int k = 0; k < 4; ++k) pushLine(frame, toWidget(m->corners[k]), toWidget(m->corners[(k + 1) % 4]));
         m_draw.drawLines(frame, m_engine->isLocked(cur) ? QColor(230, 80, 70, 220) : kSelected);
+        drawPivot(true);
         return;
     }
 
@@ -553,9 +563,11 @@ void MappingView::paintScene()
     // Locked layer: outline in red, no handles
     if (m_engine->isLocked(m_layer)) {
         m_draw.drawLines(line, QColor(230, 80, 70, 220));
+        drawPivot(false);
         return;
     }
     m_draw.drawLines(line, kOutline);
+    drawPivot(false);
 
     std::vector<float> handles, sel, shadow;
     auto addHandle = [&](const Handle &h, float half) {

@@ -864,6 +864,29 @@ int main(int argc, char **argv)
             CHECK(Engine::timingKey({"roi", "2"}, {}) == "roi" && Engine::timingKey({"color", "add", "1"}, {}) == "color/add" &&
                   Engine::timingKey({"fx", "0", "params", "radius"}, QJsonObject{{"fx", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "fx/Blur/param/radius" &&
                   Engine::timingKey({"source", "speed"}, {}) == "source/speed" && Engine::timingKey({"source", "file"}, {}).isEmpty());
+            // The pivot: a cut by default, with a time and a curve of its own when the snapshot gives them
+            {
+                CHECK(Engine::timingKey({"spatial", "pivot", "0"}, {}) == "spatial/pivot" &&
+                      Engine::timingKey({"spatial", "corners", "0", "0"}, {}) == "spatial");
+                QJsonObject ps = e.layerJson(e.indexOfId(tid));
+                QJsonObject sp = ps.value("spatial").toObject();
+                sp["pivot"] = QJsonArray{0.0, 0.0};
+                ps["spatial"] = sp;
+                ps.remove("timing");
+                L()->mapping.pivot = QPointF(0.5, 0.5);
+                e.applyLayers(QJsonArray{ps}, 1.0); // the fade is 1 s, the pivot ignores it
+                CHECK((L()->mapping.pivot - QPointF(0, 0)).manhattanLength() < 1e-9);
+                e.advanceFades(2.0);
+                ps["timing"] = QJsonObject{{"spatial/pivot", 2.0}};
+                sp["pivot"] = QJsonArray{1.0, 1.0};
+                ps["spatial"] = sp;
+                e.applyLayers(QJsonArray{ps}, 0.0);
+                CHECK((L()->mapping.pivot - QPointF(0, 0)).manhattanLength() < 1e-9 && e.isFading());
+                e.advanceFades(1.0);
+                CHECK(L()->mapping.pivot.x() > 0.05 && L()->mapping.pivot.x() < 0.95);
+                e.advanceFades(1.5);
+                CHECK((L()->mapping.pivot - QPointF(1, 1)).manhattanLength() < 1e-9 && !e.isFading());
+            }
             // Text generator: the snapshot's text is typed over its time (erased back to what both share, then
             // typed); its style moves on its own times
             {
