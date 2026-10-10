@@ -7,11 +7,34 @@ on:
   workflow_dispatch:
 
 jobs:
-  linux:
-    name: Linux (Ubuntu 24.04) + tests
+  # The test media, made once with Ubuntu's ffmpeg program (it has every encoder the tests need: x264, HAP…) and
+  # handed to the three platforms
+  media:
+    name: Test media
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Make
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          sh test/make_media.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-media
+          path: test/media
+          retention-days: 1
+
+  linux:
+    name: Linux (Ubuntu 24.04) + tests
+    runs-on: ubuntu-24.04
+    needs: media
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-media
+          path: test/media
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -25,21 +48,30 @@ jobs:
           cmake --build build --target fulskrin_tests -j4
       - name: Engine tests
         run: |
-          sh test/make_media.sh
           xvfb-run -a ./build/fulskrin_tests
           xvfb-run -a ./build/fulskrin_tests --check-isf isf
 
   macos:
-    name: macOS (Apple Silicon)
+    name: macOS (Apple Silicon) + tests
     runs-on: macos-14
+    needs: media
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-media
+          path: test/media
       - name: Dependencies
         run: brew install qt ffmpeg pkg-config
       - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
           cmake --build build -j4
+          cmake --build build --target fulskrin_tests -j4
+      - name: Engine tests
+        run: |
+          ./build/fulskrin_tests
+          ./build/fulskrin_tests --check-isf isf
       - name: Package .app
         run: |
           "$(brew --prefix qt)/bin/macdeployqt" build/Fulskrin.app
@@ -50,8 +82,9 @@ jobs:
           path: Fulskrin-macos.zip
 
   windows:
-    name: Windows (MSVC 2022)
+    name: Windows (MSVC 2022) + tests
     runs-on: windows-2022
+    needs: media
     env:
       FFMPEG_ZIP: ffmpeg-n8.1-latest-win64-lgpl-shared-8.1
     steps:
@@ -72,6 +105,21 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="C:\ffmpeg\$env:FFMPEG_ZIP"
           cmake --build build
+          cmake --build build --target fulskrin_tests
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-media
+          path: test/media
+      # No GPU on the runner: Mesa's software OpenGL (llvmpipe, OpenGL 4.5)
+      - uses: ssciwr/setup-mesa-dist-win@v2
+      - name: Engine tests
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\ffmpeg\$env:FFMPEG_ZIP\bin;$env:PATH"
+          .\build\fulskrin_tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\build\fulskrin_tests.exe --check-isf isf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package
         shell: pwsh
         run: |
