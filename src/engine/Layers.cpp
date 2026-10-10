@@ -110,6 +110,7 @@ int Engine::addLayer(const QString &name, int at)
         Lock lk(&m_mutex);
         auto l = std::make_unique<Layer>();
         l->compSize = &m_compSize;
+        l->mapping.aspect = double(m_compSize.width()) / std::max(1, m_compSize.height());
         l->id = newIdLocked();
         l->colorModels = m_defaultColorModels;
         l->name = name.isEmpty() ? QStringLiteral("Layer %1").arg(m_layers.size() + 1) : name;
@@ -143,6 +144,7 @@ int Engine::addViewport(const QString &name, QSize size)
         Lock lk(&m_mutex);
         auto l = std::make_unique<Layer>();
         l->compSize = &m_compSize;
+        l->mapping.aspect = double(m_compSize.width()) / std::max(1, m_compSize.height());
         l->id = id = newIdLocked();
         l->isViewport = true;
         // By default, the size of the last viewport (the same projectors, side by side)
@@ -162,8 +164,8 @@ int Engine::addViewport(const QString &name, QSize size)
         const double w = double(px.width()) / std::max(1, m_compSize.width());
         const double h = double(px.height()) / std::max(1, m_compSize.height());
         if (x + w > 1.0 + 1e-9) x = 0; // no room left on the right: over the first one
-        const QPointF c[4] = {{x, 0}, {x + w, 0}, {x + w, h}, {x, h}};
-        for (int k = 0; k < 4; ++k) l->mapping.setCorner(k, c[k]);
+        l->mapping.size = QSizeF(w, h);
+        l->mapping.position = QPointF(x + w / 2, h / 2);
         m_layers.push_back(std::move(l));
         normalizeLocked();
     }
@@ -252,6 +254,7 @@ int Engine::addGroup(const QString &name, int at)
         for (const auto &l : m_layers) groups += l->isGroup;
         auto l = std::make_unique<Layer>();
         l->compSize = &m_compSize;
+        l->mapping.aspect = double(m_compSize.width()) / std::max(1, m_compSize.height());
         l->id = newIdLocked();
         l->isGroup = true;
         l->name = name.isEmpty() ? QStringLiteral("Group %1").arg(groups + 1) : name;
@@ -832,15 +835,7 @@ bool Engine::setLayerTap(int i, LayerTap tap)
     return true;
 }
 
-static bool isDefaultMapping(const Mapping &m)
-{
-    const QPointF def[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-    for (int i = 0; i < 4; ++i)
-        if (m.corners[i] != def[i]) return false;
-    for (const QPointF &o : m.offsets)
-        if (!o.isNull()) return false;
-    return true;
-}
+static bool isDefaultMapping(const Mapping &m) { return m.isIdentity(); }
 
 bool Engine::setLayerVideo(int i, const QString &path, QString *err)
 {

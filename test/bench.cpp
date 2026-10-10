@@ -108,10 +108,10 @@ int main(int argc, char **argv)
         Engine::Lock lk(&e.mutex());
         Layer *l = e.layer(i);
         const double x = double(k % cols) / cols, y = double(k / cols) / rows, w = 1.0 / cols, h = 1.0 / rows;
-        l->mapping.corners[0] = {x, y};
-        l->mapping.corners[1] = {x + w, y};
-        l->mapping.corners[2] = {x + w, y + h};
-        l->mapping.corners[3] = {x, y + h};
+        l->mapping.setCorner(0, QPointF(x, y));
+        l->mapping.setCorner(1, QPointF(x + w, y));
+        l->mapping.setCorner(2, QPointF(x + w, y + h));
+        l->mapping.setCorner(3, QPointF(x, y + h));
         ids.push_back(l->id);
     }
     if (!e.start()) {

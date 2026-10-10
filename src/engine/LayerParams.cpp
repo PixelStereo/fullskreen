@@ -7,35 +7,6 @@
 
 namespace {
 
-double wrapDegrees(double d)
-{
-    d = std::fmod(d, 360.0);
-    if (d <= -180) d += 360;
-    if (d > 180) d -= 360;
-    return d;
-}
-
-// Where a layer is, in composition pixels: a viewport is a rectangle (turned or not), a layer its bounds
-QPointF centerPx(const Layer &l, QSize c)
-{
-    if (l.isViewport) return l.mapping.rect(c).center;
-    const QPointF p = l.mapping.bounds().center();
-    return QPointF(p.x() * c.width(), p.y() * c.height());
-}
-
-void setCenterPx(Layer &l, QPointF p, QSize c)
-{
-    if (l.isViewport) {
-        Mapping::Rect r = l.mapping.rect(c);
-        r.center = p;
-        l.mapping.setRect(r, c);
-        return;
-    }
-    QRectF b = l.mapping.bounds();
-    b.moveCenter(QPointF(p.x() / c.width(), p.y() * 1.0 / c.height()));
-    l.mapping.setBounds(b);
-}
-
 QStringList blendKeys()
 {
     QStringList k;
@@ -104,9 +75,14 @@ const std::vector<Parameter *> &Layer::parameters()
                 .bind([self] { return QVariant(blendModeKey(self->blend)); },
                       [self](const QVariant &v) { self->blend = blendModeFromKey(v.toString()); });
 
-        // Where it is: turned about its pivot, its center, its size (a viewport: a rectangle in pixels)
-        num("rotation", "Spatial › Rotation (°)", -180, 180, 0.0, [self, C] { return self->mapping.angle(C()); },
-            [self, C](double v) { self->mapping.rotate(wrapDegrees(v - self->mapping.angle(C())), C()); }) // the shortest way round
+        // Where it is (Mapping.h): the center of its rectangle, its size, its rotation about its pivot — each one a
+        // value of its own; a viewport's size is in pixels, a layer's in % of the composition
+        Mapping *m = &mapping;
+        num("rotation", "Spatial › Rotation (°)", -180, 180, 0.0, [m] { return m->rotation; },
+            [m](double v) {
+                m->rotation = v;
+                ++m->revision;
+            })
             .limits(-1e9, 1e9)
             .step(0.1)
             .ramp(Parameter::Ramp::Angle);
@@ -114,11 +90,10 @@ const std::vector<Parameter *> &Layer::parameters()
             const bool x = axis == 0;
             const double size = x ? C().width() : C().height();
             num(x ? "position/x" : "position/y", x ? "Spatial › Position X" : "Spatial › Position Y", -4 * size, 5 * size, size / 2,
-                [self, C, x] { return x ? centerPx(*self, C()).x() : centerPx(*self, C()).y(); },
-                [self, C, x](double v) {
-                    QPointF p = centerPx(*self, C());
-                    (x ? p.rx() : p.ry()) = v;
-                    setCenterPx(*self, p, C());
+                [m, C, x] { return x ? m->position.x() * C().width() : m->position.y() * C().height(); },
+                [m, C, x](double v) {
+                    (x ? m->position.rx() : m->position.ry()) = v / (x ? C().width() : C().height());
+                    ++m->revision;
                 })
                 .step(1);
         }
@@ -126,49 +101,40 @@ const std::vector<Parameter *> &Layer::parameters()
             const bool x = axis == 0;
             const double size = x ? C().width() : C().height();
             num(x ? "pivot/x" : "pivot/y", x ? "Spatial › Pivot X" : "Spatial › Pivot Y", -4 * size, 5 * size, size / 2,
-                [self, C, x] {
-                    const QPointF p = self->mapping.pivotPoint();
+                [m, C, x] {
+                    const QPointF p = m->pivotPoint();
                     return x ? p.x() * C().width() : p.y() * C().height();
                 },
-                [self, C, x](double v) {
-                    QPointF p = self->mapping.pivotPoint();
+                [m, C, x](double v) { // the picture stays where it is
+                    QPointF p = m->pivotPoint();
                     (x ? p.rx() : p.ry()) = v / (x ? C().width() : C().height());
-                    self->mapping.setPivotPoint(p);
+                    m->setPivotPoint(p);
                 })
                 .step(1)
-                .byDefault(std::function<QVariant()>([self, C, x] { // the middle of the picture
-                    const QPointF m = self->mapping.map(0.5, 0.5);
-                    return QVariant(x ? m.x() * C().width() : m.y() * C().height());
+                .byDefault(std::function<QVariant()>([m, C, x] { // the middle of the picture
+                    const QPointF c = m->toComposition(QPointF(0.5, 0.5));
+                    return QVariant(x ? c.x() * C().width() : c.y() * C().height());
                 }));
         }
-        if (isViewport) {
-            for (int axis = 0; axis < 2; ++axis) { // its rectangle's size, in pixels
-                const bool x = axis == 0;
+        for (int axis = 0; axis < 2; ++axis) {
+            const bool x = axis == 0;
+            auto get = [m, x] { return x ? m->size.width() : m->size.height(); };
+            auto put = [m, x](double v) {
+                if (x) m->size.setWidth(v);
+                else m->size.setHeight(v);
+                ++m->revision;
+            };
+            if (isViewport) // its rectangle, in pixels
                 num(x ? "width" : "height", x ? "Spatial › Width" : "Spatial › Height", 1, 10000, x ? C().width() : C().height(),
-                    [self, C, x] { return x ? self->mapping.rect(C()).w : self->mapping.rect(C()).h; },
-                    [self, C, x](double v) {
-                        Mapping::Rect r = self->mapping.rect(C());
-                        (x ? r.w : r.h) = v;
-                        self->mapping.setRect(r, C());
-                    })
+                    [get, C, x] { return get() * (x ? C().width() : C().height()); },
+                    [put, C, x](double v) { put(v / (x ? C().width() : C().height())); })
                     .limits(1, 100000)
                     .step(1);
-            }
-        } else {
-            for (int axis = 0; axis < 2; ++axis) { // its size, in % of the composition
-                const bool x = axis == 0;
+            else // its size, in % of the composition
                 num(x ? "scale/x" : "scale/y", x ? "Spatial › Scale X (%)" : "Spatial › Scale Y (%)", 0.1, 400, 100.0,
-                    [self, x] { return (x ? self->mapping.bounds().width() : self->mapping.bounds().height()) * 100.0; },
-                    [self, x](double v) {
-                        QRectF b = self->mapping.bounds();
-                        const QPointF center = b.center();
-                        b.setSize(QSizeF(x ? v / 100.0 : b.width(), x ? b.height() : v / 100.0));
-                        b.moveCenter(center);
-                        self->mapping.setBounds(b);
-                    })
+                    [get] { return get() * 100.0; }, [put](double v) { put(v / 100.0); })
                     .limits(0.1, 2000)
                     .step(0.1);
-            }
         }
         // Soft edge: the picture fades out towards each side
         flag("soft_edge/enable", "Spatial › Soft Edge", false, &mapping.soft.enabled);

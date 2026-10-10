@@ -1,11 +1,11 @@
 #pragma once
-// Layer mapping: 4 corners (homography, perspective-correct) + warp mesh
-// (Catmull-Rom interpolated offsets). Normalized output coordinates: (0,0) top-left, (1,1) bottom-right.
+// Layer mapping: a transform, a corner pin (homography, perspective-correct) and a warp mesh (Catmull-Rom).
 
 #include <QJsonObject>
 #include <QPointF>
 #include <QRectF>
 #include <QSize>
+#include <QSizeF>
 #include <vector>
 struct Homography {
     double a = 1, b = 0, c = 0, d = 0, e = 1, f = 0, g = 0, h = 0;
@@ -27,38 +27,53 @@ struct SoftEdge {
     bool operator==(const SoftEdge &o) const;
 };
 
+// Where a layer's picture goes on the composition (normalized: (0,0) top left, (1,1) bottom right). Stored as values
+// that each mean one thing — so that each one can be set, faded and animated on its own:
+//  - its transform: the center of its rectangle (position), its size (a fraction of the composition), its rotation
+//    (degrees, in pixels: clockwise) about its pivot (a point of the picture, in its own frame 0..1);
+//  - its corner pin: how far each corner is pulled from the rectangle (in its own frame: 1 = its width / height),
+//    which makes the perspective (a homography);
+//  - its warp mesh: control points pulled from where the corner pin puts them (in its own frame, Catmull-Rom).
+// The corners and the points on the composition are made from these (corner(), map()). Turning, moving or scaling it
+// turns, moves and scales its corner pin and its mesh with it.
 class Mapping
 {
 public:
     Mapping() { resetMesh(4, 4); }
 
-    QPointF corners[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}}; // TL, TR, BR, BL
-    int cols = 4, rows = 4;                                // number of control points
-    std::vector<QPointF> offsets;                         // cols * rows
-    bool meshMode = false;                                 // editing mode in the UI
-    unsigned revision = 1;                                 // incremented on every change
-    SoftEdge soft;                                         // fades the picture towards its sides
-    QPointF pivot{0.5, 0.5};                               // center of the rotation, in the layer's own frame (0..1 over its picture)
+    QPointF position{0.5, 0.5};      // the center of its rectangle
+    QSizeF size{1, 1};               // its rectangle, a fraction of the composition
+    double rotation = 0;             // degrees about the pivot, clockwise
+    QPointF pivot{0.5, 0.5};         // the center of the rotation, in its own frame (0..1 over its picture)
+    QPointF pins[4];                 // corner pin: TL, TR, BR, BL pulled from the rectangle, in its own frame
+    int cols = 4, rows = 4;          // number of control points
+    std::vector<QPointF> offsets;    // cols * rows, in its own frame
+    bool meshMode = false;           // editing mode in the UI
+    unsigned revision = 1;           // incremented on every change
+    SoftEdge soft;                   // fades the picture towards its sides
+    double aspect = 16.0 / 9.0;      // the composition's width / height (its rotation is in pixels): set by the engine
 
     void resetMesh(int c, int r);
-    void resetCorners();
-    void setCorner(int i, QPointF p);
+    void resetCorners(); // the whole composition, upright, no corner pin
+    QPointF corner(int k) const; // TL, TR, BR, BL on the composition
+    void setCorner(int i, QPointF p); // by its corner pin
     void translate(QPointF delta);
+
+    // Its own frame (u, v: 0..1 over its rectangle) to the composition, and back
+    QPointF toComposition(QPointF q) const;
+    QPointF fromComposition(QPointF p) const;
 
     // Bounding box of the mapped shape (corners and mesh points), normalized
     QRectF bounds() const;
-    // Moves / scales the whole shape so that its bounding box becomes `to` (corners and mesh warp alike:
-    // an axis-aligned scale + translation composes exactly with the homography).
+    // Moves and scales it so that its bounding box becomes `to` (exact when it is upright)
     void setBounds(const QRectF &to);
 
     // The pivot on the composition (normalized), and the other way round: moving it moves no picture
     QPointF pivotPoint() const;
     void setPivotPoint(QPointF p);
 
-    // Angle of the top edge, in degrees, measured in pixels of a composition of size `comp`
-    double angle(QSize comp) const;
-    // Turns the whole shape (corners and mesh) around its pivot, in pixels of `comp`
-    void rotate(double degrees, QSize comp);
+    double angle(QSize) const { return rotation; }
+    void rotate(double degrees, QSize comp); // about its pivot
 
     // An upright-or-turned rectangle (a viewport's region): center and size in pixels of `comp`, angle in degrees
     struct Rect {
@@ -66,7 +81,7 @@ public:
         double w = 1, h = 1, angle = 0;
     };
     Rect rect(QSize comp) const;
-    void setRect(const Rect &r, QSize comp); // corners only: no mesh warp
+    void setRect(const Rect &r, QSize comp); // no corner pin, no mesh warp
 
     // Final position (homography + warp) for (u,v) in [0,1].
     QPointF map(double u, double v) const;
@@ -89,4 +104,5 @@ public:
 
 private:
     QPointF offsetAt(double u, double v) const;
+    Homography local() const; // the unit square onto its corner-pinned quad, in its own frame
 };

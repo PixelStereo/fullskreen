@@ -178,7 +178,9 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
             Lock lk(&m_mutex);
             if (Layer *l = layer(i)) {
                 const unsigned rev = l->mapping.revision;
+                const double aspect = l->mapping.aspect;
                 l->mapping = mapping; // the aligned mapping stays intact
+                l->mapping.aspect = aspect;
                 l->mapping.revision = rev + 1;
             }
             changed = true;

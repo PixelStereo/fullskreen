@@ -249,7 +249,9 @@ void SetMapping::apply(const Mapping &m)
     Layer *l = m_e->layer(m_layer);
     if (!l) return;
     const unsigned rev = l->mapping.revision;
+    const double aspect = l->mapping.aspect; // the composition's now
     l->mapping = m;
+    l->mapping.aspect = aspect;
     l->mapping.revision = rev + 1;
 }
 

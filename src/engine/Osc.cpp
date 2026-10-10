@@ -877,7 +877,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     static const char *kCornerNames[] = {"Top Left", "Top Right", "Bottom Right", "Bottom Left"};
     for (int k = 0; k < 4; ++k)
         L.method(P + "/corner/" + kCorners[k], "ff", 3, kCornerNames[k],
-                 [k](Layer &l) { return QVariantList{l.mapping.corners[k].x(), l.mapping.corners[k].y()}; },
+                 [k](Layer &l) { return QVariantList{l.mapping.corner(k).x(), l.mapping.corner(k).y()}; },
                  L.edit([k](Layer &l, const QVariantList &a) {
                      if (a.size() < 2) return false;
                      l.mapping.setCorner(k, QPointF(num(a[0]), num(a[1])));

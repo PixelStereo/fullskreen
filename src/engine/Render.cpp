@@ -622,8 +622,10 @@ void Engine::bindMesh(Layer &l)
 {
     auto f = gl();
     const Mapping &m = l.mapping, &was = l.meshShape;
-    bool same = l.meshVbo && was.cols == m.cols && was.rows == m.rows && was.offsets == m.offsets;
-    for (int i = 0; same && i < 4; ++i) same = was.corners[i] == m.corners[i];
+    bool same = l.meshVbo && was.cols == m.cols && was.rows == m.rows && was.offsets == m.offsets &&
+                was.position == m.position && was.size == m.size && was.rotation == m.rotation && was.pivot == m.pivot &&
+                was.aspect == m.aspect;
+    for (int i = 0; same && i < 4; ++i) same = was.pins[i] == m.pins[i];
     if (!l.meshVbo) f->glGenBuffers(1, &l.meshVbo);
     if (!same) {
         m.buildVertices(kMeshSubdiv, m_meshScratch);

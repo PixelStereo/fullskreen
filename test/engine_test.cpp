@@ -131,10 +131,10 @@ int main(int argc, char **argv)
 
     { // Position / scale of the mapped shape: an exact affine transform of every point (corners and mesh warp)
         Mapping m;
-        m.corners[0] = {0.1, 0.2};
-        m.corners[1] = {0.7, 0.15};
-        m.corners[2] = {0.8, 0.9};
-        m.corners[3] = {0.05, 0.8};
+        m.setCorner(0, QPointF(0.1, 0.2));
+        m.setCorner(1, QPointF(0.7, 0.15));
+        m.setCorner(2, QPointF(0.8, 0.9));
+        m.setCorner(3, QPointF(0.05, 0.8));
         m.setControlPoint(1, 1, m.controlPoint(1, 1) + QPointF(0.04, -0.03));
         const QRectF from = m.bounds();
         const QPointF p = m.map(0.37, 0.61);
@@ -243,9 +243,9 @@ int main(int argc, char **argv)
         Mapping before = cmd::SetMapping::read(&e, g), after = before;
         after.setCorner(0, QPointF(0.2, 0.2));
         undo.push(new cmd::SetMapping(&e, g, before, after, "corner"));
-        CHECK(e.layer(g)->mapping.corners[0] == QPointF(0.2, 0.2));
+        CHECK(QLineF(e.layer(g)->mapping.corner(0), QPointF(0.2, 0.2)).length() < 1e-9);
         undo.undo();
-        CHECK(e.layer(g)->mapping.corners[0] == before.corners[0]);
+        CHECK(QLineF(e.layer(g)->mapping.corner(0), before.corner(0)).length() < 1e-9);
         undo.redo();
         // Delete, then restore identically
         const QJsonObject snap = e.layerJson(g);
@@ -485,14 +485,16 @@ int main(int argc, char **argv)
     {
         Mapping m;
         const QSize comp(100, 50);
-        m.setCorner(0, QPointF(0.2, 0.2)), m.setCorner(1, QPointF(0.6, 0.2)), m.setCorner(2, QPointF(0.6, 0.6)),
-            m.setCorner(3, QPointF(0.2, 0.6));
+        m.aspect = 2;
+        m.position = {0.4, 0.4};
+        m.size = {0.4, 0.4};
+        CHECK((m.corner(0) - QPointF(0.2, 0.2)).manhattanLength() < 1e-9);
         CHECK((m.pivotPoint() - QPointF(0.4, 0.4)).manhattanLength() < 1e-9); // the middle by default
         m.setPivotPoint(QPointF(0.2, 0.2)); // the top left corner
         CHECK((m.pivot - QPointF(0, 0)).manhattanLength() < 1e-9);
         m.rotate(90, comp);
         CHECK((m.pivotPoint() - QPointF(0.2, 0.2)).manhattanLength() < 1e-9 && std::abs(m.angle(comp) - 90) < 1e-6);
-        CHECK((m.corners[0] - QPointF(0.2, 0.2)).manhattanLength() < 1e-9); // it did not move: it turned about that corner
+        CHECK((m.corner(0) - QPointF(0.2, 0.2)).manhattanLength() < 1e-9); // it did not move: it turned about that corner
         Mapping back;
         back.fromJson(m.toJson());
         CHECK((back.pivot - m.pivot).manhattanLength() < 1e-9);
@@ -792,7 +794,7 @@ int main(int argc, char **argv)
         e.addEffect(V + 0, isf + "/effects/FlipCrop.fs", &err);
         e.recallSnapshot(0);
         CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6 && e.layer(V + 0)->color.temp == 0.0f);
-        CHECK(e.layer(V + 0)->mapping.corners[0] == QPointF(0, 0) || e.layer(V + 0)->mapping.corners[0].y() > 0.0);
+        CHECK(QLineF(e.layer(V + 0)->mapping.corner(0), QPointF(0.3, 0.3)).length() > 1e-6); // the corner came back
         CHECK(e.layer(V + 0)->effects.empty() && !e.layer(V + 1)->enabled);
         // With a fade: halfway between, then the target; a layer becoming visible fades in from 0
         Engine::Snapshot m2 = m;
@@ -2212,8 +2214,8 @@ int main(int argc, char **argv)
         {
             Engine::Lock lk(&e.mutex());
             Mapping &m = e.layer(v1)->mapping; // left half of the composition
-            m.setCorner(0, QPointF(0, 0)), m.setCorner(1, QPointF(0.5, 0)), m.setCorner(2, QPointF(0.5, 1)),
-                m.setCorner(3, QPointF(0, 1));
+            m.position = {0.25, 0.5};
+            m.size = {0.5, 1};
         }
         const int v2i = e.addViewport(QStringLiteral("Right"), QSize(32, 16));
         const quint64 vp1 = e.layerId(e.viewports().first()), vp2 = e.layerId(v2i);
@@ -3256,7 +3258,7 @@ int main(int argc, char **argv)
             const Layer *l = e.layer(B());
             CHECK(l->roi == QRectF(QPointF(0.25, 0.1), QPointF(0.75, 0.6)));
             CHECK(l->color.temp == 0.f && l->opacity == 1.f && l->effects.empty());
-            CHECK(l->mapping.corners[1] == QPointF(1, 0));
+            CHECK(QLineF(l->mapping.corner(1), QPointF(1, 0)).length() < 1e-9);
             CHECK(l->type == SourceType::Isf && l->sourcePath.endsWith("SolidColor.fs")); // its own media kept
         }
         CHECK(e.applyLayerParts(B(), clip, Engine::PartColor));
@@ -3268,7 +3270,7 @@ int main(int argc, char **argv)
         CHECK(e.applyLayerParts(B(), clip, Engine::PartSpatial | Engine::PartCompositing));
         {
             Engine::Lock lk(&e.mutex());
-            CHECK(e.layer(B())->mapping.corners[1] == QPointF(0.8, 0.2));
+            CHECK(QLineF(e.layer(B())->mapping.corner(1), QPointF(0.8, 0.2)).length() < 1e-9);
             CHECK(e.layer(B())->opacity == 0.25f && e.layer(B())->blend == BlendMode::Multiply);
             CHECK(e.layer(B())->effects.empty());
         }

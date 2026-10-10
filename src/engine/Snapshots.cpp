@@ -197,7 +197,9 @@ static void setNumbers(Layer &l, const LayerNumbers &n, quint64 own = kOwnAll)
     if (own & (OwnMapping | OwnSoft)) {
         const unsigned rev = l.mapping.revision;
         const SoftEdge soft = l.mapping.soft;
+        const double aspect = l.mapping.aspect;
         if (own & OwnMapping) l.mapping = n.mapping;
+        l.mapping.aspect = aspect;
         l.mapping.soft = (own & OwnSoft) ? n.soft : soft;
         l.mapping.revision = rev + 1;
     }
@@ -270,11 +272,20 @@ static LayerNumbers mixNumbers(const LayerNumbers &a, const LayerNumbers &b, con
         n.color.add[c] = mixf(a.color.add[c], b.color.add[c], tc);
         n.color.remove[c] = mixf(a.color.remove[c], b.color.remove[c], tc);
     }
-    if (a.mapping.cols == b.mapping.cols && a.mapping.rows == b.mapping.rows) {
+    {
+        // Each value of the mapping on its own: it moves, grows and turns (the shortest way round) without bending
         const double tm = t(d.mapping, d.mappingCurve);
-        for (int k = 0; k < 4; ++k) n.mapping.corners[k] = mixp(a.mapping.corners[k], b.mapping.corners[k], tm);
-        for (size_t k = 0; k < n.mapping.offsets.size() && k < a.mapping.offsets.size(); ++k)
-            n.mapping.offsets[k] = mixp(a.mapping.offsets[k], b.mapping.offsets[k], tm);
+        const Mapping &x = a.mapping, &y = b.mapping;
+        n.mapping.position = mixp(x.position, y.position, tm);
+        n.mapping.size = QSizeF(mixd(x.size.width(), y.size.width(), tm), mixd(x.size.height(), y.size.height(), tm));
+        double turn = std::fmod(y.rotation - x.rotation, 360.0);
+        if (turn > 180) turn -= 360;
+        if (turn < -180) turn += 360;
+        n.mapping.rotation = x.rotation + turn * tm;
+        for (int k = 0; k < 4; ++k) n.mapping.pins[k] = mixp(x.pins[k], y.pins[k], tm);
+        if (x.cols == y.cols && x.rows == y.rows)
+            for (size_t k = 0; k < n.mapping.offsets.size() && k < x.offsets.size(); ++k)
+                n.mapping.offsets[k] = mixp(x.offsets[k], y.offsets[k], tm);
     }
     n.mapping.pivot = mixp(a.mapping.pivot, b.mapping.pivot, t(d.pivot, d.pivotCurve));
     // Soft edge: interpolate width and power per side
