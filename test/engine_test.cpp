@@ -3,6 +3,7 @@
 #include "Engine.h"
 #include "LayerTree.h"
 #include "Osc.h"
+#include "Parameter.h"
 #include "Zeroconf.h"
 #include <QJsonArray>
 #include <QTcpSocket>
@@ -39,6 +40,15 @@ int runVideoTests(Engine &e, const QString &root, const QString &tmp); // video_
         if (!(cond)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++failures; } \
         else std::printf("ok    %s\n", #cond);                                      \
     } while (0)
+
+// A parameter's value in a layer's state (its "params", by address)
+static void setParam(QJsonObject &layer, const QString &path, const QJsonValue &v)
+{
+    QJsonObject p = layer.value("params").toObject();
+    p[path] = v;
+    layer["params"] = p;
+}
+static QJsonValue paramOf(const QJsonObject &layer, const QString &path) { return layer.value("params").toObject().value(path); }
 
 static QJsonObject readJson(const QString &p)
 {
@@ -130,10 +140,10 @@ int main(int argc, char **argv)
 
     { // Position / scale of the mapped shape: an exact affine transform of every point (corners and mesh warp)
         Mapping m;
-        m.corners[0] = {0.1, 0.2};
-        m.corners[1] = {0.7, 0.15};
-        m.corners[2] = {0.8, 0.9};
-        m.corners[3] = {0.05, 0.8};
+        m.setCorner(0, QPointF(0.1, 0.2));
+        m.setCorner(1, QPointF(0.7, 0.15));
+        m.setCorner(2, QPointF(0.8, 0.9));
+        m.setCorner(3, QPointF(0.05, 0.8));
         m.setControlPoint(1, 1, m.controlPoint(1, 1) + QPointF(0.04, -0.03));
         const QRectF from = m.bounds();
         const QPointF p = m.map(0.37, 0.61);
@@ -210,7 +220,7 @@ int main(int argc, char **argv)
             CHECK(cmd::resolveIsf(&e, g, -1)->speed == 1.0);
             undo.redo();
             bool found = false;
-            for (const auto &p : e.animatableParams(e.layerId(g))) found |= (p.path == "source/speed");
+            for (const auto &p : e.animatableParams(e.layerId(g))) found |= (p.path == "speed");
             CHECK(found);
             // The timeline menu and the snapshot timing offer the speed of an effect too
             const int fxi = e.addEffect(g, QStringLiteral(TEST_DIR) + "/isf/Offset.fs", &err);
@@ -220,10 +230,12 @@ int main(int argc, char **argv)
             for (const auto &p : e.animatableParams(e.layerId(g)))
                 if (p.path.startsWith("fx/") && p.path.endsWith("/speed")) fxFound = true, fxPath = p.path;
             CHECK(fxFound);
-            CHECK(Engine::timingKey({"fx", "0", "speed"}, e.layerJson(g)) == fxPath);
-            CHECK(Engine::timingKey({"source", "speed"}, e.layerJson(g)) == "source/speed");
-            CHECK(e.layerJson(g).value("source").toObject().contains("speed"));
-            CHECK(e.layerJson(g).value("fx").toArray().at(0).toObject().contains("speed"));
+            // Their values in the layer's state, at their addresses (the keys of their times in a snapshot)
+            const QJsonObject saved = e.layerJson(g).value("params").toObject();
+            CHECK(saved.contains(fxPath) && saved.contains("speed"));
+            CHECK(Engine::timingKeyOf(QJsonObject{{"fx", 2.0}}, fxPath) == "fx" &&
+                  Engine::timingKeyOf(QJsonObject{{fxPath, 1.0}, {"fx", 2.0}}, fxPath) == fxPath &&
+                  Engine::timingKeyOf(QJsonObject{{"speed", 1.0}}, fxPath).isEmpty());
             e.removeEffect(g, fxi);
             CHECK(e.saveProject(tmp + "/speed.fulskrin", {}, &err));
             e.newProject();
@@ -242,9 +254,9 @@ int main(int argc, char **argv)
         Mapping before = cmd::SetMapping::read(&e, g), after = before;
         after.setCorner(0, QPointF(0.2, 0.2));
         undo.push(new cmd::SetMapping(&e, g, before, after, "corner"));
-        CHECK(e.layer(g)->mapping.corners[0] == QPointF(0.2, 0.2));
+        CHECK(QLineF(e.layer(g)->mapping.corner(0), QPointF(0.2, 0.2)).length() < 1e-9);
         undo.undo();
-        CHECK(e.layer(g)->mapping.corners[0] == before.corners[0]);
+        CHECK(QLineF(e.layer(g)->mapping.corner(0), before.corner(0)).length() < 1e-9);
         undo.redo();
         // Delete, then restore identically
         const QJsonObject snap = e.layerJson(g);
@@ -484,17 +496,16 @@ int main(int argc, char **argv)
     {
         Mapping m;
         const QSize comp(100, 50);
-        m.setCorner(0, QPointF(0.2, 0.2)), m.setCorner(1, QPointF(0.6, 0.2)), m.setCorner(2, QPointF(0.6, 0.6)),
-            m.setCorner(3, QPointF(0.2, 0.6));
+        m.aspect = 2;
+        m.position = {0.4, 0.4};
+        m.size = {0.4, 0.4};
+        CHECK((m.corner(0) - QPointF(0.2, 0.2)).manhattanLength() < 1e-9);
         CHECK((m.pivotPoint() - QPointF(0.4, 0.4)).manhattanLength() < 1e-9); // the middle by default
         m.setPivotPoint(QPointF(0.2, 0.2)); // the top left corner
         CHECK((m.pivot - QPointF(0, 0)).manhattanLength() < 1e-9);
         m.rotate(90, comp);
         CHECK((m.pivotPoint() - QPointF(0.2, 0.2)).manhattanLength() < 1e-9 && std::abs(m.angle(comp) - 90) < 1e-6);
-        CHECK((m.corners[0] - QPointF(0.2, 0.2)).manhattanLength() < 1e-9); // it did not move: it turned about that corner
-        Mapping back;
-        back.fromJson(m.toJson());
-        CHECK((back.pivot - m.pivot).manhattanLength() < 1e-9);
+        CHECK((m.corner(0) - QPointF(0.2, 0.2)).manhattanLength() < 1e-9); // it did not move: it turned about that corner
         m.resetCorners();
         CHECK((m.pivot - QPointF(0.5, 0.5)).manhattanLength() < 1e-9);
     }
@@ -569,9 +580,9 @@ int main(int argc, char **argv)
         const QString L = "/layer/G/layer/My_layer";
         CHECK(server.handleMessage({L + "/opacity", "f", {0.25}}) && std::abs(e.layer(V + 1)->opacity - 0.25f) < 1e-6);
         CHECK(server.handleMessage({"/layer/G/layer/*/opacity", "f", {0.5}}) && std::abs(e.layer(V + 1)->opacity - 0.5f) < 1e-6);
-        CHECK(server.handleMessage({L + "/color/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(V + 1)->color.add[2] - 0.3f) < 1e-6);
-        CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
-        CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
+        CHECK(server.handleMessage({L + "/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(V + 1)->color.add[2] - 0.3f) < 1e-6);
+        CHECK(server.handleMessage({L + "/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
+        CHECK(server.handleMessage({L + "/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
         CHECK(server.handleMessage({L + "/roi/left", "f", {0.25}}) && std::abs(e.layer(V + 1)->roi.left() - 0.25) < 1e-9);
         CHECK(server.handleMessage({L + "/fx/FlipCrop/param/flipH", "T", {true}}));
         CHECK(e.layer(V + 1)->effects[0]->inputs()[1].bValue || e.layer(V + 1)->effects[0]->inputs()[2].bValue);
@@ -589,23 +600,25 @@ int main(int argc, char **argv)
         {
             const int vi = e.indexOfId(e.mainViewportId());
             const QString VP = "/viewport/" + osc::safeName(e.layer(vi)->name);
-            CHECK(server.handleMessage({VP + "/spatial/width", "f", {32}}) && server.handleMessage({VP + "/spatial/height", "f", {16}}));
-            CHECK(server.handleMessage({VP + "/spatial/position/x", "f", {10}}) && server.handleMessage({VP + "/spatial/position/y", "f", {8}}));
+            CHECK(server.handleMessage({VP + "/width", "f", {32}}) && server.handleMessage({VP + "/height", "f", {16}}));
+            CHECK(server.handleMessage({VP + "/position/x", "f", {10}}) && server.handleMessage({VP + "/position/y", "f", {8}}));
             const QRectF bb = e.layer(vi)->mapping.bounds();
             CHECK(std::abs(bb.width() * 64 - 32) < 1e-6 && std::abs(bb.height() * 32 - 16) < 1e-6);
             CHECK(std::abs(bb.center().x() * 64 - 10) < 1e-6 && std::abs(bb.center().y() * 32 - 8) < 1e-6);
-            CHECK(!server.handleMessage({VP + "/spatial/scale", "ff", {50, 50}}));
-            CHECK(server.handleMessage({VP + "/spatial/pivot/x", "f", {0}}) && server.handleMessage({VP + "/spatial/pivot/y", "f", {0}}));
-            CHECK(server.handleMessage({VP + "/spatial/rotation", "f", {90}}));
+            CHECK(!server.handleMessage({VP + "/scale", "ff", {50, 50}}));
+            // The pivot in % of the layer: its top left corner, (-6, 0) px; turning about it leaves it there
+            CHECK(server.handleMessage({VP + "/pivot", "ff", {0, 0}}));
+            CHECK(server.handleMessage({VP + "/rotation", "f", {90}}));
             {
                 const Mapping &pm = e.layer(vi)->mapping;
-                CHECK((pm.pivotPoint() - QPointF(0, 0)).manhattanLength() < 1e-6 && std::abs(pm.angle(e.compositionSize()) - 90) < 1e-6);
+                CHECK(pm.pivot.isNull() && (pm.pivotPoint() - QPointF(-6.0 / 64, 0)).manhattanLength() < 1e-6 &&
+                      std::abs(pm.angle(e.compositionSize()) - 90) < 1e-6);
             }
             QStringList paths;
             for (const auto &p : e.animatableParams(e.layerId(vi))) paths << p.path;
-            CHECK(paths.contains("spatial/width") && paths.contains("spatial/height") && paths.contains("spatial/position/x") &&
-                  !paths.contains("spatial/scale/x") && paths.contains("spatial/rotation") &&
-                  paths.contains("spatial/pivot/x") && paths.contains("spatial/pivot/y"));
+            CHECK(paths.contains("width") && paths.contains("height") && paths.contains("position/x") &&
+                  !paths.contains("scale/x") && paths.contains("rotation") &&
+                  paths.contains("pivot/x") && paths.contains("pivot/y"));
             e.layer(vi)->mapping.resetCorners();
         }
         // Renaming changes the address
@@ -615,6 +628,16 @@ int main(int argc, char **argv)
         CHECK(status == 200 && v.value("VALUE").toArray().at(0).toDouble() == 0.5);
         server.httpGet(L + "/opacity", &status);
         CHECK(status == 404);
+        // One vocabulary: every value the layer's state keeps is at that same address in OSC
+        {
+            const QJsonObject params = e.layerJson(V + 1).value("params").toObject();
+            int missing = 0;
+            for (auto it = params.begin(); it != params.end(); ++it) {
+                server.httpGet("/layer/G/layer/Front_wall/" + it.key(), &status);
+                if (status != 200) ++missing, qWarning("no OSC node for %s", qPrintable(it.key()));
+            }
+            CHECK(params.size() > 20 && params.contains("position/x") && params.contains("corner/top_left/x") && missing == 0);
+        }
         QJsonObject root = QJsonDocument::fromJson(server.httpGet("/", &status)).object();
         const QJsonObject op = root["CONTENTS"].toObject()["layer"].toObject()["CONTENTS"].toObject()["G"].toObject()["CONTENTS"]
                                    .toObject()["layer"].toObject()["CONTENTS"].toObject()["Front_wall"].toObject()["CONTENTS"]
@@ -650,10 +673,10 @@ int main(int argc, char **argv)
             walk(root, QString());
             CHECK(nodes > 50 && bad == 0);
             const QString LF = "/layer/G/layer/Front_wall";
-            CHECK(server.handleMessage({LF + "/color/tint/enable", "T", {true}}) && e.layer(V + 1)->color.tintOn);
-            CHECK(server.handleMessage({LF + "/color/mask/invert", "T", {true}}) && e.layer(V + 1)->color.maskInvert);
+            CHECK(server.handleMessage({LF + "/tint/enable", "T", {true}}) && e.layer(V + 1)->color.tintOn);
+            CHECK(server.handleMessage({LF + "/mask/invert", "T", {true}}) && e.layer(V + 1)->color.maskInvert);
             CHECK(server.handleMessage({LF + "/blend_mode", "s", {QStringLiteral("add")}}) && e.layer(V + 1)->blend == BlendMode::Add);
-            CHECK(server.handleMessage({LF + "/spatial/rotation", "f", {30.0}}) &&
+            CHECK(server.handleMessage({LF + "/rotation", "f", {30.0}}) &&
                   std::abs(e.layer(V + 1)->mapping.angle(e.compositionSize()) - 30.0) < 0.01);
             e.layer(V + 1)->blend = BlendMode::Normal;
         }
@@ -791,7 +814,7 @@ int main(int argc, char **argv)
         e.addEffect(V + 0, isf + "/effects/FlipCrop.fs", &err);
         e.recallSnapshot(0);
         CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6 && e.layer(V + 0)->color.temp == 0.0f);
-        CHECK(e.layer(V + 0)->mapping.corners[0] == QPointF(0, 0) || e.layer(V + 0)->mapping.corners[0].y() > 0.0);
+        CHECK(QLineF(e.layer(V + 0)->mapping.corner(0), QPointF(0.3, 0.3)).length() > 1e-6); // the corner came back
         CHECK(e.layer(V + 0)->effects.empty() && !e.layer(V + 1)->enabled);
         // With a fade: halfway between, then the target; a layer becoming visible fades in from 0
         Engine::Snapshot m2 = m;
@@ -838,7 +861,7 @@ int main(int argc, char **argv)
             L()->color.temp = 1000;
             L()->roi = QRectF(0, 0, 0.5, 1);
             QJsonObject state = e.layerJson(e.indexOfId(tid));
-            state["timing"] = QJsonObject{{"opacity", 0}, {"color/temp", 2.0}};
+            state["timing"] = QJsonObject{{"opacity", 0}, {"temp", 2.0}};
             L()->opacity = 0.0f;
             L()->color.temp = 0;
             L()->roi = QRectF(0, 0, 1, 1);
@@ -861,25 +884,30 @@ int main(int argc, char **argv)
             CHECK(L()->color.temp < 1 && e.isFading());
             e.advanceFades(2.0);
             CHECK(std::abs(L()->color.temp - 1000) < 1e-3 && !e.isFading());
-            CHECK(Engine::timingKey({"roi", "2"}, {}) == "roi" && Engine::timingKey({"color", "add", "1"}, {}) == "color/add" &&
-                  Engine::timingKey({"fx", "0", "params", "radius"}, QJsonObject{{"fx", QJsonArray{QJsonObject{{"path", "/x/Blur.fs"}}}}}) == "fx/Blur/param/radius" &&
-                  Engine::timingKey({"source", "speed"}, {}) == "source/speed" && Engine::timingKey({"source", "file"}, {}).isEmpty());
-            // The pivot: a cut by default, with a time and a curve of its own when the snapshot gives them
+            // A group's time: for all of its values that have none of their own
+            CHECK(Engine::timingKeyOf(QJsonObject{{"roi", 1.0}}, "roi/right") == "roi" &&
+                  Engine::timingKeyOf(QJsonObject{{"roi", 1.0}, {"roi/right", 0.0}}, "roi/right") == "roi/right" &&
+                  Engine::timingKeyOf(QJsonObject{{"fx/blur", 1.0}}, "fx/blur/param/radius") == "fx/blur" &&
+                  Engine::timingKeyOf(QJsonObject{{"position", 1.0}}, "position_x").isEmpty());
+            // The pivot: on the snapshot's fade like the others, or on a time of its own (its group's here)
             {
-                CHECK(Engine::timingKey({"spatial", "pivot", "0"}, {}) == "spatial/pivot" &&
-                      Engine::timingKey({"spatial", "corners", "0", "0"}, {}) == "spatial");
                 QJsonObject ps = e.layerJson(e.indexOfId(tid));
-                QJsonObject sp = ps.value("spatial").toObject();
-                sp["pivot"] = QJsonArray{0.0, 0.0};
-                ps["spatial"] = sp;
+                QJsonObject pp = ps.value("params").toObject();
+                pp["pivot/x"] = 0.0;
+                pp["pivot/y"] = 0.0;
+                ps["params"] = pp;
                 ps.remove("timing");
                 L()->mapping.pivot = QPointF(0.5, 0.5);
-                e.applyLayers(QJsonArray{ps}, 1.0); // the fade is 1 s, the pivot ignores it
+                e.applyLayers(QJsonArray{ps}, 1.0);
+                CHECK((L()->mapping.pivot - QPointF(0.5, 0.5)).manhattanLength() < 1e-9 && e.isFading());
+                e.advanceFades(0.5);
+                CHECK(L()->mapping.pivot.x() > 0.05 && L()->mapping.pivot.x() < 0.45);
+                e.advanceFades(1.0);
                 CHECK((L()->mapping.pivot - QPointF(0, 0)).manhattanLength() < 1e-9);
-                e.advanceFades(2.0);
-                ps["timing"] = QJsonObject{{"spatial/pivot", 2.0}};
-                sp["pivot"] = QJsonArray{1.0, 1.0};
-                ps["spatial"] = sp;
+                ps["timing"] = QJsonObject{{"pivot", 2.0}};
+                pp["pivot/x"] = 100.0;
+                pp["pivot/y"] = 100.0;
+                ps["params"] = pp;
                 e.applyLayers(QJsonArray{ps}, 0.0);
                 CHECK((L()->mapping.pivot - QPointF(0, 0)).manhattanLength() < 1e-9 && e.isFading());
                 e.advanceFades(1.0);
@@ -900,17 +928,19 @@ int main(int argc, char **argv)
                     l.text.color = Qt::white;
                 });
                 QJsonObject st = e.layerJson(e.indexOfId(xid));
-                QJsonObject src = st.value("source").toObject();
-                CHECK(src.value("type") == "text" && src.value("color").isArray() && src.value("h_align") == "center");
-                src["content"] = "Help me";
-                src["size"] = 80;
-                src["bold"] = true;
-                src["color"] = QJsonArray{1, 0, 0, 1};
-                st["source"] = src;
-                st["timing"] = QJsonObject{{"source/text/size", 2.0}, {"source/text/color", 0}};
+                QJsonObject src = st.value("params").toObject();
+                CHECK(st.value("source").toObject().value("type") == "text" && src.value("text/color/r").isDouble() &&
+                      src.value("text/align") == "center");
+                src["text/content"] = "Help me";
+                src["text/size"] = 80;
+                src["text/bold"] = true;
+                src["text/color/g"] = 0.0;
+                src["text/color/b"] = 0.0;
+                st["params"] = src;
+                st["timing"] = QJsonObject{{"text/size", 2.0}, {"text/color", 0}};
                 e.applyLayers(QJsonArray{st}, 1.0);
                 CHECK(X()->text.content == "Help me" && X()->text.shown() == "Hello" && X()->text.bold);
-                CHECK(X()->text.color == QColor(255, 0, 0)); // a cut
+                CHECK(X()->text.color == QColor(255, 0, 0)); // a cut (its group's)
                 e.advanceFades(0.5); // 6 steps (erase "lo", type "p me") at an even pace: 3 done
                 CHECK(X()->text.shown() == "Help" && X()->text.size > 40 && X()->text.size < 80);
                 e.advanceFades(0.6);
@@ -921,19 +951,16 @@ int main(int argc, char **argv)
                 e.setLayerTextContent(xi, "Hi");
                 CHECK(X()->text.shown() == "Hi");
                 // A cut types nothing
-                src["content"] = "Cut";
-                st["source"] = src;
-                st["timing"] = QJsonObject{{"source/text/content", 0}};
+                src["text/content"] = "Cut";
+                st["params"] = src;
+                st["timing"] = QJsonObject{{"text/content", 0}};
                 e.applyLayers(QJsonArray{st}, 1.0);
                 CHECK(X()->text.shown() == "Cut");
                 e.advanceFades(3.0);
-                CHECK(Engine::timingKey({"source", "color", "2"}, {}) == "source/text/color" &&
-                      Engine::timingKey({"source", "content"}, {}) == "source/text/content" &&
-                      Engine::timingKey({"source", "params", "size"}, {}) == "source/param/size");
                 // Kept in range when read from a file
-                src["size"] = 100000;
-                src["line_height"] = -3;
-                st["source"] = src;
+                src["text/size"] = 100000;
+                src["text/line_height"] = -3;
+                st["params"] = src;
                 st.remove("timing");
                 e.applyLayers(QJsonArray{st}, 0.0);
                 CHECK(X()->text.size == 1000 && X()->text.lineHeight > 0);
@@ -977,7 +1004,7 @@ int main(int argc, char **argv)
                             for (auto it = o.begin(); it != o.end(); ++it) {
                                 static const QRegularExpression ok("^[a-z0-9_]+$");
                                 if (!ok.match(it.key()).hasMatch()) { ++bad; qWarning("project key: %s", qPrintable(it.key())); }
-                                if (it.key() != "params" && it.key() != "timing") walk(it.value());
+                                if (it.key() != "params" && it.key() != "timing" && it.key() != "easing") walk(it.value());
                             }
                         }
                     };
@@ -1086,11 +1113,11 @@ int main(int argc, char **argv)
             e.advanceFades(0.6);
             CHECK(center().blue() > 250);
             // The source's own time: a cut, no transition
-            red["timing"] = QJsonObject{{"source/file", 0}};
+            red["timing"] = QJsonObject{{"file", 0}};
             e.applyLayers(QJsonArray{red}, 1.0);
             CHECK(!e.isTransitioning(tid) && center().red() > 250);
             // A transition running when the layer goes: it goes with it
-            blue["timing"] = QJsonObject{{"source/file", 2.0}};
+            blue["timing"] = QJsonObject{{"file", 2.0}};
             e.applyLayers(QJsonArray{blue}, 0.0); // its own time even with no snapshot fade
             CHECK(e.isTransitioning(tid));
             e.removeLayer(e.indexOfId(tid));
@@ -1173,7 +1200,7 @@ int main(int argc, char **argv)
                     QJsonObject o = v.toObject();
                     const bool me = o.value("id").toString().toULongLong() == id;
                     o["included"] = me;
-                    if (me) o["opacity"] = opacity;
+                    if (me) setParam(o, "opacity", opacity);
                     m.layers.append(o);
                 }
                 return e.addSnapshot(m);
@@ -1223,7 +1250,10 @@ int main(int argc, char **argv)
                 QJsonArray ls = m.layers;
                 for (int k = 0; k < ls.size(); ++k) {
                     QJsonObject o = ls[k].toObject();
-                    if (o.value("included").toBool()) o["timing"] = QJsonObject{{"opacity", 5.0}, {"opacity/curve", "linear"}};
+                    if (o.value("included").toBool()) {
+                        o["timing"] = QJsonObject{{"opacity", 5.0}};
+                        o["easing"] = QJsonObject{{"opacity", "linear"}};
+                    }
                     ls[k] = o;
                 }
                 m.layers = ls;
@@ -1234,7 +1264,7 @@ int main(int argc, char **argv)
                     QJsonObject o = m.layers[k].toObject();
                     const bool me = o.value("id").toString().toULongLong() == ib;
                     o["included"] = me;
-                    o["opacity"] = 1.0;
+                    setParam(o, "opacity", 1.0);
                     m.layers[k] = o;
                 }
                 e.setSnapshot(mB1, m);
@@ -1363,7 +1393,7 @@ int main(int argc, char **argv)
             a.repeat = 0;
             Engine::AnimTrack rot;
             rot.layer = tid;
-            rot.param = "spatial/rotation";
+            rot.param = "rotation";
             rot.oscillator = true;
             rot.wave = Engine::AnimWave::Saw;
             rot.period = 4;
@@ -1377,12 +1407,12 @@ int main(int argc, char **argv)
             e.controlAnimation(aid, A::Play);
             CHECK(near(val("opacity"), 0) && e.animation(ai).state == Engine::AnimState::Playing);
             e.advanceFades(1.0);
-            CHECK(near(val("opacity"), 0.5) && near(val("spatial/rotation"), -90));
+            CHECK(near(val("opacity"), 0.5) && near(val("rotation"), -90));
             e.advanceFades(1.0);
-            CHECK(near(val("opacity"), 1.0) && near(val("spatial/rotation"), 0));
+            CHECK(near(val("opacity"), 1.0) && near(val("rotation"), 0));
             CHECK(near(e.layer(e.indexOfId(tid))->mapping.bounds().width(), before.width())); // turned, not shrunk
             e.advanceFades(2.5); // 4.5 s: the second pass of the pattern
-            CHECK(near(val("opacity"), 0.25) && near(val("spatial/rotation"), -135));
+            CHECK(near(val("opacity"), 0.25) && near(val("rotation"), -135));
             // Paused: its values are left alone
             e.controlAnimation(aid, A::Pause);
             e.layer(e.indexOfId(tid))->opacity = 0.9f;
@@ -1625,6 +1655,254 @@ int main(int argc, char **argv)
             e.removeLayer(e.indexOfId(tid));
             e.setFadesManual(false);
         }
+        // Waves that are random, and keys joined by Bézier curves
+        {
+            auto near = [](double a, double b) { return std::abs(a - b) < 1e-3; };
+            Engine::AnimTrack r;
+            r.oscillator = true;
+            r.wave = Engine::AnimWave::Random;
+            r.period = 1;
+            r.center = 0;
+            r.amplitude = 1;
+            r.seed = 7;
+            const double r0 = r.valueAt(0, 0.1), r1 = r.valueAt(0, 1.1);
+            CHECK(near(r.valueAt(0, 0.9), r0) && std::abs(r0) <= 1 && std::abs(r1) <= 1 && !near(r0, r1)); // held, then another
+            CHECK(near(r.valueAt(0, 1.1), r1)); // the same at the same time: drawn and sought alike
+            Engine::AnimTrack r2 = r;
+            r2.seed = 8;
+            CHECK(!near(r2.valueAt(0, 0.1), r0));
+            r.wave = Engine::AnimWave::SmoothRandom; // from one value to the next, without a jump
+            CHECK(near(r.valueAt(0, 0.0), r0) && near(r.valueAt(0, 0.9999), r1) && near(r.valueAt(0, 1.0), r1));
+            Engine::AnimTrack b;
+            b.keys = {{0, 0, Engine::kAnimBezier}, {2, 1, 0}};
+            // Automatic handles: flat, a third of the way — an S, symmetric
+            CHECK(near(b.valueAt(1, 0), 0.5) && b.valueAt(0.5, 0) < 0.2 && b.valueAt(1.5, 0) > 0.8);
+            b.keys[0].outDt = 0.5;
+            b.keys[0].outDv = 2; // a handle pulled up: it rises fast, beyond the linear way
+            CHECK(b.valueAt(0.5, 0) > 0.4);
+            double t1, v1, t2, v2;
+            b.keys[0].outDt = 5; // never beyond the next key: the curve stays a function of time
+            b.bezierHandles(0, &t1, &v1, &t2, &v2);
+            CHECK(near(t1, 2) && near(t2, 2 - 2.0 / 3) && near(v2, 1));
+        }
+        // The animations of a layer's numbers: each one on its own clock, on as soon as it is made, saved with the layer
+        {
+            using A = Engine::AnimAction;
+            e.setFadesManual(true);
+            auto near = [](double a, double b) { return std::abs(a - b) < 1e-3; };
+            const quint64 wid = e.layerId(e.addLayer("Wave", V));
+            auto L = [&] { return e.layer(e.indexOfId(wid)); };
+            L()->opacity = 1.0f;
+            // Declared once: what can be animated is an attribute of each number
+            {
+                Engine::Lock lk(&e.mutex());
+                QStringList paths;
+                for (const Parameter *p : L()->parameters()) paths << p->path();
+                CHECK(paths.contains("opacity") && paths.contains("soft_edge/left/width") && paths.contains("roi/left") &&
+                      !paths.contains("volume") && !paths.contains("width")); // no sound, not a viewport
+                Parameter *op = L()->parameter("opacity");
+                CHECK(op && op->setNumber(2) && op->number() == 1.0); // kept within its limits
+                CHECK(!L()->parameter("width") && L()->parameter("blend_mode")->setValue("add") && L()->blend == BlendMode::Add &&
+                      !L()->parameter("blend_mode")->setValue("nothing")); // a choice: one of its keys only
+                CHECK(L()->parameter("blend_mode")->reset() && L()->blend == BlendMode::Normal &&
+                      L()->parameter("rotation")->info().ramp == ParamInfo::Ramp::Angle &&
+                      !L()->parameter("color/enable")->info().animatable);
+            }
+            // A sine around the value, from Animate ▸ Sine
+            Engine::Animation s = e.makeLayerAnim(wid, "opacity", int(Engine::AnimWave::Sine));
+            CHECK(s.tracks.size() == 1 && s.tracks[0].oscillator && s.tracks[0].layer == wid &&
+                  s.tracks[0].center - s.tracks[0].amplitude >= -1e-9 && s.tracks[0].center + s.tracks[0].amplitude <= 1 + 1e-9 &&
+                  s.tracks[0].amplitude > 0.1); // at a bound: the whole range
+            s.tracks[0].center = 0.5;
+            s.tracks[0].amplitude = 0.5;
+            s.tracks[0].period = 2;
+            e.setLayerAnims(wid, {s});
+            Engine::Animation now;
+            CHECK(e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Playing);
+            e.advanceFades(0.5);
+            CHECK(near(L()->opacity, 1.0));
+            e.advanceFades(1.0);
+            CHECK(near(L()->opacity, 0.0));
+            // An edit goes on from where it is (no restart)
+            s.tracks[0].amplitude = 0.25;
+            e.setLayerAnims(wid, {s});
+            CHECK(e.layerAnim(wid, "opacity", &now) && near(now.clock, 1.5) && now.state == Engine::AnimState::Playing);
+            // Off: the number stays where it is; on again: from the start
+            s.tracks[0].enabled = false;
+            e.setLayerAnims(wid, {s});
+            L()->opacity = 0.3f;
+            e.advanceFades(0.5);
+            CHECK(near(L()->opacity, 0.3));
+            s.tracks[0].enabled = true;
+            e.setLayerAnims(wid, {s});
+            CHECK(e.layerAnim(wid, "opacity", &now) && near(now.clock, 0) && near(L()->opacity, 0.5));
+            // One animation per number; keys from where the number is, out and back
+            Engine::Animation k = e.makeLayerAnim(wid, "rotation", -1);
+            CHECK(!k.tracks[0].oscillator && k.tracks[0].keys.size() == 3 && near(k.tracks[0].keys[0].v, 0));
+            e.setLayerAnims(wid, {s, k, s});
+            CHECK(e.layerAnims(wid).size() == 2);
+            // Its transport, and the view of its card (not an edit: kept by the next edit)
+            e.controlLayerAnim(wid, "opacity", A::Pause);
+            CHECK(e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Paused);
+            e.setLayerAnimView(wid, "opacity", true, true);
+            e.setLayerAnims(wid, {s, k});
+            CHECK(e.layerAnim(wid, "opacity", &now) && now.pinned && now.folded);
+            e.controlLayerAnim(wid, "opacity", A::Play);
+            // A locked layer: its animations play on (they are its content)
+            L()->locked = true;
+            e.advanceFades(0.5);
+            CHECK(near(L()->opacity, 0.75));
+            L()->locked = false;
+            // Undo: one step per edit, the arrows of a number merge; the other numbers' animations are left alone
+            {
+                QUndoStack st;
+                Engine::Animation b0;
+                e.layerAnim(wid, "opacity", &b0);
+                Engine::Animation b1 = b0, b2 = b0;
+                b1.speed = 2;
+                b2.speed = 3;
+                st.push(new cmd::SetLayerAnim(&e, wid, "opacity", b0, b1, "Speed", "speed"));
+                st.push(new cmd::SetLayerAnim(&e, wid, "opacity", b1, b2, "Speed", "speed"));
+                CHECK(st.count() == 1 && e.layerAnim(wid, "opacity", &now) && near(now.speed, 3));
+                e.setLayerAnimOn(wid, "rotation", false); // meanwhile, by OSC
+                st.undo();
+                CHECK(e.layerAnim(wid, "opacity", &now) && near(now.speed, 1) && e.layerAnim(wid, "rotation", &now) &&
+                      !now.tracks[0].enabled);
+                e.setLayerAnimOn(wid, "rotation", true);
+                // Removed, then back at its place
+                Engine::Animation r;
+                e.layerAnim(wid, "opacity", &r);
+                st.push(new cmd::SetLayerAnim(&e, wid, "opacity", r, std::nullopt, "Remove"));
+                CHECK(!e.layerAnim(wid, "opacity", nullptr) && e.layerAnims(wid).size() == 1);
+                st.undo();
+                CHECK(e.layerAnimIndex(wid, "opacity") == 0 && e.layerAnims(wid).size() == 2);
+            }
+            // OSC: /layer/<name>/anim/<the number>/enable, speed, rewind
+            {
+                OscServer server(&e);
+                CHECK(server.handleMessage({"/layer/Wave/opacity/anim/speed", "f", {0.5}}) && e.layerAnim(wid, "opacity", &now) &&
+                      near(now.speed, 0.5));
+                CHECK(server.handleMessage({"/layer/Wave/rotation/anim/enable", "F", {false}}) &&
+                      e.layerAnim(wid, "rotation", &now) && !now.tracks[0].enabled);
+                CHECK(server.handleMessage({"/layer/Wave/opacity/anim/rewind", "N", {}}) && e.layerAnim(wid, "opacity", &now) &&
+                      near(now.clock, 0));
+                CHECK(!server.handleMessage({"/layer/Wave/roi/left/anim/enable", "T", {true}}));
+                // The animation's settings, under its parameter
+                CHECK(server.handleMessage({"/layer/Wave/rotation/anim/duration", "f", {6}}) &&
+                      server.handleMessage({"/layer/Wave/rotation/anim/loop_mode", "s", {QStringLiteral("ping-pong")}}) &&
+                      e.layerAnim(wid, "rotation", &now) && near(now.duration, 6) && now.loop == Engine::AnimLoop::PingPong);
+                CHECK(server.handleMessage({"/layer/Wave/rotation/anim/wave", "s", {QStringLiteral("saw")}}) &&
+                      server.handleMessage({"/layer/Wave/rotation/anim/period", "f", {3}}) && e.layerAnim(wid, "rotation", &now) &&
+                      now.tracks[0].oscillator && now.tracks[0].wave == Engine::AnimWave::Saw && near(now.tracks[0].period, 3));
+                CHECK(server.handleMessage({"/layer/Wave/rotation/anim/wave", "s", {QStringLiteral("keys")}}) &&
+                      server.handleMessage({"/layer/Wave/rotation/anim/pause", "N", {}}) && e.layerAnim(wid, "rotation", &now) &&
+                      !now.tracks[0].oscillator && now.tracks[0].keys.size() == 3);
+                CHECK(!server.handleMessage({"/layer/Wave/rotation/anim/loop_mode", "s", {QStringLiteral("sideways")}}));
+                {
+                    Engine::Animation r;
+                    e.layerAnim(wid, "rotation", &r);
+                    r.duration = 4;
+                    r.loop = Engine::AnimLoop::Loop;
+                    e.setLayerAnim(wid, "rotation", &r);
+                }
+                // Every number at its own address (the one of the timelines and the animations), and the ones that go
+                // together at their common address too; their limits are the declared ones
+                CHECK(server.handleMessage({"/layer/Wave/position/x", "f", {16}}) &&
+                      server.handleMessage({"/layer/Wave/position", "ff", {20, 10}}));
+                {
+                    double x = 0, y = 0;
+                    e.animParamValue(wid, "position/x", &x);
+                    e.animParamValue(wid, "position/y", &y);
+                    CHECK(near(x, 20) && near(y, 10));
+                }
+                CHECK(server.handleMessage({"/layer/Wave/add", "fff", {0.1, 0.2, 0.3}}) &&
+                      server.handleMessage({"/layer/Wave/add/g", "f", {0.5}}) && near(L()->color.add[0], 0.1) &&
+                      near(L()->color.add[1], 0.5));
+                CHECK(server.handleMessage({"/layer/Wave/soft_edge/left/width", "f", {0.9}}) && near(L()->mapping.soft.width[0], 0.5));
+                CHECK(server.handleMessage({"/layer/Wave/blend_mode", "s", {QStringLiteral("difference")}}) &&
+                      L()->blend == BlendMode::Difference);
+                int status = 0;
+                const QJsonObject op = QJsonDocument::fromJson(server.httpGet("/layer/Wave/opacity", &status)).object();
+                CHECK(status == 200 && op.value("RANGE").toArray().at(0).toObject().value("MAX").toDouble() == 1 &&
+                      op.value("TYPE").toString() == "f");
+                L()->blend = BlendMode::Normal;
+                L()->mapping.soft.width[0] = 0;
+                L()->color.add[0] = L()->color.add[1] = L()->color.add[2] = 0;
+            }
+            // Saved with the layer: duplicated with it (on the copy), and back when the project is opened
+            const QJsonObject lj = e.layerJson(e.indexOfId(wid));
+            CHECK(lj.value("anims").toArray().size() == 2 &&
+                  lj.value("anims").toArray().at(0).toObject().value("param").toString() == "opacity" &&
+                  lj.value("anims").toArray().at(0).toObject().value("pinned").toBool());
+            const int copy = e.duplicateLayer(e.indexOfId(wid));
+            CHECK(copy >= 0 && e.layerAnims(e.layerId(copy)).size() == 2 &&
+                  e.layerAnims(e.layerId(copy))[0].tracks[0].layer == e.layerId(copy));
+            e.removeLayer(copy);
+            // Not part of a snapshot: a recall leaves them as they are, even one that gives the layer another source
+            const QJsonArray cap = e.captureLayers();
+            for (const QJsonValue &x : cap) CHECK(!x.toObject().contains("anims"));
+            {
+                e.controlLayerAnim(wid, "opacity", A::Pause);
+                const double clock0 = (e.layerAnim(wid, "opacity", &now), now.clock);
+                QJsonObject other = e.layerJson(e.indexOfId(wid));
+                other.remove("anims");
+                QJsonObject src{{"type", "image"}, {"path", tmp + "/redblue.png"}};
+                other["source"] = src;
+                e.applyLayers(QJsonArray{other}, 0.0); // a cut to another source: the layer is made again
+                CHECK(e.layer(e.indexOfId(wid))->type == SourceType::Image && e.layerAnims(wid).size() == 2 &&
+                      e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Paused && near(now.clock, clock0));
+                e.controlLayerAnim(wid, "opacity", A::Play);
+            }
+            CHECK(e.saveProject(tmp + "/anims.fulskrin", {}, &err));
+            CHECK(e.loadProject(tmp + "/anims.fulskrin", nullptr, &err));
+            CHECK(e.layerAnims(wid).size() == 2 && e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Playing &&
+                  near(now.speed, 0.5) && now.tracks[0].layer == wid && e.layerAnim(wid, "rotation", &now) &&
+                  !now.tracks[0].enabled && now.state == Engine::AnimState::Stopped && now.tracks[0].keys.size() == 3);
+            e.removeLayer(e.indexOfId(wid));
+            e.setFadesManual(false);
+        }
+        // A snapshot, then a timeline on one of its numbers: the timeline ends where it ends, the rest fades on
+        {
+            using A = Engine::AnimAction;
+            e.setFadesManual(true);
+            auto near = [](double a, double b) { return std::abs(a - b) < 1e-3; };
+            const quint64 lid = e.layerId(e.addLayer("Chained", V));
+            auto L = [&] { return e.layer(e.indexOfId(lid)); };
+            L()->opacity = 1.0f;
+            L()->color.temp = 0;
+            QJsonObject state = e.layerJson(e.indexOfId(lid));
+            setParam(state, "opacity", 0.0);
+            setParam(state, "temp", 1000.0);
+            e.applyLayers(QJsonArray{state}, 4.0); // a slow fade: opacity to 0, temperature to 1000
+            e.advanceFades(0.5);
+            Engine::Animation t;
+            t.name = "Up";
+            t.duration = 1;
+            t.loop = Engine::AnimLoop::Once;
+            Engine::AnimTrack tr;
+            tr.layer = lid;
+            tr.param = "opacity";
+            tr.keys = {{0, 0.2, 0}, {1, 0.6, 0}};
+            t.tracks = {tr};
+            const quint64 tid = e.animation(e.addAnimation(t)).id;
+            e.controlAnimation(tid, A::Play);
+            e.advanceFades(0.5);
+            CHECK(near(L()->opacity, 0.4));
+            e.advanceFades(1.0); // over
+            CHECK(near(L()->opacity, 0.6) && e.animation(e.indexOfAnimation(tid)).state == Engine::AnimState::Stopped);
+            e.advanceFades(1.0); // the snapshot's fade goes on, but not on the opacity any more
+            CHECK(near(L()->opacity, 0.6) && L()->color.temp > 600 && L()->color.temp < 999);
+            e.advanceFades(2.0);
+            CHECK(near(L()->opacity, 0.6) && near(L()->color.temp, 1000));
+            // A snapshot recalled afterwards drives it again
+            setParam(state, "opacity", 1.0);
+            e.applyLayers(QJsonArray{state}, 1.0);
+            e.advanceFades(1.0);
+            CHECK(near(L()->opacity, 1.0));
+            e.removeAnimation(e.indexOfAnimation(tid));
+            e.removeLayer(e.indexOfId(lid));
+            e.setFadesManual(false);
+        }
         // A recall shows what was stored: a layer the snapshot does not know fades out and is hidden
         {
             const int xi = e.addLayer("Extra", V);
@@ -1656,21 +1934,17 @@ int main(int argc, char **argv)
         {
             Engine::Snapshot edited = e.snapshot(0);
             QJsonObject l0 = edited.layers[0].toObject();
-            l0["opacity"] = 0.25;
-            l0["blend_mode"] = "screen";
+            setParam(l0, "opacity", 0.25);
+            setParam(l0, "blend_mode", "screen");
             QJsonObject l1 = edited.layers[1].toObject();
-            QJsonObject src = l1.value("source").toObject();
-            QJsonObject params = src.value("params").toObject();
-            params["color"] = QJsonArray{0.25, 0.5, 0.75, 1.0}; // SolidColor
-            src["params"] = params;
-            l1["source"] = src;
+            for (int c = 0; c < 4; ++c) setParam(l1, QStringLiteral("param/color/") + QChar("rgba"[c]), 0.25 * (c + 1)); // SolidColor
             l1["enable"] = true;
             edited.layers[0] = l0;
             edited.layers[1] = l1;
             e.layer(V + 0)->opacity = 0.8f;
             e.setSnapshot(0, edited);
             CHECK(std::abs(e.layer(V + 0)->opacity - 0.8f) < 1e-6); // editing a snapshot does not touch the layers
-            CHECK(std::abs(e.snapshot(0).layers[0].toObject().value("opacity").toDouble() - 0.25) < 1e-9);
+            CHECK(std::abs(paramOf(e.snapshot(0).layers[0].toObject(), "opacity").toDouble() - 0.25) < 1e-9);
             e.recallSnapshot(0);
             CHECK(std::abs(e.layer(V + 0)->opacity - 0.25f) < 1e-6 && e.layer(V + 0)->blend == BlendMode::Screen);
             CHECK(e.layer(V + 1)->enabled);
@@ -1682,7 +1956,7 @@ int main(int argc, char **argv)
             // Still edited after a save / load round trip
             CHECK(e.saveProject(tmp + "/snapshots.fulskrin", {}, &err));
             CHECK(e.loadProject(tmp + "/snapshots.fulskrin", nullptr, &err));
-            CHECK(std::abs(e.snapshot(0).layers[0].toObject().value("opacity").toDouble() - 0.25) < 1e-9);
+            CHECK(std::abs(paramOf(e.snapshot(0).layers[0].toObject(), "opacity").toDouble() - 0.25) < 1e-9);
         }
         e.newProject();
         CHECK(e.snapshotCount() == 0);
@@ -1783,8 +2057,7 @@ int main(int argc, char **argv)
         e.layer(e.indexOfId(lid))->color.enabled = true;
         // Saved, read back, recalled by a snapshot
         const QJsonObject json = e.layerJson(e.indexOfId(lid));
-        CHECK(json.value("color").toObject().value("mask").toString() == QString::number(maskId)
-              && json.value("color").toObject().value("mask_invert").toBool());
+        CHECK(json.value("mask").toString() == QString::number(maskId) && paramOf(json, "mask/invert").toBool());
         CHECK(e.setColorMask(e.indexOfId(lid), 0, false, &err));
         e.replaceLayerJson(e.indexOfId(lid), json);
         {
@@ -1857,9 +2130,9 @@ int main(int argc, char **argv)
         g = e.grabOutput();
         CHECK(g.pixelColor(20, 19).red() > 100 && g.pixelColor(20, 35).blue() > 250);
         // Saved and loaded
-        Mapping m;
-        m.fromJson(e.layerJson(e.indexOfId(id)).value("spatial").toObject());
-        CHECK(m.soft.enabled && m.soft.width[SoftEdge::Top] == 0.5 && m.soft.power[SoftEdge::Top] == 2);
+        const QJsonObject saved = e.layerJson(e.indexOfId(id));
+        CHECK(paramOf(saved, "soft_edge/enable").toBool() && paramOf(saved, "soft_edge/top/width").toDouble() == 0.5 &&
+              paramOf(saved, "soft_edge/top/power").toDouble() == 2);
     }
 
     // 4d'. Blend modes that take away: Subtract and Difference (against what is drawn below)
@@ -1963,8 +2236,8 @@ int main(int argc, char **argv)
         {
             Engine::Lock lk(&e.mutex());
             Mapping &m = e.layer(v1)->mapping; // left half of the composition
-            m.setCorner(0, QPointF(0, 0)), m.setCorner(1, QPointF(0.5, 0)), m.setCorner(2, QPointF(0.5, 1)),
-                m.setCorner(3, QPointF(0, 1));
+            m.position = {0.25, 0.5};
+            m.size = {0.5, 1};
         }
         const int v2i = e.addViewport(QStringLiteral("Right"), QSize(32, 16));
         const quint64 vp1 = e.layerId(e.viewports().first()), vp2 = e.layerId(v2i);
@@ -2373,9 +2646,9 @@ int main(int argc, char **argv)
             CHECK(l && !l->color.enabled && l->color.removeOn && std::abs(l->color.remove[1] - 1.0f) < 1e-6);
         }
         QJsonObject legacy = e.layerJson(V + 0);
-        QJsonObject color = legacy.value("color").toObject();
-        for (const QString &k : {QStringLiteral("enable"), QStringLiteral("remove_enable")}) color.remove(k);
-        legacy["color"] = color;
+        QJsonObject params = legacy.value("params").toObject();
+        for (const QString &k : {QStringLiteral("color/enable"), QStringLiteral("remove/enable")}) params.remove(k);
+        legacy["params"] = params;
         e.replaceLayerJson(V + 0, legacy);
         {
             Engine::Lock lk(&e.mutex());
@@ -2491,13 +2764,17 @@ int main(int argc, char **argv)
         clip = find(tmp + "/clip.mp4");
         CHECK(clip && clip->missing && clip->video);
         CHECK(e.layerJson(vi).value("source").toObject().value("type").toString() == "video");
+        CHECK(paramOf(e.layerJson(vi), "play_mode").isString()); // its transport's values are kept for when it comes back
         CHECK(e.binItems().size() == 2);
         // Relink: the video comes back, the mapping is kept
         Mapping before = e.layer(vi)->mapping;
         CHECK(e.relinkLayerMedia(vi, tmp + "/clip.mp4", tmp + "/clip_moved.mp4", &err));
         e.relinkBinItem(tmp + "/clip.mp4", tmp + "/clip_moved.mp4");
         CHECK(e.layer(vi)->type == SourceType::Video && e.layer(vi)->error.isEmpty());
-        CHECK(e.layer(vi)->mapping.toJson() == before.toJson());
+        CHECK(e.layer(vi)->mapping == before);
+        CHECK(paramOf(e.layerJson(vi), "play_mode").isString() && e.layer(vi)->extraParams.isEmpty());
+        e.layer(vi)->extraParams = QJsonObject{{"speed", -1.0}}; // kept from a missing file: not for another media
+        CHECK(e.setLayerImage(vi, root + "/media/bars.png", &err) && e.layer(vi)->extraParams.isEmpty());
         CHECK(e.binItems().contains(tmp + "/clip_moved.mp4"));
         QFile::remove(tmp + "/clip_moved.mp4");
         VideoDecoder::Info info;
@@ -2642,7 +2919,7 @@ int main(int argc, char **argv)
         // Save / load
         const QJsonObject j = e.layerJson(a);
         CHECK(j.value("source").toObject().value("type").toString() == "audio");
-        CHECK(j.contains("volume") && j.contains("muted"));
+        CHECK(paramOf(j, "volume").isDouble() && paramOf(j, "mute").isBool());
 
         // Video with a sound track
         e.removeLayer(a);
@@ -2826,7 +3103,7 @@ int main(int argc, char **argv)
                 Engine::Lock lk(&e.mutex());
                 CHECK(e.layer(r)->position() < 1e-6);
             }
-            CHECK(e.layerJson(r).value("source").toObject().value("speed").toDouble() == -2.0);
+            CHECK(paramOf(e.layerJson(r), "speed").toDouble() == -2.0);
             e.removeLayer(r);
         }
         { // In / out points, video: the loop stays within [0.4, 1.2] s, frame by frame
@@ -2920,10 +3197,16 @@ int main(int argc, char **argv)
                 Engine::Lock lk(&e.mutex());
                 CHECK(std::abs(e.layer(a2)->position() - 1.5) < 1e-6);
             }
-            const QJsonObject j = e.layerJson(a2).value("source").toObject();
-            CHECK(std::abs(j.value("in").toDouble() - 1.5) < 1e-9 && std::abs(j.value("out").toDouble() - 2.5) < 1e-9);
+            const QJsonObject j = e.layerJson(a2);
+            CHECK(std::abs(paramOf(j, "in").toDouble() - 1.5) < 1e-9 && std::abs(paramOf(j, "out").toDouble() - 2.5) < 1e-9);
             CHECK(e.setLayerAudio(a2, root + "/media/tone.wav", &err)); // a new media is played whole
             CHECK(e.layer(a2)->inPoint == 0 && e.layer(a2)->outPoint < 0);
+            CHECK(paramOf(e.layerJson(a2), "out").toDouble() == -1.0); // to its end, whatever its length
+            {
+                Engine::Lock lk(&e.mutex());
+                const Parameter *in = e.layer(a2)->parameter("in");
+                CHECK(in && !in->animatable() && in->info().ramp == ParamInfo::Ramp::Cut); // each change repositions the media
+            }
             e.removeLayer(a2);
         }
         { // Stop: black and silent at the end; One-shot: last frame kept
@@ -2953,7 +3236,7 @@ int main(int argc, char **argv)
                 Engine::Lock lk(&e.mutex());
                 CHECK(!e.layer(s1)->ended && e.layer(s1)->finalTex != 0);
             }
-            CHECK(e.layerJson(s1).value("source").toObject().value("play_mode").toString() == "oneshot");
+            CHECK(paramOf(e.layerJson(s1), "play_mode").toString() == "oneshot");
             // Default mode (preference) given to a newly loaded video
             e.setDefaultPlayMode(PlayMode::PingPong);
             CHECK(e.setLayerVideo(s1, root + "/media/h264.mp4", &err));
@@ -3007,7 +3290,7 @@ int main(int argc, char **argv)
             const Layer *l = e.layer(B());
             CHECK(l->roi == QRectF(QPointF(0.25, 0.1), QPointF(0.75, 0.6)));
             CHECK(l->color.temp == 0.f && l->opacity == 1.f && l->effects.empty());
-            CHECK(l->mapping.corners[1] == QPointF(1, 0));
+            CHECK(QLineF(l->mapping.corner(1), QPointF(1, 0)).length() < 1e-9);
             CHECK(l->type == SourceType::Isf && l->sourcePath.endsWith("SolidColor.fs")); // its own media kept
         }
         CHECK(e.applyLayerParts(B(), clip, Engine::PartColor));
@@ -3019,7 +3302,7 @@ int main(int argc, char **argv)
         CHECK(e.applyLayerParts(B(), clip, Engine::PartSpatial | Engine::PartCompositing));
         {
             Engine::Lock lk(&e.mutex());
-            CHECK(e.layer(B())->mapping.corners[1] == QPointF(0.8, 0.2));
+            CHECK(QLineF(e.layer(B())->mapping.corner(1), QPointF(0.8, 0.2)).length() < 1e-9);
             CHECK(e.layer(B())->opacity == 0.25f && e.layer(B())->blend == BlendMode::Multiply);
             CHECK(e.layer(B())->effects.empty());
         }

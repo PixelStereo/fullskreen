@@ -12,6 +12,9 @@ class QToolButton;
 // Groups fold and unfold (arrow), layers are dragged onto a group to go into it, or between rows to move.
 // Double-click (or F2) on a name renames it; the padlock between visibility and name locks the layer.
 // Rows follow the engine's layer indices one to one (members of a folded group are hidden rows).
+// A drag of layers from the list: their rows, "3,5"
+inline constexpr char kLayerRowsMime[] = "application/x-fulskrin-layer-rows";
+
 class LayerTable : public QWidget
 {
     Q_OBJECT

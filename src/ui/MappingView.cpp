@@ -150,7 +150,7 @@ void MappingView::typeCoordinate()
         moveSelection(target - handlePos(m_primary));
         after = *m;
     }
-    if (m_undo && after.toJson() != before.toJson())
+    if (m_undo && after != before)
         m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, QStringLiteral("Move Point"), true));
     emit mappingEdited();
     update();
@@ -287,7 +287,7 @@ int MappingView::hitViewportFrame(QPointF p) const
     for (int i : order) { // near one of the four sides of its frame (turned or not)
         const Mapping &m = m_engine->layer(i)->mapping;
         for (int k = 0; k < 4; ++k) {
-            const QPointF a = toWidget(m.corners[k]), b = toWidget(m.corners[(k + 1) % 4]);
+            const QPointF a = toWidget(m.corner(k)), b = toWidget(m.corner((k + 1) % 4));
             const QPointF d = b - a;
             const double len2 = d.x() * d.x() + d.y() * d.y();
             const double t = len2 > 1e-9 ? std::clamp(QPointF::dotProduct(p - a, d) / len2, 0.0, 1.0) : 0.0;
@@ -410,7 +410,7 @@ void MappingView::paintViewportNames()
         for (int i : m_engine->viewports()) {
             const Layer *l = m_engine->layer(i);
             QPolygonF poly;
-            for (const QPointF &c : l->mapping.corners) poly << toWidget(c);
+            for (int k = 0; k < 4; ++k) poly << toWidget(l->mapping.corner(k));
             frames.push_back({poly.boundingRect(), l->name});
         }
     }
@@ -492,7 +492,7 @@ void MappingView::paintScene()
         for (int i : m_engine->viewports()) {
             if (i == m_layer) continue;
             const Mapping &vm = m_engine->layer(i)->mapping;
-            for (int k = 0; k < 4; ++k) pushLine(frames, toWidget(vm.corners[k]), toWidget(vm.corners[(k + 1) % 4]));
+            for (int k = 0; k < 4; ++k) pushLine(frames, toWidget(vm.corner(k)), toWidget(vm.corner((k + 1) % 4)));
         }
         m_draw.drawLines(frames, kViewport);
     }
@@ -529,7 +529,7 @@ void MappingView::paintScene()
     // A viewport: its frame, moved by dragging (no corners or mesh)
     if (isViewport(cur)) {
         std::vector<float> frame;
-        for (int k = 0; k < 4; ++k) pushLine(frame, toWidget(m->corners[k]), toWidget(m->corners[(k + 1) % 4]));
+        for (int k = 0; k < 4; ++k) pushLine(frame, toWidget(m->corner(k)), toWidget(m->corner((k + 1) % 4)));
         m_draw.drawLines(frame, m_engine->isLocked(cur) ? QColor(230, 80, 70, 220) : kSelected);
         drawPivot(true);
         return;
@@ -557,8 +557,8 @@ void MappingView::paintScene()
     for (size_t k = 0; k < pts.size(); ++k) pushLine(line, W(pts[k]), W(pts[(k + 1) % pts.size()]));
     // Faint diagonals in corners mode, to judge the perspective
     if (!m->meshMode) {
-        pushLine(line, W(m->corners[0]), W(m->corners[2]));
-        pushLine(line, W(m->corners[1]), W(m->corners[3]));
+        pushLine(line, W(m->corner(0)), W(m->corner(2)));
+        pushLine(line, W(m->corner(1)), W(m->corner(3)));
     }
     // Locked layer: outline in red, no handles
     if (m_engine->isLocked(m_layer)) {
@@ -628,7 +628,7 @@ QPointF MappingView::handlePos(const Handle &h) const
 {
     Mapping *m = mapping();
     if (!m || !h.valid()) return {};
-    if (h.kind == 0) return m->corners[h.i];
+    if (h.kind == 0) return m->corner(h.i);
     return m->controlPoint(h.i, h.j);
 }
 
@@ -935,7 +935,7 @@ void MappingView::mouseReleaseEvent(QMouseEvent *)
     update();
     if (!dragging || !m_undo) return;
     const Mapping after = cmd::SetMapping::read(m_engine, m_layer);
-    if (after.toJson() == m_dragBefore.toJson()) return;
+    if (after == m_dragBefore) return;
     const QString text = !handle ? (isViewport(m_layer) ? QStringLiteral("Move Viewport") : QStringLiteral("Move Layer"))
                          : m_selection.size() > 1 ? QStringLiteral("Move %1 Points").arg(m_selection.size())
                                                   : QStringLiteral("Move Handle");

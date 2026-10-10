@@ -1,6 +1,8 @@
 #include "LayerInspector.h"
 #include "Commands.h"
 #include "Engine.h"
+#include "LayerTable.h"
+#include "ParamAnimPanel.h"
 #include "ParamPanel.h"
 #include "SettingsPanel.h"
 #include "ViewportOutput.h"
@@ -80,6 +82,8 @@ struct LayerValues {
     AudioStream::Info audio;
     bool hasGenerator = false;
     int genW = 0, genH = 0;
+    double genSpeed = 1;
+    int srcW = 0, srcH = 0; // an image's
     // Another layer as the source, and the layers that could be chosen (id, name; cycles left out)
     quint64 sourceLayer = 0;
     LayerTap sourceTap = LayerTap::PostFx;
@@ -146,6 +150,9 @@ struct LayerValues {
         s.hasGenerator = l->generator != nullptr;
         s.genW = l->genWidth;
         s.genH = l->genHeight;
+        s.genSpeed = l->generator ? l->generator->speed : 1.0;
+        s.srcW = l->srcWidth;
+        s.srcH = l->srcHeight;
         s.sourceLayer = l->sourceLayer;
         s.sourceTap = l->sourceTap;
         s.transition = l->transition;
@@ -214,11 +221,12 @@ static QToolButton *toolButton(const QString &text, const QString &tip)
 }
 
 namespace {
-// Drop zone of the Source tab: a file from the Media Bin or the Finder is loaded into the layer.
+// Drop zone of the source (top of the inspector): a file from the Media Bin or the Finder is loaded into the layer.
 class DropZone : public QLabel
 {
 public:
-    std::function<void(const QString &)> onDrop;
+    std::function<void(const QString &)> onDrop; // a file
+    std::function<void(int)> onLayer;           // a layer dragged from the list (its row)
     explicit DropZone(const QString &text) : QLabel(text)
     {
         setAcceptDrops(true);
@@ -227,15 +235,39 @@ public:
         setMinimumHeight(64);
         setHover(false);
     }
+    // Loaded: it stands out (a filled, framed card), empty: a dashed outline; missing: in red
+    void setLoaded(bool on, bool missing = false)
+    {
+        m_loaded = on;
+        m_missing = missing;
+        setHover(false);
+    }
 
 protected:
     void setHover(bool on)
     {
-        setStyleSheet(on ? QStringLiteral("QLabel { border:2px dashed %1; border-radius:6px; background:%2;"
-                                          " color:%3; padding:8px; }")
-                               .arg(theme::css(), theme::css(40), theme::accent().lighter(130).name())
-                         : QStringLiteral("QLabel { border:2px dashed #55555c; border-radius:6px; "
-                                          "color:#9a9aa0; padding:8px; }"));
+        if (on)
+            setStyleSheet(QStringLiteral("QLabel { border:2px dashed %1; border-radius:6px; background:%2;"
+                                         " color:%3; padding:8px; }")
+                              .arg(theme::css(), theme::css(40), theme::accent().lighter(130).name()));
+        else if (m_missing)
+            setStyleSheet(QStringLiteral("QLabel { border:2px solid #b4483c; border-radius:6px; background:#3a2422;"
+                                         " color:#ffb4a8; padding:8px; }"));
+        else if (m_loaded)
+            setStyleSheet(QStringLiteral("QLabel { border:2px solid %1; border-radius:6px; background:%2;"
+                                         " color:#f4f4f6; padding:8px; }")
+                              .arg(theme::css(), theme::css(55)));
+        else
+            setStyleSheet(QStringLiteral("QLabel { border:2px dashed #55555c; border-radius:6px; "
+                                         "color:#9a9aa0; padding:8px; }"));
+    }
+    bool m_loaded = false, m_missing = false;
+    static int layerRow(const QMimeData *m)
+    {
+        if (!m->hasFormat(kLayerRowsMime)) return -1;
+        bool ok = false;
+        const int row = m->data(kLayerRowsMime).split(',').value(0).toInt(&ok);
+        return ok ? row : -1;
     }
     static QString firstFile(const QMimeData *m)
     {
@@ -245,7 +277,7 @@ protected:
     }
     void dragEnterEvent(QDragEnterEvent *e) override
     {
-        if (firstFile(e->mimeData()).isEmpty()) return e->ignore();
+        if (firstFile(e->mimeData()).isEmpty() && (layerRow(e->mimeData()) < 0 || !onLayer)) return e->ignore();
         setHover(true);
         e->acceptProposedAction();
     }
@@ -254,8 +286,10 @@ protected:
     {
         setHover(false);
         const QString f = firstFile(e->mimeData());
+        const int row = layerRow(e->mimeData());
         e->acceptProposedAction();
         if (!f.isEmpty() && onDrop) onDrop(f);
+        else if (row >= 0 && onLayer) onLayer(row);
     }
 };
 
@@ -275,7 +309,35 @@ LayerInspector::LayerInspector(Engine *engine, QUndoStack *undo, QWidget *parent
 {
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(8, 8, 8, 8);
+    // A number animated or no longer: the tabs again (the ∿ by its name); an edit of an animation: its card follows
+    connect(engine, &Engine::layerAnimsChanged, this, [this](quint64 layer) {
+        if (layer != m_layerId) return;
+        QStringList now;
+        for (const Animation &a : m_engine->layerAnims(layer))
+            if (!a.tracks.empty()) now << a.tracks.front().param;
+        if (now != m_animated) QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+    });
     rebuild();
+}
+
+std::pair<double, double> LayerInspector::limitsOf(const QString &path, double lo, double hi) const
+{
+    ParamInfo p;
+    if (!m_engine->parameterInfo(m_layerId, path, &p)) return {lo, hi};
+    return {p.lo, p.hi};
+}
+
+void LayerInspector::showAnimation(const QString &param)
+{
+    QStringList now;
+    for (const Animation &a : m_engine->layerAnims(m_layerId))
+        if (!a.tracks.empty()) now << a.tracks.front().param;
+    if (now != m_animated) { // just made: shown once the tabs are built again
+        m_revealAnim = param;
+        return;
+    }
+    if (m_tabs && m_animTab >= 0) m_tabs->setCurrentIndex(m_animTab);
+    if (m_anims) m_anims->reveal(param);
 }
 
 void LayerInspector::setLayer(int index)
@@ -354,6 +416,10 @@ void LayerInspector::rebuild()
 
     m_layerId = s.id;
     m_locked = s.locked || s.lockedByGroup;
+    m_animated.clear();
+    for (const Animation &a : m_engine->layerAnims(s.id))
+        if (!a.tracks.empty()) m_animated << a.tracks.front().param;
+    m_animate = new AnimateMenu(m_engine, m_undo, s.id, [this](const QString &p) { showAnimation(p); }, m_content);
     const QString kind = s.isViewport ? QStringLiteral("Viewport") : s.isGroup ? QStringLiteral("Group") : QStringLiteral("Layer");
     emit kindChanged(kind);
     // Header: visibility, lock, name
@@ -397,7 +463,23 @@ void LayerInspector::rebuild()
         emit layerChanged();
     });
 
-    // Sub-tabs; the current one is kept from one layer to the next
+    // At the top, always shown: its source (media, transport, sound, generator) and how it is composited (opacity,
+    // blend, the viewports it appears in)
+    auto *top = new QWidget;
+    {
+        auto *tv = new QVBoxLayout(top);
+        tv->setContentsMargins(0, 0, 0, 0);
+        tv->setSpacing(8);
+        tv->addWidget(buildSource(s));
+        if (s.type != SourceType::Audio) { // a sound has no picture to composite
+            tv->addWidget(separator());
+            tv->addWidget(buildCompositing(s));
+        }
+        lockInputs(top, m_locked);
+    }
+    v->addWidget(top);
+
+    // Below, in sub-tabs; the current one is kept from one layer to the next
     auto *tabs = new QTabWidget;
     tabs->setDocumentMode(true);
     // Tabs that read as tabs (as the ones above): the current one lighter, underlined with the accent
@@ -409,13 +491,25 @@ void LayerInspector::rebuild()
                                        "QTabBar::tab:hover:!selected { background:#313136; color:#d8d8dc; }"
                                        "QTabBar::tab:disabled { color:#55555a; }")
                             .arg(theme::css()));
-    tabs->addTab(page(buildSource(s)), QStringLiteral("Source"));
+    const bool hasSource = !s.isGroup && !s.isViewport;
+    if (hasSource) tabs->addTab(page(buildSourceTab(s)), QStringLiteral("Source"));
     tabs->addTab(page(buildRoi(s)), QStringLiteral("ROI"));
     tabs->addTab(page(buildColor(s)), QStringLiteral("Color"));
     tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
     tabs->addTab(page(buildEffects(s)), QStringLiteral("FX"));
-    tabs->addTab(page(buildCompositing(s)), QStringLiteral("Compositing"));
+    if (!s.isViewport) tabs->addTab(page(buildViewports(s)), QStringLiteral("Viewports"));
+    m_anims = new ParamAnimPanel(m_engine, m_undo, s.id);
+    connect(m_anims, &ParamAnimPanel::projectEdited, this, &LayerInspector::projectEdited);
+    {
+        auto *w = new QWidget; // no stretch below: the cards that are not pinned scroll in the room left
+        auto *av = new QVBoxLayout(w);
+        av->setContentsMargins(0, 6, 0, 0);
+        av->addWidget(m_anims, 1);
+        m_animTab = tabs->addTab(w, m_animated.isEmpty() ? QStringLiteral("Anim") : QStringLiteral("Anim (%1)").arg(m_animated.size()));
+        tabs->setTabToolTip(m_animTab, QStringLiteral("The animations of this layer's numbers (right-click a parameter › Animate)"));
+    }
     m_output = nullptr;
+    if (s.isViewport) m_routeFields.clear();
     if (s.isViewport) { // its size, screen and publishing
         m_output = new ViewportOutputPanel(m_engine, s.id);
         connect(m_output, &ViewportOutputPanel::edited, this, &LayerInspector::projectEdited);
@@ -424,18 +518,55 @@ void LayerInspector::rebuild()
     }
     lockInputs(tabs, m_locked);
     name->setEnabled(!m_locked);
-    if (s.type == SourceType::Audio) { // a sound has no picture: no color, mapping, effects or compositing
-        for (int t = 1; t < tabs->count(); ++t) {
+    if (s.type == SourceType::Audio) { // a sound has no picture: no ROI, color, mapping, effects or routing
+        for (int t = 0; t < tabs->count(); ++t) {
+            if (t == m_animTab || tabs->tabText(t) == QLatin1String("Source")) continue; // its transport, volume, speed
             tabs->setTabEnabled(t, false);
             tabs->setTabToolTip(t, QStringLiteral("An audio layer has no picture"));
         }
     }
-    tabs->setCurrentIndex(tabs->isTabEnabled(m_subTab) ? m_subTab : 0);
+    m_tabs = tabs;
+    // The tab shown last, by its name (the tabs differ from one kind of layer to the next)
+    int current = -1;
+    for (int t = 0; t < tabs->count(); ++t)
+        if (tabs->tabText(t).section(' ', 0, 0) == m_subTab && tabs->isTabEnabled(t)) current = t;
+    if (!m_revealAnim.isEmpty() || current < 0) current = m_animTab;
+    if (current == m_animTab && m_revealAnim.isEmpty() && m_subTab != QLatin1String("Anim"))
+        for (int t = 0; t < tabs->count(); ++t) // its first tab that can be used
+            if (tabs->isTabEnabled(t)) {
+                current = t;
+                break;
+            }
+    tabs->setCurrentIndex(current);
     connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int i) {
-        if (tabs->isTabEnabled(i)) m_subTab = i;
+        if (tabs->isTabEnabled(i)) m_subTab = tabs->tabText(i).section(' ', 0, 0);
     });
     v->addWidget(tabs, 1);
+    if (!m_revealAnim.isEmpty()) {
+        m_anims->reveal(m_revealAnim);
+        m_revealAnim.clear();
+    }
     refreshDynamic();
+}
+
+// The picture of the layer at `row` as this one's source (dropped from the list onto the source)
+void LayerInspector::useLayer(int row, const std::vector<std::pair<quint64, QString>> &candidates)
+{
+    const quint64 id = m_engine->layerId(row);
+    if (!id || row == m_layer) return;
+    const bool allowed = std::any_of(candidates.begin(), candidates.end(), [id](const auto &c) { return c.first == id; });
+    if (!allowed) {
+        QMessageBox::warning(this, QStringLiteral("Source"),
+                             QStringLiteral("This layer cannot be used here: its picture would feed back on itself."));
+        return;
+    }
+    QString err;
+    bool ok = false;
+    editSource(QStringLiteral("Use Layer as Source"),
+               [this, id, &err, &ok] { ok = m_engine->setLayerSourceLayer(m_layer, id, LayerTap::PostFx, &err); });
+    if (!ok && !err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Source"), err);
+    emit layerChanged();
+    rebuild();
 }
 
 QWidget *LayerInspector::buildSource(const LayerValues &s)
@@ -448,7 +579,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         auto *info = new QLabel(QStringLiteral("<b>Viewport</b> %1 × %2<br><span style='font-size:11px; color:#999'>"
                                                "A window onto the composition: it shows the region set in Spatial, "
                                                "at its own size (Output). The layers at the top of the list choose "
-                                               "the viewports they appear in (Compositing).</span>")
+                                               "the viewports they appear in (below their opacity).</span>")
                                     .arg(s.vpSize.width())
                                     .arg(s.vpSize.height()));
         info->setWordWrap(true);
@@ -465,34 +596,77 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         return g;
     }
 
-    QString desc;
+    // What feeds it, in the drop zone: its kind, its name and what it is (resolution, rate, length, codec), or that it is
+    // empty. A file dropped there (Media Bin, Finder) replaces it; a layer dragged from the list becomes its source.
+    QString kind, name, details;
+    auto audioText = [](const AudioStream::Info &a) {
+        const QString ch = a.channels == 1 ? QStringLiteral("mono") : a.channels == 2 ? QStringLiteral("stereo")
+                                                                                        : QStringLiteral("%1 ch").arg(a.channels);
+        return QStringLiteral("%1 · %2 kHz · %3").arg(a.codec).arg(a.sampleRate / 1000.0, 0, 'g', 3).arg(ch);
+    };
+    QStringList d;
     switch (s.type) {
-    case SourceType::Video: desc = QStringLiteral("Video — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
-    case SourceType::Image: desc = QStringLiteral("Image — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
-    case SourceType::Isf: desc = QStringLiteral("ISF Generator — %1").arg(QFileInfo(s.sourcePath).completeBaseName()); break;
-    case SourceType::Audio: desc = QStringLiteral("Audio — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
-    case SourceType::Text: desc = QStringLiteral("Text"); break;
+    case SourceType::Video:
+        kind = QStringLiteral("Video");
+        name = QFileInfo(s.sourcePath).fileName();
+        d << QStringLiteral("%1 × %2").arg(s.videoW).arg(s.videoH) << QStringLiteral("%1 fps").arg(s.fps, 0, 'f', 2)
+          << fmtTime(s.duration) << s.codec << (s.hasAudio ? QStringLiteral("sound: ") + audioText(s.audio) : QStringLiteral("no sound"));
+        break;
+    case SourceType::Audio:
+        kind = QStringLiteral("Sound");
+        name = QFileInfo(s.sourcePath).fileName();
+        d << fmtTime(s.duration) << audioText(s.audio);
+        break;
+    case SourceType::Image:
+        kind = QStringLiteral("Image");
+        name = QFileInfo(s.sourcePath).fileName();
+        d << QStringLiteral("%1 × %2").arg(s.srcW).arg(s.srcH);
+        break;
+    case SourceType::Isf:
+        kind = QStringLiteral("ISF Generator");
+        name = QFileInfo(s.sourcePath).completeBaseName();
+        d << QStringLiteral("%1 × %2").arg(s.genW).arg(s.genH);
+        break;
+    case SourceType::Text:
+        kind = QStringLiteral("Text");
+        name = s.text.content.section('\n', 0, 0).left(40);
+        d << QStringLiteral("%1 × %2").arg(s.text.width).arg(s.text.height);
+        break;
     case SourceType::Layer: {
-        QString from = QStringLiteral("(gone)");
+        kind = QStringLiteral("Layer");
+        name = QStringLiteral("(gone)");
         for (const auto &c : s.candidates)
-            if (c.first == s.sourceLayer) from = c.second;
-        desc = QStringLiteral("Layer — %1, %2").arg(from, s.sourceTap == LayerTap::PreFx ? QStringLiteral("pre-FX") : QStringLiteral("post-FX"));
+            if (c.first == s.sourceLayer) name = c.second;
+        d << (s.sourceTap == LayerTap::PreFx ? QStringLiteral("before its FX") : QStringLiteral("after its FX"));
         break;
     }
-    default: desc = QStringLiteral("No source"); break;
+    default:
+        if (!s.sourcePath.isEmpty()) { // its file is missing
+            kind = QStringLiteral("Missing");
+            name = QFileInfo(s.sourcePath).fileName();
+        }
+        break;
     }
-
-    // Drop zone: the current media, replaced by whatever is dropped (Media Bin, Finder). × ejects it.
-    const bool loaded = s.type != SourceType::None;
+    d.removeAll(QString());
+    details = d.join(QStringLiteral(" · "));
+    const bool loaded = !kind.isEmpty();
     auto *zoneRow = new QHBoxLayout;
-    auto *zone = new DropZone(loaded ? QStringLiteral("<b>%1</b><br><span style='font-size:11px'>Drop another media here to replace it</span>")
-                                           .arg(desc.toHtmlEscaped())
-                                     : QStringLiteral("Drop a video, image, sound or ISF generator here<br>"
-                                                      "<span style='font-size:11px'>from the Media Bin or the Finder</span>"));
+    auto *zone = new DropZone(loaded ? QStringLiteral("<span style='font-size:11px; letter-spacing:1px'>%1</span><br>"
+                                                      "<b style='font-size:14px'>%2</b><br>"
+                                                      "<span style='font-size:11px'>%3</span>")
+                                           .arg(kind.toUpper().toHtmlEscaped(), name.toHtmlEscaped(), details.toHtmlEscaped())
+                                     : QStringLiteral("<b>Empty layer</b><br><span style='font-size:11px'>Drop a video, image, "
+                                                      "sound or ISF generator here (Media Bin, Finder), or a layer from the list</span>"));
     zone->setTextFormat(Qt::RichText);
-    zone->setToolTip(s.sourcePath.isEmpty() ? QStringLiteral("Video, image, audio file or ISF generator") : s.sourcePath);
-    zone->onDrop = [this](const QString &f) { emit fileDropped(f); };
-    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Eject the media from the layer"));
+    zone->setLoaded(loaded, s.type == SourceType::None && loaded); // a missing file: in red
+    zone->setToolTip(s.sourcePath.isEmpty() ? QStringLiteral("Drop a file, or a layer from the list (its picture becomes this one's)")
+                                            : s.sourcePath + QStringLiteral("\nDrop another media or a layer to replace it"));
+    zone->onDrop = [this](const QString &f) { QTimer::singleShot(0, this, [this, f] { emit fileDropped(f); }); };
+    zone->onLayer = [this, candidates = s.candidates](int row) {
+        // After the drag is over (the zone is rebuilt with the inspector)
+        QTimer::singleShot(0, this, [this, candidates, row] { useLayer(row, candidates); });
+    };
+    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Eject the source from the layer"));
     bClear->setEnabled(loaded || s.error.size());
     zoneRow->addWidget(zone, 1);
     zoneRow->addWidget(bClear, 0, Qt::AlignTop);
@@ -502,252 +676,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         emit layerChanged();
         rebuild();
     });
-
-    // Text generator: the text typed here, and how it is set
-    if (s.type == SourceType::Text) {
-        // Edits apply at once; the undo step is pushed when the editing pauses
-        struct Pending { QJsonObject before; QString label; bool has = false; };
-        auto pend = std::make_shared<Pending>();
-        auto *commit = new QTimer(g);
-        commit->setSingleShot(true);
-        commit->setInterval(700);
-        connect(commit, &QTimer::timeout, this, [this, pend] {
-            if (!pend->has) return;
-            pend->has = false;
-            m_undo->push(new cmd::ReplaceLayer(m_engine, m_layer, pend->before, pend->label));
-        });
-        auto live = [this, pend, commit](const QString &label, const std::function<void()> &op) {
-            if (m_engine->isLocked(m_layer)) return;
-            if (!pend->has) {
-                pend->has = true;
-                pend->before = m_engine->layerJson(m_layer);
-            }
-            pend->label = label;
-            op();
-            commit->start();
-        };
-        auto style = [this, live](const QString &label, std::function<void(Layer &)> fn) {
-            live(label, [this, fn] { m_engine->editLayerText(m_layer, fn); });
-        };
-        auto colorButton = [this, style](const QColor &c, const QString &label, std::function<void(Layer &, const QColor &)> set) {
-            auto *b = new QPushButton;
-            b->setFixedWidth(48);
-            b->setEnabled(!m_locked);
-            auto paint = [b](const QColor &x) {
-                b->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #666; border-radius: 2px;").arg(x.name()));
-            };
-            paint(c);
-            connect(b, &QPushButton::clicked, this, [this, b, c, label, set, style, paint] {
-                const QColor cur = b->property("color").value<QColor>().isValid() ? b->property("color").value<QColor>() : c;
-                const QColor picked = QColorDialog::getColor(cur, this, label, QColorDialog::ShowAlphaChannel);
-                if (!picked.isValid()) return;
-                b->setProperty("color", picked);
-                paint(picked);
-                style(label, [set, picked](Layer &l) { set(l, picked); });
-            });
-            return b;
-        };
-        auto spin = [this](double v, double lo, double hi, double step, int dec, const QString &suffix) {
-            auto *x = new NumberBox;
-            x->setRange(lo, hi);
-            x->setSingleStep(step);
-            x->setDecimals(dec);
-            x->setSuffix(suffix);
-            x->setValue(v);
-            x->setEnabled(!m_locked);
-            return x;
-        };
-
-        auto *editor = new QPlainTextEdit;
-        editor->setPlainText(s.text.content);
-        editor->setMinimumHeight(90);
-        editor->setPlaceholderText(QStringLiteral("Type the text here"));
-        editor->setToolTip(QStringLiteral("The text of this layer. A snapshot that holds another text types it (typewriter) over its fade."));
-        editor->setReadOnly(m_locked);
-        v->addWidget(editor);
-        connect(editor, &QPlainTextEdit::textChanged, this, [this, editor, live] {
-            live(QStringLiteral("Edit Text"), [this, editor] { m_engine->setLayerTextContent(m_layer, editor->toPlainText()); });
-        });
-
-        auto *fmt = new QFormLayout;
-        fmt->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-        auto *fontBox = new QFontComboBox;
-        fontBox->setCurrentFont(QFont(s.text.font));
-        fontBox->setEnabled(!m_locked);
-        fmt->addRow(QStringLiteral("Font"), fontBox);
-        connect(fontBox, &QFontComboBox::currentFontChanged, this, [style](const QFont &f) {
-            const QString family = f.family();
-            style(QStringLiteral("Text Font"), [family](Layer &l) { l.text.font = family; });
-        });
-
-        auto *size = new IntBox;
-        size->setRange(1, 1000);
-        size->setSuffix(QStringLiteral(" px"));
-        size->setValue(s.text.size);
-        size->setEnabled(!m_locked);
-        auto *colorRow = new QHBoxLayout;
-        colorRow->addWidget(size);
-        colorRow->addWidget(colorButton(s.text.color, QStringLiteral("Text Color"), [](Layer &l, const QColor &c) { l.text.color = c; }));
-        colorRow->addStretch();
-        fmt->addRow(QStringLiteral("Size / color"), colorRow);
-        connect(size, QOverload<int>::of(&QSpinBox::valueChanged), this, [style](int px) {
-            style(QStringLiteral("Text Size"), [px](Layer &l) { l.text.size = px; });
-        });
-
-        // Bold, italic, underline, strikethrough
-        auto *styleRow = new QHBoxLayout;
-        struct Toggle { const char *label, *tip; bool on; bool TextSource::*field; };
-        const Toggle toggles[] = {{"B", "Bold", s.text.bold, &TextSource::bold},
-                                  {"I", "Italic", s.text.italic, &TextSource::italic},
-                                  {"U", "Underline", s.text.underline, &TextSource::underline},
-                                  {"S", "Strikethrough", s.text.strike, &TextSource::strike}};
-        for (const Toggle &t : toggles) {
-            auto *b = new ToggleButton(QString::fromLatin1(t.label));
-            b->setToolTip(QString::fromLatin1(t.tip));
-            b->setChecked(t.on);
-            b->setEnabled(!m_locked);
-            QFont f = b->font();
-            f.setBold(t.label[0] == 'B');
-            f.setItalic(t.label[0] == 'I');
-            f.setUnderline(t.label[0] == 'U');
-            f.setStrikeOut(t.label[0] == 'S');
-            b->setFont(f);
-            styleRow->addWidget(b);
-            auto field = t.field;
-            connect(b, &QToolButton::toggled, this, [style, field, tip = QString::fromLatin1(t.tip)](bool on) {
-                style(tip, [field, on](Layer &l) { l.text.*field = on; });
-            });
-        }
-        styleRow->addStretch();
-        fmt->addRow(QStringLiteral("Style"), styleRow);
-
-        // Alignment: left, center, right, justified; top, middle, bottom
-        auto *hAlign = new QComboBox;
-        hAlign->addItem(QStringLiteral("Left"), int(Qt::AlignLeft));
-        hAlign->addItem(QStringLiteral("Center"), int(Qt::AlignHCenter));
-        hAlign->addItem(QStringLiteral("Right"), int(Qt::AlignRight));
-        hAlign->addItem(QStringLiteral("Justified"), int(Qt::AlignJustify));
-        auto *vAlign = new QComboBox;
-        vAlign->addItem(QStringLiteral("Top"), int(Qt::AlignTop));
-        vAlign->addItem(QStringLiteral("Middle"), int(Qt::AlignVCenter));
-        vAlign->addItem(QStringLiteral("Bottom"), int(Qt::AlignBottom));
-        const int h0 = hAlign->findData(int(s.text.align & Qt::AlignHorizontal_Mask));
-        const int v0 = vAlign->findData(int(s.text.align & Qt::AlignVertical_Mask));
-        hAlign->setCurrentIndex(h0 >= 0 ? h0 : 0);
-        vAlign->setCurrentIndex(v0 >= 0 ? v0 : 0);
-        hAlign->setEnabled(!m_locked);
-        vAlign->setEnabled(!m_locked);
-        auto *alignRow = new QHBoxLayout;
-        alignRow->addWidget(hAlign);
-        alignRow->addWidget(vAlign);
-        fmt->addRow(QStringLiteral("Align"), alignRow);
-        auto setAlign = [style, hAlign, vAlign] {
-            const int a = hAlign->currentData().toInt() | vAlign->currentData().toInt();
-            style(QStringLiteral("Text Alignment"), [a](Layer &l) { l.text.align = Qt::Alignment(a); });
-        };
-        connect(hAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
-        connect(vAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
-
-        auto *lineSp = spin(s.text.lineHeight, 0.2, 5.0, 0.05, 2, QStringLiteral(" ×"));
-        lineSp->setToolTip(QStringLiteral("Space between the lines (1 = the font's own)"));
-        fmt->addRow(QStringLiteral("Line spacing"), lineSp);
-        connect(lineSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
-            style(QStringLiteral("Line Spacing"), [x](Layer &l) { l.text.lineHeight = float(x); });
-        });
-        auto *letterSp = spin(s.text.letterSpacing, -50, 200, 0.5, 1, QStringLiteral(" px"));
-        letterSp->setToolTip(QStringLiteral("Space added between the letters"));
-        fmt->addRow(QStringLiteral("Letter spacing"), letterSp);
-        connect(letterSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
-            style(QStringLiteral("Letter Spacing"), [x](Layer &l) { l.text.letterSpacing = float(x); });
-        });
-
-        // Outline
-        auto *outline = spin(s.text.outline, 0, 100, 0.5, 1, QStringLiteral(" px"));
-        auto *outlineRow = new QHBoxLayout;
-        outlineRow->addWidget(outline);
-        outlineRow->addWidget(colorButton(s.text.outlineColor, QStringLiteral("Outline Color"),
-                                          [](Layer &l, const QColor &c) { l.text.outlineColor = c; }));
-        outlineRow->addStretch();
-        fmt->addRow(QStringLiteral("Outline"), outlineRow);
-        connect(outline, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
-            style(QStringLiteral("Text Outline"), [x](Layer &l) { l.text.outline = float(x); });
-        });
-
-        // Shadow
-        auto *shadow = new FlagBox(QStringLiteral("Enable"));
-        shadow->setChecked(s.text.shadow);
-        shadow->setEnabled(!m_locked);
-        auto *shadowRow = new QHBoxLayout;
-        shadowRow->addWidget(shadow);
-        shadowRow->addWidget(colorButton(s.text.shadowColor, QStringLiteral("Shadow Color"),
-                                         [](Layer &l, const QColor &c) { l.text.shadowColor = c; }));
-        auto *sx = spin(s.text.shadowX, -200, 200, 1, 0, QStringLiteral(" x"));
-        auto *sy = spin(s.text.shadowY, -200, 200, 1, 0, QStringLiteral(" y"));
-        shadowRow->addWidget(sx);
-        shadowRow->addWidget(sy);
-        fmt->addRow(QStringLiteral("Shadow"), shadowRow);
-        connect(shadow, &QCheckBox::toggled, this, [style](bool on) {
-            style(QStringLiteral("Text Shadow"), [on](Layer &l) { l.text.shadow = on; });
-        });
-        connect(sx, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
-            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.text.shadowX = float(x); });
-        });
-        connect(sy, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
-            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.text.shadowY = float(x); });
-        });
-
-        v->addLayout(fmt);
-        v->addStretch();
-        return g;
-    }
-
-    // Or the picture of another layer, tapped before or after its effect chain
-    {
-        auto *row = new QHBoxLayout;
-        auto *pick = new QComboBox;
-        pick->setToolTip(QStringLiteral("Use the picture of another layer as this layer's source"));
-        pick->addItem(QStringLiteral("Use a layer…"), QVariant(qulonglong(0)));
-        int current = 0;
-        for (const auto &c : s.candidates) {
-            pick->addItem(c.second, QVariant(qulonglong(c.first)));
-            if (s.type == SourceType::Layer && c.first == s.sourceLayer) current = pick->count() - 1;
-        }
-        pick->setCurrentIndex(current);
-        auto *tap = new QComboBox;
-        tap->addItem(QStringLiteral("Pre-FX"), int(LayerTap::PreFx));
-        tap->addItem(QStringLiteral("Post-FX"), int(LayerTap::PostFx));
-        tap->setCurrentIndex(s.sourceTap == LayerTap::PreFx ? 0 : 1);
-        tap->setToolTip(QStringLiteral("Where the picture is taken in that layer:\n"
-                                       "Pre-FX — after its ROI and color, before its FX\n"
-                                       "Post-FX — after its FX"));
-        tap->setEnabled(s.type == SourceType::Layer);
-        row->addWidget(pick, 1);
-        row->addWidget(tap, 0);
-        v->addLayout(row);
-        connect(pick, &QComboBox::activated, this, [this, pick, tap](int i) {
-            const quint64 id = pick->itemData(i).toULongLong();
-            if (!id) return;
-            const LayerTap t = LayerTap(tap->currentData().toInt());
-            QString err;
-            bool ok = false;
-            editSource(QStringLiteral("Use Layer as Source"),
-                       [this, id, t, &err, &ok] { ok = m_engine->setLayerSourceLayer(m_layer, id, t, &err); });
-            if (!ok && !err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Source"), err);
-            emit layerChanged();
-            rebuild();
-        });
-        connect(tap, &QComboBox::activated, this, [this, tap](int i) {
-            editSource(QStringLiteral("Change Source Tap"),
-                       [this, tap, i] { m_engine->setLayerTap(m_layer, LayerTap(tap->itemData(i).toInt())); });
-            emit layerChanged();
-            rebuild();
-        });
-        if (s.candidates.empty()) {
-            pick->setEnabled(false);
-            pick->setToolTip(QStringLiteral("No other layer can be used here without the picture feeding back on itself"));
-        }
-    }
+    if (!s.error.isEmpty()) v->addWidget(errorLabel(s.error));
 
     // Transition when a snapshot gives this layer another source
     {
@@ -781,49 +710,369 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
                 [this, pick](int i) { setProp(cmd::SetLayerProp::Transition, pick->itemData(i).toString()); });
     }
 
-    if (!s.error.isEmpty()) v->addWidget(errorLabel(s.error));
 
-    auto audioText = [](const AudioStream::Info &a) {
-        const QString ch = a.channels == 1 ? QStringLiteral("mono") : a.channels == 2 ? QStringLiteral("stereo")
-                                                                                        : QStringLiteral("%1 ch").arg(a.channels);
-        return QStringLiteral("%1 · %2 kHz · %3").arg(a.codec).arg(a.sampleRate / 1000.0, 0, 'g', 3).arg(ch);
-    };
+    // Its speed: the media's (below 0 backwards), or the pace of the generator's time; a click on its name puts it back
+    if ((s.type == SourceType::Video && s.hasVideo) || (s.type == SourceType::Audio && s.hasAudio)) {
+        auto *row = new QHBoxLayout;
+        m_speed = new SliderField;
+        m_speed->setRange(-200, 200);      // the bar: the speeds actually used
+        m_speed->setTypedRange(-800, 800); // faster or more backwards: typed
+        m_speed->setDecimals(0);
+        m_speed->setSuffix(QStringLiteral(" %"));
+        m_speed->setSingleStep(5);
+        m_speed->setOrigin(0); // the fill grows either side of a standstill
+        m_speed->setTicks(8);
+        m_speed->setSnaps({-200, -100, 0, 100, 200});
+        m_speed->setValue(s.speed * 100);
+        m_speed->setToolTip(QStringLiteral("Playback speed — below 0 the media plays backwards, 100 % is its own rate"));
+        auto *label = new ResetLabel(QStringLiteral("Speed"), [this] {
+            setProp(cmd::SetLayerProp::Speed, 1.0);
+            m_speed->setValue(100);
+        });
+        m_animate->attach({label, m_speed}, {QStringLiteral("speed")});
+        row->addWidget(label);
+        row->addWidget(m_speed, 1);
+        v->addLayout(row);
+        connect(m_speed, &SliderField::valueEdited, this, [this](double pct) {
+            setProp(cmd::SetLayerProp::Speed, pct / 100.0);
+            emit layerChanged();
+        });
+    } else if (s.type == SourceType::Isf && s.hasGenerator) {
+        auto *row = new QHBoxLayout;
+        m_genSpeed = new SliderField;
+        m_genSpeed->setRange(0, 10);
+        m_genSpeed->setDecimals(2);
+        m_genSpeed->setSingleStep(0.05);
+        m_genSpeed->setTicks(10);
+        m_genSpeed->setSnaps({1});
+        m_genSpeed->setValue(s.genSpeed);
+        m_genSpeed->setToolTip(QStringLiteral("Speed of the shader's time (1 = normal, 0 = stopped)"));
+        auto setSpeed = [this](double v) {
+            double before = 1.0;
+            {
+                Engine::Lock lk(&m_engine->mutex());
+                IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, -1);
+                if (!inst) return;
+                before = inst->speed;
+            }
+            if (std::abs(before - v) > 1e-9) m_undo->push(new cmd::SetIsfSpeed(m_engine, m_layer, -1, before, v));
+        };
+        auto *label = new ResetLabel(QStringLiteral("Speed"), [this, setSpeed] {
+            m_genSpeed->setValue(1);
+            setSpeed(1);
+        });
+        m_animate->attach({label, m_genSpeed}, {QStringLiteral("speed")});
+        row->addWidget(label);
+        row->addWidget(m_genSpeed, 1);
+        v->addLayout(row);
+        connect(m_genSpeed, &SliderField::valueEdited, this, setSpeed);
+    }
+    return g;
+}
+
+// The Source tab: what the source is made of and how it plays — the media's transport and sound, the generator's
+// parameters and resolution, the text and its style, the tap of a layer used as the source
+QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
+{
+    auto *g = new QWidget;
+    auto *v = new QVBoxLayout(g);
+    v->setContentsMargins(0, 0, 0, 0);
+
+    if (s.type == SourceType::Layer) {
+        auto *row = new QHBoxLayout;
+        auto *tap = new QComboBox;
+        tap->addItem(QStringLiteral("Pre-FX"), int(LayerTap::PreFx));
+        tap->addItem(QStringLiteral("Post-FX"), int(LayerTap::PostFx));
+        tap->setCurrentIndex(s.sourceTap == LayerTap::PreFx ? 0 : 1);
+        tap->setToolTip(QStringLiteral("Where the picture is taken in that layer:\n"
+                                       "Pre-FX — after its ROI and color, before its FX\n"
+                                       "Post-FX — after its FX"));
+        auto setTap = [this](LayerTap t) {
+            editSource(QStringLiteral("Change Source Tap"), [this, t] { m_engine->setLayerTap(m_layer, t); });
+            emit layerChanged();
+            QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+        };
+        row->addWidget(new ResetLabel(QStringLiteral("Tap"), [setTap] { setTap(LayerTap::PostFx); }));
+        row->addWidget(tap, 1);
+        v->addLayout(row);
+        connect(tap, &QComboBox::activated, this, [tap, setTap](int i) { setTap(LayerTap(tap->itemData(i).toInt())); });
+        auto *hint = new QLabel(QStringLiteral("To use another layer, drag it from the list onto the source above, or "
+                                               "right-click it › Load into Layer."));
+        hint->setWordWrap(true);
+        hint->setStyleSheet("color:#888; font-size:11px;");
+        v->addWidget(hint);
+        return g;
+    }
+
+    // Text generator: the text typed here, and how it is set
+    if (s.type == SourceType::Text) {
+        // Edits apply at once; the undo step is pushed when the editing pauses
+        struct Pending { QJsonObject before; QString label; bool has = false; };
+        auto pend = std::make_shared<Pending>();
+        auto *commit = new QTimer(g);
+        commit->setSingleShot(true);
+        commit->setInterval(700);
+        connect(commit, &QTimer::timeout, this, [this, pend] {
+            if (!pend->has) return;
+            pend->has = false;
+            m_undo->push(new cmd::ReplaceLayer(m_engine, m_layer, pend->before, pend->label));
+        });
+        auto live = [this, pend, commit](const QString &label, const std::function<void()> &op) {
+            if (m_engine->isLocked(m_layer)) return;
+            if (!pend->has) {
+                pend->has = true;
+                pend->before = m_engine->layerJson(m_layer);
+            }
+            pend->label = label;
+            op();
+            commit->start();
+        };
+        auto style = [this, live](const QString &label, std::function<void(Layer &)> fn) {
+            live(label, [this, fn] { m_engine->editLayerText(m_layer, fn); });
+        };
+        using ColorSet = std::function<void(Layer &, const QColor &)>;
+        auto paint = [](QPushButton *b, const QColor &x) {
+            b->setProperty("color", x);
+            b->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #666; border-radius: 2px;").arg(x.name()));
+        };
+        // A color of the text set from its button (picked, or put back by the name of its row)
+        auto applyColor = [style, paint](QPushButton *b, const QColor &x, const QString &label, ColorSet set) {
+            paint(b, x);
+            style(label, [set, x](Layer &l) { set(l, x); });
+        };
+        auto colorButton = [this, paint, applyColor](const QColor &c, const QString &label, ColorSet set) {
+            auto *b = new QPushButton;
+            b->setFixedWidth(48);
+            b->setEnabled(!m_locked);
+            paint(b, c);
+            connect(b, &QPushButton::clicked, this, [this, b, label, set, applyColor] {
+                const QColor picked = QColorDialog::getColor(b->property("color").value<QColor>(), this, label,
+                                                             QColorDialog::ShowAlphaChannel);
+                if (picked.isValid()) applyColor(b, picked, label, set);
+            });
+            return b;
+        };
+        const TextSource def; // what the names of the rows put back
+        auto spin = [this](double v, double lo, double hi, double step, int dec, const QString &suffix) {
+            auto *x = new NumberBox;
+            x->setRange(lo, hi);
+            x->setSingleStep(step);
+            x->setDecimals(dec);
+            x->setSuffix(suffix);
+            x->setValue(v);
+            x->setEnabled(!m_locked);
+            return x;
+        };
+
+        auto *editor = new QPlainTextEdit;
+        editor->setPlainText(s.text.content);
+        editor->setMinimumHeight(90);
+        editor->setPlaceholderText(QStringLiteral("Type the text here"));
+        editor->setToolTip(QStringLiteral("The text of this layer. A snapshot that holds another text types it (typewriter) over its fade."));
+        editor->setReadOnly(m_locked);
+        v->addWidget(editor);
+        connect(editor, &QPlainTextEdit::textChanged, this, [this, editor, live] {
+            live(QStringLiteral("Edit Text"), [this, editor] { m_engine->setLayerTextContent(m_layer, editor->toPlainText()); });
+        });
+
+        auto *fmt = new QFormLayout;
+        fmt->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        auto *fontBox = new QFontComboBox;
+        fontBox->setCurrentFont(QFont(s.text.font));
+        fontBox->setEnabled(!m_locked);
+        fmt->addRow(new ResetLabel(QStringLiteral("Font"), [fontBox, def] { fontBox->setCurrentFont(QFont(def.font)); }), fontBox);
+        connect(fontBox, &QFontComboBox::currentFontChanged, this, [style](const QFont &f) {
+            const QString family = f.family();
+            style(QStringLiteral("Text Font"), [family](Layer &l) { l.text.font = family; });
+        });
+
+        auto *size = new IntBox;
+        {
+            const auto [lo, hi] = limitsOf(QStringLiteral("text/size"), 1, 1000);
+            size->setRange(int(lo), int(hi));
+        }
+        size->setSuffix(QStringLiteral(" px"));
+        size->setValue(s.text.size);
+        size->setEnabled(!m_locked);
+        auto *colorRow = new QHBoxLayout;
+        colorRow->addWidget(size);
+        const ColorSet setTextColor = [](Layer &l, const QColor &c) { l.text.color = c; };
+        QPushButton *textColor = colorButton(s.text.color, QStringLiteral("Text Color"), setTextColor);
+        colorRow->addWidget(textColor);
+        colorRow->addStretch();
+        fmt->addRow(new ResetLabel(QStringLiteral("Size / color"), [size, textColor, def, applyColor, setTextColor] {
+                        size->setValue(def.size);
+                        applyColor(textColor, def.color, QStringLiteral("Text Color"), setTextColor);
+                    }),
+                    colorRow);
+        connect(size, QOverload<int>::of(&QSpinBox::valueChanged), this, [style](int px) {
+            style(QStringLiteral("Text Size"), [px](Layer &l) { l.text.size = px; });
+        });
+
+        // Bold, italic, underline, strikethrough
+        auto *styleRow = new QHBoxLayout;
+        QList<ToggleButton *> styleButtons;
+        struct Toggle { const char *label, *tip; bool on; bool TextSource::*field; };
+        const Toggle toggles[] = {{"B", "Bold", s.text.bold, &TextSource::bold},
+                                  {"I", "Italic", s.text.italic, &TextSource::italic},
+                                  {"U", "Underline", s.text.underline, &TextSource::underline},
+                                  {"S", "Strikethrough", s.text.strike, &TextSource::strike}};
+        for (const Toggle &t : toggles) {
+            auto *b = new ToggleButton(QString::fromLatin1(t.label));
+            b->setToolTip(QString::fromLatin1(t.tip));
+            b->setChecked(t.on);
+            b->setEnabled(!m_locked);
+            QFont f = b->font();
+            f.setBold(t.label[0] == 'B');
+            f.setItalic(t.label[0] == 'I');
+            f.setUnderline(t.label[0] == 'U');
+            f.setStrikeOut(t.label[0] == 'S');
+            b->setFont(f);
+            styleRow->addWidget(b);
+            styleButtons << b;
+            auto field = t.field;
+            connect(b, &QToolButton::toggled, this, [style, field, tip = QString::fromLatin1(t.tip)](bool on) {
+                style(tip, [field, on](Layer &l) { l.text.*field = on; });
+            });
+        }
+        styleRow->addStretch();
+        fmt->addRow(new ResetLabel(QStringLiteral("Style"), [styleButtons] { // plain
+                        for (ToggleButton *b : styleButtons) b->setChecked(false);
+                    }),
+                    styleRow);
+
+        // Alignment: left, center, right, justified; top, middle, bottom
+        auto *hAlign = new QComboBox;
+        hAlign->addItem(QStringLiteral("Left"), int(Qt::AlignLeft));
+        hAlign->addItem(QStringLiteral("Center"), int(Qt::AlignHCenter));
+        hAlign->addItem(QStringLiteral("Right"), int(Qt::AlignRight));
+        hAlign->addItem(QStringLiteral("Justified"), int(Qt::AlignJustify));
+        auto *vAlign = new QComboBox;
+        vAlign->addItem(QStringLiteral("Top"), int(Qt::AlignTop));
+        vAlign->addItem(QStringLiteral("Middle"), int(Qt::AlignVCenter));
+        vAlign->addItem(QStringLiteral("Bottom"), int(Qt::AlignBottom));
+        const int h0 = hAlign->findData(int(s.text.align & Qt::AlignHorizontal_Mask));
+        const int v0 = vAlign->findData(int(s.text.align & Qt::AlignVertical_Mask));
+        hAlign->setCurrentIndex(h0 >= 0 ? h0 : 0);
+        vAlign->setCurrentIndex(v0 >= 0 ? v0 : 0);
+        hAlign->setEnabled(!m_locked);
+        vAlign->setEnabled(!m_locked);
+        auto *alignRow = new QHBoxLayout;
+        alignRow->addWidget(hAlign);
+        alignRow->addWidget(vAlign);
+        auto setAlign = [style, hAlign, vAlign] {
+            const int a = hAlign->currentData().toInt() | vAlign->currentData().toInt();
+            style(QStringLiteral("Text Alignment"), [a](Layer &l) { l.text.align = Qt::Alignment(a); });
+        };
+        fmt->addRow(new ResetLabel(QStringLiteral("Align"), [hAlign, vAlign, def, setAlign] {
+                        hAlign->setCurrentIndex(std::max(0, hAlign->findData(int(def.align & Qt::AlignHorizontal_Mask))));
+                        vAlign->setCurrentIndex(std::max(0, vAlign->findData(int(def.align & Qt::AlignVertical_Mask))));
+                        setAlign();
+                    }),
+                    alignRow);
+        connect(hAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
+        connect(vAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
+
+        const auto lh = limitsOf(QStringLiteral("text/line_height"), 0.1, 10);
+        auto *lineSp = spin(s.text.lineHeight, lh.first, lh.second, 0.05, 2, QStringLiteral(" ×"));
+        lineSp->setToolTip(QStringLiteral("Space between the lines (1 = the font's own)"));
+        fmt->addRow(new ResetLabel(QStringLiteral("Line spacing"), [lineSp, def] { lineSp->setValue(def.lineHeight); }), lineSp);
+        connect(lineSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Line Spacing"), [x](Layer &l) { l.text.lineHeight = float(x); });
+        });
+        const auto ls = limitsOf(QStringLiteral("text/letter_spacing"), -200, 500);
+        auto *letterSp = spin(s.text.letterSpacing, ls.first, ls.second, 0.5, 1, QStringLiteral(" px"));
+        letterSp->setToolTip(QStringLiteral("Space added between the letters"));
+        fmt->addRow(new ResetLabel(QStringLiteral("Letter spacing"), [letterSp, def] { letterSp->setValue(def.letterSpacing); }),
+                    letterSp);
+        connect(letterSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Letter Spacing"), [x](Layer &l) { l.text.letterSpacing = float(x); });
+        });
+
+        // Outline
+        const auto ol = limitsOf(QStringLiteral("text/outline/width"), 0, 200);
+        auto *outline = spin(s.text.outline, ol.first, ol.second, 0.5, 1, QStringLiteral(" px"));
+        auto *outlineRow = new QHBoxLayout;
+        outlineRow->addWidget(outline);
+        const ColorSet setOutlineColor = [](Layer &l, const QColor &c) { l.text.outlineColor = c; };
+        QPushButton *outlineColor = colorButton(s.text.outlineColor, QStringLiteral("Outline Color"), setOutlineColor);
+        outlineRow->addWidget(outlineColor);
+        outlineRow->addStretch();
+        fmt->addRow(new ResetLabel(QStringLiteral("Outline"), [outline, outlineColor, def, applyColor, setOutlineColor] {
+                        outline->setValue(def.outline);
+                        applyColor(outlineColor, def.outlineColor, QStringLiteral("Outline Color"), setOutlineColor);
+                    }),
+                    outlineRow);
+        connect(outline, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Text Outline"), [x](Layer &l) { l.text.outline = float(x); });
+        });
+
+        for (auto [field, path] : std::initializer_list<std::pair<QWidget *, const char *>>{
+                 {size, "text/size"}, {lineSp, "text/line_height"},
+                 {letterSp, "text/letter_spacing"}, {outline, "text/outline/width"}})
+            m_animate->attach(field, {QString::fromLatin1(path)});
+        m_animate->attach(fmt->labelForField(colorRow), {QStringLiteral("text/size")});
+        m_animate->attach(fmt->labelForField(lineSp), {QStringLiteral("text/line_height")});
+        m_animate->attach(fmt->labelForField(letterSp), {QStringLiteral("text/letter_spacing")});
+        m_animate->attach(fmt->labelForField(outlineRow), {QStringLiteral("text/outline/width")});
+
+        // Shadow
+        auto *shadow = new FlagBox(QStringLiteral("Enable"));
+        shadow->setChecked(s.text.shadow);
+        shadow->setEnabled(!m_locked);
+        auto *shadowRow = new QHBoxLayout;
+        shadowRow->addWidget(shadow);
+        const ColorSet setShadowColor = [](Layer &l, const QColor &c) { l.text.shadowColor = c; };
+        QPushButton *shadowColor = colorButton(s.text.shadowColor, QStringLiteral("Shadow Color"), setShadowColor);
+        shadowRow->addWidget(shadowColor);
+        const auto sxl = limitsOf(QStringLiteral("text/shadow/x"), -2000, 2000);
+        const auto syl = limitsOf(QStringLiteral("text/shadow/y"), -2000, 2000);
+        auto *sx = spin(s.text.shadowX, sxl.first, sxl.second, 1, 0, QStringLiteral(" x"));
+        auto *sy = spin(s.text.shadowY, syl.first, syl.second, 1, 0, QStringLiteral(" y"));
+        shadowRow->addWidget(sx);
+        shadowRow->addWidget(sy);
+        fmt->addRow(new ResetLabel(QStringLiteral("Shadow"), [shadow, shadowColor, sx, sy, def, applyColor, setShadowColor] {
+                        shadow->setChecked(def.shadow);
+                        applyColor(shadowColor, def.shadowColor, QStringLiteral("Shadow Color"), setShadowColor);
+                        sx->setValue(def.shadowX);
+                        sy->setValue(def.shadowY);
+                    }),
+                    shadowRow);
+        m_animate->attach(sx, {QStringLiteral("text/shadow/x")});
+        m_animate->attach(sy, {QStringLiteral("text/shadow/y")});
+        m_animate->attach(fmt->labelForField(shadowRow), {QStringLiteral("text/shadow/x"), QStringLiteral("text/shadow/y")});
+        connect(shadow, &QCheckBox::toggled, this, [style](bool on) {
+            style(QStringLiteral("Text Shadow"), [on](Layer &l) { l.text.shadow = on; });
+        });
+        connect(sx, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.text.shadowX = float(x); });
+        });
+        connect(sy, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
+            style(QStringLiteral("Text Shadow"), [x](Layer &l) { l.text.shadowY = float(x); });
+        });
+
+        v->addLayout(fmt);
+        v->addStretch();
+        return g;
+    }
+
     const bool media = (s.type == SourceType::Video && s.hasVideo) || (s.type == SourceType::Audio && s.hasAudio);
     if (media) {
-        // What the media is
-        auto *facts = new QFormLayout;
-        facts->setContentsMargins(0, 2, 0, 2);
-        facts->setHorizontalSpacing(10);
-        facts->setVerticalSpacing(2);
-        facts->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        auto fact = [&](const QString &name, const QString &value) {
-            auto *k = new QLabel(name);
+        if (s.type == SourceType::Video) { // how the decoded frames reach the GPU: known once they come
+            auto *facts = new QFormLayout;
+            facts->setContentsMargins(0, 2, 0, 2);
+            facts->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            auto *k = new QLabel(QStringLiteral("Picture"));
             k->setStyleSheet("color:#8a8a8e;");
-            auto *val = new QLabel(value);
-            val->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            facts->addRow(k, val);
-            return val;
-        };
-        fact(QStringLiteral("Name"), QFileInfo(s.sourcePath).fileName());
-        if (s.type == SourceType::Video) {
-            fact(QStringLiteral("Resolution"), QStringLiteral("%1 × %2").arg(s.videoW).arg(s.videoH));
-            fact(QStringLiteral("FPS"), QString::number(s.fps, 'f', 2));
-        }
-        fact(QStringLiteral("Duration"), fmtTime(s.duration));
-        m_codecFact = fact(QStringLiteral("Codec"), s.type == SourceType::Video ? s.codec : s.audio.codec);
-        if (s.type == SourceType::Video) {
-            // How the frames reach the GPU: their layout, or HAP's textures, or a conversion on the CPU
-            m_pictureFact = fact(QStringLiteral("Picture"), QStringLiteral("…"));
+            m_pictureFact = new QLabel(QStringLiteral("…"));
+            m_pictureFact->setTextInteractionFlags(Qt::TextSelectableByMouse);
             m_pictureFact->setToolTip(QStringLiteral("How the decoded frames reach the GPU. A pixel layout (yuv420p, nv12, "
                                                      "p010…) or HAP textures are converted by the GPU; \"converted on "
                                                      "the CPU\" or \"decoded on the CPU\" costs processor time."));
-        } else {
-            m_codecFact = nullptr;
+            facts->addRow(k, m_pictureFact);
+            v->addLayout(facts);
         }
-        fact(QStringLiteral("Sound"), s.hasAudio ? audioText(s.audio) : QStringLiteral("none"));
-        v->addLayout(facts);
-        v->addWidget(separator());
-
         auto *grid = new QGridLayout;
         grid->setHorizontalSpacing(8);
         grid->setVerticalSpacing(4);
@@ -893,10 +1142,15 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         grid->addLayout(playRow, 0, 1);
 
         // Mode: what happens at the end, then the in / out points at the playhead
-        rowLabel(1, QStringLiteral("Mode"));
+        auto *modes = new QButtonGroup(g);
+        rowLabel(1, QStringLiteral("Mode"), [this, modes] { // the one new media get (Settings)
+            const int def = int(m_engine->defaultPlayMode());
+            if (QAbstractButton *b = modes->button(def)) b->setChecked(true);
+            setProp(cmd::SetLayerProp::Mode, def);
+            emit layerChanged();
+        });
         auto *modeRow = new QHBoxLayout;
         modeRow->setSpacing(2);
-        auto *modes = new QButtonGroup(g);
         modes->setExclusive(true);
         const struct { PlayMode mode; const char *tip; } kModes[] = {
             {PlayMode::Loop, "Loop: starts again from the beginning"},
@@ -928,7 +1182,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         v->addLayout(grid);
         v->addWidget(separator());
 
-        // Position, speed and played range: one bar each, dragged or typed
+        // Position and played range: one bar each, dragged or typed
         auto *bars = new QGridLayout;
         bars->setHorizontalSpacing(8);
         bars->setVerticalSpacing(4);
@@ -938,8 +1192,8 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
             l->setStyleSheet("color:#8a8a8e;");
             l->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
             bars->addWidget(l, row, 0);
+            return l;
         };
-
         m_position = new SliderField;
         m_position->setRange(0, std::max(0.01, s.duration));
         m_position->setDecimals(2);
@@ -952,20 +1206,6 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         barLabel(0, QStringLiteral("Position"), [this] { m_engine->seekLayer(m_layer, 0); });
         bars->addWidget(m_position, 0, 1);
 
-        m_speed = new SliderField;
-        m_speed->setRange(-200, 200);        // the bar: the speeds actually used
-        m_speed->setTypedRange(-800, 800); // faster or more backwards: typed
-        m_speed->setDecimals(0);
-        m_speed->setSuffix(QStringLiteral(" %"));
-        m_speed->setSingleStep(5);
-        m_speed->setOrigin(0); // the fill grows either side of a standstill
-        m_speed->setTicks(8);
-        m_speed->setSnaps({-200, -100, 0, 100, 200});
-        m_speed->setValue(s.speed * 100);
-        m_speed->setToolTip(QStringLiteral("Playback speed — below 0 the media plays backwards, 100 % is its own rate"));
-        barLabel(1, QStringLiteral("Speed"), [this] { setProp(cmd::SetLayerProp::Speed, 1.0); m_speed->setValue(100); });
-        bars->addWidget(m_speed, 1, 1);
-
         m_loop = new RangeField;
         m_loop->setRange(0, std::max(0.01, s.duration));
         m_loop->setDecimals(2);
@@ -973,14 +1213,14 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         m_loop->setValues(s.inPoint, s.outPoint < 0 ? s.duration : s.outPoint);
         m_loop->setToolTip(QStringLiteral("Played range: playback, loops and ping-pong stay between these two points"));
         const double duration0 = s.duration;
-        barLabel(2, QStringLiteral("Loop"), [this] {
+        barLabel(1, QStringLiteral("Loop"), [this] {
             m_undo->beginMacro(QStringLiteral("Clear In / Out Points"));
             setProp(cmd::SetLayerProp::InPoint, 0.0);
             setProp(cmd::SetLayerProp::OutPoint, -1.0);
             m_undo->endMacro();
             rebuild();
         });
-        bars->addWidget(m_loop, 2, 1);
+        bars->addWidget(m_loop, 1, 1);
         v->addLayout(bars);
 
         // Playback is not a project edit: no undo on play, pause or seek.
@@ -1002,10 +1242,6 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
             emit layerChanged();
         });
         connect(m_position, &SliderField::valueEdited, this, [this](double t) { m_engine->seekLayer(m_layer, t); });
-        connect(m_speed, &SliderField::valueEdited, this, [this](double pct) {
-            setProp(cmd::SetLayerProp::Speed, pct / 100.0);
-            emit layerChanged();
-        });
         connect(m_loop, &RangeField::edited, this, [this, duration0](bool low, double t) {
             setProp(low ? cmd::SetLayerProp::InPoint : cmd::SetLayerProp::OutPoint,
                     low ? t : (t >= duration0 - 1e-6 ? -1.0 : t));
@@ -1034,6 +1270,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         row->addWidget(icon);
         row->addWidget(vol, 1);
         row->addWidget(mute);
+        m_animate->attach({icon, vol}, {QStringLiteral("volume")});
         v->addLayout(row);
         m_meter = new QProgressBar;
         m_meter->setRange(0, 600);
@@ -1052,6 +1289,13 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
     }
 
     if (s.type == SourceType::Isf && s.hasGenerator) {
+        // Its inputs back to their defaults, at the top
+        auto *reset = new QPushButton(QStringLiteral("Reset to Defaults"));
+        reset->setToolTip(QStringLiteral("Every parameter of the shader back to its default value (one undo step)"));
+        auto *resetRow = new QHBoxLayout;
+        resetRow->addWidget(reset);
+        resetRow->addStretch();
+        v->addLayout(resetRow);
         auto *res = new QHBoxLayout;
         auto *w = new IntBox, *h = new IntBox;
         for (auto *sb : {w, h}) {
@@ -1087,10 +1331,17 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
             m_engine->reloadIsf(gen);
             rebuild();
         });
-        auto *params = new ParamPanel(m_engine, m_undo, m_layer, -1);
+        auto *params = new ParamPanel(m_engine, m_undo, m_layer, -1, ParamPanel::NoSpeed | ParamPanel::NoReset);
+        connect(reset, &QPushButton::clicked, params, &ParamPanel::resetToDefaults);
         m_generatorParams = params;
+        params->attachAnimate(m_animate);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
+    }
+    if (s.type == SourceType::None) {
+        auto *hint = new QLabel(QStringLiteral("Nothing to set: the layer is empty."));
+        hint->setStyleSheet("color:#888;");
+        v->addWidget(hint);
     }
     return g;
 }
@@ -1113,6 +1364,7 @@ QWidget *LayerInspector::buildRoi(const LayerValues &s)
     m_roi->setAspect(s.aspect);
     m_roi->setRoi(s.roi);
     v->addWidget(m_roi);
+    m_animate->attach({title, m_roi.data()}, {"roi/left", "roi/top", "roi/right", "roi/bottom"});
     auto *grid = new QGridLayout;
     grid->setHorizontalSpacing(8);
     grid->setVerticalSpacing(4);
@@ -1136,6 +1388,7 @@ QWidget *LayerInspector::buildRoi(const LayerValues &s)
         name->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         grid->addWidget(name, k, 0);
         grid->addWidget(bar, k, 1);
+        m_animate->attach({name, bar}, k == 0 ? QStringList{"roi/left", "roi/right"} : QStringList{"roi/top", "roi/bottom"});
     }
     v->addLayout(grid);
     auto apply = [this](const QRectF &r) {
@@ -1240,17 +1493,17 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
         auto *grid = new QGridLayout(box);
         grid->addWidget(new QLabel(QStringLiteral("<b>Balance</b>")), 0, 0, 1, 4);
         struct Def {
-            const char *name;
+            const char *name, *path;
             double range, value;
             QGradientStops gradient;
             int prop;
             QPointer<SliderField> *field;
             bool on;
             int onProp;
-        } defs[] = {{"Temp", ColorAdjust::kTempRange, s.color.temp,
+        } defs[] = {{"Temp", "temp", ColorAdjust::kTempRange, s.color.temp,
                      {{0.0, QColor("#3a7bff")}, {0.5, QColor("#888888")}, {1.0, QColor("#ffd23a")}},
                      cmd::SetLayerProp::Temp, &m_temp, s.color.tempOn, cmd::SetLayerProp::TempOn},
-                    {"Tint", ColorAdjust::kTintRange, s.color.tint,
+                    {"Tint", "tint", ColorAdjust::kTintRange, s.color.tint,
                      {{0.0, QColor("#2fd04a")}, {0.5, QColor("#888888")}, {1.0, QColor("#e03ce0")}},
                      cmd::SetLayerProp::Tint, &m_tint, s.color.tintOn, cmd::SetLayerProp::TintOn}};
         int row = 1;
@@ -1270,12 +1523,13 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
             const int onProp = d.onProp;
             connect(on, &QCheckBox::toggled, this, [this, onProp](bool v) { setProp(onProp, v); });
             grid->addWidget(on, row, 0);
-            grid->addWidget(new ResetLabel(QString::fromUtf8(d.name), [bar] {
-                                bar->setValue(0);
-                                emit bar->valueEdited(0);
-                            }),
-                            row, 1);
+            auto *name = new ResetLabel(QString::fromUtf8(d.name), [bar] {
+                bar->setValue(0);
+                emit bar->valueEdited(0);
+            });
+            grid->addWidget(name, row, 1);
             grid->addWidget(bar, row, 2, 1, 2);
+            m_animate->attach({name, bar}, {QString::fromLatin1(d.path)});
             connect(bar, &SliderField::valueEdited, this, [this, prop](double x) { setProp(prop, x); });
             ++row;
         }
@@ -1321,6 +1575,8 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
         v->addWidget(frame);
         ed->setModels(s.colorModels);
     }
+    m_animate->attach(m_colorAdd, {"add/r", "add/g", "add/b"});
+    m_animate->attach(m_colorRemove, {"remove/r", "remove/g", "remove/b"});
     m_colorAdd->setSwitch(true, s.color.addOn, QStringLiteral("Apply the added color (it is kept either way)"));
     m_colorRemove->setSwitch(true, s.color.removeOn, QStringLiteral("Apply the removed color (it is kept either way)"));
     connect(m_colorAdd, &ColorEditor::colorEdited, this, [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorAdd, c); });
@@ -1345,28 +1601,37 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
     opacity->setSnaps({100});
     opacity->setValue(s.opacity * 100);
     m_opacity = opacity;
-    form->addRow(new ResetLabel(QStringLiteral("Opacity"), [this, opacity] {
-                     opacity->setValue(100);
-                     setProp(cmd::SetLayerProp::Opacity, 1.0);
-                 }),
-                 opacity);
+    auto *opacityLabel = new ResetLabel(QStringLiteral("Opacity"), [this, opacity] {
+        opacity->setValue(100);
+        setProp(cmd::SetLayerProp::Opacity, 1.0);
+    });
+    form->addRow(opacityLabel, opacity);
+    m_animate->attach({opacityLabel, opacity}, {QStringLiteral("opacity")});
     connect(opacity, &SliderField::valueEdited, this, [this](double v) { setProp(cmd::SetLayerProp::Opacity, v / 100.0); });
     if (s.isViewport) return g; // drawn onto nothing: no blend, no routing
 
     auto *blend = new QComboBox;
-    for (BlendMode m : {BlendMode::Normal, BlendMode::Add, BlendMode::Screen, BlendMode::Multiply, BlendMode::Subtract,
-                        BlendMode::Difference})
-        blend->addItem(blendModeName(m), int(m));
+    for (BlendMode m : kBlendModes) blend->addItem(blendModeName(m), int(m));
     blend->setCurrentIndex(blend->findData(int(s.blend)));
     form->addRow(new ResetLabel(QStringLiteral("Blend Mode"), [blend] { blend->setCurrentIndex(0); }), blend);
     connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this, blend](int i) { setProp(cmd::SetLayerProp::Blend, blend->itemData(i).toInt()); });
 
+    return g;
+}
+
+// The viewports it appears in: chosen at the top of the list (a group for everything inside it)
+QWidget *LayerInspector::buildViewports(const LayerValues &s)
+{
     // Viewports it appears in: chosen at the top of the list (a group for everything inside it)
     auto *routes = new QWidget;
     auto *rv = new QVBoxLayout(routes);
     rv->setContentsMargins(0, 0, 0, 0);
-    rv->setSpacing(2);
+    rv->setSpacing(4);
+    auto *intro = new QLabel(QStringLiteral("How much of it each viewport shows (0 hides it). A click on a name shows it fully."));
+    intro->setWordWrap(true);
+    intro->setStyleSheet("color:#888; font-size:11px;");
+    rv->addWidget(intro);
     if (!s.routedBy.isEmpty()) {
         auto *note = new QLabel(QStringLiteral("Routed by its group “%1”.").arg(s.routedBy.toHtmlEscaped()));
         note->setStyleSheet("color:#999;");
@@ -1378,9 +1643,12 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
         auto *row = new QWidget;
         auto *rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
-        auto *name = new QLabel(r.name);
-        name->setMinimumWidth(70);
         auto *sl = new SliderField;
+        auto *name = new ResetLabel(r.name, [sl] { // fully shown
+            sl->setValue(100);
+            emit sl->valueEdited(100);
+        });
+        name->setMinimumWidth(70);
         sl->setRange(0, 100);
         sl->setDecimals(0);
         sl->setSuffix(QStringLiteral(" %"));
@@ -1404,9 +1672,10 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
             *current = after;
         });
     }
-    form->addRow(new QLabel(QStringLiteral("Viewports")), routes);
-    return g;
+    rv->addStretch();
+    return routes;
 }
+
 
 QWidget *LayerInspector::buildMapping(const LayerValues &s)
 {
@@ -1427,11 +1696,18 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             b->setAccelerated(true);
             return b;
         };
-        m_posX = spin(-100000, 100000, QStringLiteral(" px"), 1);
-        m_posY = spin(-100000, 100000, QStringLiteral(" px"), 1);
+        // Their limits are the parameters' (Parameter.h)
+        auto spinOf = [this, spin](const QString &path, const QString &suffix, int decimals) {
+            const auto [lo, hi] = limitsOf(path, -100000, 100000);
+            return spin(lo, hi, suffix, decimals);
+        };
+        m_posX = spinOf(QStringLiteral("position/x"), QStringLiteral(" px"), 1);
+        m_posY = spinOf(QStringLiteral("position/y"), QStringLiteral(" px"), 1);
         m_sizePx = s.isViewport;
-        m_scaleX = m_sizePx ? spin(1, 100000, QStringLiteral(" px"), 1) : spin(0.1, 10000, QStringLiteral(" %"), 2);
-        m_scaleY = m_sizePx ? spin(1, 100000, QStringLiteral(" px"), 1) : spin(0.1, 10000, QStringLiteral(" %"), 2);
+        m_scaleX = m_sizePx ? spinOf(QStringLiteral("width"), QStringLiteral(" px"), 1)
+                            : spinOf(QStringLiteral("scale/x"), QStringLiteral(" %"), 2);
+        m_scaleY = m_sizePx ? spinOf(QStringLiteral("height"), QStringLiteral(" px"), 1)
+                            : spinOf(QStringLiteral("scale/y"), QStringLiteral(" %"), 2);
         m_rotation = spin(-360, 360, QStringLiteral("°"), 1);
         m_posX->setToolTip(QStringLiteral("Horizontal position of the layer's center, in composition pixels"));
         m_posY->setToolTip(QStringLiteral("Vertical position of the layer's center, in composition pixels"));
@@ -1473,13 +1749,14 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             m_rotation->setWrapping(true);
             m_rotation->setRange(-180, 180);
             auto *rotLabel = new ResetLabel(QStringLiteral("Rotation"), [this] { m_rotation->setValue(0); });
+            m_animate->attach(rotLabel, {"rotation"});
             grid->addWidget(rotLabel, 2, 0);
             grid->addWidget(m_rotation, 2, 2);
         }
-        m_pivotX = spin(-100000, 100000, QStringLiteral(" px"), 1);
-        m_pivotY = spin(-100000, 100000, QStringLiteral(" px"), 1);
-        m_pivotX->setToolTip(QStringLiteral("Horizontal center of the rotation, in composition pixels (moves with the layer)"));
-        m_pivotY->setToolTip(QStringLiteral("Vertical center of the rotation, in composition pixels (moves with the layer)"));
+        m_pivotX = spinOf(QStringLiteral("pivot/x"), QStringLiteral(" %"), 1);
+        m_pivotY = spinOf(QStringLiteral("pivot/y"), QStringLiteral(" %"), 1);
+        m_pivotX->setToolTip(QStringLiteral("Horizontal center of the rotation, in % of the layer (50: its middle)"));
+        m_pivotY->setToolTip(QStringLiteral("Vertical center of the rotation, in % of the layer (50: its middle)"));
         auto *pivotLabel = new ResetLabel(QStringLiteral("Pivot"), [this] {
             editMapping(QStringLiteral("Pivot"), [](Mapping &m) {
                 m.pivot = QPointF(0.5, 0.5); // the middle of the picture
@@ -1492,89 +1769,71 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         grid->addWidget(m_pivotX, 3, 2);
         grid->addWidget(new QLabel(QStringLiteral("Y")), 3, 4);
         grid->addWidget(m_pivotY, 3, 5);
+        {
+            const QString sx = m_sizePx ? QStringLiteral("width") : QStringLiteral("scale/x");
+            const QString sy = m_sizePx ? QStringLiteral("height") : QStringLiteral("scale/y");
+            m_animate->attach(posLabel, {"position/x", "position/y"});
+            m_animate->attach(m_posX, {"position/x"});
+            m_animate->attach(m_posY, {"position/y"});
+            m_animate->attach(scaleLabel, {sx, sy});
+            m_animate->attach(m_scaleX, {sx});
+            m_animate->attach(m_scaleY, {sy});
+            m_animate->attach(m_rotation, {"rotation"});
+            m_animate->attach(pivotLabel, {"pivot/x", "pivot/y"});
+            m_animate->attach(m_pivotX, {"pivot/x"});
+            m_animate->attach(m_pivotY, {"pivot/y"});
+        }
         grid->setColumnStretch(2, 1);
         grid->setColumnStretch(5, 1);
         v->addLayout(grid);
         refreshSpatial();
+        // The fields are the mapping's own values (as its parameters show them: position and pivot in composition
+        // pixels, the size in % of the composition, or in pixels for a viewport, the rotation in degrees)
         if (m_rotation) {
-            connect(m_rotation, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, comp](double deg) {
+            connect(m_rotation, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double deg) {
                 editMapping(QStringLiteral("Rotation"), [&](Mapping &m) {
-                    double d = std::fmod(deg - m.angle(comp), 360.0); // the shortest way round
-                    if (d > 180) d -= 360;
-                    if (d <= -180) d += 360;
-                    m.rotate(d, comp);
+                    m.rotation = deg;
+                    ++m.revision;
                 }, true);
                 refreshSpatial();
             });
         }
 
         connect(link, &QToolButton::toggled, this, [this](bool on) { m_scaleLinked = on; });
-        auto setPivot = [this, comp](bool x, double v) {
+        auto setPivot = [this](bool x, double v) {
             editMapping(QStringLiteral("Pivot"), [&](Mapping &m) {
-                QPointF p = m.pivotPoint();
-                (x ? p.rx() : p.ry()) = v / (x ? comp.width() : comp.height());
-                m.setPivotPoint(p);
+                (x ? m.pivot.rx() : m.pivot.ry()) = v / 100.0;
+                ++m.revision;
             }, true);
         };
         connect(m_pivotX, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [setPivot](double v) { setPivot(true, v); });
         connect(m_pivotY, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [setPivot](double v) { setPivot(false, v); });
-        auto applyBounds = [this, comp](const QString &text, const std::function<QRectF(QRectF)> &fn) {
-            editMapping(text, [&](Mapping &m) {
-                QRectF b = m.bounds();
-                // in composition pixels
-                b = QRectF(b.left() * comp.width(), b.top() * comp.height(), b.width() * comp.width(), b.height() * comp.height());
-                b = fn(b);
-                m.setBounds(QRectF(b.left() / comp.width(), b.top() / comp.height(), b.width() / comp.width(),
-                                   b.height() / comp.height()));
+        auto setPosition = [this, comp](bool x, double v) {
+            editMapping(QStringLiteral("Position"), [&](Mapping &m) {
+                (x ? m.position.rx() : m.position.ry()) = v / (x ? comp.width() : comp.height());
+                ++m.revision;
             }, true);
         };
-        // A viewport is a rectangle (turned or not): its center and size are read and written as such
-        auto applyRect = [this, comp](const QString &text, const std::function<void(Mapping::Rect &)> &fn) {
-            editMapping(text, [&](Mapping &m) {
-                Mapping::Rect r = m.rect(comp);
-                fn(r);
-                m.setRect(r, comp);
-            }, true);
-        };
-        connect(m_posX, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, applyBounds, applyRect](double x) {
-            if (m_sizePx) applyRect(QStringLiteral("Position"), [x](Mapping::Rect &r) { r.center.setX(x); });
-            else applyBounds(QStringLiteral("Position"), [x](QRectF b) { b.moveCenter(QPointF(x, b.center().y())); return b; });
-        });
-        connect(m_posY, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, applyBounds, applyRect](double y) {
-            if (m_sizePx) applyRect(QStringLiteral("Position"), [y](Mapping::Rect &r) { r.center.setY(y); });
-            else applyBounds(QStringLiteral("Position"), [y](QRectF b) { b.moveCenter(QPointF(b.center().x(), y)); return b; });
-        });
-        auto scale = [this, applyBounds, applyRect, comp](double sx, double sy, bool fromX) {
-            if (m_sizePx) {
-                applyRect(QStringLiteral("Size"), [&](Mapping::Rect &r) {
-                    double w = sx, h = sy;
-                    if (m_scaleLinked) { // the other side follows, keeping the aspect ratio
-                        if (fromX && r.w > 1e-9) h = r.h * w / r.w;
-                        if (!fromX && r.h > 1e-9) w = r.w * h / r.h;
-                    } else if (fromX) {
-                        h = r.h;
-                    } else {
-                        w = r.w;
-                    }
-                    r.w = std::max(1.0, w);
-                    r.h = std::max(1.0, h);
-                });
-                refreshSpatial();
-                return;
-            }
-            applyBounds(QStringLiteral("Scale"), [&](QRectF b) {
-                const QPointF c = b.center();
-                double w = m_sizePx ? sx : sx / 100.0 * comp.width(), h = m_sizePx ? sy : sy / 100.0 * comp.height();
-                if (m_scaleLinked) { // the other axis follows, keeping the aspect ratio
-                    if (fromX && b.width() > 1e-9) h = b.height() * w / b.width();
-                    if (!fromX && b.height() > 1e-9) w = b.width() * h / b.height();
+        connect(m_posX, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [setPosition](double v) { setPosition(true, v); });
+        connect(m_posY, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [setPosition](double v) { setPosition(false, v); });
+        auto scale = [this, comp](double sx, double sy, bool fromX) {
+            // in the composition's units: a fraction of its width / height
+            const double unitX = m_sizePx ? comp.width() : 100.0, unitY = m_sizePx ? comp.height() : 100.0;
+            editMapping(m_sizePx ? QStringLiteral("Size") : QStringLiteral("Scale"), [&](Mapping &m) {
+                double w = sx / unitX, h = sy / unitY;
+                const QSizeF was = m.size;
+                if (m_scaleLinked) { // the other side follows, keeping the aspect ratio
+                    if (fromX && std::abs(was.width()) > 1e-12) h = was.height() * w / was.width();
+                    if (!fromX && std::abs(was.height()) > 1e-12) w = was.width() * h / was.height();
+                } else if (fromX) {
+                    h = was.height();
+                } else {
+                    w = was.width();
                 }
-                if (fromX) h = m_scaleLinked ? h : b.height();
-                else w = m_scaleLinked ? w : b.width();
-                b.setSize(QSizeF(w, h));
-                b.moveCenter(c);
-                return b;
-            });
+                const double least = m_sizePx ? 1.0 / std::max(1, std::min(comp.width(), comp.height())) : 0.001;
+                m.size = QSizeF(std::max(least, w), std::max(least, h));
+                ++m.revision;
+            }, true);
             refreshSpatial();
         };
         connect(m_scaleX, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
@@ -1734,13 +1993,17 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             power->setValue(se.power[side]);
             m_softWidth[side] = width;
             m_softPower[side] = power;
-            grid->addWidget(new ResetLabel(QString::fromLatin1(names[side]), [width, power] {
-                                width->setValue(10.0);
-                                power->setValue(1.0);
-                                emit width->valueEdited(10.0);
-                                emit power->valueEdited(1.0);
-                            }),
-                            side + 1, 0);
+            auto *name = new ResetLabel(QString::fromLatin1(names[side]), [width, power] {
+                width->setValue(10.0);
+                power->setValue(1.0);
+                emit width->valueEdited(10.0);
+                emit power->valueEdited(1.0);
+            });
+            grid->addWidget(name, side + 1, 0);
+            const QString base = QStringLiteral("soft_edge/%1/").arg(QString::fromLatin1(names[side]).toLower());
+            m_animate->attach(name, {base + "width", base + "power"});
+            m_animate->attach(width, {base + "width"});
+            m_animate->attach(power, {base + "power"});
             grid->addWidget(width, side + 1, 1);
             grid->addWidget(power, side + 1, 3);
             connect(width, &SliderField::valueEdited, this, [this, side](double v) {
@@ -1989,6 +2252,7 @@ void LayerInspector::showEffectParams()
     if (valid) {
         auto *params = new ParamPanel(m_engine, m_undo, m_layer, m_selectedEffect);
         m_effectParams = params;
+        params->attachAnimate(m_animate);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         lay->addWidget(params);
     }
@@ -1998,31 +2262,20 @@ void LayerInspector::showEffectParams()
 void LayerInspector::refreshSpatial()
 {
     if (!m_posX) return;
-    QRectF b;
-    Mapping::Rect rect;
-    QPointF pivot;
-    double angle = 0;
+    Mapping m;
     const QSize comp = m_engine->compositionSize();
     {
         Engine::Lock lk(&m_engine->mutex());
         Layer *l = m_engine->layer(m_layer);
         if (!l) return;
-        b = l->mapping.bounds();
-        rect = l->mapping.rect(comp);
-        pivot = l->mapping.pivotPoint();
-        angle = l->mapping.angle(comp);
+        m = l->mapping;
     }
-    if (m_rotation && !m_rotation->hasFocus() && std::abs(m_rotation->value() - angle) > 1e-6) {
-        QSignalBlocker blk(m_rotation);
-        m_rotation->setValue(angle);
-    }
-    const double values[4] = {m_sizePx ? rect.center.x() : b.center().x() * comp.width(),
-                              m_sizePx ? rect.center.y() : b.center().y() * comp.height(),
-                              m_sizePx ? rect.w : b.width() * 100.0, m_sizePx ? rect.h : b.height() * 100.0};
-    QDoubleSpinBox *boxes[6] = {m_posX, m_posY, m_scaleX, m_scaleY, m_pivotX, m_pivotY};
-    const double all[6] = {values[0], values[1], values[2], values[3], pivot.x() * comp.width(), pivot.y() * comp.height()};
-    for (int k = 0; k < 6; ++k) {
-        if (boxes[k]->hasFocus()) continue; // being edited
+    const double unitX = m_sizePx ? comp.width() : 100.0, unitY = m_sizePx ? comp.height() : 100.0;
+    QDoubleSpinBox *boxes[7] = {m_posX, m_posY, m_scaleX, m_scaleY, m_pivotX, m_pivotY, m_rotation};
+    const double all[7] = {m.position.x() * comp.width(), m.position.y() * comp.height(), m.size.width() * unitX,
+                           m.size.height() * unitY, m.pivot.x() * 100.0, m.pivot.y() * 100.0, std::remainder(m.rotation, 360.0)};
+    for (int k = 0; k < 7; ++k) {
+        if (!boxes[k] || boxes[k]->hasFocus()) continue; // being edited
         if (std::abs(boxes[k]->value() - all[k]) < 1e-6) continue;
         QSignalBlocker blk(boxes[k]);
         boxes[k]->setValue(all[k]);
@@ -2090,6 +2343,15 @@ void LayerInspector::refreshDynamic()
         show(m_opacity, opacity * 100.0);
         show(m_volume, volume * 100.0);
         if (m_generatorParams) m_generatorParams->refresh();
+        if (m_genSpeed) {
+            double gs = 1;
+            {
+                Engine::Lock lk(&m_engine->mutex());
+                Layer *l = m_engine->layer(m_layer);
+                if (l && l->generator) gs = l->generator->speed;
+            }
+            show(m_genSpeed, gs);
+        }
         if (m_effectParams) m_effectParams->refresh();
         for (int side = 0; side < 4; ++side) {
             show(m_softWidth[side], soft.width[side] * 100.0);
@@ -2119,10 +2381,6 @@ void LayerInspector::refreshDynamic()
         speed = l->speed;
         d = l->duration();
         p = l->position();
-        if (l->video && m_codecFact) {
-            const QString codec = l->video->codecName();
-            if (m_codecFact->text() != codec) m_codecFact->setText(codec);
-        }
         if (l->video && m_pictureFact && l->frame.layout && m_pictureFact->text() != l->frame.layout->description)
             m_pictureFact->setText(l->frame.layout->description);
     }

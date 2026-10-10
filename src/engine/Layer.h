@@ -1,14 +1,18 @@
 #pragma once
+#include "Anim.h"
 #include "AudioStream.h"
 #include "Gl.h"
 #include "Isf.h"
 #include "Mapping.h"
+#include "Parameter.h"
 #include "Publish.h"
 #include "VideoDecoder.h"
 #include "VideoTexture.h"
 
 #include <QColor>
+#include <QHash>
 #include <QImage>
+#include <QJsonObject>
 #include <QRectF>
 #include <QSize>
 #include <QString>
@@ -36,6 +40,8 @@ enum class LayerTap {
 QString layerTapKey(LayerTap t);
 LayerTap layerTapFromKey(const QString &k);
 enum class BlendMode { Normal, Add, Screen, Multiply, Subtract, Difference };
+inline constexpr BlendMode kBlendModes[] = {BlendMode::Normal,   BlendMode::Add,      BlendMode::Screen,
+                                            BlendMode::Multiply, BlendMode::Subtract, BlendMode::Difference};
 // What a video or a sound does at its end: freeze on the last frame, loop, play backwards and forwards,
 // or stop and go black (and silent).
 enum class PlayMode { OneShot, Loop, PingPong, Stop };
@@ -260,6 +266,8 @@ struct Layer {
     int rawW = 0, rawH = 0;
 
     Mapping mapping;
+    // Animations of its own numbers (one track each, on this layer): the Anim tab (see Engine::setLayerAnims)
+    std::vector<Animation> anims;
     GLuint meshVbo = 0;  // its mesh's vertices (render thread)
     Mapping meshShape;   // the mapping they were built from
 
@@ -275,6 +283,26 @@ struct Layer {
     int finalW = 0, finalH = 0;
     GLuint preFxTex = 0; // picture just before the effect chain (tap of a layer used as a source)
     int preFxW = 0, preFxH = 0;
+
+    // Its parameters (Parameter.h), the ones it has as it is now: its own, its generator's (speed, param/<input>) and
+    // its effects' (fx/<fx>/…). Made again when what it is changes (its kind, its source, its effects, the
+    // composition's size). The engine's lock is held.
+    const std::vector<Parameter *> &parameters();
+    Parameter *parameter(const QString &path); // null: it has none at that address
+    const QSize *compSize = nullptr;           // the composition's (set by the engine): its parameters in pixels
+    std::vector<std::unique_ptr<Parameter>> paramStore;
+    std::vector<Parameter *> paramList;
+    QHash<QString, Parameter *> paramIndex; // by address
+    std::vector<quint64> paramKey; // what they were made from
+    // Values read from a file for parameters it does not have now (a media file missing: its speed, its in and out
+    // points…): written back as they were when it is saved
+    QJsonObject extraParams;
+
+    // Its transport, changed from where it is: the speed (below 0 it turns round there), the play mode, the
+    // played range (kept within the media; out < 0: its end)
+    void setSpeed(double speed);
+    void setPlayMode(PlayMode mode);
+    void setInOut(double in, double out);
 
     bool hasTransport() const { return video || audio; }
     double duration() const { return video ? video->duration() : audio ? audio->duration() : 0.0; }

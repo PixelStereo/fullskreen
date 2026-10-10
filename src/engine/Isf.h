@@ -4,6 +4,7 @@
 // persistent and float buffers, imported images.
 
 #include "Gl.h"
+#include "Parameter.h"
 #include <QJsonObject>
 #include <QPointF>
 #include <QString>
@@ -52,6 +53,9 @@ struct IsfInput {
 
     GLint loc = -1, sizeLoc = -1, rectLoc = -1;
     static QString typeName(Type t);
+    // A number (or numbers) a timeline, an animation or a snapshot's fade can move: a float, a choice among numbers,
+    // a point (x, y), a color (r, g, b, a)
+    bool isNumber() const { return type == Float || type == Long || type == Point2D || type == Color; }
 
     IsfValue value() const
     {
@@ -120,8 +124,11 @@ public:
     void setImageTexture(const QString &name, GLuint tex, int w, int h);
     IsfInput *input(const QString &name);
 
-    QJsonObject save(const QString &projectDir) const;
-    void restoreParams(const QJsonObject &params, const QString &projectDir);
+    // In a file: the shader (path), its mask, its image inputs' files ("images": input → path) and, unless its
+    // values are kept elsewhere (a layer keeps its shaders' values in its own parameters), its parameters' values
+    // ("params": address → value, as parameters() names them)
+    QJsonObject save(const QString &projectDir, bool withParams = true) const;
+    void restore(const QJsonObject &o, const QString &projectDir); // GL context current (its images are loaded)
     void resetParams();
 
     QString path() const { return m_path; }
@@ -140,11 +147,13 @@ public:
     quint64 maskLayer = 0; // 0: everywhere
     bool maskInvert = false;
     bool maskPreFx = false; // the mask is the layer's picture before its own effects (false: after them)
-    // enabled, mask and invert, from a saved effect (its params are restored by restoreParams)
-    void readState(const QJsonObject &o);
 
     std::vector<IsfInput> &inputs() { return m_inputs; }
     const std::vector<IsfInput> &inputs() const { return m_inputs; }
+    // Its parameters (Parameter.h), from its inputs as they are now: "speed", "enable" (an effect's switch),
+    // "mask/invert", "param/<input>" (a point: /x /y; a color: /r /g /b /a; a boolean, an event). Bound to this
+    // instance (an input is found again by its name: a reloaded shader keeps them); labels "<title> › <input>"
+    std::vector<Parameter> parameters(const QString &title) const;
 
     // Lightweight header parsing (for the library, no GL).
     struct Header {

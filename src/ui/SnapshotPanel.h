@@ -25,13 +25,13 @@ struct MemField {
     enum Kind { Info, Bool, Number, Choice };
     Kind kind = Info;
     int row = 0;          // index of the layer in the snapshot (-1: the snapshot's composition)
-    QStringList path;     // inside the layer object, e.g. {"source", "speed"} or {"fx", "0", "params", "radius"}
+    QStringList path;     // inside the layer object, e.g. {"enable"} or {"params", "position/x"} (a parameter's address)
     double min = 0, max = 1, step = 0.01, scale = 1; // scale: displayed value = stored × scale (percentages)
     int decimals = 2;
     QString suffix;
     QStringList keys, labels; // Choice: stored key ↔ shown label
     QString label;            // as listed
-    QString timeKey;          // a value that fades: the key of its time in the snapshot (empty otherwise)
+    QString timeKey;          // a value (or a group of values) that fades: its address, the key of its time (empty otherwise)
 };
 
 // Snapshots (as the scenes / cues of MadMapper), at the bottom of the window, in three parts:
@@ -62,6 +62,7 @@ private:
     void showDetail(QTreeWidgetItem *it); // the selected value, on the right
     void fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject &layer);
     QTreeWidgetItem *addField(QTreeWidgetItem *parent, const MemField &f, const QJsonValue &value);
+    void showTime(QTreeWidgetItem *it, const MemField &f); // its time in the time column
     void applyField(const MemField &f, const QJsonValue &value); // writes it into the selected snapshot
     void applyTime(int row, const QString &key, double seconds); // < 0: FOLLOW (the snapshot's fade)
     void applyEasingCurve(int row, const QString &paramKey, const QString &curveKey); // easing curve of a parameter

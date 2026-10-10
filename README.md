@@ -16,7 +16,9 @@ Built with Qt 6, FFmpeg, and OpenGL 3.3. Cross-platform: macOS, Windows, Linux.
 
 **Effects** — ISF 1.3+ shader chain per layer. Includes generators (TestPattern, Plasma, Gradient, Clouds), color correction, blur, trails, kaleidoscope, soft edges. Load your own from `~/Library/Graphics/ISF` or bundled folder.
 
-**Snapshot system** — Save and recall layer states (cues). Every parameter fades smoothly to its stored value over a configurable duration. Undo/redo throughout.
+**Snapshot system** — Save and recall layer states (cues). Every parameter gets to its stored value as its kind says — numbers fade (angles the shortest way round), switches and choices cut, a text is typed in — over the snapshot's fade or a time and an easing of its own; a time given to a group of values (`position`, `roi`, `fx/blur`) applies to all of its values that have none. Undo/redo throughout.
+
+**Parameter animations** — Right-click a number → Animate: a waveform (sine, triangle, saw, step, random) or keys with Bézier handles. A layer's animations are listed in its Anim tab (pin, fold, a floating window to edit them larger), each with its duration, loop mode and speed.
 
 **Sequences** — Cue lists of snapshots played with GO (button, Space, OSC). Each step has a pre-wait, a post-wait and a continuation, as in QLab: *Wait* (the next step waits for GO), *Follow* (the next step goes once this one is triggered, plus its post-wait), *Auto-follow* (the next step goes once this one's fade is over, plus its post-wait). The waits and fades are drawn filling up as they run. Snapshots run side by side: a snapshot recalled takes over only the values it holds, the others keep fading. A step recalls a snapshot or drives a timeline: drag either onto it.
 
@@ -102,6 +104,8 @@ cmake -S . -B build && cmake --build build -j
 - UDP 1234 (OSC), TCP 5678 (OSCQuery HTTP + WebSocket)
 - Zeroconf announce (`_oscjson._tcp`, `_osc._udp`)
 - Full namespace remote control
+- One vocabulary: a layer's parameter has the same address everywhere — its OSC address under the layer, its key in the project's and snapshots' `params`, its timing key, a timeline's track (`opacity`, `rotation`, `position/x`, `scale/x`, `pivot/x`, `corner/top_left/x`, `roi/left`, `temp`, `add/r`, `speed`, `text/size`, `param/<input>`, `fx/<fx>/param/<input>`); numbers that go together also answer at their common address (`position 960 540`)
+- A parameter's animation: `<param>/anim/play`, `pause`, `stop`, `rewind`, `enable`, `duration`, `speed`, `loop_mode`, `repeat`, `wave`, `period`, `center`, `amplitude`, `phase`
 - Timelines: `/timelines/<n>/play`, `pause`, `stop`, `rewind`, `seek <seconds>`, `playing`
 - Address patterns and bundles supported
 

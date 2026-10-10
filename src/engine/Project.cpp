@@ -9,78 +9,6 @@
 #include <QSaveFile>
 #include <cmath>
 
-// The Text generator in a layer state: colors as [r, g, b, a] (0..1, so that a snapshot's panel edits and fades them
-// like the shaders' colors), alignment as words.
-static QJsonArray colorJson(const QColor &c) { return QJsonArray{c.redF(), c.greenF(), c.blueF(), c.alphaF()}; }
-static QColor colorFromJson(const QJsonValue &v, const QColor &fallback)
-{
-    if (v.isString()) {
-        const QColor c(v.toString());
-        return c.isValid() ? c : fallback;
-    }
-    const QJsonArray a = v.toArray();
-    if (a.size() < 3) return fallback;
-    auto ch = [&](int k, double d) { return std::clamp(k < a.size() ? a[k].toDouble(d) : d, 0.0, 1.0); };
-    return QColor::fromRgbF(float(ch(0, 0)), float(ch(1, 0)), float(ch(2, 0)), float(ch(3, 1)));
-}
-static const char *const kHAlign[] = {"left", "center", "right", "justify"};
-static const Qt::AlignmentFlag kHFlag[] = {Qt::AlignLeft, Qt::AlignHCenter, Qt::AlignRight, Qt::AlignJustify};
-static const char *const kVAlign[] = {"top", "middle", "bottom"};
-static const Qt::AlignmentFlag kVFlag[] = {Qt::AlignTop, Qt::AlignVCenter, Qt::AlignBottom};
-
-QJsonObject textJson(const TextSource &t)
-{
-    QString h = QStringLiteral("left"), v = QStringLiteral("top");
-    for (int k = 0; k < 4; ++k)
-        if (t.align & kHFlag[k]) h = QString::fromLatin1(kHAlign[k]);
-    for (int k = 0; k < 3; ++k)
-        if (t.align & kVFlag[k]) v = QString::fromLatin1(kVAlign[k]);
-    return QJsonObject{{"content", t.content},       {"font", t.font},
-                       {"size", t.size},             {"color", colorJson(t.color)},
-                       {"h_align", h},                {"v_align", v},
-                       {"line_height", t.lineHeight}, {"letter_spacing", t.letterSpacing},
-                       {"bold", t.bold},             {"italic", t.italic},
-                       {"underline", t.underline},   {"strike", t.strike},
-                       {"outline", t.outline},       {"outline_color", colorJson(t.outlineColor)},
-                       {"shadow", t.shadow},         {"shadow_color", colorJson(t.shadowColor)},
-                       {"shadow_x", t.shadowX},       {"shadow_y", t.shadowY},
-                       {"width", t.width},           {"height", t.height}};
-}
-
-// Onto the current values: what the state does not hold stays as it is
-void readTextJson(TextSource &t, const QJsonObject &o)
-{
-    t.content = o.value("content").toString(t.content);
-    t.font = o.value("font").toString(t.font);
-    t.size = o.value("size").toInt(t.size);
-    t.color = colorFromJson(o.value("color"), t.color);
-    if (o.contains("h_align") || o.contains("v_align")) {
-        int h = Qt::AlignLeft, v = Qt::AlignTop;
-        for (int k = 0; k < 4; ++k)
-            if (o.value("h_align").toString() == QLatin1String(kHAlign[k])) h = kHFlag[k];
-        for (int k = 0; k < 3; ++k)
-            if (o.value("v_align").toString() == QLatin1String(kVAlign[k])) v = kVFlag[k];
-        t.align = Qt::Alignment(h | v);
-    } else if (o.contains("align")) {
-        t.align = Qt::Alignment(o.value("align").toInt(int(t.align)));
-    }
-    t.lineHeight = float(o.value("line_height").toDouble(t.lineHeight));
-    t.letterSpacing = float(o.value("letter_spacing").toDouble(t.letterSpacing));
-    t.bold = o.value("bold").toBool(t.bold);
-    t.italic = o.value("italic").toBool(t.italic);
-    t.underline = o.value("underline").toBool(t.underline);
-    t.strike = o.value("strike").toBool(t.strike);
-    t.outline = float(o.value("outline").toDouble(t.outline));
-    t.outlineColor = colorFromJson(o.value("outline_color"), t.outlineColor);
-    t.shadow = o.value("shadow").toBool(t.shadow);
-    t.shadowColor = colorFromJson(o.value("shadow_color"), t.shadowColor);
-    t.shadowX = float(o.value("shadow_x").toDouble(t.shadowX));
-    t.shadowY = float(o.value("shadow_y").toDouble(t.shadowY));
-    t.width = o.value("width").toInt(t.width);
-    t.height = o.value("height").toInt(t.height);
-    t.sanitize();
-}
-
 QString Engine::projectPath() const
 {
     Lock lk(&m_mutex);
@@ -175,7 +103,10 @@ QString Engine::resolvePath(const QJsonObject &o, const QString &projectDir) con
     return abs;
 }
 
-QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
+// A layer in a file: what it is (its source, its effects, its mesh, where it is routed…) and the values of its
+// parameters under "params", each at its address (the same as its OSC address, its timelines' and its snapshots'
+// timing keys)
+QJsonObject Engine::layerToJson(Layer &l, const QString &projectDir) const
 {
     QJsonObject o;
     // Ids are strings: JSON numbers are doubles
@@ -187,101 +118,60 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     }
     if (l.isViewport) {
         o["viewport"] = true;
-        o["width"] = l.vpWidth;
-        o["height"] = l.vpHeight;
-        o["screen"] = l.vpScreen;
-        o["output_mode"] = l.vpMode;
+        o["output"] = QJsonObject{{"width", l.vpWidth}, {"height", l.vpHeight}, {"screen", l.vpScreen}, {"mode", l.vpMode}};
         o["publish"] = l.vpPublish.toJson();
     }
-    // Always save viewport opacity (even if empty) so snapshots preserve per-viewport visibility settings
+    // How much of it each viewport shows (always there, so that a snapshot sets it)
     QJsonObject vo;
     for (const auto &[v, a] : l.viewportOpacity) vo[QString::number(v)] = double(a);
     o["viewports"] = vo;
     o["name"] = l.name;
     o["enable"] = l.enabled;
     o["locked"] = l.locked;
-    o["opacity"] = l.opacity;
-    o["blend_mode"] = blendModeKey(l.blend);
-    o["volume"] = l.volume;
-    o["muted"] = l.muted;
+    o["color_models"] = l.colorModels;
+    if (l.color.maskLayer) o["mask"] = QString::number(l.color.maskLayer);
+
     QJsonObject src;
-    switch (l.type) {
-    case SourceType::Video:
-        src["type"] = "video";
-        src["play_mode"] = playModeKey(l.mode);
-        src["in"] = l.inPoint;
-        src["out"] = l.outPoint;
-        src["speed"] = l.speed;
-        src["playing"] = l.playing;
-        break;
-    case SourceType::Audio:
-        src["type"] = "audio";
-        src["play_mode"] = playModeKey(l.mode);
-        src["in"] = l.inPoint;
-        src["out"] = l.outPoint;
-        src["speed"] = l.speed;
-        src["playing"] = l.playing;
-        break;
+    const SourceType type = l.type != SourceType::None ? l.type : l.missingType;
+    switch (type) {
+    case SourceType::Video: src["type"] = "video"; break;
+    case SourceType::Audio: src["type"] = "audio"; break;
     case SourceType::Image: src["type"] = "image"; break;
     case SourceType::Layer:
         src["type"] = "layer";
-        src["layer"] = QString::number(l.sourceLayer); // ids are strings: JSON numbers are doubles
+        src["layer"] = QString::number(l.sourceLayer);
         src["tap"] = layerTapKey(l.sourceTap);
         break;
     case SourceType::Isf:
-        src = l.generator ? l.generator->save(projectDir) : QJsonObject();
+        if (l.generator) src = l.generator->save(projectDir, false);
         src["type"] = "isf";
         src["width"] = l.genWidth;
         src["height"] = l.genHeight;
         break;
-    case SourceType::Text: {
-        src["type"] = "text";
-        const QJsonObject tj = textJson(l.text);
-        for (auto it = tj.constBegin(); it != tj.constEnd(); ++it) src[it.key()] = it.value();
-        break;
+    case SourceType::Text: src["type"] = "text"; break;
+    default: src["type"] = "none"; break;
     }
-    default:
-        // Missing file: keep what was intended, so nothing is lost on save.
-        if (l.missingType == SourceType::Video || l.missingType == SourceType::Audio) {
-            src["type"] = l.missingType == SourceType::Video ? "video" : "audio";
-            src["play_mode"] = playModeKey(l.mode);
-            src["in"] = l.inPoint;
-            src["out"] = l.outPoint;
-            src["speed"] = l.speed;
-            src["playing"] = l.playing;
-        } else if (l.missingType == SourceType::Image) {
-            src["type"] = "image";
-        } else {
-            src["type"] = "none";
-        }
-        break;
-    }
-    if ((l.type != SourceType::None && l.type != SourceType::Layer) || l.missingType != SourceType::None) {
+    if (type == SourceType::Video || type == SourceType::Audio) o["play"] = l.playing;
+    if (type == SourceType::Video || type == SourceType::Audio || type == SourceType::Image || type == SourceType::Isf) {
         src["path"] = l.sourcePath;
         if (!projectDir.isEmpty()) src["relative_path"] = QDir(projectDir).relativeFilePath(l.sourcePath);
     }
-    const QRectF c = l.roi;
     if (!l.transition.isEmpty()) src["transition"] = l.transition;
     o["source"] = src;
-    o["roi"] = QJsonArray{c.left(), c.top(), c.right(), c.bottom()};
-    auto rgb = [](const float v[3]) { return QJsonArray{v[0], v[1], v[2]}; };
-    o["color"] = QJsonObject{{"temp", l.color.temp},        {"tint", l.color.tint},
-                             {"add", rgb(l.color.add)},    {"remove", rgb(l.color.remove)},
-                             {"enable", l.color.enabled}, {"temp_enable", l.color.tempOn},
-                             {"tint_enable", l.color.tintOn},   {"add_enable", l.color.addOn},
-                             {"remove_enable", l.color.removeOn}};
-    if (l.color.maskLayer) {
-        QJsonObject col = o["color"].toObject();
-        col["mask"] = QString::number(l.color.maskLayer);
-        if (l.color.maskInvert) col["mask_invert"] = true;
-        o["color"] = col;
-    }
     QJsonArray fx;
-    for (const auto &e : l.effects) fx.append(e->save(projectDir));
+    for (const auto &e : l.effects) fx.append(e->save(projectDir, false));
     o["fx"] = fx;
-    o["fx_enable"] = l.effectsEnabled;
-    o["color_models"] = l.colorModels;
-    o["spatial"] = l.mapping.toJson();
+    if (!l.isViewport) o["mesh"] = l.mapping.meshJson();
+
+    QJsonObject params = parametersToJson(l.parameters());
+    for (auto it = l.extraParams.constBegin(); it != l.extraParams.constEnd(); ++it)
+        if (!params.contains(it.key())) params.insert(it.key(), it.value());
+    o["params"] = params;
+    if (!l.anims.empty()) {
+        QJsonArray anims;
+        for (const Animation &a : l.anims) anims.append(layerAnimToJson(a));
+        o["anims"] = anims;
+    }
     return o;
 }
 
@@ -294,31 +184,28 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
         if (!l) return;
         l->name = o.value("name").toString(l->name);
         l->enabled = o.value("enable").toBool(true);
-        l->opacity = float(o.value("opacity").toDouble(1.0));
-        l->blend = blendModeFromKey(o.value("blend_mode").toString());
-        l->volume = float(std::clamp(o.value("volume").toDouble(1.0), 0.0, 2.0));
-        l->muted = o.value("muted").toBool(false);
         l->locked = o.value("locked").toBool(false);
         l->isGroup = o.value("group").toBool(false);
         l->collapsed = o.value("collapsed").toBool(false);
         l->isViewport = o.value("viewport").toBool(false);
         if (l->isViewport) {
-            l->vpWidth = std::clamp(o.value("width").toInt(1920), 1, 16384);
-            l->vpHeight = std::clamp(o.value("height").toInt(1080), 1, 16384);
-            l->vpScreen = o.value("screen").toString();
-            l->vpMode = std::clamp(o.value("output_mode").toInt(0), 0, 2);
+            const QJsonObject out = o.value("output").toObject();
+            l->vpWidth = std::clamp(out.value("width").toInt(1920), 1, 16384);
+            l->vpHeight = std::clamp(out.value("height").toInt(1080), 1, 16384);
+            l->vpScreen = out.value("screen").toString();
+            l->vpMode = std::clamp(out.value("mode").toInt(0), 0, 2);
             l->vpPublish = PublishSettings::fromJson(o.value("publish").toObject());
         }
         l->viewportOpacity.clear();
         const QJsonObject vo = o.value("viewports").toObject();
         for (auto it = vo.begin(); it != vo.end(); ++it)
             l->viewportOpacity[it.key().toULongLong()] = float(std::clamp(it.value().toDouble(1.0), 0.0, 1.0));
-        l->effectsEnabled = o.value("fx_enable").toBool(true);
         {
             const QString t = o.value("source").toObject().value("transition").toString();
             l->transition = t.isEmpty() ? QString() : resolvePath(QJsonObject{{"path", t}}, projectDir);
         }
         l->colorModels = o.value("color_models").toInt(l->colorModels);
+        l->color.maskLayer = o.value("mask").toString().toULongLong();
         // Saved id kept unless another layer already has it
         const quint64 id = o.value("id").toString().toULongLong();
         bool taken = false;
@@ -328,8 +215,6 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             m_nextId = std::max(m_nextId, id + 1);
         }
         l->parent = o.value("parent").toString().toULongLong();
-        l->roi = roiFromJson(o);
-        colorFromJson(l->color, o.value("color").toObject());
         name = l->name;
     }
 
@@ -339,19 +224,12 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
     QString err;
     if (type == "video" || type == "audio") {
         const bool video = type == "video";
-        {
-            Lock lk(&m_mutex);
-            layer(index)->speed = src.value("speed").toDouble(1.0);
-        }
         const bool ok = video ? setLayerVideo(index, path, &err) : setLayerAudio(index, path, &err);
         if (!ok && warnings) *warnings << name + ": " + missingMessage(path, err);
-        setLayerPlayMode(index, playModeFromKey(src.value("play_mode").toString()));
-        setLayerInOut(index, src.value("in").toDouble(0), src.value("out").toDouble(-1));
-        Lock lk(&m_mutex);
-        Layer *l = layer(index);
-        l->playing = src.value("playing").toBool(true);
-        if (l->hasTransport()) startMedia(*l); // saved speed: backwards starts from the end
-        if (!ok) markMissing(*l, video ? SourceType::Video : SourceType::Audio, path, err);
+        if (!ok) {
+            Lock lk(&m_mutex);
+            markMissing(*layer(index), video ? SourceType::Video : SourceType::Audio, path, err);
+        }
     } else if (type == "image") {
         const bool ok = setLayerImage(index, path, &err);
         if (!ok && warnings) *warnings << name + ": " + missingMessage(path, err);
@@ -379,18 +257,12 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             Lock lk(&m_mutex);
             gen = layer(index)->generator.get();
         }
-        const QJsonObject params = src.value("params").toObject();
-        const double speed = std::clamp(src.value("speed").toDouble(1.0), 0.0, 10.0);
-        if (gen) runGl([gen, params, projectDir, speed] {
-            gen->restoreParams(params, projectDir);
-            gen->speed = speed;
-        });
+        if (gen) runGl([gen, src, projectDir] { gen->restore(src, projectDir); });
     } else if (type == "text") {
         Lock lk(&m_mutex);
         Layer *l = layer(index);
         l->type = SourceType::Text;
         l->text = TextSource{};
-        readTextJson(l->text, src);
     }
 
     for (const QJsonValue &v : o.value("fx").toArray()) {
@@ -404,14 +276,27 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
             inst = layer(index)->effects[size_t(fi)].get();
         }
         if (!inst->isValid() && warnings) *warnings << name + " / " + QFileInfo(p).fileName() + ": " + inst->error();
-        runGl([inst, e, projectDir] {
-            inst->readState(e);
-            inst->restoreParams(e.value("params").toObject(), projectDir);
-        });
+        runGl([inst, e, projectDir] { inst->restore(e, projectDir); });
     }
-    // The mapping is restored after the source (which would otherwise auto-adjust the aspect ratio).
+    // Its values once it is all there (the source would otherwise fit the mapping to its aspect ratio), in the order
+    // of its parameters; the mesh's points; then its animations, the ones that are on playing from the start
     Lock lk(&m_mutex);
-    layer(index)->mapping.fromJson(o.value("spatial").toObject());
+    Layer *l = layer(index);
+    if (o.contains("mesh")) l->mapping.setMeshJson(o.value("mesh").toObject());
+    parametersFromJson(l->parameters(), o.value("params").toObject(), &l->extraParams);
+    if (l->hasTransport()) {
+        l->playing = o.value("play").toBool(true);
+        startMedia(*l); // its speed: backwards starts from the end
+    }
+    l->anims.clear();
+    for (const QJsonValue &v : o.value("anims").toArray()) {
+        const Animation a = layerAnimFromJson(v.toObject(), l->id);
+        const QString &param = a.tracks.front().param;
+        const bool twice = std::any_of(l->anims.begin(), l->anims.end(), [&](const Animation &x) { return x.tracks.front().param == param; });
+        if (!param.isEmpty() && !twice) l->anims.push_back(a);
+    }
+    for (Animation &a : l->anims)
+        if (a.tracks.front().enabled) startLayerAnim(a);
 }
 
 bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QString *err)

@@ -72,6 +72,10 @@ QWidget *CompositionPanel::buildCompositionLevel()
     m_compositionLabel->setToolTip(QStringLiteral("What goes out now (the fader, and the blackout over it)"));
     m_compositionLabel->setMinimumWidth(64);
     m_compositionLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    row->addWidget(new ResetLabel(QStringLiteral("Level"), [this] {
+        m_composition->setValue(100);
+        emit m_composition->valueEdited(100);
+    }));
     row->addWidget(m_composition, 1);
     row->addWidget(m_compositionLabel);
     v->addLayout(row);
@@ -90,7 +94,7 @@ QWidget *CompositionPanel::buildCompositionLevel()
     m_fade->setValue(QSettings().value("composition/fade", 1.0).toDouble());
     m_fade->setToolTip(QStringLiteral("Fade duration for blackout and fade back in"));
     row2->addWidget(m_blackout, 1);
-    row2->addWidget(new QLabel(QStringLiteral("Fade")));
+    row2->addWidget(new ResetLabel(QStringLiteral("Fade"), [this] { m_fade->setValue(1.0); }));
     row2->addWidget(m_fade);
     v->addLayout(row2);
 
@@ -112,7 +116,10 @@ QWidget *CompositionPanel::buildCompositionLevel()
     m_speed->setToolTip(QStringLiteral("Composition speed: a coefficient on every speed (media, shaders' TIME, timelines, fades, sequences). "
                                        "0 stops them, 1 is normal"));
     row3->addWidget(m_pause);
-    row3->addWidget(new QLabel(QStringLiteral("Speed")));
+    row3->addWidget(new ResetLabel(QStringLiteral("Speed"), [this] {
+        m_speed->setValue(1);
+        emit m_speed->valueEdited(1);
+    }));
     row3->addWidget(m_speed, 1);
     v->addLayout(row3);
     connect(m_pause, &QPushButton::toggled, this, [this](bool on) {
@@ -181,6 +188,10 @@ QWidget *CompositionPanel::buildAudio()
     m_audioVolumeLabel = new QLabel(volumeText(100));
     m_audioVolumeLabel->setMinimumWidth(64);
     m_audioVolumeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    volRow->addWidget(new ResetLabel(QStringLiteral("Volume"), [this] {
+        m_audioVolume->setValue(100);
+        emit m_audioVolume->valueEdited(100);
+    }));
     volRow->addWidget(m_audioVolume, 1);
     volRow->addWidget(m_audioVolumeLabel);
     v->addLayout(volRow);
@@ -243,12 +254,23 @@ QWidget *CompositionPanel::buildComposition()
     size->addWidget(new QLabel(QStringLiteral("×")));
     size->addWidget(m_height);
     form->addRow(QStringLiteral("Preset"), m_preset);
-    form->addRow(QStringLiteral("Size"), size);
+    form->addRow(new ResetLabel(QStringLiteral("Size"), [this] { // 1920 × 1080, the size of a new show
+        m_syncing = true;
+        m_width->setValue(1920);
+        m_syncing = false;
+        m_height->setValue(1080);
+        m_preset->setCurrentIndex(qMax(0, m_preset->findData(QSize(1920, 1080))));
+    }),
+                 size);
     m_rate = new QComboBox;
     m_rate->addItem(QStringLiteral("Machine default"), -1.0);
     for (double r : renderChoice::frameRates()) m_rate->addItem(renderChoice::frameRateName(r), r);
     m_rate->setToolTip(QStringLiteral("Frame rate of the render (Machine default: the choice made in Settings)"));
-    form->addRow(QStringLiteral("Frame rate"), m_rate);
+    form->addRow(new ResetLabel(QStringLiteral("Frame rate"), [this] {
+        m_rate->setCurrentIndex(0);
+        emit m_rate->activated(0);
+    }),
+                 m_rate);
     form->addRow(note(QStringLiteral("The pixel space every layer lives in. Each viewport shows a part of it, "
                                      "placed by its Spatial tab: three 1920 × 1080 projectors side by side "
                                      "make a 5760 × 1080 composition. The spatial placement is relative: it follows size changes.")));

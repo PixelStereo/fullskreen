@@ -1,6 +1,8 @@
 #include "ParamPanel.h"
 #include "Commands.h"
 #include "Engine.h"
+#include "Osc.h"
+#include "ParamAnimPanel.h"
 #include "Widgets.h"
 
 #include <QCheckBox>
@@ -44,7 +46,7 @@ void ParamPanel::setValue(int input, const QString &label, const std::function<v
     m_undo->push(new cmd::SetParam(m_engine, m_layer, m_slot, input, before, after, label));
 }
 
-ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QWidget *parent)
+ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, int options, QWidget *parent)
     : QWidget(parent), m_engine(engine), m_undo(undo), m_layer(layer), m_slot(slot)
 {
     // Copy metadata and values under the lock: widgets are then built without blocking rendering.
@@ -72,7 +74,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
     }
 
     // Speed of TIME, for every shader (TIME goes on from where it is: no jump)
-    {
+    if (!(options & NoSpeed)) {
         double speed = 1.0;
         {
             Engine::Lock lk(&engine->mutex());
@@ -96,7 +98,12 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             }
             if (std::abs(before - v) > 1e-9) m_undo->push(new cmd::SetIsfSpeed(m_engine, m_layer, m_slot, before, v));
         });
-        form->addRow(QStringLiteral("Speed"), m_speed);
+        auto *name = new ResetLabel(QStringLiteral("Speed"), [this] {
+            m_speed->setValue(1);
+            emit m_speed->valueEdited(1);
+        });
+        form->addRow(name, m_speed);
+        m_rows.push_back({QString(), {name, m_speed}});
     }
 
     for (int idx = 0; idx < int(inputs.size()); ++idx) {
@@ -104,6 +111,8 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
         if (in.type == IsfInput::Image && in.isInputImage) continue;
         const QString label = in.label;
         QWidget *field = nullptr;
+        QWidget *pointX = nullptr, *pointY = nullptr;
+        std::function<void()> reset; // an image: cleared by a click on its name
 
         switch (in.type) {
         case IsfInput::Float: {
@@ -180,6 +189,8 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             y->setValue(in.pValue.y());
             x->setPrefix("x ");
             y->setPrefix("y ");
+            pointX = x;
+            pointY = y;
             h->addWidget(x);
             h->addWidget(y);
             connect(x, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
@@ -260,6 +271,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
                 m_engine->setIsfImageInput(instance(), idx, QString());
                 name->setText(QStringLiteral("(none)"));
             });
+            reset = [clear] { clear->click(); };
             field = w;
             break;
         }
@@ -274,7 +286,8 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
         }
         if (in.type == IsfInput::Event || in.type == IsfInput::Image || in.type == IsfInput::Audio ||
             in.type == IsfInput::AudioFFT) {
-            form->addRow(label, field);
+            if (reset) form->addRow(new ResetLabel(label, reset), field);
+            else form->addRow(label, field); // a trigger, or nothing to set
             continue;
         }
         // A click on the parameter's name puts it back to its default value
@@ -289,12 +302,21 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
             emit rebuildRequested();
         });
         form->addRow(name, field);
+        m_rows.push_back({in.name, {name, field}, pointX, pointY});
     }
 
-    auto *reset = new QPushButton(QStringLiteral("Reset to Defaults"));
-    reset->setFlat(true);
-    reset->setStyleSheet("color:#aaa; text-align:left;");
-    connect(reset, &QPushButton::clicked, this, [this] {
+    if (!(options & NoReset)) {
+        auto *reset = new QPushButton(QStringLiteral("Reset to Defaults"));
+        reset->setFlat(true);
+        reset->setStyleSheet("color:#aaa; text-align:left;");
+        connect(reset, &QPushButton::clicked, this, &ParamPanel::resetToDefaults);
+        form->addRow(reset);
+    }
+}
+
+void ParamPanel::resetToDefaults()
+{
+    {
         // A single undo step for all parameters
         std::vector<std::pair<IsfValue, IsfValue>> changes;
         std::vector<QString> labels;
@@ -320,8 +342,42 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
                                                labels[k]));
         m_undo->endMacro();
         emit rebuildRequested();
-    });
-    form->addRow(reset);
+    }
+}
+
+void ParamPanel::attachAnimate(AnimateMenu *menu)
+{
+    if (!menu) return;
+    // The addresses of this shader's numbers in the layer: the generator's, or the effect's (its segment)
+    QString base, speed;
+    {
+        Engine::Lock lk(&m_engine->mutex());
+        const Layer *l = m_engine->layer(m_layer);
+        if (!l) return;
+        if (m_slot < 0) {
+            base = QStringLiteral("param/");
+            speed = QStringLiteral("speed");
+        } else {
+            QStringList names;
+            for (const auto &x : l->effects) names << x->name();
+            const QStringList segs = osc::uniqueSegments(names);
+            if (m_slot >= segs.size()) return;
+            base = QStringLiteral("fx/%1/param/").arg(segs[m_slot]);
+            speed = QStringLiteral("fx/%1/speed").arg(segs[m_slot]);
+        }
+    }
+    for (const Row &r : m_rows) {
+        if (r.input.isEmpty()) {
+            for (QWidget *w : r.all) menu->attach(w, {speed});
+            continue;
+        }
+        const QString p = base + r.input;
+        // Every number this input has (only the ones declared animatable are offered)
+        const QStringList all{p, p + "/x", p + "/y", p + "/r", p + "/g", p + "/b", p + "/a"};
+        for (QWidget *w : r.all) menu->attach(w, all);
+        menu->attach(r.x, {p + "/x"});
+        menu->attach(r.y, {p + "/y"});
+    }
 }
 
 void ParamPanel::refresh()

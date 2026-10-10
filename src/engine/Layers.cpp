@@ -109,6 +109,8 @@ int Engine::addLayer(const QString &name, int at)
     {
         Lock lk(&m_mutex);
         auto l = std::make_unique<Layer>();
+        l->compSize = &m_compSize;
+        l->mapping.aspect = double(m_compSize.width()) / std::max(1, m_compSize.height());
         l->id = newIdLocked();
         l->colorModels = m_defaultColorModels;
         l->name = name.isEmpty() ? QStringLiteral("Layer %1").arg(m_layers.size() + 1) : name;
@@ -141,6 +143,8 @@ int Engine::addViewport(const QString &name, QSize size)
     {
         Lock lk(&m_mutex);
         auto l = std::make_unique<Layer>();
+        l->compSize = &m_compSize;
+        l->mapping.aspect = double(m_compSize.width()) / std::max(1, m_compSize.height());
         l->id = id = newIdLocked();
         l->isViewport = true;
         // By default, the size of the last viewport (the same projectors, side by side)
@@ -160,8 +164,8 @@ int Engine::addViewport(const QString &name, QSize size)
         const double w = double(px.width()) / std::max(1, m_compSize.width());
         const double h = double(px.height()) / std::max(1, m_compSize.height());
         if (x + w > 1.0 + 1e-9) x = 0; // no room left on the right: over the first one
-        const QPointF c[4] = {{x, 0}, {x + w, 0}, {x + w, h}, {x, h}};
-        for (int k = 0; k < 4; ++k) l->mapping.setCorner(k, c[k]);
+        l->mapping.size = QSizeF(w, h);
+        l->mapping.position = QPointF(x + w / 2, h / 2);
         m_layers.push_back(std::move(l));
         normalizeLocked();
     }
@@ -249,6 +253,8 @@ int Engine::addGroup(const QString &name, int at)
         int groups = 0;
         for (const auto &l : m_layers) groups += l->isGroup;
         auto l = std::make_unique<Layer>();
+        l->compSize = &m_compSize;
+        l->mapping.aspect = double(m_compSize.width()) / std::max(1, m_compSize.height());
         l->id = newIdLocked();
         l->isGroup = true;
         l->name = name.isEmpty() ? QStringLiteral("Group %1").arg(groups + 1) : name;
@@ -488,6 +494,22 @@ void Engine::replaceLayerJson(int i, const QJsonObject &o)
     emit layersChanged();
 }
 
+// The part of a layer a parameter belongs to (what a paste of some parts carries), by its address
+int Engine::partOf(const QString &path)
+{
+    auto under = [&path](const char *base) { return path.startsWith(QLatin1String(base)); };
+    if (under("roi/")) return PartRoi;
+    if (path == "color/enable" || path == "temp" || path == "tint" || under("temp/") || under("tint/") || under("add/") ||
+        under("remove/") || path == "mask/invert")
+        return PartColor;
+    if (path == "rotation" || path == "width" || path == "height" || under("pivot/") || under("position/") ||
+        under("scale/") || under("corner/") || under("soft_edge/"))
+        return PartSpatial;
+    if (under("fx/")) return PartEffects;
+    if (path == "opacity" || path == "blend_mode") return PartCompositing;
+    return PartSource; // the generator's, the text's, the transport's, the sound's
+}
+
 bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
 {
     if (i < 0 || i >= layerCount() || o.isEmpty() || !parts || isLocked(i)) return false;
@@ -499,22 +521,26 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
         group = l->isGroup || l->isViewport;
     }
     if (group) parts &= ~PartSource; // a group has no source of its own: it composites its layers
+    // The values of those parts, the others as the target has them
+    const QJsonObject from = o.value("params").toObject();
+    auto merge = [&](QJsonObject params) {
+        for (auto it = params.begin(); it != params.end();)
+            it = (partOf(it.key()) & parts) ? params.erase(it) : it + 1;
+        for (auto it = from.constBegin(); it != from.constEnd(); ++it)
+            if (partOf(it.key()) & parts) params.insert(it.key(), it.value());
+        return params;
+    };
 
     // With the source, the layer is rebuilt from a merged state (the media is opened again, as when one is
     // loaded); the target keeps its identity and whatever the paste does not carry.
     if (parts & PartSource) {
-        QJsonObject merged = layerJson(i), src = o.value("source").toObject();
-        merged["source"] = src;
-        if (!(parts & PartRoi)) merged["roi"] = layerJson(i).value("roi");
-        else merged["roi"] = o.value("roi");
-        if (parts & PartColor) merged["color"] = o.value("color");
-        if (parts & PartSpatial) merged["spatial"] = o.value("spatial");
-        if (parts & PartEffects) {
-            merged["fx"] = o.value("fx");
-            merged["fx_enable"] = o.value("fx_enable");
-        }
-        if (parts & PartCompositing)
-            for (const char *k : {"opacity", "blend_mode"}) merged[QLatin1String(k)] = o.value(QLatin1String(k));
+        QJsonObject merged = layerJson(i);
+        merged["source"] = o.value("source");
+        if (o.contains("play")) merged["play"] = o.value("play");
+        if (parts & PartColor) merged["mask"] = o.value("mask");
+        if (parts & PartSpatial) merged["mesh"] = o.value("mesh");
+        if (parts & PartEffects) merged["fx"] = o.value("fx");
+        merged["params"] = merge(merged.value("params").toObject());
         replaceLayerJson(i, merged);
         fixLayerReferences(); // a pasted layer source must not make the picture feed back
         return true;
@@ -526,15 +552,15 @@ bool Engine::applyLayerParts(int i, const QJsonObject &o, int parts)
         Lock lk(&m_mutex);
         Layer *l = layer(i);
         if (!l) return false;
-        if (parts & PartEffects) l->effectsEnabled = o.value("fx_enable").toBool(true);
-        if (parts & PartRoi) l->roi = roiFromJson(o);
-        if (parts & PartColor) colorFromJson(l->color, o.value("color").toObject());
-        if (parts & PartSpatial) l->mapping.fromJson(o.value("spatial").toObject());
-        if (parts & PartCompositing) {
-            l->opacity = float(std::clamp(o.value("opacity").toDouble(l->opacity), 0.0, 1.0));
-            l->blend = blendModeFromKey(o.value("blend_mode").toString());
-        }
+        if (parts & PartColor) l->color.maskLayer = o.value("mask").toString().toULongLong();
+        if ((parts & PartSpatial) && o.contains("mesh") && !l->isViewport) l->mapping.setMeshJson(o.value("mesh").toObject());
+        QJsonObject values;
+        for (auto it = from.constBegin(); it != from.constEnd(); ++it)
+            if (partOf(it.key()) & parts) values.insert(it.key(), it.value());
+        QJsonObject unknown;
+        parametersFromJson(l->parameters(), values, &unknown);
     }
+    fixLayerReferences();
     emit layersChanged();
     return true;
 }
@@ -590,16 +616,14 @@ void Engine::setEffectsJson(int i, const QJsonArray &a)
             Lock lk(&m_mutex);
             inst = m_layers[size_t(i)]->effects[size_t(fi)].get();
         }
-        runGl([inst, e] {
-            inst->readState(e);
-            inst->restoreParams(e.value("params").toObject(), QString());
-        });
+        runGl([inst, e] { inst->restore(e, QString()); });
     }
 }
 
 std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
 {
     auto g = std::make_shared<Garbage>();
+    l.extraParams = QJsonObject(); // another source: what its missing file kept is not for this one
     g->video = std::move(l.video);
     g->videoTex = std::move(l.videoTex);
     l.frame = VideoFrame{}; // its upload buffer belongs to the texture that goes
@@ -829,15 +853,7 @@ bool Engine::setLayerTap(int i, LayerTap tap)
     return true;
 }
 
-static bool isDefaultMapping(const Mapping &m)
-{
-    const QPointF def[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-    for (int i = 0; i < 4; ++i)
-        if (m.corners[i] != def[i]) return false;
-    for (const QPointF &o : m.offsets)
-        if (!o.isNull()) return false;
-    return true;
-}
+static bool isDefaultMapping(const Mapping &m) { return m.isIdentity(); }
 
 bool Engine::setLayerVideo(int i, const QString &path, QString *err)
 {
@@ -990,44 +1006,19 @@ void Engine::setLayerPlaying(int i, bool playing)
 void Engine::setLayerPlayMode(int i, PlayMode mode)
 {
     Lock lk(&m_mutex);
-    Layer *l = layer(i);
-    if (!l) return;
-    const double pos = l->position();
-    l->mode = mode;
-    l->ended = false;
-    if (l->hasTransport()) reposition(*l, pos, l->dir); // same place, new mode
+    if (Layer *l = layer(i)) l->setPlayMode(mode);
 }
 
 void Engine::setLayerInOut(int i, double in, double out)
 {
     Lock lk(&m_mutex);
-    Layer *l = layer(i);
-    if (!l) return;
-    const double d = l->duration();
-    in = std::max(0.0, in);
-    if (d > 0) {
-        in = std::min(in, d);
-        if (out >= 0) out = std::clamp(out, 0.0, d);
-        if (out >= d - 1e-6) out = -1; // up to the end: follows the media
-    }
-    if (out >= 0 && out < in + 0.01) out = in + 0.01; // at least a few milliseconds
-    if (std::abs(l->inPoint - in) < 1e-9 && std::abs(l->outPoint - out) < 1e-9) return;
-    const double pos = l->position();
-    l->inPoint = in;
-    l->outPoint = out;
-    if (l->hasTransport()) reposition(*l, pos, l->dir); // clamped into the new range
+    if (Layer *l = layer(i)) l->setInOut(in, out);
 }
 
 void Engine::setLayerSpeed(int i, double speed)
 {
     Lock lk(&m_mutex);
-    Layer *l = layer(i);
-    if (!l) return;
-    const int dir = speed < 0 ? -1 : speed > 0 ? 1 : l->dir;
-    const bool turn = dir != l->dir;
-    const double pos = l->position();
-    l->speed = speed;
-    if (turn && l->hasTransport()) reposition(*l, pos, dir); // the other way from the same place
+    if (Layer *l = layer(i)) l->setSpeed(speed);
 }
 
 void Engine::seekLayer(int i, double t)
@@ -1075,46 +1066,10 @@ void Engine::setLayerTextContent(int i, const QString &text)
     }
 }
 
-void Engine::setLayerTextFont(int i, const QString &font)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.font = font;
-}
-
-void Engine::setLayerTextSize(int i, int size)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.size = std::clamp(size, 8, 256);
-}
-
-void Engine::setLayerTextColor(int i, const QColor &color)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.color = color;
-}
-
 void Engine::editLayerText(int i, const std::function<void(Layer &)> &edit)
 {
     Lock lk(&m_mutex);
     if (Layer *l = layer(i)) edit(*l);
-}
-
-void Engine::setLayerTextLineHeight(int i, float lineHeight)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.lineHeight = std::clamp(lineHeight, 0.2f, 5.0f);
-}
-
-void Engine::setLayerTextLetterSpacing(int i, float pixels)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.letterSpacing = std::clamp(pixels, -50.0f, 200.0f);
-}
-
-void Engine::setLayerTextAlign(int i, Qt::Alignment align)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.align = align;
 }
 
 int Engine::addEffect(int li, const QString &path, QString *err)
@@ -1179,8 +1134,7 @@ bool Engine::reloadIsf(IsfInstance *inst)
         // Keep parameter values across the reload.
         const QJsonObject saved = inst->save(QString());
         ok = inst->load(inst->path());
-        inst->restoreParams(saved.value("params").toObject(), QString());
-        inst->readState(saved);
+        inst->restore(saved, QString());
     });
     Lock lk(&m_mutex);
     for (auto &l : m_layers)

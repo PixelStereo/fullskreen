@@ -25,13 +25,17 @@ class ColorEditor;
 class QComboBox;
 class QGroupBox;
 class ParamPanel;
+class ParamAnimPanel;
+class AnimateMenu;
+class QTabWidget;
 class ViewportOutputPanel;
 
-// Inspector for the selected layer, group or viewport, in sub-tabs: Source (drop zone, transport, sound, generator
-// parameters, roi), Color (added / removed), Spatial (mapping), Effects (ISF chain), Compositing (opacity, blend,
-// the viewports it appears in), and for a viewport, Output (size, screen, publishing).
+// Inspector for the selected layer, group or viewport: at the top, always shown, its source (drop zone, transport,
+// sound, generator parameters) and its compositing (opacity, blend, the viewports it appears in); below, in sub-tabs:
+// ROI, Color (added / removed), Spatial (mapping), FX (ISF chain), Anim (the animations of its parameters), and for a
+// viewport, Output (size, screen, publishing).
 // All edits go through the undo stack. A locked layer shows its settings without allowing edits
-// (the transport stays available). A click on a parameter's name resets it.
+// (the transport stays available). A click on a parameter's name resets it; a right-click animates it.
 class LayerInspector : public QWidget
 {
     Q_OBJECT
@@ -53,7 +57,10 @@ signals:
     void kindChanged(const QString &kind); // "Layer", "Group" or "Viewport": the title of the tab
 
 private:
-    QWidget *buildSource(const LayerValues &s);
+    QWidget *buildSource(const LayerValues &s);    // above the tabs: the drop zone, the transition, the speed
+    QWidget *buildSourceTab(const LayerValues &s); // the Source tab
+    QWidget *buildViewports(const LayerValues &s); // the Viewports tab: how much of it each one shows
+    void useLayer(int row, const std::vector<std::pair<quint64, QString>> &candidates); // a layer dropped on the source
     QWidget *buildRoi(const LayerValues &s);
     QWidget *buildColor(const LayerValues &s);
     QWidget *buildCompositing(const LayerValues &s);
@@ -65,12 +72,15 @@ private:
     void editEffects(const QString &text, const std::function<void()> &op);
     void editSource(const QString &text, const std::function<void()> &op);
     void setProp(int prop, const QVariant &value);
+    void showAnimation(const QString &param); // the Anim tab, that number's card unfolded
+    // The limits of the layer's number at `path`, as declared (Parameter.h); `lo`, `hi` if it has none
+    std::pair<double, double> limitsOf(const QString &path, double lo, double hi) const;
 
     Engine *m_engine;
     QUndoStack *m_undo;
     int m_layer = -1;
     int m_selectedEffect = 0;
-    int m_subTab = 0; // Source / ROI / Color / Spatial / Effects / Compositing
+    QString m_subTab = QStringLiteral("Source"); // the tab shown, by its name: kept from one layer to the next
     quint64 m_layerId = 0;
     bool m_locked = false;
     QVBoxLayout *m_layout = nullptr;
@@ -96,8 +106,15 @@ private:
     std::vector<RouteField> m_routeFields;
     bool m_previewing = false;
     QPointer<QProgressBar> m_meter;
-    QPointer<QLabel> m_codecFact, m_pictureFact; // known once frames are decoded: kept up to date
+    QPointer<QLabel> m_pictureFact; // known once frames are decoded: kept up to date
+    QPointer<SliderField> m_genSpeed; // the generator's speed (above the tabs)
     QPointer<ViewportOutputPanel> m_output;
+    QPointer<QTabWidget> m_tabs;
+    QPointer<AnimateMenu> m_animate; // right-click on a number: Animate
+    QPointer<ParamAnimPanel> m_anims; // the Anim tab
+    int m_animTab = -1;
+    QStringList m_animated; // the numbers animated when the tabs were built (a ∿ by their names)
+    QString m_revealAnim;   // the card to show once rebuilt
     QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY, m_rotation, m_pivotX, m_pivotY;
     bool m_scaleLinked = true;
     bool m_sizePx = false; // a viewport: width and height in composition pixels (a layer: scale in %)

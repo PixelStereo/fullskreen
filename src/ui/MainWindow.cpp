@@ -1100,6 +1100,24 @@ void MainWindow::pasteLayerParams(int parts, const QString &what)
     statusBar()->showMessage(QStringLiteral("%1 from \"%2\" onto %3 layer(s).").arg(text, m_paramClipboardName).arg(targets.size()), 4000);
 }
 
+// The picture of the layer at `sourceRow` as the source of the layer at `target` (after its effects; the Source tab
+// changes the tap): undoable
+void MainWindow::useLayerAsSource(int target, int sourceRow)
+{
+    if (refuseLocked(target)) return;
+    const quint64 id = m_engine->layerId(sourceRow);
+    if (!id) return;
+    const QJsonObject before = m_engine->layerJson(target);
+    QString err;
+    if (!m_engine->setLayerSourceLayer(target, id, LayerTap::PostFx, &err)) {
+        if (!err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Source"), err);
+        return;
+    }
+    m_undo->push(new cmd::ReplaceLayer(m_engine, target, before, QStringLiteral("Use Layer as Source")));
+    selectLayer(target);
+    refreshAll();
+}
+
 void MainWindow::layerContextMenu(int row, const QPoint &globalPos)
 {
     QMenu menu(this);
@@ -1117,6 +1135,26 @@ void MainWindow::layerContextMenu(int row, const QPoint &globalPos)
         menu.addAction(locked ? QStringLiteral("Unlock") : QStringLiteral("Lock"), this, &MainWindow::toggleLockCurrent);
         menu.addAction(QStringLiteral("Delete"), this, &MainWindow::removeCurrentLayer)->setEnabled(!locked);
         menu.addSeparator();
+        // Its picture as the source of another layer: the layers that can take it (not one it already depends on)
+        QMenu *into = menu.addMenu(QStringLiteral("Load into Layer"));
+        {
+            std::vector<std::pair<int, QString>> targets;
+            {
+                Engine::Lock lk(&m_engine->mutex());
+                const Layer *src = m_engine->layer(row);
+                for (int k = 0; src && !src->isViewport && k < m_engine->layerCount(); ++k) {
+                    const Layer *t = m_engine->layer(k);
+                    if (!t || k == row || t->isGroup || t->isViewport || m_engine->isLocked(k) ||
+                        m_engine->layerDependsOn(src->id, t->id))
+                        continue;
+                    targets.push_back({k, t->name});
+                }
+            }
+            for (const auto &[k, name] : targets)
+                into->addAction(name, this, [this, row, k = k] { useLayerAsSource(k, row); });
+            into->setEnabled(!targets.empty());
+            into->setToolTip(QStringLiteral("This layer's picture becomes the source of the one chosen"));
+        }
         menu.addAction(QStringLiteral("Copy Parameters"), this, [this, row] { copyLayerParams(row); });
     }
     QMenu *paste = menu.addMenu(m_paramClipboardName.isEmpty()

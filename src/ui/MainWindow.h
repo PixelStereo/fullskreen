@@ -81,6 +81,7 @@ private:
     bool refuseLocked(int layer); // status message if locked
     void duplicateCurrentLayer();
     void moveCurrentLayer(int delta);
+    void useLayerAsSource(int target, int sourceRow);
     void layerContextMenu(int row, const QPoint &globalPos);
     void copyLayerParams(int row);                             // into m_paramClipboard
     void pasteLayerParams(int parts, const QString &what);     // Engine::LayerParts, onto the selected layers

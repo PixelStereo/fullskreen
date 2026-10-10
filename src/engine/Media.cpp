@@ -141,6 +141,7 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
     Mapping mapping;
     PlayMode mode = PlayMode::Loop;
     double in = 0, out = -1;
+    QJsonObject kept; // the values it kept while its file was missing (its speed, its range…)
     std::vector<std::pair<IsfInstance *, int>> inputs;
     {
         Lock lk(&m_mutex);
@@ -152,6 +153,7 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
         mode = l->mode;
         in = l->inPoint;
         out = l->outPoint;
+        kept = l->extraParams;
         auto collect = [&](IsfInstance *inst) {
             if (!inst) return;
             for (int k = 0; k < int(inst->inputs().size()); ++k) {
@@ -178,8 +180,11 @@ bool Engine::relinkLayerMedia(int i, const QString &from, const QString &to, QSt
             Lock lk(&m_mutex);
             if (Layer *l = layer(i)) {
                 const unsigned rev = l->mapping.revision;
+                const double aspect = l->mapping.aspect;
                 l->mapping = mapping; // the aligned mapping stays intact
+                l->mapping.aspect = aspect;
                 l->mapping.revision = rev + 1;
+                parametersFromJson(l->parameters(), kept, &l->extraParams);
             }
             changed = true;
         }

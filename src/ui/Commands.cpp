@@ -183,7 +183,6 @@ void SetLayerProp::apply(const QVariant &v)
     case Enabled: l->enabled = v.toBool(); break;
     case Opacity: l->opacity = float(v.toDouble()); break;
     case Blend: l->blend = BlendMode(v.toInt()); break;
-    case Speed: l->speed = v.toDouble(); break;
     case Volume: l->volume = float(std::clamp(v.toDouble(), 0.0, 2.0)); break;
     case Muted: l->muted = v.toBool(); break;
     case Locked: l->locked = v.toBool(); break;
@@ -250,7 +249,9 @@ void SetMapping::apply(const Mapping &m)
     Layer *l = m_e->layer(m_layer);
     if (!l) return;
     const unsigned rev = l->mapping.revision;
+    const double aspect = l->mapping.aspect; // the composition's now
     l->mapping = m;
+    l->mapping.aspect = aspect;
     l->mapping.revision = rev + 1;
 }
 
@@ -424,6 +425,27 @@ void RemoveAnimation::redo()
         m_index = i;
         m_e->removeAnimation(i);
     }
+}
+
+SetLayerAnim::SetLayerAnim(Engine *e, quint64 layer, const QString &param, std::optional<Animation> before,
+                           std::optional<Animation> after, const QString &text, const QString &mergeKey)
+    : m_e(e), m_layer(layer), m_param(param), m_before(std::move(before)), m_after(std::move(after)),
+      m_index(e->layerAnimIndex(layer, param)), m_mergeKey(mergeKey)
+{
+    setText(text);
+}
+
+bool SetLayerAnim::mergeWith(const QUndoCommand *other)
+{
+    const auto *o = static_cast<const SetLayerAnim *>(other); // same id(): a SetLayerAnim
+    if (o->m_layer != m_layer || o->m_param != m_param || o->m_mergeKey != m_mergeKey) return false;
+    m_after = o->m_after;
+    return true;
+}
+
+void SetLayerAnim::apply(const std::optional<Animation> &a)
+{
+    m_e->setLayerAnim(m_layer, m_param, a ? &*a : nullptr, m_index);
 }
 
 } // namespace cmd

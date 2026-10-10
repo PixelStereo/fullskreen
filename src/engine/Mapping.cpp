@@ -37,6 +37,9 @@ QPointF Homography::map(double u, double v) const
     return QPointF((a * u + b * v + c) / w, (d * u + e * v + f) / w);
 }
 
+static constexpr double kPi = 3.14159265358979323846;
+static const QPointF kUnit[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+
 void Mapping::resetMesh(int c, int r)
 {
     cols = std::clamp(c, 2, 32);
@@ -47,24 +50,52 @@ void Mapping::resetMesh(int c, int r)
 
 void Mapping::resetCorners()
 {
-    corners[0] = {0, 0};
-    corners[1] = {1, 0};
-    corners[2] = {1, 1};
-    corners[3] = {0, 1};
+    position = {0.5, 0.5};
+    size = {1, 1};
+    rotation = 0;
     pivot = {0.5, 0.5};
+    for (QPointF &p : pins) p = QPointF();
     ++revision;
 }
+
+QPointF Mapping::toComposition(QPointF q) const
+{
+    const double A = aspect > 0 ? aspect : 1.0, a = rotation * kPi / 180, c = std::cos(a), s = std::sin(a);
+    // In units of the composition's height: its pixels, to turn it
+    const double dx = (q.x() - 0.5) * size.width() * A, dy = (q.y() - 0.5) * size.height();
+    const double px = (pivot.x() - 0.5) * size.width() * A, py = (pivot.y() - 0.5) * size.height();
+    const double rx = px + c * (dx - px) - s * (dy - py), ry = py + s * (dx - px) + c * (dy - py);
+    return position + QPointF(rx / A, ry);
+}
+
+QPointF Mapping::fromComposition(QPointF p) const
+{
+    const double A = aspect > 0 ? aspect : 1.0, a = rotation * kPi / 180, c = std::cos(a), s = std::sin(a);
+    const double rx = (p.x() - position.x()) * A, ry = p.y() - position.y();
+    const double px = (pivot.x() - 0.5) * size.width() * A, py = (pivot.y() - 0.5) * size.height();
+    const double dx = px + c * (rx - px) + s * (ry - py), dy = py - s * (rx - px) + c * (ry - py);
+    const double w = std::abs(size.width()) > 1e-12 ? size.width() * A : 1e-12, h = std::abs(size.height()) > 1e-12 ? size.height() : 1e-12;
+    return QPointF(dx / w + 0.5, dy / h + 0.5);
+}
+
+Homography Mapping::local() const
+{
+    const QPointF q[4] = {kUnit[0] + pins[0], kUnit[1] + pins[1], kUnit[2] + pins[2], kUnit[3] + pins[3]};
+    return Homography::squareToQuad(q);
+}
+
+QPointF Mapping::corner(int k) const { return toComposition(kUnit[k & 3] + pins[k & 3]); }
 
 void Mapping::setCorner(int i, QPointF p)
 {
     if (i < 0 || i > 3) return;
-    corners[i] = p;
+    pins[i] = fromComposition(p) - kUnit[i];
     ++revision;
 }
 
 void Mapping::translate(QPointF delta)
 {
-    for (QPointF &c : corners) c += delta;
+    position += delta;
     ++revision;
 }
 
@@ -77,7 +108,7 @@ QRectF Mapping::bounds() const
         x1 = std::max(x1, p.x());
         y1 = std::max(y1, p.y());
     };
-    for (const QPointF &c : corners) add(c);
+    for (int k = 0; k < 4; ++k) add(corner(k));
     for (int j = 0; j < rows; ++j)
         for (int i = 0; i < cols; ++i) add(controlPoint(i, j));
     return QRectF(QPointF(x0, y0), QPointF(x1, y1));
@@ -86,10 +117,9 @@ QRectF Mapping::bounds() const
 void Mapping::setBounds(const QRectF &to)
 {
     const QRectF from = bounds();
-    const double kx = from.width() > 1e-9 ? to.width() / from.width() : 1.0;
-    const double ky = from.height() > 1e-9 ? to.height() / from.height() : 1.0;
-    for (QPointF &c : corners) c = QPointF(to.left() + (c.x() - from.left()) * kx, to.top() + (c.y() - from.top()) * ky);
-    for (QPointF &o : offsets) o = QPointF(o.x() * kx, o.y() * ky);
+    if (from.width() > 1e-9) size.setWidth(size.width() * to.width() / from.width());
+    if (from.height() > 1e-9) size.setHeight(size.height() * to.height() / from.height());
+    position += to.center() - bounds().center();
     ++revision;
 }
 
@@ -121,10 +151,7 @@ QPointF Mapping::offsetAt(double u, double v) const
                    catmull(rowv[0].y(), rowv[1].y(), rowv[2].y(), rowv[3].y(), ty));
 }
 
-QPointF Mapping::map(double u, double v) const
-{
-    return Homography::squareToQuad(corners).map(u, v) + offsetAt(u, v);
-}
+QPointF Mapping::map(double u, double v) const { return toComposition(local().map(u, v) + offsetAt(u, v)); }
 
 QPointF Mapping::unmap(QPointF p, QPointF guess) const
 {
@@ -144,9 +171,12 @@ QPointF Mapping::unmap(QPointF p, QPointF guess) const
 
 bool Mapping::isIdentity() const
 {
-    const QPointF def[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-    for (int i = 0; i < 4; ++i)
-        if (std::hypot(corners[i].x() - def[i].x(), corners[i].y() - def[i].y()) > 1e-12) return false;
+    auto near = [](QPointF a, QPointF b) { return std::hypot(a.x() - b.x(), a.y() - b.y()) <= 1e-12; };
+    if (!near(position, QPointF(0.5, 0.5)) || std::abs(size.width() - 1) > 1e-12 || std::abs(size.height() - 1) > 1e-12 ||
+        std::abs(rotation) > 1e-12)
+        return false;
+    for (const QPointF &p : pins)
+        if (!p.isNull()) return false;
     for (const QPointF &o : offsets)
         if (!o.isNull()) return false;
     return true;
@@ -159,26 +189,26 @@ QPointF Mapping::controlUV(int i, int j) const
 
 QPointF Mapping::controlPoint(int i, int j) const
 {
-    QPointF uv = controlUV(i, j);
-    return Homography::squareToQuad(corners).map(uv.x(), uv.y()) + offsets[size_t(j) * cols + i];
+    const QPointF uv = controlUV(i, j);
+    return toComposition(local().map(uv.x(), uv.y()) + offsets[size_t(j) * cols + i]);
 }
 
 void Mapping::setControlPoint(int i, int j, QPointF p)
 {
-    QPointF uv = controlUV(i, j);
-    offsets[size_t(j) * cols + i] = p - Homography::squareToQuad(corners).map(uv.x(), uv.y());
+    const QPointF uv = controlUV(i, j);
+    offsets[size_t(j) * cols + i] = fromComposition(p) - local().map(uv.x(), uv.y());
     ++revision;
 }
 
 void Mapping::buildVertices(int n, std::vector<float> &out) const
 {
-    const Homography H = Homography::squareToQuad(corners);
+    const Homography H = local();
     out.resize(size_t(n + 1) * (n + 1) * 4);
     size_t k = 0;
     for (int y = 0; y <= n; ++y) {
         for (int x = 0; x <= n; ++x) {
             const double u = double(x) / n, v = double(y) / n;
-            const QPointF p = H.map(u, v) + offsetAt(u, v);
+            const QPointF p = toComposition(H.map(u, v) + offsetAt(u, v));
             out[k++] = float(p.x() * 2.0 - 1.0);
             out[k++] = float(1.0 - p.y() * 2.0);
             out[k++] = float(u);
@@ -193,37 +223,10 @@ void Mapping::fitAspect(double srcAspect, double compAspect)
     double w = 1, h = 1;
     if (srcAspect > compAspect) h = compAspect / srcAspect;
     else w = srcAspect / compAspect;
-    const double x0 = (1 - w) / 2, y0 = (1 - h) / 2;
-    corners[0] = {x0, y0};
-    corners[1] = {x0 + w, y0};
-    corners[2] = {x0 + w, y0 + h};
-    corners[3] = {x0, y0 + h};
+    aspect = compAspect;
+    size = QSizeF(w, h);
+    position = QPointF(0.5, 0.5);
     ++revision;
-}
-
-QJsonObject SoftEdge::toJson() const
-{
-    QJsonObject o;
-    o["enable"] = enabled;
-    QJsonArray w, p;
-    for (int i = 0; i < 4; ++i) {
-        w.append(width[i]);
-        p.append(power[i]);
-    }
-    o["width"] = w;
-    o["power"] = p;
-    return o;
-}
-
-void SoftEdge::fromJson(const QJsonObject &o)
-{
-    *this = SoftEdge();
-    enabled = o.value("enable").toBool(false);
-    const QJsonArray w = o.value("width").toArray(), p = o.value("power").toArray();
-    for (int i = 0; i < 4; ++i) {
-        if (i < w.size()) width[i] = std::clamp(w[i].toDouble(), 0.0, 0.5);
-        if (i < p.size()) power[i] = std::clamp(p[i].toDouble(), 0.1, 8.0);
-    }
 }
 
 bool SoftEdge::operator==(const SoftEdge &o) const
@@ -234,105 +237,76 @@ bool SoftEdge::operator==(const SoftEdge &o) const
     return true;
 }
 
-QJsonObject Mapping::toJson() const
+// Its mesh (the other values are its layer's parameters): the grid and the points pulled from it
+QJsonObject Mapping::meshJson() const
 {
-    QJsonObject o;
-    QJsonArray c;
-    for (const QPointF &p : corners) c.append(QJsonArray{p.x(), p.y()});
-    o["corners"] = c;
-    o["cols"] = cols;
-    o["rows"] = rows;
     QJsonArray off;
     for (const QPointF &p : offsets) off.append(QJsonArray{p.x(), p.y()});
-    o["offsets"] = off;
-    o["mesh_mode"] = meshMode;
-    // Always save soft edge (even if disabled) so snapshots preserve crop feathering settings
-    o["soft_edge"] = soft.toJson();
-    o["pivot"] = QJsonArray{pivot.x(), pivot.y()};
-    return o;
+    return QJsonObject{{"cols", cols}, {"rows", rows}, {"offsets", off}, {"edit", meshMode}}; // edit: the points are edited (not the corners)
 }
 
-void Mapping::fromJson(const QJsonObject &o)
+void Mapping::setMeshJson(const QJsonObject &o)
 {
-    QJsonArray c = o.value("corners").toArray();
-    for (int i = 0; i < 4 && i < c.size(); ++i) {
-        QJsonArray p = c[i].toArray();
-        corners[i] = QPointF(p[0].toDouble(), p[1].toDouble());
-    }
     resetMesh(o.value("cols").toInt(4), o.value("rows").toInt(4));
-    QJsonArray off = o.value("offsets").toArray();
+    const QJsonArray off = o.value("offsets").toArray();
     for (int i = 0; i < int(offsets.size()) && i < off.size(); ++i) {
-        QJsonArray p = off[i].toArray();
-        offsets[size_t(i)] = QPointF(p[0].toDouble(), p[1].toDouble());
+        const QJsonArray a = off[i].toArray();
+        if (a.size() == 2) offsets[size_t(i)] = QPointF(a[0].toDouble(), a[1].toDouble());
     }
-    meshMode = o.value("mesh_mode").toBool(false);
-    soft.fromJson(o.value("soft_edge").toObject());
-    const QJsonArray pv = o.value("pivot").toArray();
-    pivot = pv.size() == 2 ? QPointF(pv[0].toDouble(0.5), pv[1].toDouble(0.5)) : QPointF(0.5, 0.5);
+    meshMode = o.value("edit").toBool(false);
     ++revision;
 }
 
-double Mapping::angle(QSize comp) const
+bool Mapping::operator==(const Mapping &o) const
 {
-    const QPointF d = corners[1] - corners[0];
-    return std::atan2(d.y() * comp.height(), d.x() * comp.width()) * 180 / 3.14159265358979323846;
+    if (position != o.position || size != o.size || rotation != o.rotation || pivot != o.pivot || cols != o.cols ||
+        rows != o.rows || offsets != o.offsets || meshMode != o.meshMode || !(soft == o.soft))
+        return false;
+    for (int k = 0; k < 4; ++k)
+        if (pins[k] != o.pins[k]) return false;
+    return true;
 }
 
-void Mapping::rotate(double degrees, QSize comp)
+void Mapping::rotate(double degrees, QSize)
 {
-    if (std::abs(degrees) < 1e-9) return;
-    const double W = std::max(1, comp.width()), H = std::max(1, comp.height());
-    const double a = degrees * 3.14159265358979323846 / 180, c = std::cos(a), s = std::sin(a);
-    const QPointF o = pivotPoint();
-    auto turn = [&](QPointF v) { // a vector in normalized units
-        const double x = v.x() * W, y = v.y() * H;
-        return QPointF((x * c - y * s) / W, (x * s + y * c) / H);
-    };
-    for (QPointF &p : corners) p = o + turn(p - o);
-    for (QPointF &p : offsets) p = turn(p);
+    if (std::abs(degrees) < 1e-12) return;
+    double r = std::fmod(rotation + degrees, 360.0);
+    if (r <= -180) r += 360;
+    if (r > 180) r -= 360;
+    rotation = r;
     ++revision;
 }
 
 Mapping::Rect Mapping::rect(QSize comp) const
 {
     const double W = std::max(1, comp.width()), H = std::max(1, comp.height());
-    auto px = [&](QPointF p) { return QPointF(p.x() * W, p.y() * H); };
     Rect r;
-    r.center = (px(corners[0]) + px(corners[1]) + px(corners[2]) + px(corners[3])) / 4.0;
-    auto len = [](QPointF d) { return std::hypot(d.x(), d.y()); };
-    r.w = len(px(corners[1]) - px(corners[0]));
-    r.h = len(px(corners[3]) - px(corners[0]));
-    r.angle = angle(comp);
+    const QPointF c = toComposition(QPointF(0.5, 0.5));
+    r.center = QPointF(c.x() * W, c.y() * H);
+    r.w = size.width() * W;
+    r.h = size.height() * H;
+    r.angle = rotation;
     return r;
 }
 
 void Mapping::setRect(const Rect &r, QSize comp)
 {
     const double W = std::max(1, comp.width()), H = std::max(1, comp.height());
-    const double a = r.angle * 3.14159265358979323846 / 180, c = std::cos(a), s = std::sin(a);
-    const double hw = r.w / 2, hh = r.h / 2;
-    static const int sx[4] = {-1, 1, 1, -1}, sy[4] = {-1, -1, 1, 1}; // top left, top right, bottom right, bottom left
-    for (int k = 0; k < 4; ++k) {
-        const double x = sx[k] * hw, y = sy[k] * hh;
-        corners[k] = QPointF((r.center.x() + x * c - y * s) / W, (r.center.y() + x * s + y * c) / H);
-    }
+    size = QSizeF(r.w / W, r.h / H);
+    rotation = r.angle;
+    for (QPointF &p : pins) p = QPointF();
     for (QPointF &o : offsets) o = QPointF();
+    position += QPointF(r.center.x() / W, r.center.y() / H) - toComposition(QPointF(0.5, 0.5));
     ++revision;
 }
 
-// The pivot is fixed to the picture: (u, v) over the quad, read off the corners (exact for a rectangle or a parallelogram)
-QPointF Mapping::pivotPoint() const
-{
-    const QPointF top = corners[0] + (corners[1] - corners[0]) * pivot.x();
-    const QPointF bottom = corners[3] + (corners[2] - corners[3]) * pivot.x();
-    return top + (bottom - top) * pivot.y();
-}
+// The pivot is fixed to the picture
+QPointF Mapping::pivotPoint() const { return toComposition(pivot); }
 
 void Mapping::setPivotPoint(QPointF p)
 {
-    const QPointF e1 = corners[1] - corners[0], e2 = corners[3] - corners[0], d = p - corners[0];
-    const double det = e1.x() * e2.y() - e1.y() * e2.x();
-    if (std::abs(det) < 1e-12) return;
-    pivot = QPointF((d.x() * e2.y() - d.y() * e2.x()) / det, (e1.x() * d.y() - e1.y() * d.x()) / det);
+    const QPointF before = corner(0);
+    pivot = fromComposition(p);
+    position += before - corner(0); // the picture stays where it is
     ++revision;
 }

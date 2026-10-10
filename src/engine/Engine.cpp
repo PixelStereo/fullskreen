@@ -588,6 +588,7 @@ void Engine::setCompositionSize(QSize s)
         Lock lk(&m_mutex);
         if (s == m_compSize) return;
         m_compSize = s;
+        for (auto &l : m_layers) l->mapping.aspect = double(s.width()) / s.height(); // their rotations are in its pixels
     }
     emit compositionSizeChanged(s);
 }

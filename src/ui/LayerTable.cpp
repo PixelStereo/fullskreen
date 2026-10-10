@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMimeData>
+#include <memory>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPointer>
@@ -28,7 +29,7 @@
 
 enum Col { ColVisible, ColLock, ColName, ColEffects, ColOpacity, ColBlend, ColPlayback, ColCount };
 
-static const char *kRowsMime = "application/x-fulskrin-layer-rows";
+static const char *const kRowsMime = kLayerRowsMime;
 static constexpr int kArrowZone = 22;  // px at the left of a group's name: fold / unfold
 static constexpr int kIndent = 26;     // px: members of a group
 
@@ -173,11 +174,17 @@ protected:
             if (onCollapse) onCollapse(row);
             return;
         }
-        QTableWidget::mousePressEvent(e);
         if (e->button() == Qt::LeftButton && col != ColVisible && col != ColLock) {
             m_pressRow = row;
             m_pressPos = p;
+            // A plain click selects on release: a press that becomes a drag (onto the inspector's source, say)
+            // leaves the selection, and the layer shown, as they are
+            if (e->modifiers() == Qt::NoModifier) {
+                m_pendingPress.reset(static_cast<QMouseEvent *>(e->clone()));
+                return;
+            }
         }
+        QTableWidget::mousePressEvent(e);
     }
 
     void mouseMoveEvent(QMouseEvent *e) override
@@ -195,6 +202,7 @@ protected:
             auto *drag = new QDrag(this);
             drag->setMimeData(mime);
             m_pressRow = -1;
+            m_pendingPress.reset();
             drag->exec(Qt::MoveAction);
             return;
         }
@@ -204,6 +212,10 @@ protected:
     void mouseReleaseEvent(QMouseEvent *e) override
     {
         m_pressRow = -1;
+        if (m_pendingPress) { // a click, not a drag: it selects now
+            std::unique_ptr<QMouseEvent> press = std::move(m_pendingPress);
+            QTableWidget::mousePressEvent(press.get());
+        }
         QTableWidget::mouseReleaseEvent(e);
     }
 
@@ -314,6 +326,7 @@ private:
     Target m_target;
     int m_pressRow = -1;
     QPoint m_pressPos;
+    std::unique_ptr<QMouseEvent> m_pendingPress; // a plain click, applied on release unless it became a drag
 };
 } // namespace
 
