@@ -3,14 +3,17 @@
 #include "Widgets.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QContextMenuEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHash>
+#include <optional>
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSplitter>
 #include <QTimer>
 #include <QToolButton>
 #include <QUndoStack>
@@ -48,15 +51,23 @@ ParamAnimEditor::ParamAnimEditor(Engine *engine, QUndoStack *undo, quint64 layer
 
 bool ParamAnimEditor::fetch(Animation *a) const { return m_engine->layerAnim(m_layer, m_param, a); }
 
-void ParamAnimEditor::store(const Animation &, const Animation &after, const QString &text, const QString &mergeKey)
+void ParamAnimEditor::store(const Animation &before, const Animation &after, const QString &text, const QString &mergeKey)
 {
-    std::vector<Animation> list = m_engine->layerAnims(m_layer);
-    for (Animation &x : list)
-        if (!x.tracks.empty() && x.tracks.front().param == m_param) x = after;
-    // The keys merge for this number only (the other numbers' edits are steps of their own)
-    const QString key = mergeKey.isEmpty() ? QString() : m_param + QLatin1Char('|') + mergeKey;
-    if (m_undo) m_undo->push(new cmd::SetLayerAnims(m_engine, m_layer, m_engine->layerAnims(m_layer), list, text, key));
-    else m_engine->setLayerAnims(m_layer, list);
+    if (m_engine->isLocked(m_engine->indexOfId(m_layer))) { // locked meanwhile: the edit is not made
+        QTimer::singleShot(0, this, [this] {
+            forgetView();
+            reload();
+        });
+        return;
+    }
+    if (m_undo) m_undo->push(new cmd::SetLayerAnim(m_engine, m_layer, m_param, before, after, text, mergeKey));
+    else m_engine->setLayerAnim(m_layer, m_param, &after);
+}
+
+void ParamAnimEditor::loaded()
+{
+    // A locked layer: its animations are shown, not edited (they play on)
+    setEditorEnabled(m_has && !m_engine->isLocked(m_engine->indexOfId(m_layer)));
 }
 
 void ParamAnimEditor::control(AnimAction action, double time) { m_engine->controlLayerAnim(m_layer, m_param, action, time); }
@@ -107,7 +118,10 @@ public:
         connect(e, &Engine::layerAnimsChanged, this, [check, this](quint64 l) {
             if (l == m_layer) check();
         });
-        connect(e, &Engine::layersChanged, this, check);
+        connect(e, &Engine::layersChanged, this, [check, this] {
+            check();
+            if (m_editor && !m_editor->isCommitting()) m_editor->reload(); // locked or unlocked meanwhile
+        });
         fill();
     }
 
@@ -127,6 +141,7 @@ private:
         m_filling = true;
         m_on->setChecked(a.tracks.front().enabled);
         m_filling = false;
+        m_on->setEnabled(!m_e->isLocked(m_e->indexOfId(m_layer))); // a locked layer: shown, not edited
     }
     Engine *m_e;
     quint64 m_layer;
@@ -153,60 +168,60 @@ QString label(Engine *e, quint64 layer, const QString &param)
     return param;
 }
 
-void setAnims(Engine *e, QUndoStack *undo, quint64 layer, const std::vector<Animation> &anims, const QString &text)
+// One animation replaced, added or removed (absent), as an undo step; nothing on a locked layer
+static void setAnim(Engine *e, QUndoStack *undo, quint64 layer, const QString &param, std::optional<Animation> before,
+                    std::optional<Animation> after, const QString &text)
 {
-    if (undo) undo->push(new cmd::SetLayerAnims(e, layer, e->layerAnims(layer), anims, text));
-    else e->setLayerAnims(layer, anims);
+    if (e->isLocked(e->indexOfId(layer))) return;
+    if (undo) undo->push(new cmd::SetLayerAnim(e, layer, param, std::move(before), std::move(after), text));
+    else e->setLayerAnim(layer, param, after ? &*after : nullptr);
 }
 
 void animate(Engine *e, QUndoStack *undo, quint64 layer, const QString &param, int wave)
 {
-    std::vector<Animation> list = e->layerAnims(layer);
-    if (findAnim(list, param)) return; // one animation per number
-    list.push_back(e->makeLayerAnim(layer, param, wave));
-    setAnims(e, undo, layer, list, QStringLiteral("Animate %1").arg(shortLabel(label(e, layer, param))));
+    if (e->layerAnim(layer, param, nullptr)) return; // one animation per number
+    setAnim(e, undo, layer, param, std::nullopt, e->makeLayerAnim(layer, param, wave),
+            QStringLiteral("Animate %1").arg(shortLabel(label(e, layer, param))));
 }
 
 void setOn(Engine *e, QUndoStack *undo, quint64 layer, const QString &param, bool on)
 {
-    std::vector<Animation> list = e->layerAnims(layer);
-    for (Animation &a : list)
-        if (!a.tracks.empty() && a.tracks.front().param == param) {
-            if (a.tracks.front().enabled == on) return;
-            a.tracks.front().enabled = on;
-        }
-    setAnims(e, undo, layer, list, on ? QStringLiteral("Animation On") : QStringLiteral("Animation Off"));
+    Animation a;
+    if (!e->layerAnim(layer, param, &a) || a.tracks.front().enabled == on) return;
+    const Animation before = a;
+    a.tracks.front().enabled = on;
+    setAnim(e, undo, layer, param, before, a, on ? QStringLiteral("Animation On") : QStringLiteral("Animation Off"));
 }
 
 void remove(Engine *e, QUndoStack *undo, quint64 layer, const QString &param)
 {
-    std::vector<Animation> list = e->layerAnims(layer);
-    list.erase(std::remove_if(list.begin(), list.end(),
-                              [&](const Animation &a) { return !a.tracks.empty() && a.tracks.front().param == param; }),
-               list.end());
-    setAnims(e, undo, layer, list, QStringLiteral("Remove Animation"));
+    Animation a;
+    if (!e->layerAnim(layer, param, &a)) return;
+    setAnim(e, undo, layer, param, a, std::nullopt, QStringLiteral("Remove Animation"));
 }
 
 void openWindow(Engine *e, QUndoStack *undo, quint64 layer, const QString &param, QWidget *anchor)
 {
     const QString key = QStringLiteral("%1/%2").arg(layer).arg(param);
     QPointer<ParamAnimWindow> &w = windows()[key];
-    if (!w) w = new ParamAnimWindow(e, undo, layer, param, anchor ? anchor->window() : nullptr);
+    QWidget *top = anchor ? anchor->window() : QApplication::activeWindow();
+    if (!w) w = new ParamAnimWindow(e, undo, layer, param, top);
     w->show();
     w->raise();
     w->activateWindow();
 }
 
-void fillMenu(QMenu *menu, Engine *e, QUndoStack *undo, quint64 layer, const QString &param, QWidget *anchor,
+void fillMenu(QMenu *menu, Engine *e, QUndoStack *undo, quint64 layer, const QString &param, QWidget *widget,
               const std::function<void(const QString &)> &edit)
 {
+    const QPointer<QWidget> anchor = widget; // the menu may outlive it (the inspector rebuilt meanwhile)
     Animation a;
     if (e->layerAnim(layer, param, &a)) {
         menu->addAction(QStringLiteral("Edit Animation"), menu, [edit, param] {
             if (edit) edit(param);
         });
         menu->addAction(QStringLiteral("Open Animation in a Window"), menu,
-                        [e, undo, layer, param, anchor] { openWindow(e, undo, layer, param, anchor); });
+                        [e, undo, layer, param, anchor] { openWindow(e, undo, layer, param, anchor.data()); });
         QAction *on = menu->addAction(QStringLiteral("Animation On"), menu,
                                       [e, undo, layer, param](bool checked) { setOn(e, undo, layer, param, checked); });
         on->setCheckable(true);
@@ -273,17 +288,20 @@ bool AnimateMenu::eventFilter(QObject *o, QEvent *e)
     while (w && !w->property("animPaths").isValid()) w = w->parentWidget();
     if (!w || !w->isEnabled()) return false;
     const QStringList paths = w->property("animPaths").toStringList();
-    QMenu menu;
+    // Shown without waiting here (no event loop inside this event): the menu goes with the widget, should the
+    // inspector be rebuilt meanwhile
+    auto *menu = new QMenu(w);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
     if (paths.size() == 1) {
-        paramanim::fillMenu(&menu, m_e, m_undo, m_layer, paths.front(), w, m_edit);
+        paramanim::fillMenu(menu, m_e, m_undo, m_layer, paths.front(), w, m_edit);
     } else { // a sub-menu for each number (X, Y; R, G, B…)
         for (const QString &p : paths) {
-            QMenu *sub = menu.addMenu(shortLabel(paramanim::label(m_e, m_layer, p)) +
-                                      (m_animated.contains(p) ? QStringLiteral("  ∿") : QString()));
+            QMenu *sub = menu->addMenu(shortLabel(paramanim::label(m_e, m_layer, p)) +
+                                       (m_animated.contains(p) ? QStringLiteral("  ∿") : QString()));
             paramanim::fillMenu(sub, m_e, m_undo, m_layer, p, w, m_edit);
         }
     }
-    menu.exec(static_cast<QContextMenuEvent *>(e)->globalPos());
+    menu->popup(static_cast<QContextMenuEvent *>(e)->globalPos());
     return true;
 }
 
@@ -421,6 +439,7 @@ ParamAnimPanel::ParamAnimPanel(Engine *engine, QUndoStack *undo, quint64 layer, 
     auto *menu = new QMenu(add);
     add->setMenu(menu);
     connect(menu, &QMenu::aboutToShow, this, [this, menu] {
+        qDeleteAll(menu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly)); // the sub-menus of the last time
         menu->clear();
         addParamMenu(menu, m_engine->animatableParams(m_layer), [this](QMenu *into, const Engine::AnimParam &p, const QString &text) {
             QMenu *sub = into->addMenu(text);
@@ -440,22 +459,29 @@ ParamAnimPanel::ParamAnimPanel(Engine *engine, QUndoStack *undo, quint64 layer, 
     m_empty->setWordWrap(true);
     m_empty->setStyleSheet("color:#8a8a90;");
     v->addWidget(m_empty);
-    m_pinnedBox = new QWidget;
-    m_pinned = new QVBoxLayout(m_pinnedBox);
-    m_pinned->setContentsMargins(0, 0, 0, 0);
-    m_pinned->setSpacing(4);
-    v->addWidget(m_pinnedBox);
-    m_scroll = new QScrollArea;
-    m_scroll->setWidgetResizable(true);
-    m_scroll->setFrameShape(QFrame::NoFrame);
-    m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    auto *host = new QWidget;
-    m_list = new QVBoxLayout(host);
-    m_list->setContentsMargins(0, 0, 0, 0);
-    m_list->setSpacing(4);
-    m_list->addStretch();
-    m_scroll->setWidget(host);
-    v->addWidget(m_scroll, 1);
+    // The pinned cards above, the others below: each part scrolls, the line between them is dragged
+    auto scrolled = [](QVBoxLayout **list) {
+        auto *area = new QScrollArea;
+        area->setWidgetResizable(true);
+        area->setFrameShape(QFrame::NoFrame);
+        area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        auto *host = new QWidget;
+        *list = new QVBoxLayout(host);
+        (*list)->setContentsMargins(0, 0, 0, 0);
+        (*list)->setSpacing(4);
+        (*list)->addStretch();
+        area->setWidget(host);
+        return area;
+    };
+    m_pinnedArea = scrolled(&m_pinned);
+    m_scroll = scrolled(&m_list);
+    m_split = new QSplitter(Qt::Vertical);
+    m_split->setChildrenCollapsible(false);
+    m_split->addWidget(m_pinnedArea);
+    m_split->addWidget(m_scroll);
+    m_split->setStretchFactor(0, 1);
+    m_split->setStretchFactor(1, 1);
+    v->addWidget(m_split, 1);
 
     auto foldEvery = [this](bool f) {
         for (Card *c : m_cards)
@@ -508,13 +534,15 @@ void ParamAnimPanel::rebuild()
     for (const Animation &a : list) {
         if (a.tracks.empty()) continue;
         auto *c = new Card(this, a);
-        if (a.pinned) m_pinned->insertWidget(pinned++, c);
-        else m_list->insertWidget(m_list->count() - 1, c); // before the stretch
+        QVBoxLayout *into = a.pinned ? m_pinned : m_list;
+        into->insertWidget(into->count() - 1, c); // before the stretch
+        pinned += a.pinned ? 1 : 0;
         m_cards.push_back(c);
     }
-    m_pinnedBox->setVisible(pinned > 0);
+    m_pinnedArea->setVisible(pinned > 0);
     m_empty->setVisible(m_cards.empty());
     m_scroll->setVisible(int(m_cards.size()) > pinned);
+    m_split->setVisible(!m_cards.empty());
 }
 
 void ParamAnimPanel::reveal(const QString &param)
@@ -524,8 +552,9 @@ void ParamAnimPanel::reveal(const QString &param)
         if (c->param() == param) {
             if (c->folded()) c->setFolded(false, true);
             QTimer::singleShot(0, this, [this, card = QPointer<Card>(c)] {
-                if (card && card->parentWidget() && card->parentWidget()->parentWidget() == m_scroll->viewport())
-                    m_scroll->ensureWidgetVisible(card);
+                if (!card) return;
+                for (QScrollArea *area : {m_pinnedArea, m_scroll})
+                    if (card->parentWidget() && card->parentWidget()->parentWidget() == area->viewport()) area->ensureWidgetVisible(card);
             });
         }
 }

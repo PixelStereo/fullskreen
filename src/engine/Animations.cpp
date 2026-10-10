@@ -478,6 +478,50 @@ bool Engine::layerAnim(quint64 layer, const QString &param, Animation *a) const
     return false;
 }
 
+void Engine::assignLayerAnims(Layer &l, const std::vector<Animation> &anims)
+{
+    std::vector<Animation> old = std::move(l.anims);
+    l.anims.clear();
+    for (const Animation &in : anims) {
+        if (in.tracks.empty() || in.tracks.front().param.isEmpty() || findLayerAnim(l, in.tracks.front().param))
+            continue; // one animation per number
+        Animation a = in;
+        a.tracks.resize(1);
+        AnimTrack &t = a.tracks.front();
+        t.layer = l.id;
+        sortKeys(t);
+        a.state = AnimState::Stopped;
+        a.clock = 0;
+        a.reversed = false;
+        const Animation *was = nullptr;
+        for (const Animation &o : old)
+            if (!o.tracks.empty() && o.tracks.front().param == t.param) was = &o;
+        if (was) { // how its card is shown is not part of an edit
+            a.pinned = was->pinned;
+            a.folded = was->folded;
+        }
+        if (was && was->tracks.front().enabled && t.enabled) { // it goes on from where it is
+            a.state = was->state;
+            a.clock = was->clock;
+            a.reversed = was->reversed;
+            a.loop = was->loop;
+            a.repeat = was->repeat;
+            a.setLoop(in.loop, in.repeat);
+            a.clock = std::min(a.clock, a.length());
+            t.captured = was->tracks.front().captured;
+        }
+        l.anims.push_back(a);
+    }
+    // New, or turned on: from the start
+    for (Animation &a : l.anims) {
+        const QString &param = a.tracks.front().param;
+        bool wasOn = false;
+        for (const Animation &o : old)
+            if (!o.tracks.empty() && o.tracks.front().param == param) wasOn = o.tracks.front().enabled;
+        if (a.tracks.front().enabled && !wasOn) controlLocked(&a, AnimAction::Play, 0, a.loop, a.repeat, &l);
+    }
+}
+
 void Engine::setLayerAnims(quint64 layer, const std::vector<Animation> &anims)
 {
     {
@@ -486,49 +530,60 @@ void Engine::setLayerAnims(quint64 layer, const std::vector<Animation> &anims)
         for (auto &x : m_layers)
             if (x->id == layer) l = x.get();
         if (!l) return;
-        std::vector<Animation> old = std::move(l->anims);
-        l->anims.clear();
-        for (const Animation &in : anims) {
-            if (in.tracks.empty() || in.tracks.front().param.isEmpty() || findLayerAnim(*l, in.tracks.front().param))
-                continue; // one animation per number
-            Animation a = in;
-            a.tracks.resize(1);
-            AnimTrack &t = a.tracks.front();
-            t.layer = layer;
-            sortKeys(t);
-            a.state = AnimState::Stopped;
-            a.clock = 0;
-            a.reversed = false;
-            const Animation *was = nullptr;
-            for (const Animation &o : old)
-                if (!o.tracks.empty() && o.tracks.front().param == t.param) was = &o;
-            if (was) { // how its card is shown is not part of an edit
-                a.pinned = was->pinned;
-                a.folded = was->folded;
-            }
-            const bool wasOn = was && was->tracks.front().enabled;
-            if (was && wasOn && t.enabled) { // it goes on from where it is
-                a.state = was->state;
-                a.clock = was->clock;
-                a.reversed = was->reversed;
-                a.loop = was->loop;
-                a.repeat = was->repeat;
-                a.setLoop(in.loop, in.repeat);
-                a.clock = std::min(a.clock, a.length());
-                t.captured = was->tracks.front().captured;
-            }
-            l->anims.push_back(a);
-        }
-        // New, or turned on: from the start
-        for (Animation &a : l->anims) {
-            const QString &param = a.tracks.front().param;
-            bool wasOn = false;
-            for (const Animation &o : old)
-                if (!o.tracks.empty() && o.tracks.front().param == param) wasOn = o.tracks.front().enabled;
-            if (a.tracks.front().enabled && !wasOn) controlLocked(&a, AnimAction::Play, 0, a.loop, a.repeat, l);
-        }
+        assignLayerAnims(*l, anims);
     }
     emit layerAnimsChanged(layer);
+}
+
+void Engine::setLayerAnim(quint64 layer, const QString &param, const Animation *a, int at)
+{
+    {
+        Lock lk(&m_mutex);
+        Layer *l = nullptr;
+        for (auto &x : m_layers)
+            if (x->id == layer) l = x.get();
+        if (!l) return;
+        std::vector<Animation> list = l->anims; // the others as they are
+        auto it = std::find_if(list.begin(), list.end(), [&](const Animation &x) { return x.tracks.front().param == param; });
+        if (a && it != list.end()) {
+            *it = *a;
+        } else if (a) {
+            list.insert(at >= 0 && at <= int(list.size()) ? list.begin() + at : list.end(), *a);
+        } else if (it != list.end()) {
+            list.erase(it);
+        } else {
+            return;
+        }
+        assignLayerAnims(*l, list);
+    }
+    emit layerAnimsChanged(layer);
+}
+
+void Engine::setLayerAnimOn(quint64 layer, const QString &param, bool on)
+{
+    {
+        Lock lk(&m_mutex); // read and written under the same lock: an edit meanwhile is not lost
+        Layer *l = nullptr;
+        for (auto &x : m_layers)
+            if (x->id == layer) l = x.get();
+        Animation *a = l ? findLayerAnim(*l, param) : nullptr;
+        if (!a || a->tracks.front().enabled == on) return;
+        std::vector<Animation> list = l->anims;
+        for (Animation &x : list)
+            if (x.tracks.front().param == param) x.tracks.front().enabled = on;
+        assignLayerAnims(*l, list);
+    }
+    emit layerAnimsChanged(layer);
+}
+
+int Engine::layerAnimIndex(quint64 layer, const QString &param) const
+{
+    Lock lk(&m_mutex);
+    for (auto &l : m_layers)
+        if (l->id == layer)
+            for (size_t i = 0; i < l->anims.size(); ++i)
+                if (l->anims[i].tracks.front().param == param) return int(i);
+    return -1;
 }
 
 void Engine::setLayerAnimView(quint64 layer, const QString &param, bool pinned, bool folded)

@@ -179,7 +179,10 @@ TimelineEditor::TimelineEditor(Engine *engine, QUndoStack *undo, QWidget *parent
         applyView();
     });
     connect(m_engine, &Engine::layersChanged, this, [this] {
-        if (!(QApplication::mouseButtons() & Qt::LeftButton)) rebuildRows(); // the names of the layers
+        if (QApplication::mouseButtons() & Qt::LeftButton) return;
+        forgetParams(); // a layer's numbers (another source, another effect)
+        rebuildRows();  // the names of the layers
+        applyView();
     });
 }
 
@@ -200,8 +203,10 @@ bool TimelineEditor::fetch(Animation *a) const
 
 void TimelineEditor::store(const Animation &before, const Animation &after, const QString &text, const QString &mergeKey)
 {
-    if (m_undo) m_undo->push(new cmd::SetAnimation(m_engine, m_id, before, after, text, mergeKey));
-    else m_engine->setAnimation(m_engine->indexOfAnimation(m_id), after);
+    Animation a = after;
+    a.name = before.name; // its name is the list's (renamed meanwhile)
+    if (m_undo) m_undo->push(new cmd::SetAnimation(m_engine, m_id, before, a, text, mergeKey));
+    else m_engine->setAnimation(m_engine->indexOfAnimation(m_id), a);
 }
 
 void TimelineEditor::control(AnimAction action, double time) { m_engine->controlAnimation(m_id, action, time); }

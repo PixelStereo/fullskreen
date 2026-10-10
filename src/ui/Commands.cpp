@@ -426,19 +426,25 @@ void RemoveAnimation::redo()
     }
 }
 
-SetLayerAnims::SetLayerAnims(Engine *e, quint64 layer, const std::vector<Animation> &before, const std::vector<Animation> &after,
-                             const QString &text, const QString &mergeKey)
-    : m_e(e), m_layer(layer), m_before(before), m_after(after), m_mergeKey(mergeKey)
+SetLayerAnim::SetLayerAnim(Engine *e, quint64 layer, const QString &param, std::optional<Animation> before,
+                           std::optional<Animation> after, const QString &text, const QString &mergeKey)
+    : m_e(e), m_layer(layer), m_param(param), m_before(std::move(before)), m_after(std::move(after)),
+      m_index(e->layerAnimIndex(layer, param)), m_mergeKey(mergeKey)
 {
     setText(text);
 }
 
-bool SetLayerAnims::mergeWith(const QUndoCommand *other)
+bool SetLayerAnim::mergeWith(const QUndoCommand *other)
 {
-    const auto *o = static_cast<const SetLayerAnims *>(other); // same id(): a SetLayerAnims
-    if (o->m_layer != m_layer || o->m_mergeKey != m_mergeKey) return false;
+    const auto *o = static_cast<const SetLayerAnim *>(other); // same id(): a SetLayerAnim
+    if (o->m_layer != m_layer || o->m_param != m_param || o->m_mergeKey != m_mergeKey) return false;
     m_after = o->m_after;
     return true;
+}
+
+void SetLayerAnim::apply(const std::optional<Animation> &a)
+{
+    m_e->setLayerAnim(m_layer, m_param, a ? &*a : nullptr, m_index);
 }
 
 } // namespace cmd

@@ -676,7 +676,6 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             continue;
         }
         const QJsonObject cur = layerJson(idx);
-        if (cur.contains("anims")) o["anims"] = cur.value("anims"); // a new source: the layer keeps its animations
         const QJsonObject curSrc = cur.value("source").toObject(), src = o.value("source").toObject();
         const bool group = o.value("group").toBool();
         if (!group && (curSrc.value("type") != src.value("type") || curSrc.value("layer") != src.value("layer") ||
@@ -687,11 +686,23 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             const QJsonValue own = o.value("timing").toObject().value("source/file");
             const double t = own.isDouble() ? std::clamp(own.toDouble(), 0.0, 600.0) : std::max(0.0, fade);
             takeOver(id, kOwnAll);
+            // The layer is made again with its new source: its animations go on as they were (not restarted)
+            std::vector<Animation> anims;
+            {
+                Lock lk(&m_mutex);
+                anims = layer(idx)->anims;
+            }
+            auto keepAnims = [this, id, &anims] {
+                Lock lk(&m_mutex);
+                if (Layer *l = layer(indexOfId(id))) l->anims = anims;
+            };
             if (t <= 0) {
                 replaceLayerJson(idx, o);
+                keepAnims();
                 continue;
             }
             startSourceTransition(idx, o, t);
+            keepAnims();
             // The layer now holds the snapshot's state; its numbers move there from the outgoing one's (ROI,
             // color, mapping, opacity, volume) over their times, as they would with the same source
             Lock lk(&m_mutex);
@@ -886,6 +897,17 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
     m_fadeElapsed = 0;
 }
 
+// The part of a fade that is this number alone (0: it shares its part with other numbers)
+static quint64 ownBitOf(const QString &path)
+{
+    if (path == QLatin1String("opacity")) return OwnOpacity;
+    if (path == QLatin1String("source/volume")) return OwnVolume;
+    if (path == QLatin1String("source/speed")) return OwnSpeed; // not set then set back: no turning round twice a frame
+    for (int k = 0; k < TextNumCount; ++k)
+        if (path == QLatin1String(kTextTimeKeys[k])) return OwnText0 << k;
+    return 0;
+}
+
 // Every number moves on its own time, each snapshot on its own clock; a layer that fades out is hidden once its
 // opacity got there
 void Engine::stepFade(double dt)
@@ -902,12 +924,19 @@ void Engine::stepFade(double dt)
             it = m_fades.erase(it);
             continue;
         }
-        std::vector<std::pair<QString, double>> keep; // what an animation drives stays as it set it
+        // What an animation drives stays as it set it: a value the fade drives alone is left out of it, one that shares
+        // its part with others (a side of the ROI, a corner of the mapping…) is put back after it
+        quint64 owned = job.owned;
+        std::vector<std::pair<QString, double>> keep;
         for (const QString &path : job.released) {
+            if (const quint64 bit = ownBitOf(path)) {
+                owned &= ~bit;
+                continue;
+            }
             double v = 0;
             if (layerNumber(*l, path, &v, nullptr, m_compSize)) keep.push_back({path, v});
         }
-        setNumbers(*l, mixNumbers(job.from, job.to, job.times, job.elapsed), job.owned);
+        setNumbers(*l, mixNumbers(job.from, job.to, job.times, job.elapsed), owned);
         for (const auto &[path, v] : keep) layerNumber(*l, path, nullptr, &v, m_compSize);
         if (job.hideAtEnd && job.elapsed >= job.times.opacity) {
             l->enabled = false;

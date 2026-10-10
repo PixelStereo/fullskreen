@@ -272,6 +272,11 @@ public:
     // The layer's whole list: an animation already there (the same number) goes on from where it is; one that is new,
     // or turned on, starts from the beginning; one turned off stops
     void setLayerAnims(quint64 layer, const std::vector<Animation> &anims);
+    // One of them (by its number): replaced, added at `at` (-1: at the end), or removed (a: null); the others are left
+    // as they are
+    void setLayerAnim(quint64 layer, const QString &param, const Animation *a, int at = -1);
+    void setLayerAnimOn(quint64 layer, const QString &param, bool on); // on (from the start) or off
+    int layerAnimIndex(quint64 layer, const QString &param) const;      // its place in the list (-1: none)
     // How its card is shown (pinned at the top of the Anim tab, folded): saved, not an edit (setLayerAnims keeps them)
     void setLayerAnimView(quint64 layer, const QString &param, bool pinned, bool folded);
     // Its transport (as controlAnimation; LoopMode takes `loop` and `repeat`)
@@ -663,6 +668,7 @@ private:
     QJsonArray animationsToJson() const;
     void animationsFromJson(const QJsonArray &a);
     void startLayerAnim(Animation &a); // from the start: the "current value" keys read now (lock held)
+    void assignLayerAnims(Layer &l, const std::vector<Animation> &anims); // see setLayerAnims (lock held)
     std::vector<Sequence> m_sequences;
     int m_currentSequence = -1, m_sequencePosition = -1;
     std::vector<StepRun> m_runs; // of the current sequence

@@ -546,10 +546,12 @@ void CurveLane::contextMenuEvent(QContextMenuEvent *e)
 {
     if (m_track.oscillator) return;
     const int k = keyAt(e->pos());
-    QMenu menu;
+    // Shown without waiting here: the menu goes with the lane, should the rows be rebuilt meanwhile
+    auto *menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
     if (k >= 0) {
         if (k == 0) {
-            QAction *cur = menu.addAction(QStringLiteral("Start from the current value"), this, [this](bool on) {
+            QAction *cur = menu->addAction(QStringLiteral("Start from the current value"), this, [this](bool on) {
                 m_track.keys[0].isCurrentValue = on;
                 if (on && m_current) m_track.keys[0].v = m_current(); // the placeholder, should it be turned off
                 update();
@@ -558,9 +560,9 @@ void CurveLane::contextMenuEvent(QContextMenuEvent *e)
             cur->setCheckable(true);
             cur->setChecked(m_track.keys[0].isCurrentValue);
             cur->setToolTip(QStringLiteral("The number starts from where it is when the animation starts: no jump"));
-            menu.addSeparator();
+            menu->addSeparator();
         }
-        QMenu *curve = menu.addMenu(QStringLiteral("Curve to the next key"));
+        QMenu *curve = menu->addMenu(QStringLiteral("Curve to the next key"));
         for (int c : {0, 1, 2, 3, 4, 5, int(kAnimBezier), int(kAnimHold)}) {
             QAction *a = curve->addAction(animCurveName(c), this, [this, k, c] {
                 m_track.keys[size_t(k)].curve = c;
@@ -572,14 +574,14 @@ void CurveLane::contextMenuEvent(QContextMenuEvent *e)
         }
         const AnimKey &key = m_track.keys[size_t(k)];
         if (key.hasIn() || key.hasOut()) {
-            menu.addAction(QStringLiteral("Automatic handles"), this, [this, k] {
+            menu->addAction(QStringLiteral("Automatic handles"), this, [this, k] {
                 AnimKey &x = m_track.keys[size_t(k)];
                 x.inDt = x.inDv = x.outDt = x.outDv = 0;
                 update();
                 emitEdited();
             });
         }
-        QAction *value = menu.addAction(QStringLiteral("Value…"), this, [this, k] {
+        QAction *value = menu->addAction(QStringLiteral("Value…"), this, [this, k] {
             bool ok = false;
             const double v = QInputDialog::getDouble(this, QStringLiteral("Key"), QStringLiteral("Value"), m_track.keys[size_t(k)].v,
                                                      -1e9, 1e9, 3, &ok);
@@ -589,7 +591,7 @@ void CurveLane::contextMenuEvent(QContextMenuEvent *e)
             emitEdited();
         });
         value->setEnabled(!(k == 0 && m_track.keys[0].isCurrentValue));
-        menu.addAction(QStringLiteral("Time…"), this, [this, k] {
+        menu->addAction(QStringLiteral("Time…"), this, [this, k] {
             bool ok = false;
             const double lo = k > 0 ? m_track.keys[size_t(k - 1)].t : 0.0;
             const double hi = k + 1 < int(m_track.keys.size()) ? m_track.keys[size_t(k + 1)].t : m_duration;
@@ -600,7 +602,7 @@ void CurveLane::contextMenuEvent(QContextMenuEvent *e)
             update();
             emitEdited();
         });
-        menu.addAction(QStringLiteral("Delete"), this, [this, k] {
+        menu->addAction(QStringLiteral("Delete"), this, [this, k] {
             m_track.keys.erase(m_track.keys.begin() + k);
             if (!m_track.keys.empty() && k == 0) m_track.keys[0].isCurrentValue = false;
             update();
@@ -608,7 +610,7 @@ void CurveLane::contextMenuEvent(QContextMenuEvent *e)
         });
     } else {
         const double t = tOf(e->pos().x());
-        QAction *cur = menu.addAction(QStringLiteral("Key here with the current value"), this, [this, t] {
+        QAction *cur = menu->addAction(QStringLiteral("Key here with the current value"), this, [this, t] {
             m_track.keys.push_back(AnimKey{t, m_current(), 3});
             sortKeys(m_track.keys);
             for (size_t k = 1; k < m_track.keys.size(); ++k) m_track.keys[k].isCurrentValue = false;
@@ -616,20 +618,20 @@ void CurveLane::contextMenuEvent(QContextMenuEvent *e)
             emitEdited();
         });
         cur->setEnabled(bool(m_current));
-        QAction *smooth = menu.addAction(QStringLiteral("Every key: Bézier"), this, [this] {
+        QAction *smooth = menu->addAction(QStringLiteral("Every key: Bézier"), this, [this] {
             for (AnimKey &k : m_track.keys) k.curve = kAnimBezier;
             update();
             emitEdited();
         });
         smooth->setEnabled(m_track.keys.size() >= 2);
-        QAction *clear = menu.addAction(QStringLiteral("Clear the keys"), this, [this] {
+        QAction *clear = menu->addAction(QStringLiteral("Clear the keys"), this, [this] {
             m_track.keys.clear();
             update();
             emitEdited();
         });
         clear->setEnabled(!m_track.keys.empty());
     }
-    menu.exec(e->globalPos());
+    menu->popup(e->globalPos());
 }
 
 // ---------------------------------------------------------------------------
@@ -722,6 +724,7 @@ void TimeRuler::wheelEvent(QWheelEvent *e)
 static NumberBox *numberBox(double lo, double hi, int decimals, double step, const QString &suffix = {})
 {
     auto *b = new NumberBox;
+    b->setKeyboardTracking(false); // a value typed is taken once it is complete
     b->setRange(lo, hi);
     b->setDecimals(decimals);
     b->setSingleStep(step);
@@ -948,6 +951,7 @@ AnimEditor::AnimEditor(Engine *engine, QUndoStack *undo, Layout layout, bool scr
     m_time = new QLabel;
     m_time->setMinimumWidth(side ? 170 : 0);
     m_duration = numberBox(0.05, 36000, 2, 0.1, QStringLiteral(" s"));
+    m_duration->setKeyboardTracking(false); // typing 12 over 4 does not first squash the keys into 1 s
     m_duration->setToolTip(QStringLiteral("Duration of one pass (the time of the keys; a wave has its own period)"));
     m_loop = new QComboBox;
     m_loop->addItem(QStringLiteral("Once"));
@@ -1148,6 +1152,7 @@ void AnimEditor::reload()
     // The same as edited (an edit made here, come back, or another number of the same layer): nothing to rebuild
     if (has && m_has && !m_freshView && sameAnimation(a, m_edit) && m_rows.size() == a.tracks.size()) {
         m_edit = a;
+        loaded();
         poll();
         return;
     }

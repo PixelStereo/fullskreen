@@ -1407,12 +1407,9 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                          return a ? QVariantList{a->tracks.front().enabled} : QVariantList();
                      },
                      [e, id, param](int, const QVariantList &a) {
-                         std::vector<Animation> list = e->layerAnims(id);
-                         bool found = false;
-                         for (Animation &x : list)
-                             if (x.tracks.front().param == param) x.tracks.front().enabled = truth(a.value(0)), found = true;
-                         if (found) e->setLayerAnims(id, list);
-                         return found;
+                         if (!e->layerAnim(id, param, nullptr)) return false;
+                         e->setLayerAnimOn(id, param, truth(a.value(0)));
+                         return true;
                      });
             OscNode &sp = L.method(A + "/speed", "f", 3, "Speed (1 = normal)",
                                    [anim](Layer &l) {

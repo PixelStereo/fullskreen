@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QUndoCommand>
 #include <QVariant>
+#include <optional>
 
 namespace cmd {
 
@@ -267,22 +268,27 @@ private:
     int m_index;
 };
 
-// The animations of a layer's numbers (the Anim tab), the whole list before / after, by the layer's id. Edits with the
-// same non-empty merge key that follow one another (a key dragged, the arrows of a number) are one step.
-class SetLayerAnims : public QUndoCommand
+// One animation of a layer's number (the Anim tab), by the layer's id and the number: before / after, either of them
+// absent for one added or removed (it goes back to its place). The others are left alone (an edit made meanwhile by
+// OSC is not undone with it). Edits with the same non-empty merge key that follow one another (a key dragged, the
+// arrows of a number) are one step.
+class SetLayerAnim : public QUndoCommand
 {
 public:
-    SetLayerAnims(Engine *e, quint64 layer, const std::vector<Animation> &before, const std::vector<Animation> &after,
-                  const QString &text, const QString &mergeKey = {});
-    void undo() override { m_e->setLayerAnims(m_layer, m_before); }
-    void redo() override { m_e->setLayerAnims(m_layer, m_after); }
+    SetLayerAnim(Engine *e, quint64 layer, const QString &param, std::optional<Animation> before, std::optional<Animation> after,
+                 const QString &text, const QString &mergeKey = {});
+    void undo() override { apply(m_before); }
+    void redo() override { apply(m_after); }
     int id() const override { return m_mergeKey.isEmpty() ? -1 : 9202; }
     bool mergeWith(const QUndoCommand *other) override;
 
 private:
+    void apply(const std::optional<Animation> &a);
     Engine *m_e;
     quint64 m_layer;
-    std::vector<Animation> m_before, m_after;
+    QString m_param;
+    std::optional<Animation> m_before, m_after;
+    int m_index; // its place when it was there
     QString m_mergeKey;
 };
 

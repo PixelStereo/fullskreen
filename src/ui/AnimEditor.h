@@ -207,6 +207,7 @@ protected:
     void commit(const QString &text, const QString &mergeKey = {});
     void rebuildRows();
     void forgetView(); // another animation: shown whole on the next reload
+    void forgetParams() { m_params.clear(); } // the layers changed: their numbers are read again
     void setEditorEnabled(bool on);
     QVBoxLayout *mainLayout() const { return m_main; }
     struct LaneView {

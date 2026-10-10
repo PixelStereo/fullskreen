@@ -31,6 +31,7 @@ protected:
     bool fetch(Animation *a) const override;
     void store(const Animation &before, const Animation &after, const QString &text, const QString &mergeKey) override;
     void control(AnimAction action, double time) override;
+    void loaded() override;
 
 private:
     quint64 m_layer;
@@ -40,10 +41,8 @@ private:
 namespace paramanim {
 // The name of a layer's number ("Spatial › Rotation (°)"), or its address when the layer has no such number
 QString label(Engine *e, quint64 layer, const QString &param);
-// A new animation of the number (a wave: an AnimWave; keys: -1), as an undo step
+// A new animation of the number (a wave: an AnimWave; keys: -1), as an undo step (none on a locked layer)
 void animate(Engine *e, QUndoStack *undo, quint64 layer, const QString &param, int wave);
-// The whole list replaced, as an undo step
-void setAnims(Engine *e, QUndoStack *undo, quint64 layer, const std::vector<Animation> &anims, const QString &text);
 void setOn(Engine *e, QUndoStack *undo, quint64 layer, const QString &param, bool on);
 void remove(Engine *e, QUndoStack *undo, quint64 layer, const QString &param);
 // Its floating window (one per number: shown again if it is open)
@@ -96,8 +95,8 @@ private:
     QUndoStack *m_undo;
     quint64 m_layer;
     QVBoxLayout *m_pinned, *m_list;
-    QWidget *m_pinnedBox;
-    QScrollArea *m_scroll;
+    QScrollArea *m_pinnedArea, *m_scroll;
+    class QSplitter *m_split;
     QLabel *m_empty;
     std::vector<Card *> m_cards;
     QString m_signature;

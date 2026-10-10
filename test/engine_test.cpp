@@ -1722,18 +1722,29 @@ int main(int argc, char **argv)
             e.advanceFades(0.5);
             CHECK(near(L()->opacity, 0.75));
             L()->locked = false;
-            // Undo: one step per edit, the arrows of a number merge
+            // Undo: one step per edit, the arrows of a number merge; the other numbers' animations are left alone
             {
                 QUndoStack st;
-                const std::vector<Engine::Animation> b0 = e.layerAnims(wid);
-                std::vector<Engine::Animation> b1 = b0, b2 = b0;
-                b1[0].speed = 2;
-                b2[0].speed = 3;
-                st.push(new cmd::SetLayerAnims(&e, wid, b0, b1, "Speed", "opacity|speed"));
-                st.push(new cmd::SetLayerAnims(&e, wid, b1, b2, "Speed", "opacity|speed"));
+                Engine::Animation b0;
+                e.layerAnim(wid, "opacity", &b0);
+                Engine::Animation b1 = b0, b2 = b0;
+                b1.speed = 2;
+                b2.speed = 3;
+                st.push(new cmd::SetLayerAnim(&e, wid, "opacity", b0, b1, "Speed", "speed"));
+                st.push(new cmd::SetLayerAnim(&e, wid, "opacity", b1, b2, "Speed", "speed"));
                 CHECK(st.count() == 1 && e.layerAnim(wid, "opacity", &now) && near(now.speed, 3));
+                e.setLayerAnimOn(wid, "spatial/rotation", false); // meanwhile, by OSC
                 st.undo();
-                CHECK(e.layerAnim(wid, "opacity", &now) && near(now.speed, 1));
+                CHECK(e.layerAnim(wid, "opacity", &now) && near(now.speed, 1) && e.layerAnim(wid, "spatial/rotation", &now) &&
+                      !now.tracks[0].enabled);
+                e.setLayerAnimOn(wid, "spatial/rotation", true);
+                // Removed, then back at its place
+                Engine::Animation r;
+                e.layerAnim(wid, "opacity", &r);
+                st.push(new cmd::SetLayerAnim(&e, wid, "opacity", r, std::nullopt, "Remove"));
+                CHECK(!e.layerAnim(wid, "opacity", nullptr) && e.layerAnims(wid).size() == 1);
+                st.undo();
+                CHECK(e.layerAnimIndex(wid, "opacity") == 0 && e.layerAnims(wid).size() == 2);
             }
             // OSC: /layer/<name>/anim/<the number>/enable, speed, rewind
             {
@@ -1755,9 +1766,21 @@ int main(int argc, char **argv)
             CHECK(copy >= 0 && e.layerAnims(e.layerId(copy)).size() == 2 &&
                   e.layerAnims(e.layerId(copy))[0].tracks[0].layer == e.layerId(copy));
             e.removeLayer(copy);
-            // Not part of a snapshot: a recall leaves them as they are
+            // Not part of a snapshot: a recall leaves them as they are, even one that gives the layer another source
             const QJsonArray cap = e.captureLayers();
             for (const QJsonValue &x : cap) CHECK(!x.toObject().contains("anims"));
+            {
+                e.controlLayerAnim(wid, "opacity", A::Pause);
+                const double clock0 = (e.layerAnim(wid, "opacity", &now), now.clock);
+                QJsonObject other = e.layerJson(e.indexOfId(wid));
+                other.remove("anims");
+                QJsonObject src{{"type", "image"}, {"path", tmp + "/redblue.png"}};
+                other["source"] = src;
+                e.applyLayers(QJsonArray{other}, 0.0); // a cut to another source: the layer is made again
+                CHECK(e.layer(e.indexOfId(wid))->type == SourceType::Image && e.layerAnims(wid).size() == 2 &&
+                      e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Paused && near(now.clock, clock0));
+                e.controlLayerAnim(wid, "opacity", A::Play);
+            }
             CHECK(e.saveProject(tmp + "/anims.fulskrin", {}, &err));
             CHECK(e.loadProject(tmp + "/anims.fulskrin", nullptr, &err));
             CHECK(e.layerAnims(wid).size() == 2 && e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Playing &&
