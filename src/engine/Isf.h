@@ -52,6 +52,9 @@ struct IsfInput {
 
     GLint loc = -1, sizeLoc = -1, rectLoc = -1;
     static QString typeName(Type t);
+    // A number (or numbers) a timeline, an animation or a snapshot's fade can move: a float, a choice among numbers,
+    // a point (x, y), a color (r, g, b, a)
+    bool isNumber() const { return type == Float || (type == Long && !lValues.isEmpty()) || type == Point2D || type == Color; }
 
     IsfValue value() const
     {

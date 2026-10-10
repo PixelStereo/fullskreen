@@ -267,4 +267,23 @@ private:
     int m_index;
 };
 
+// The animations of a layer's numbers (the Anim tab), the whole list before / after, by the layer's id. Edits with the
+// same non-empty merge key that follow one another (a key dragged, the arrows of a number) are one step.
+class SetLayerAnims : public QUndoCommand
+{
+public:
+    SetLayerAnims(Engine *e, quint64 layer, const std::vector<Animation> &before, const std::vector<Animation> &after,
+                  const QString &text, const QString &mergeKey = {});
+    void undo() override { m_e->setLayerAnims(m_layer, m_before); }
+    void redo() override { m_e->setLayerAnims(m_layer, m_after); }
+    int id() const override { return m_mergeKey.isEmpty() ? -1 : 9202; }
+    bool mergeWith(const QUndoCommand *other) override;
+
+private:
+    Engine *m_e;
+    quint64 m_layer;
+    std::vector<Animation> m_before, m_after;
+    QString m_mergeKey;
+};
+
 } // namespace cmd

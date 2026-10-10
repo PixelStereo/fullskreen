@@ -1,4 +1,5 @@
 #pragma once
+#include "Anim.h"
 #include "AudioStream.h"
 #include "Gl.h"
 #include "Isf.h"
@@ -260,6 +261,8 @@ struct Layer {
     int rawW = 0, rawH = 0;
 
     Mapping mapping;
+    // Animations of its own numbers (one track each, on this layer): the Anim tab (see Engine::setLayerAnims)
+    std::vector<Animation> anims;
     GLuint meshVbo = 0;  // its mesh's vertices (render thread)
     Mapping meshShape;   // the mapping they were built from
 

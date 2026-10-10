@@ -1,5 +1,6 @@
 // Snapshots (cues): snapshots of the layers, recalled with a fade; another source comes in with a transition.
 #include "EngineInternal.h"
+#include "Params.h"
 #include "Osc.h"
 
 #include <QBuffer>
@@ -150,6 +151,9 @@ struct Engine::FadeJob {
     double elapsed = 0;      // its own clock: snapshots started at different times run side by side
     bool hideAtEnd = false;
     float finalOpacity = 1;
+    // Numbers a timeline or a layer's animation has driven since it started (their addresses): it leaves them where
+    // they are, so that one played after a snapshot ends where it ends, while the rest of the snapshot fades on
+    QStringList released;
 };
 
 static LayerNumbers numbersOf(const Layer &l)
@@ -535,6 +539,7 @@ QJsonArray Engine::captureLayers() const
     for (int i = 0; i < int(m_layers.size()); ++i) {
         if (m_layers[size_t(i)]->isViewport) continue; // a viewport has one state, not one per snapshot
         QJsonObject o = layerJson(i);
+        o.remove("anims"); // the layer's animations are not part of a snapshot: a recall leaves them alone
         o["included"] = true;
         a.append(o);
     }
@@ -659,7 +664,8 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
     };
     std::vector<std::shared_ptr<FadeJob>> jobs;
     for (const QJsonValue &value : layers) {
-        const QJsonObject o = value.toObject();
+        QJsonObject o = value.toObject();
+        o.remove("anims"); // not part of a snapshot
         if (!o.value("included").toBool(true) || o.value("viewport").toBool()) continue;
         const quint64 id = o.value("id").toString().toULongLong();
         int idx = indexOfId(id);
@@ -670,6 +676,7 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
             continue;
         }
         const QJsonObject cur = layerJson(idx);
+        if (cur.contains("anims")) o["anims"] = cur.value("anims"); // a new source: the layer keeps its animations
         const QJsonObject curSrc = cur.value("source").toObject(), src = o.value("source").toObject();
         const bool group = o.value("group").toBool();
         if (!group && (curSrc.value("type") != src.value("type") || curSrc.value("layer") != src.value("layer") ||
@@ -895,15 +902,27 @@ void Engine::stepFade(double dt)
             it = m_fades.erase(it);
             continue;
         }
+        std::vector<std::pair<QString, double>> keep; // what an animation drives stays as it set it
+        for (const QString &path : job.released) {
+            double v = 0;
+            if (layerNumber(*l, path, &v, nullptr, m_compSize)) keep.push_back({path, v});
+        }
         setNumbers(*l, mixNumbers(job.from, job.to, job.times, job.elapsed), job.owned);
+        for (const auto &[path, v] : keep) layerNumber(*l, path, nullptr, &v, m_compSize);
         if (job.hideAtEnd && job.elapsed >= job.times.opacity) {
             l->enabled = false;
-            l->opacity = job.finalOpacity;
+            if (!job.released.contains(QStringLiteral("opacity"))) l->opacity = job.finalOpacity;
             job.hideAtEnd = false;
             job.from.opacity = job.to.opacity = job.finalOpacity; // stays as stored while the rest moves on
         }
         it = job.elapsed < job.times.longest() ? it + 1 : m_fades.erase(it);
     }
+}
+
+void Engine::releaseFromFades(quint64 layer, const QString &path)
+{
+    for (const auto &job : m_fades)
+        if (job->id == layer && !job->released.contains(path)) job->released << path;
 }
 
 void Engine::advanceFades(double dt)

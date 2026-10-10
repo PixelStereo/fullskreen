@@ -233,52 +233,15 @@ public:
     // own period, on the time played so that it goes on without a jump across the loops). Values are absolute.
     // While a timeline plays, its values are set every frame after the snapshots' fades: they win over them.
     // Paused or stopped, it leaves its values where they are. Several timelines play side by side.
-    enum class AnimWave { Sine = 0, Triangle = 1, Saw = 2, Square = 3 };
-    enum class AnimLoop { Once = 0, Loop = 1, PingPong = 2 };
-    enum class AnimState { Stopped = 0, Playing = 1, Paused = 2 };
-    enum class AnimAction { Play = 0, Pause = 1, Stop = 2, Rewind = 3, Seek = 4, LoopMode = 5, Speed = 6 };
-    static constexpr int kAnimHold = 100; // a key's curve: holds its value until the next key
-    struct AnimKey {
-        double t = 0, v = 0; // seconds into the timeline, value
-        int curve = 0;       // towards the next key: an easing (0 linear, 1 in, 2 out, 3 in-out, 4 in cubic,
-                             // 5 out cubic) or kAnimHold
-        bool isCurrentValue = false; // the first key only: starts from the value the number has when the timeline
-                                     // starts (v is then only a placeholder), so that nothing jumps
-    };
-    struct AnimTrack {
-        quint64 layer = 0; // the layer driven (its id; 0: the composition)
-        QString param;     // the number (see animatableParams): "opacity", "spatial/rotation", "fx/<fx>/param/<name>"… (the OSC address inside the layer)
-        bool enabled = true;
-        bool oscillator = false;
-        std::vector<AnimKey> keys; // curve: sorted by time
-        AnimWave wave = AnimWave::Sine;
-        double period = 1, center = 0.5, amplitude = 0.5, phase = 0; // oscillator (phase: 0..1 of a period)
-        double valueAt(double position, double played) const; // nan: no value (a curve without keys)
-        double keyValue(size_t k) const; // a key's value (the one captured for a "current value" key)
-        // Where it is (not saved): the value read when the timeline started, for a first key "current value"
-        double captured = std::numeric_limits<double>::quiet_NaN();
-    };
-    struct Animation {
-        quint64 id = 0; // stable (sequences refer to it); given by addAnimation
-        QString name;
-        double duration = 4; // seconds of one pass
-        AnimLoop loop = AnimLoop::Loop;
-        int repeat = 0; // passes of Loop / PingPong (0: endless)
-        double speed = 1.0; // playback speed (0 to 10x; 0: frozen where it is, still playing)
-        std::vector<AnimTrack> tracks;
-        // Where it is (not saved)
-        AnimState state = AnimState::Stopped;
-        double clock = 0;      // seconds played since its start (or since its loop mode last changed)
-        bool reversed = false; // the first pass goes backwards (a loop mode changed during a ping-pong's way back)
-        double length() const; // the time it plays from the start (infinity: endless)
-        double position(double clock) const; // within the pass: 0..duration
-        double position() const { return position(clock); }
-        bool backwardsAt(double clock) const; // the pass at that clock goes from the end to the start
-        double clockAt(double position) const; // the clock giving `position` within the pass it is in now
-        // A new loop mode / repeat while it runs: it goes on from where it is, the way it goes, and the passes
-        // count from the one it is in (Once: it ends this pass, then stops — it does not jump to the end)
-        void setLoop(AnimLoop loop, int repeat);
-    };
+    using AnimWave = ::AnimWave; // the types are in Anim.h: a layer holds animations of its own numbers too
+    using AnimLoop = ::AnimLoop;
+    using AnimState = ::AnimState;
+    using AnimAction = ::AnimAction;
+    static constexpr int kAnimHold = ::kAnimHold;
+    static constexpr int kAnimBezier = ::kAnimBezier;
+    using AnimKey = ::AnimKey;
+    using AnimTrack = ::AnimTrack;
+    using Animation = ::Animation;
     struct AnimParam {
         QString path, label;
         double min = 0, max = 1;
@@ -296,7 +259,27 @@ public:
     // The numbers of a layer (0: the composition) a timeline can drive, with their ranges
     std::vector<AnimParam> animatableParams(quint64 layer) const;
     bool animParamValue(quint64 layer, const QString &path, double *value) const;
-    void stepAnimations(double dt); // the timelines playing move on and set their values (lock held)
+    void stepAnimations(double dt); // the layers' animations, then the timelines, move on and set their values (lock held)
+
+    // --- Animations of a layer's numbers (Layer::anims, the Anim tab of the inspector): each one drives one number of
+    // its layer (its single track, on that layer) with its own duration, loop, speed and transport. One that is on
+    // plays from the moment it is made (and when the project is opened); off, it leaves its number where it is. They
+    // are set every frame after the snapshots' fades and before the timelines (a timeline playing the same number
+    // wins), on a locked layer too (they are its content). They belong to the layer (saved, duplicated, undone with
+    // it), not to the snapshots: a recall leaves them as they are.
+    std::vector<Animation> layerAnims(quint64 layer) const;
+    bool layerAnim(quint64 layer, const QString &param, Animation *a) const; // false: that number is not animated
+    // The layer's whole list: an animation already there (the same number) goes on from where it is; one that is new,
+    // or turned on, starts from the beginning; one turned off stops
+    void setLayerAnims(quint64 layer, const std::vector<Animation> &anims);
+    // How its card is shown (pinned at the top of the Anim tab, folded): saved, not an edit (setLayerAnims keeps them)
+    void setLayerAnimView(quint64 layer, const QString &param, bool pinned, bool folded);
+    // Its transport (as controlAnimation; LoopMode takes `loop` and `repeat`)
+    void controlLayerAnim(quint64 layer, const QString &param, AnimAction action, double time = 0,
+                          AnimLoop loop = AnimLoop::Loop, int repeat = 0);
+    // A new animation of a number, as the Animate menu makes it: a wave (`wave`: an AnimWave) around the number's
+    // value, or (`wave` < 0) keys starting from it. Not added: see setLayerAnims.
+    Animation makeLayerAnim(quint64 layer, const QString &param, int wave) const;
 
     // --- Sequences: ordered steps, each recalling a snapshot or driving a timeline (and carrying a text for the
     // operator), played by GO / GO BACK. Several sequences; one is current. Saved with the project; the position is not.
@@ -495,6 +478,7 @@ signals:
     void sequencesChanged();        // their contents
     void sequencePositionChanged(); // current sequence or step
     void animationsChanged();       // the timelines' contents (not their transport)
+    void layerAnimsChanged(quint64 layer); // the animations of a layer's numbers (their contents, not their transport)
     void snapshotRecalled(int index);
     void frameRendered(); // emitted from the render thread, at most once per frame displayed by the UI
 
@@ -670,10 +654,15 @@ private:
     std::vector<Animation> m_animations;
     quint64 m_nextAnimationId = 1;
     void applyAnimation(Animation &a); // sets its values where it is (lock held)
-    void controlLocked(Animation *a, AnimAction action, double time, AnimLoop loop, int repeat);
+    // owner: the layer of one of its own animations (its values are set on it even when it is locked)
+    void controlLocked(Animation *a, AnimAction action, double time, AnimLoop loop, int repeat, Layer *owner = nullptr);
+    void applyLayerAnim(Layer &l, Animation &a); // sets its value where it is (lock held)
+    // A number of a layer an animation sets: the snapshots' fades running leave it to it from now on (lock held)
+    void releaseFromFades(quint64 layer, const QString &path);
     bool setAnimParam(quint64 layer, const QString &path, double v); // lock held
     QJsonArray animationsToJson() const;
     void animationsFromJson(const QJsonArray &a);
+    void startLayerAnim(Animation &a); // from the start: the "current value" keys read now (lock held)
     std::vector<Sequence> m_sequences;
     int m_currentSequence = -1, m_sequencePosition = -1;
     std::vector<StepRun> m_runs; // of the current sequence

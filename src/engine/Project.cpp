@@ -282,6 +282,11 @@ QJsonObject Engine::layerToJson(const Layer &l, const QString &projectDir) const
     o["fx_enable"] = l.effectsEnabled;
     o["color_models"] = l.colorModels;
     o["spatial"] = l.mapping.toJson();
+    if (!l.anims.empty()) {
+        QJsonArray anims;
+        for (const Animation &a : l.anims) anims.append(layerAnimToJson(a));
+        o["anims"] = anims;
+    }
     return o;
 }
 
@@ -411,7 +416,18 @@ void Engine::layerFromJson(int index, const QJsonObject &o, const QString &proje
     }
     // The mapping is restored after the source (which would otherwise auto-adjust the aspect ratio).
     Lock lk(&m_mutex);
-    layer(index)->mapping.fromJson(o.value("spatial").toObject());
+    Layer *l = layer(index);
+    l->mapping.fromJson(o.value("spatial").toObject());
+    // Its animations, once its numbers are all there: the ones that are on play from the start
+    l->anims.clear();
+    for (const QJsonValue &v : o.value("anims").toArray()) {
+        const Animation a = layerAnimFromJson(v.toObject(), l->id);
+        const QString &param = a.tracks.front().param;
+        const bool twice = std::any_of(l->anims.begin(), l->anims.end(), [&](const Animation &x) { return x.tracks.front().param == param; });
+        if (!param.isEmpty() && !twice) l->anims.push_back(a);
+    }
+    for (Animation &a : l->anims)
+        if (a.tracks.front().enabled) startLayerAnim(a);
 }
 
 bool Engine::saveProject(const QString &path, const QJsonObject &uiState, QString *err)

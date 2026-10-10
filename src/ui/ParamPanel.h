@@ -6,6 +6,7 @@
 class Engine;
 class QUndoStack;
 class SliderField;
+class AnimateMenu;
 struct IsfValue;
 
 // Parameter panel generated automatically from the INPUTS of an ISF shader.
@@ -18,6 +19,8 @@ public:
 
     // Shows the current values (a snapshot fading them, OSC), except in the field being edited
     void refresh();
+    // A right-click on a parameter offers to animate it (its numbers, and the shader's speed)
+    void attachAnimate(AnimateMenu *menu);
 
 signals:
     void rebuildRequested();
@@ -30,4 +33,11 @@ private:
     int m_layer, m_slot;
     SliderField *m_speed = nullptr;
     std::vector<std::pair<int, std::function<void(const IsfValue &)>>> m_followers; // input, shows its value
+    // The widgets of each number (its name, its field; a point's x and y fields), for the Animate menu
+    struct Row {
+        QString input;              // the input's name ("" : the speed)
+        std::vector<QWidget *> all; // the name and the whole field: every number of the input
+        QWidget *x = nullptr, *y = nullptr;
+    };
+    std::vector<Row> m_rows;
 };

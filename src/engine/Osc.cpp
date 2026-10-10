@@ -334,6 +334,8 @@ QString OscNamespace::signature() const
         };
         isf(l->generator.get());
         for (const auto &fx : l->effects) isf(fx.get());
+        for (const Animation &a : l->anims)
+            if (!a.tracks.empty()) s += QStringLiteral("anim:") + a.tracks.front().param + ',';
         s += '\n';
     }
     for (int i = 0; i < m_e->snapshotCount(); ++i) s += QStringLiteral("snapshot:") + m_e->snapshot(i).name + '\n';
@@ -1379,6 +1381,58 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      e->setLayerMuted(idx, truth(a.value(0)));
                      return true;
                  });
+    }
+    // Its animations (the Anim tab): /anim/<the number's address>/enable, speed, rewind
+    {
+        QStringList params;
+        {
+            Engine::Lock lk(&e->mutex());
+            if (Layer *l = find(e, id))
+                for (const Animation &a : l->anims)
+                    if (!a.tracks.empty()) params << a.tracks.front().param;
+        }
+        if (!params.isEmpty()) add(P + "/anim", QString(), 0, "Animations");
+        for (const QString &param : params) {
+            QStringList segs = param.split('/');
+            for (QString &x : segs) x = osc::safeName(x);
+            const QString A = P + "/anim/" + segs.join('/');
+            auto anim = [param](Layer &l) -> const Animation * {
+                for (const Animation &a : l.anims)
+                    if (!a.tracks.empty() && a.tracks.front().param == param) return &a;
+                return nullptr;
+            };
+            L.method(A + "/enable", "T", 3, "On",
+                     [anim](Layer &l) {
+                         const Animation *a = anim(l);
+                         return a ? QVariantList{a->tracks.front().enabled} : QVariantList();
+                     },
+                     [e, id, param](int, const QVariantList &a) {
+                         std::vector<Animation> list = e->layerAnims(id);
+                         bool found = false;
+                         for (Animation &x : list)
+                             if (x.tracks.front().param == param) x.tracks.front().enabled = truth(a.value(0)), found = true;
+                         if (found) e->setLayerAnims(id, list);
+                         return found;
+                     });
+            OscNode &sp = L.method(A + "/speed", "f", 3, "Speed (1 = normal)",
+                                   [anim](Layer &l) {
+                                       const Animation *a = anim(l);
+                                       return a ? QVariantList{a->speed} : QVariantList();
+                                   },
+                                   [e, id, param](int, const QVariantList &a) {
+                                       if (a.isEmpty() || !e->layerAnim(id, param, nullptr)) return false;
+                                       e->controlLayerAnim(id, param, AnimAction::Speed, num(a[0]));
+                                       return true;
+                                   });
+            sp.range = {minMax(0, 10)};
+            sp.clip = "both";
+            L.method(A + "/rewind", "N", 2, "Rewind (from the start)", nullptr, [e, id, param](int, const QVariantList &) {
+                if (!e->layerAnim(id, param, nullptr)) return false;
+                e->controlLayerAnim(id, param, AnimAction::Rewind);
+                return true;
+            });
+            m_nodes[A].description = param;
+        }
     }
     if (isGroup) add(P + "/layer", QString(), 0, "Layers");
     // Readable names of the containers

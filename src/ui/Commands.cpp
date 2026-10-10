@@ -426,4 +426,19 @@ void RemoveAnimation::redo()
     }
 }
 
+SetLayerAnims::SetLayerAnims(Engine *e, quint64 layer, const std::vector<Animation> &before, const std::vector<Animation> &after,
+                             const QString &text, const QString &mergeKey)
+    : m_e(e), m_layer(layer), m_before(before), m_after(after), m_mergeKey(mergeKey)
+{
+    setText(text);
+}
+
+bool SetLayerAnims::mergeWith(const QUndoCommand *other)
+{
+    const auto *o = static_cast<const SetLayerAnims *>(other); // same id(): a SetLayerAnims
+    if (o->m_layer != m_layer || o->m_mergeKey != m_mergeKey) return false;
+    m_after = o->m_after;
+    return true;
+}
+
 } // namespace cmd

@@ -61,6 +61,7 @@ add_library(fulskrin_engine STATIC
   src/engine/Snapshots.cpp
   src/engine/Sequences.cpp
   src/engine/Animations.cpp
+  src/engine/Params.cpp
 )
 target_include_directories(fulskrin_engine PUBLIC src/engine)
 target_link_libraries(fulskrin_engine PUBLIC Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::Network ffmpeg)
@@ -180,6 +181,8 @@ set(APP_SOURCES
   src/ui/SettingsPanel.cpp
   src/ui/SnapshotPanel.cpp
   src/ui/SequencePanel.cpp
+  src/ui/AnimEditor.cpp
+  src/ui/ParamAnimPanel.cpp
   src/ui/TimelinePanel.cpp
   src/ui/Widgets.cpp
 )

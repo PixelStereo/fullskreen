@@ -25,13 +25,16 @@ class ColorEditor;
 class QComboBox;
 class QGroupBox;
 class ParamPanel;
+class ParamAnimPanel;
+class AnimateMenu;
+class QTabWidget;
 class ViewportOutputPanel;
 
 // Inspector for the selected layer, group or viewport, in sub-tabs: Source (drop zone, transport, sound, generator
-// parameters, roi), Color (added / removed), Spatial (mapping), Effects (ISF chain), Compositing (opacity, blend,
-// the viewports it appears in), and for a viewport, Output (size, screen, publishing).
+// parameters), ROI, Color (added / removed), Spatial (mapping), FX (ISF chain), Compositing (opacity, blend, the
+// viewports it appears in), Anim (the animations of its numbers), and for a viewport, Output (size, screen, publishing).
 // All edits go through the undo stack. A locked layer shows its settings without allowing edits
-// (the transport stays available). A click on a parameter's name resets it.
+// (the transport stays available). A click on a parameter's name resets it; a right-click animates it.
 class LayerInspector : public QWidget
 {
     Q_OBJECT
@@ -65,6 +68,7 @@ private:
     void editEffects(const QString &text, const std::function<void()> &op);
     void editSource(const QString &text, const std::function<void()> &op);
     void setProp(int prop, const QVariant &value);
+    void showAnimation(const QString &param); // the Anim tab, that number's card unfolded
 
     Engine *m_engine;
     QUndoStack *m_undo;
@@ -98,6 +102,12 @@ private:
     QPointer<QProgressBar> m_meter;
     QPointer<QLabel> m_codecFact, m_pictureFact; // known once frames are decoded: kept up to date
     QPointer<ViewportOutputPanel> m_output;
+    QPointer<QTabWidget> m_tabs;
+    QPointer<AnimateMenu> m_animate; // right-click on a number: Animate
+    QPointer<ParamAnimPanel> m_anims; // the Anim tab
+    int m_animTab = -1;
+    QStringList m_animated; // the numbers animated when the tabs were built (a ∿ by their names)
+    QString m_revealAnim;   // the card to show once rebuilt
     QPointer<QDoubleSpinBox> m_posX, m_posY, m_scaleX, m_scaleY, m_rotation, m_pivotX, m_pivotY;
     bool m_scaleLinked = true;
     bool m_sizePx = false; // a viewport: width and height in composition pixels (a layer: scale in %)

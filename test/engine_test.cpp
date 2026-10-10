@@ -3,6 +3,7 @@
 #include "Engine.h"
 #include "LayerTree.h"
 #include "Osc.h"
+#include "Params.h"
 #include "Zeroconf.h"
 #include <QJsonArray>
 #include <QTcpSocket>
@@ -1623,6 +1624,188 @@ int main(int argc, char **argv)
             e.removeSequence(e.currentSequence());
             e.removeAnimation(e.indexOfAnimation(aid));
             e.removeLayer(e.indexOfId(tid));
+            e.setFadesManual(false);
+        }
+        // Waves that are random, and keys joined by Bézier curves
+        {
+            auto near = [](double a, double b) { return std::abs(a - b) < 1e-3; };
+            Engine::AnimTrack r;
+            r.oscillator = true;
+            r.wave = Engine::AnimWave::Random;
+            r.period = 1;
+            r.center = 0;
+            r.amplitude = 1;
+            r.seed = 7;
+            const double r0 = r.valueAt(0, 0.1), r1 = r.valueAt(0, 1.1);
+            CHECK(near(r.valueAt(0, 0.9), r0) && std::abs(r0) <= 1 && std::abs(r1) <= 1 && !near(r0, r1)); // held, then another
+            CHECK(near(r.valueAt(0, 1.1), r1)); // the same at the same time: drawn and sought alike
+            Engine::AnimTrack r2 = r;
+            r2.seed = 8;
+            CHECK(!near(r2.valueAt(0, 0.1), r0));
+            r.wave = Engine::AnimWave::SmoothRandom; // from one value to the next, without a jump
+            CHECK(near(r.valueAt(0, 0.0), r0) && near(r.valueAt(0, 0.9999), r1) && near(r.valueAt(0, 1.0), r1));
+            Engine::AnimTrack b;
+            b.keys = {{0, 0, Engine::kAnimBezier}, {2, 1, 0}};
+            // Automatic handles: flat, a third of the way — an S, symmetric
+            CHECK(near(b.valueAt(1, 0), 0.5) && b.valueAt(0.5, 0) < 0.2 && b.valueAt(1.5, 0) > 0.8);
+            b.keys[0].outDt = 0.5;
+            b.keys[0].outDv = 2; // a handle pulled up: it rises fast, beyond the linear way
+            CHECK(b.valueAt(0.5, 0) > 0.4);
+            double t1, v1, t2, v2;
+            b.keys[0].outDt = 5; // never beyond the next key: the curve stays a function of time
+            b.bezierHandles(0, &t1, &v1, &t2, &v2);
+            CHECK(near(t1, 2) && near(t2, 2 - 2.0 / 3) && near(v2, 1));
+        }
+        // The animations of a layer's numbers: each one on its own clock, on as soon as it is made, saved with the layer
+        {
+            using A = Engine::AnimAction;
+            e.setFadesManual(true);
+            auto near = [](double a, double b) { return std::abs(a - b) < 1e-3; };
+            const quint64 wid = e.layerId(e.addLayer("Wave", V));
+            auto L = [&] { return e.layer(e.indexOfId(wid)); };
+            L()->opacity = 1.0f;
+            // Declared once: what can be animated is an attribute of each number
+            {
+                Engine::Lock lk(&e.mutex());
+                const std::vector<NumberParam> nums = layerNumbers(*L(), e.compositionSize());
+                QStringList paths;
+                for (const NumberParam &n : nums) paths << n.path;
+                CHECK(paths.contains("opacity") && paths.contains("spatial/soft_edge/left/width") && paths.contains("roi/left") &&
+                      !paths.contains("source/volume") && !paths.contains("spatial/width")); // no sound, not a viewport
+                double v = 2, got = 0;
+                CHECK(layerNumber(*L(), "opacity", nullptr, &v, e.compositionSize()) && layerNumber(*L(), "opacity", &got, nullptr, e.compositionSize()) &&
+                      near(got, 1)); // kept within its limits
+                CHECK(!layerNumber(*L(), "spatial/width", &got, nullptr, e.compositionSize()));
+            }
+            // A sine around the value, from Animate ▸ Sine
+            Engine::Animation s = e.makeLayerAnim(wid, "opacity", int(Engine::AnimWave::Sine));
+            CHECK(s.tracks.size() == 1 && s.tracks[0].oscillator && s.tracks[0].layer == wid &&
+                  s.tracks[0].center - s.tracks[0].amplitude >= -1e-9 && s.tracks[0].center + s.tracks[0].amplitude <= 1 + 1e-9 &&
+                  s.tracks[0].amplitude > 0.1); // at a bound: the whole range
+            s.tracks[0].center = 0.5;
+            s.tracks[0].amplitude = 0.5;
+            s.tracks[0].period = 2;
+            e.setLayerAnims(wid, {s});
+            Engine::Animation now;
+            CHECK(e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Playing);
+            e.advanceFades(0.5);
+            CHECK(near(L()->opacity, 1.0));
+            e.advanceFades(1.0);
+            CHECK(near(L()->opacity, 0.0));
+            // An edit goes on from where it is (no restart)
+            s.tracks[0].amplitude = 0.25;
+            e.setLayerAnims(wid, {s});
+            CHECK(e.layerAnim(wid, "opacity", &now) && near(now.clock, 1.5) && now.state == Engine::AnimState::Playing);
+            // Off: the number stays where it is; on again: from the start
+            s.tracks[0].enabled = false;
+            e.setLayerAnims(wid, {s});
+            L()->opacity = 0.3f;
+            e.advanceFades(0.5);
+            CHECK(near(L()->opacity, 0.3));
+            s.tracks[0].enabled = true;
+            e.setLayerAnims(wid, {s});
+            CHECK(e.layerAnim(wid, "opacity", &now) && near(now.clock, 0) && near(L()->opacity, 0.5));
+            // One animation per number; keys from where the number is, out and back
+            Engine::Animation k = e.makeLayerAnim(wid, "spatial/rotation", -1);
+            CHECK(!k.tracks[0].oscillator && k.tracks[0].keys.size() == 3 && near(k.tracks[0].keys[0].v, 0));
+            e.setLayerAnims(wid, {s, k, s});
+            CHECK(e.layerAnims(wid).size() == 2);
+            // Its transport, and the view of its card (not an edit: kept by the next edit)
+            e.controlLayerAnim(wid, "opacity", A::Pause);
+            CHECK(e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Paused);
+            e.setLayerAnimView(wid, "opacity", true, true);
+            e.setLayerAnims(wid, {s, k});
+            CHECK(e.layerAnim(wid, "opacity", &now) && now.pinned && now.folded);
+            e.controlLayerAnim(wid, "opacity", A::Play);
+            // A locked layer: its animations play on (they are its content)
+            L()->locked = true;
+            e.advanceFades(0.5);
+            CHECK(near(L()->opacity, 0.75));
+            L()->locked = false;
+            // Undo: one step per edit, the arrows of a number merge
+            {
+                QUndoStack st;
+                const std::vector<Engine::Animation> b0 = e.layerAnims(wid);
+                std::vector<Engine::Animation> b1 = b0, b2 = b0;
+                b1[0].speed = 2;
+                b2[0].speed = 3;
+                st.push(new cmd::SetLayerAnims(&e, wid, b0, b1, "Speed", "opacity|speed"));
+                st.push(new cmd::SetLayerAnims(&e, wid, b1, b2, "Speed", "opacity|speed"));
+                CHECK(st.count() == 1 && e.layerAnim(wid, "opacity", &now) && near(now.speed, 3));
+                st.undo();
+                CHECK(e.layerAnim(wid, "opacity", &now) && near(now.speed, 1));
+            }
+            // OSC: /layer/<name>/anim/<the number>/enable, speed, rewind
+            {
+                OscServer server(&e);
+                CHECK(server.handleMessage({"/layer/Wave/anim/opacity/speed", "f", {0.5}}) && e.layerAnim(wid, "opacity", &now) &&
+                      near(now.speed, 0.5));
+                CHECK(server.handleMessage({"/layer/Wave/anim/spatial/rotation/enable", "F", {false}}) &&
+                      e.layerAnim(wid, "spatial/rotation", &now) && !now.tracks[0].enabled);
+                CHECK(server.handleMessage({"/layer/Wave/anim/opacity/rewind", "N", {}}) && e.layerAnim(wid, "opacity", &now) &&
+                      near(now.clock, 0));
+                CHECK(!server.handleMessage({"/layer/Wave/anim/roi/left/enable", "T", {true}}));
+            }
+            // Saved with the layer: duplicated with it (on the copy), and back when the project is opened
+            const QJsonObject lj = e.layerJson(e.indexOfId(wid));
+            CHECK(lj.value("anims").toArray().size() == 2 &&
+                  lj.value("anims").toArray().at(0).toObject().value("param").toString() == "opacity" &&
+                  lj.value("anims").toArray().at(0).toObject().value("pinned").toBool());
+            const int copy = e.duplicateLayer(e.indexOfId(wid));
+            CHECK(copy >= 0 && e.layerAnims(e.layerId(copy)).size() == 2 &&
+                  e.layerAnims(e.layerId(copy))[0].tracks[0].layer == e.layerId(copy));
+            e.removeLayer(copy);
+            // Not part of a snapshot: a recall leaves them as they are
+            const QJsonArray cap = e.captureLayers();
+            for (const QJsonValue &x : cap) CHECK(!x.toObject().contains("anims"));
+            CHECK(e.saveProject(tmp + "/anims.fulskrin", {}, &err));
+            CHECK(e.loadProject(tmp + "/anims.fulskrin", nullptr, &err));
+            CHECK(e.layerAnims(wid).size() == 2 && e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Playing &&
+                  near(now.speed, 0.5) && now.tracks[0].layer == wid && e.layerAnim(wid, "spatial/rotation", &now) &&
+                  !now.tracks[0].enabled && now.state == Engine::AnimState::Stopped && now.tracks[0].keys.size() == 3);
+            e.removeLayer(e.indexOfId(wid));
+            e.setFadesManual(false);
+        }
+        // A snapshot, then a timeline on one of its numbers: the timeline ends where it ends, the rest fades on
+        {
+            using A = Engine::AnimAction;
+            e.setFadesManual(true);
+            auto near = [](double a, double b) { return std::abs(a - b) < 1e-3; };
+            const quint64 lid = e.layerId(e.addLayer("Chained", V));
+            auto L = [&] { return e.layer(e.indexOfId(lid)); };
+            L()->opacity = 1.0f;
+            L()->color.temp = 0;
+            QJsonObject state = e.layerJson(e.indexOfId(lid));
+            state["opacity"] = 0.0;
+            state["color"] = QJsonObject{{"temp", 1000.0}};
+            e.applyLayers(QJsonArray{state}, 4.0); // a slow fade: opacity to 0, temperature to 1000
+            e.advanceFades(0.5);
+            Engine::Animation t;
+            t.name = "Up";
+            t.duration = 1;
+            t.loop = Engine::AnimLoop::Once;
+            Engine::AnimTrack tr;
+            tr.layer = lid;
+            tr.param = "opacity";
+            tr.keys = {{0, 0.2, 0}, {1, 0.6, 0}};
+            t.tracks = {tr};
+            const quint64 tid = e.animation(e.addAnimation(t)).id;
+            e.controlAnimation(tid, A::Play);
+            e.advanceFades(0.5);
+            CHECK(near(L()->opacity, 0.4));
+            e.advanceFades(1.0); // over
+            CHECK(near(L()->opacity, 0.6) && e.animation(e.indexOfAnimation(tid)).state == Engine::AnimState::Stopped);
+            e.advanceFades(1.0); // the snapshot's fade goes on, but not on the opacity any more
+            CHECK(near(L()->opacity, 0.6) && L()->color.temp > 600 && L()->color.temp < 999);
+            e.advanceFades(2.0);
+            CHECK(near(L()->opacity, 0.6) && near(L()->color.temp, 1000));
+            // A snapshot recalled afterwards drives it again
+            state["opacity"] = 1.0;
+            e.applyLayers(QJsonArray{state}, 1.0);
+            e.advanceFades(1.0);
+            CHECK(near(L()->opacity, 1.0));
+            e.removeAnimation(e.indexOfAnimation(tid));
+            e.removeLayer(e.indexOfId(lid));
             e.setFadesManual(false);
         }
         // A recall shows what was stored: a layer the snapshot does not know fades out and is hidden

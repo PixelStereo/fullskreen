@@ -20,6 +20,9 @@ double easeCurve(double t, int curve);
 // Keys of a timeline's loop mode in a project ("once", "loop", "pingpong")
 QString animLoopKey(Engine::AnimLoop l);
 Engine::AnimLoop animLoopFromKey(const QString &k);
+// A layer's animation of one of its numbers in its layer state ("anims"): its number, transport, keys, oscillator
+QJsonObject layerAnimToJson(const Animation &a);
+Animation layerAnimFromJson(const QJsonObject &o, quint64 layer);
 
 struct Engine::Garbage {
     std::unique_ptr<VideoDecoder> video;

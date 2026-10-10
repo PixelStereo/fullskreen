@@ -1,6 +1,7 @@
 #include "LayerInspector.h"
 #include "Commands.h"
 #include "Engine.h"
+#include "ParamAnimPanel.h"
 #include "ParamPanel.h"
 #include "SettingsPanel.h"
 #include "ViewportOutput.h"
@@ -275,7 +276,28 @@ LayerInspector::LayerInspector(Engine *engine, QUndoStack *undo, QWidget *parent
 {
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(8, 8, 8, 8);
+    // A number animated or no longer: the tabs again (the ∿ by its name); an edit of an animation: its card follows
+    connect(engine, &Engine::layerAnimsChanged, this, [this](quint64 layer) {
+        if (layer != m_layerId) return;
+        QStringList now;
+        for (const Animation &a : m_engine->layerAnims(layer))
+            if (!a.tracks.empty()) now << a.tracks.front().param;
+        if (now != m_animated) QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+    });
     rebuild();
+}
+
+void LayerInspector::showAnimation(const QString &param)
+{
+    QStringList now;
+    for (const Animation &a : m_engine->layerAnims(m_layerId))
+        if (!a.tracks.empty()) now << a.tracks.front().param;
+    if (now != m_animated) { // just made: shown once the tabs are built again
+        m_revealAnim = param;
+        return;
+    }
+    if (m_tabs && m_animTab >= 0) m_tabs->setCurrentIndex(m_animTab);
+    if (m_anims) m_anims->reveal(param);
 }
 
 void LayerInspector::setLayer(int index)
@@ -354,6 +376,10 @@ void LayerInspector::rebuild()
 
     m_layerId = s.id;
     m_locked = s.locked || s.lockedByGroup;
+    m_animated.clear();
+    for (const Animation &a : m_engine->layerAnims(s.id))
+        if (!a.tracks.empty()) m_animated << a.tracks.front().param;
+    m_animate = new AnimateMenu(m_engine, m_undo, s.id, [this](const QString &p) { showAnimation(p); }, m_content);
     const QString kind = s.isViewport ? QStringLiteral("Viewport") : s.isGroup ? QStringLiteral("Group") : QStringLiteral("Layer");
     emit kindChanged(kind);
     // Header: visibility, lock, name
@@ -415,6 +441,16 @@ void LayerInspector::rebuild()
     tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
     tabs->addTab(page(buildEffects(s)), QStringLiteral("FX"));
     tabs->addTab(page(buildCompositing(s)), QStringLiteral("Compositing"));
+    m_anims = new ParamAnimPanel(m_engine, m_undo, s.id);
+    connect(m_anims, &ParamAnimPanel::projectEdited, this, &LayerInspector::projectEdited);
+    {
+        auto *w = new QWidget; // no stretch below: the cards that are not pinned scroll in the room left
+        auto *av = new QVBoxLayout(w);
+        av->setContentsMargins(0, 6, 0, 0);
+        av->addWidget(m_anims, 1);
+        m_animTab = tabs->addTab(w, m_animated.isEmpty() ? QStringLiteral("Anim") : QStringLiteral("Anim (%1)").arg(m_animated.size()));
+        tabs->setTabToolTip(m_animTab, QStringLiteral("The animations of this layer's numbers (right-click a parameter › Animate)"));
+    }
     m_output = nullptr;
     if (s.isViewport) { // its size, screen and publishing
         m_output = new ViewportOutputPanel(m_engine, s.id);
@@ -426,15 +462,22 @@ void LayerInspector::rebuild()
     name->setEnabled(!m_locked);
     if (s.type == SourceType::Audio) { // a sound has no picture: no color, mapping, effects or compositing
         for (int t = 1; t < tabs->count(); ++t) {
+            if (t == m_animTab) continue; // its volume and speed can be animated
             tabs->setTabEnabled(t, false);
             tabs->setTabToolTip(t, QStringLiteral("An audio layer has no picture"));
         }
     }
+    m_tabs = tabs;
+    if (!m_revealAnim.isEmpty()) m_subTab = m_animTab;
     tabs->setCurrentIndex(tabs->isTabEnabled(m_subTab) ? m_subTab : 0);
     connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int i) {
         if (tabs->isTabEnabled(i)) m_subTab = i;
     });
     v->addWidget(tabs, 1);
+    if (!m_revealAnim.isEmpty()) {
+        m_anims->reveal(m_revealAnim);
+        m_revealAnim.clear();
+    }
     refreshDynamic();
 }
 
@@ -674,6 +717,15 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
             style(QStringLiteral("Text Outline"), [x](Layer &l) { l.text.outline = float(x); });
         });
 
+        for (auto [field, path] : std::initializer_list<std::pair<QWidget *, const char *>>{
+                 {size, "source/text/size"}, {lineSp, "source/text/line_height"},
+                 {letterSp, "source/text/letter_spacing"}, {outline, "source/text/outline"}})
+            m_animate->attach(field, {QString::fromLatin1(path)});
+        m_animate->attach(fmt->labelForField(colorRow), {QStringLiteral("source/text/size")});
+        m_animate->attach(fmt->labelForField(lineSp), {QStringLiteral("source/text/line_height")});
+        m_animate->attach(fmt->labelForField(letterSp), {QStringLiteral("source/text/letter_spacing")});
+        m_animate->attach(fmt->labelForField(outlineRow), {QStringLiteral("source/text/outline")});
+
         // Shadow
         auto *shadow = new FlagBox(QStringLiteral("Enable"));
         shadow->setChecked(s.text.shadow);
@@ -687,6 +739,9 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         shadowRow->addWidget(sx);
         shadowRow->addWidget(sy);
         fmt->addRow(QStringLiteral("Shadow"), shadowRow);
+        m_animate->attach(sx, {QStringLiteral("source/text/shadow/x")});
+        m_animate->attach(sy, {QStringLiteral("source/text/shadow/y")});
+        m_animate->attach(fmt->labelForField(shadowRow), {QStringLiteral("source/text/shadow/x"), QStringLiteral("source/text/shadow/y")});
         connect(shadow, &QCheckBox::toggled, this, [style](bool on) {
             style(QStringLiteral("Text Shadow"), [on](Layer &l) { l.text.shadow = on; });
         });
@@ -938,6 +993,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
             l->setStyleSheet("color:#8a8a8e;");
             l->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
             bars->addWidget(l, row, 0);
+            return l;
         };
 
         m_position = new SliderField;
@@ -963,7 +1019,9 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         m_speed->setSnaps({-200, -100, 0, 100, 200});
         m_speed->setValue(s.speed * 100);
         m_speed->setToolTip(QStringLiteral("Playback speed — below 0 the media plays backwards, 100 % is its own rate"));
-        barLabel(1, QStringLiteral("Speed"), [this] { setProp(cmd::SetLayerProp::Speed, 1.0); m_speed->setValue(100); });
+        m_animate->attach({barLabel(1, QStringLiteral("Speed"), [this] { setProp(cmd::SetLayerProp::Speed, 1.0); m_speed->setValue(100); }),
+                           m_speed},
+                          {QStringLiteral("source/speed")});
         bars->addWidget(m_speed, 1, 1);
 
         m_loop = new RangeField;
@@ -1034,6 +1092,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         row->addWidget(icon);
         row->addWidget(vol, 1);
         row->addWidget(mute);
+        m_animate->attach({icon, vol}, {QStringLiteral("source/volume")});
         v->addLayout(row);
         m_meter = new QProgressBar;
         m_meter->setRange(0, 600);
@@ -1089,6 +1148,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         });
         auto *params = new ParamPanel(m_engine, m_undo, m_layer, -1);
         m_generatorParams = params;
+        params->attachAnimate(m_animate);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
     }
@@ -1113,6 +1173,7 @@ QWidget *LayerInspector::buildRoi(const LayerValues &s)
     m_roi->setAspect(s.aspect);
     m_roi->setRoi(s.roi);
     v->addWidget(m_roi);
+    m_animate->attach({title, m_roi.data()}, {"roi/left", "roi/top", "roi/right", "roi/bottom"});
     auto *grid = new QGridLayout;
     grid->setHorizontalSpacing(8);
     grid->setVerticalSpacing(4);
@@ -1136,6 +1197,7 @@ QWidget *LayerInspector::buildRoi(const LayerValues &s)
         name->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         grid->addWidget(name, k, 0);
         grid->addWidget(bar, k, 1);
+        m_animate->attach({name, bar}, k == 0 ? QStringList{"roi/left", "roi/right"} : QStringList{"roi/top", "roi/bottom"});
     }
     v->addLayout(grid);
     auto apply = [this](const QRectF &r) {
@@ -1240,17 +1302,17 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
         auto *grid = new QGridLayout(box);
         grid->addWidget(new QLabel(QStringLiteral("<b>Balance</b>")), 0, 0, 1, 4);
         struct Def {
-            const char *name;
+            const char *name, *path;
             double range, value;
             QGradientStops gradient;
             int prop;
             QPointer<SliderField> *field;
             bool on;
             int onProp;
-        } defs[] = {{"Temp", ColorAdjust::kTempRange, s.color.temp,
+        } defs[] = {{"Temp", "color/temp", ColorAdjust::kTempRange, s.color.temp,
                      {{0.0, QColor("#3a7bff")}, {0.5, QColor("#888888")}, {1.0, QColor("#ffd23a")}},
                      cmd::SetLayerProp::Temp, &m_temp, s.color.tempOn, cmd::SetLayerProp::TempOn},
-                    {"Tint", ColorAdjust::kTintRange, s.color.tint,
+                    {"Tint", "color/tint", ColorAdjust::kTintRange, s.color.tint,
                      {{0.0, QColor("#2fd04a")}, {0.5, QColor("#888888")}, {1.0, QColor("#e03ce0")}},
                      cmd::SetLayerProp::Tint, &m_tint, s.color.tintOn, cmd::SetLayerProp::TintOn}};
         int row = 1;
@@ -1270,12 +1332,13 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
             const int onProp = d.onProp;
             connect(on, &QCheckBox::toggled, this, [this, onProp](bool v) { setProp(onProp, v); });
             grid->addWidget(on, row, 0);
-            grid->addWidget(new ResetLabel(QString::fromUtf8(d.name), [bar] {
-                                bar->setValue(0);
-                                emit bar->valueEdited(0);
-                            }),
-                            row, 1);
+            auto *name = new ResetLabel(QString::fromUtf8(d.name), [bar] {
+                bar->setValue(0);
+                emit bar->valueEdited(0);
+            });
+            grid->addWidget(name, row, 1);
             grid->addWidget(bar, row, 2, 1, 2);
+            m_animate->attach({name, bar}, {QString::fromLatin1(d.path)});
             connect(bar, &SliderField::valueEdited, this, [this, prop](double x) { setProp(prop, x); });
             ++row;
         }
@@ -1321,6 +1384,8 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
         v->addWidget(frame);
         ed->setModels(s.colorModels);
     }
+    m_animate->attach(m_colorAdd, {"color/add/r", "color/add/g", "color/add/b"});
+    m_animate->attach(m_colorRemove, {"color/remove/r", "color/remove/g", "color/remove/b"});
     m_colorAdd->setSwitch(true, s.color.addOn, QStringLiteral("Apply the added color (it is kept either way)"));
     m_colorRemove->setSwitch(true, s.color.removeOn, QStringLiteral("Apply the removed color (it is kept either way)"));
     connect(m_colorAdd, &ColorEditor::colorEdited, this, [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorAdd, c); });
@@ -1345,11 +1410,12 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
     opacity->setSnaps({100});
     opacity->setValue(s.opacity * 100);
     m_opacity = opacity;
-    form->addRow(new ResetLabel(QStringLiteral("Opacity"), [this, opacity] {
-                     opacity->setValue(100);
-                     setProp(cmd::SetLayerProp::Opacity, 1.0);
-                 }),
-                 opacity);
+    auto *opacityLabel = new ResetLabel(QStringLiteral("Opacity"), [this, opacity] {
+        opacity->setValue(100);
+        setProp(cmd::SetLayerProp::Opacity, 1.0);
+    });
+    form->addRow(opacityLabel, opacity);
+    m_animate->attach({opacityLabel, opacity}, {QStringLiteral("opacity")});
     connect(opacity, &SliderField::valueEdited, this, [this](double v) { setProp(cmd::SetLayerProp::Opacity, v / 100.0); });
     if (s.isViewport) return g; // drawn onto nothing: no blend, no routing
 
@@ -1473,6 +1539,7 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             m_rotation->setWrapping(true);
             m_rotation->setRange(-180, 180);
             auto *rotLabel = new ResetLabel(QStringLiteral("Rotation"), [this] { m_rotation->setValue(0); });
+            m_animate->attach(rotLabel, {"spatial/rotation"});
             grid->addWidget(rotLabel, 2, 0);
             grid->addWidget(m_rotation, 2, 2);
         }
@@ -1492,6 +1559,20 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         grid->addWidget(m_pivotX, 3, 2);
         grid->addWidget(new QLabel(QStringLiteral("Y")), 3, 4);
         grid->addWidget(m_pivotY, 3, 5);
+        {
+            const QString sx = m_sizePx ? QStringLiteral("spatial/width") : QStringLiteral("spatial/scale/x");
+            const QString sy = m_sizePx ? QStringLiteral("spatial/height") : QStringLiteral("spatial/scale/y");
+            m_animate->attach(posLabel, {"spatial/position/x", "spatial/position/y"});
+            m_animate->attach(m_posX, {"spatial/position/x"});
+            m_animate->attach(m_posY, {"spatial/position/y"});
+            m_animate->attach(scaleLabel, {sx, sy});
+            m_animate->attach(m_scaleX, {sx});
+            m_animate->attach(m_scaleY, {sy});
+            m_animate->attach(m_rotation, {"spatial/rotation"});
+            m_animate->attach(pivotLabel, {"spatial/pivot/x", "spatial/pivot/y"});
+            m_animate->attach(m_pivotX, {"spatial/pivot/x"});
+            m_animate->attach(m_pivotY, {"spatial/pivot/y"});
+        }
         grid->setColumnStretch(2, 1);
         grid->setColumnStretch(5, 1);
         v->addLayout(grid);
@@ -1734,13 +1815,17 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             power->setValue(se.power[side]);
             m_softWidth[side] = width;
             m_softPower[side] = power;
-            grid->addWidget(new ResetLabel(QString::fromLatin1(names[side]), [width, power] {
-                                width->setValue(10.0);
-                                power->setValue(1.0);
-                                emit width->valueEdited(10.0);
-                                emit power->valueEdited(1.0);
-                            }),
-                            side + 1, 0);
+            auto *name = new ResetLabel(QString::fromLatin1(names[side]), [width, power] {
+                width->setValue(10.0);
+                power->setValue(1.0);
+                emit width->valueEdited(10.0);
+                emit power->valueEdited(1.0);
+            });
+            grid->addWidget(name, side + 1, 0);
+            const QString base = QStringLiteral("spatial/soft_edge/%1/").arg(QString::fromLatin1(names[side]).toLower());
+            m_animate->attach(name, {base + "width", base + "power"});
+            m_animate->attach(width, {base + "width"});
+            m_animate->attach(power, {base + "power"});
             grid->addWidget(width, side + 1, 1);
             grid->addWidget(power, side + 1, 3);
             connect(width, &SliderField::valueEdited, this, [this, side](double v) {
@@ -1989,6 +2074,7 @@ void LayerInspector::showEffectParams()
     if (valid) {
         auto *params = new ParamPanel(m_engine, m_undo, m_layer, m_selectedEffect);
         m_effectParams = params;
+        params->attachAnimate(m_animate);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         lay->addWidget(params);
     }
