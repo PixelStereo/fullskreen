@@ -240,7 +240,7 @@ void isfNumbers(const IsfInstance *inst, const QString &base, const QString &tit
     for (const IsfInput &in : inst->inputs()) {
         if (!in.isNumber()) continue;
         const QString label = QStringLiteral("%1 › %2").arg(title, in.label.isEmpty() ? in.name : in.label);
-        const QString path = base + in.name;
+        const QString path = base + osc::safeName(in.name); // its address, as in OSC
         switch (in.type) {
         case IsfInput::Float: {
             const double lo = std::min(in.fMin, in.fMax), hi = std::max(in.fMin, in.fMax);
@@ -250,7 +250,7 @@ void isfNumbers(const IsfInstance *inst, const QString &base, const QString &tit
         case IsfInput::Long: {
             const double lo = *std::min_element(in.lValues.begin(), in.lValues.end());
             const double hi = *std::max_element(in.lValues.begin(), in.lValues.end());
-            out.push_back({path, label, lo, hi, lo, hi, true});
+            out.push_back({path, label, lo, hi, lo, hi, true, QList<int>(in.lValues.begin(), in.lValues.end())});
             break;
         }
         case IsfInput::Point2D: {
@@ -272,7 +272,9 @@ void isfNumbers(const IsfInstance *inst, const QString &base, const QString &tit
 bool isfNumber(IsfInstance *inst, const QStringList &p, int at, double *get, const double *set)
 {
     if (!inst) return false;
-    IsfInput *in = inst->input(p.value(at));
+    IsfInput *in = nullptr; // by its name in the address
+    for (IsfInput &x : inst->inputs())
+        if (osc::safeName(x.name) == p.value(at)) in = &x;
     if (!in || !in->isNumber()) return false;
     const QString part = p.value(at + 1);
     if (p.size() > at + 2) return false;
@@ -310,7 +312,13 @@ bool isfNumber(IsfInstance *inst, const QStringList &p, int at, double *get, con
         const double s = std::clamp(*set, lo, hi);
         switch (in->type) {
         case IsfInput::Float: v.f = s; break;
-        case IsfInput::Long: v.l = int(std::lround(s)); break;
+        case IsfInput::Long: { // the nearest of its values
+            int best = in->lValues.isEmpty() ? int(std::lround(s)) : in->lValues.front();
+            for (int x : in->lValues)
+                if (std::abs(x - s) < std::abs(best - s)) best = x;
+            v.l = best;
+            break;
+        }
         case IsfInput::Point2D: (part == "x" ? v.p.rx() : v.p.ry()) = s; break;
         case IsfInput::Color: v.c[QStringLiteral("rgba").indexOf(part)] = float(s); break;
         default: break;

@@ -37,6 +37,8 @@ enum class LayerTap {
 QString layerTapKey(LayerTap t);
 LayerTap layerTapFromKey(const QString &k);
 enum class BlendMode { Normal, Add, Screen, Multiply, Subtract, Difference };
+inline constexpr BlendMode kBlendModes[] = {BlendMode::Normal,   BlendMode::Add,      BlendMode::Screen,
+                                            BlendMode::Multiply, BlendMode::Subtract, BlendMode::Difference};
 // What a video or a sound does at its end: freeze on the last frame, loop, play backwards and forwards,
 // or stop and go black (and silent).
 enum class PlayMode { OneShot, Loop, PingPong, Stop };

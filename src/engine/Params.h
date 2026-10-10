@@ -5,7 +5,8 @@
 // namespace, the timelines, the layers' animations and the Animate menu all read them from here.
 //
 // The fixed numbers (opacity, ROI, color, spatial, soft edge, playback, text) are a table; the shaders' (the
-// generator's parameters, each effect's speed and parameters) come from their inputs (IsfInput::isNumber).
+// generator's parameters, each effect's speed and parameters) come from their inputs (IsfInput::isNumber), named in the
+// addresses as in OSC (osc::safeName of the input's name; an effect by its segment, osc::uniqueSegments).
 
 #include "Layer.h"
 
@@ -19,6 +20,7 @@ struct NumberParam {
     double min = 0, max = 1; // the range shown (bars, lanes, OSC range); a value is kept within lo..hi
     double lo = 0, hi = 1;
     bool animatable = true; // a timeline or an animation can drive it
+    QList<int> values;      // the values it can take, when it is a choice (a shader's LONG input); empty: any
 };
 
 // The numbers of layer l, in the order of the interface (comp: the composition's size, for the pixels)

@@ -11,28 +11,27 @@
 // Easing curve types for parameter interpolation
 enum class EasingCurve { Linear, EaseIn, EaseOut, EaseInOut, EaseInCubic, EaseOutCubic };
 
-QString easingCurveKey(EasingCurve c)
+QStringList Engine::easingKeys()
 {
-    switch (c) {
-    case EasingCurve::Linear: return QStringLiteral("linear");
-    case EasingCurve::EaseIn: return QStringLiteral("ease_in");
-    case EasingCurve::EaseOut: return QStringLiteral("ease_out");
-    case EasingCurve::EaseInOut: return QStringLiteral("ease_in_out");
-    case EasingCurve::EaseInCubic: return QStringLiteral("ease_in_cubic");
-    case EasingCurve::EaseOutCubic: return QStringLiteral("ease_out_cubic");
-    }
-    return QStringLiteral("ease_in_out");
+    return {QStringLiteral("linear"),      QStringLiteral("ease_in"),       QStringLiteral("ease_out"),
+            QStringLiteral("ease_in_out"), QStringLiteral("ease_in_cubic"), QStringLiteral("ease_out_cubic")};
+}
+
+QStringList Engine::easingNames()
+{
+    return {QStringLiteral("Linear"),      QStringLiteral("Ease In"),       QStringLiteral("Ease Out"),
+            QStringLiteral("Ease In-Out"), QStringLiteral("Ease In Cubic"), QStringLiteral("Ease Out Cubic")};
+}
+
+QString Engine::defaultEasing(const QString &timingKey)
+{
+    return timingKey == QLatin1String("source/text/content") ? QStringLiteral("linear") : QStringLiteral("ease_in_out");
 }
 
 EasingCurve easingCurveFromKey(const QString &k)
 {
-    if (k == "linear") return EasingCurve::Linear;
-    if (k == "ease_in") return EasingCurve::EaseIn;
-    if (k == "ease_out") return EasingCurve::EaseOut;
-    if (k == "ease_in_out") return EasingCurve::EaseInOut;
-    if (k == "ease_in_cubic") return EasingCurve::EaseInCubic;
-    if (k == "ease_out_cubic") return EasingCurve::EaseOutCubic;
-    return EasingCurve::EaseInOut; // default
+    const int i = Engine::easingKeys().indexOf(k);
+    return i < 0 ? EasingCurve::EaseInOut : EasingCurve(i); // in-out by default
 }
 
 // Easing function: applies curve type to normalized time [0..1]
@@ -382,7 +381,7 @@ static LayerTimes timesOf(const Layer &l, const QJsonObject &timing, double fade
     auto params = [&](const IsfInstance *inst, const QString &base) {
         std::vector<double> v;
         if (inst)
-            for (const IsfInput &in : inst->inputs()) v.push_back(time(base + in.name));
+            for (const IsfInput &in : inst->inputs()) v.push_back(time(base + osc::safeName(in.name))); // its address
         return v;
     };
     d.isf.push_back(params(l.generator.get(), QStringLiteral("source/param/")));
@@ -414,7 +413,7 @@ QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
         for (int k = 0; k < TextNumCount; ++k)
             if (path[1] == QLatin1String(kTextNumKeys[k])) return QString::fromLatin1(kTextTimeKeys[k]); // Text generator
         if (path[1] == "speed" || path[1] == "in" || path[1] == "out") return QStringLiteral("source/") + path[1];
-        if (path[1] == "params" && path.size() >= 3) return QStringLiteral("source/param/") + path[2];
+        if (path[1] == "params" && path.size() >= 3) return QStringLiteral("source/param/") + osc::safeName(path[2]);
     }
     if (a == "color" && path.size() >= 2 && (path[1] == "temp" || path[1] == "tint" || path[1] == "add" || path[1] == "remove"))
         return QStringLiteral("color/") + path[1];
@@ -432,7 +431,7 @@ QString Engine::timingKey(const QStringList &path, const QJsonObject &layer)
             names << QFileInfo(v.toObject().value("path").toString()).completeBaseName();
         const int k = path[1].toInt();
         if (k < 0 || k >= names.size()) return {};
-        return QStringLiteral("fx/%1/param/%2").arg(osc::uniqueSegments(names).at(k), path[3]);
+        return QStringLiteral("fx/%1/param/%2").arg(osc::uniqueSegments(names).at(k), osc::safeName(path[3]));
     }
     return {};
 }

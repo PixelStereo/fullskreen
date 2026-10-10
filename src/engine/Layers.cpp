@@ -1075,46 +1075,10 @@ void Engine::setLayerTextContent(int i, const QString &text)
     }
 }
 
-void Engine::setLayerTextFont(int i, const QString &font)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.font = font;
-}
-
-void Engine::setLayerTextSize(int i, int size)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.size = std::clamp(size, 8, 256);
-}
-
-void Engine::setLayerTextColor(int i, const QColor &color)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.color = color;
-}
-
 void Engine::editLayerText(int i, const std::function<void(Layer &)> &edit)
 {
     Lock lk(&m_mutex);
     if (Layer *l = layer(i)) edit(*l);
-}
-
-void Engine::setLayerTextLineHeight(int i, float lineHeight)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.lineHeight = std::clamp(lineHeight, 0.2f, 5.0f);
-}
-
-void Engine::setLayerTextLetterSpacing(int i, float pixels)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.letterSpacing = std::clamp(pixels, -50.0f, 200.0f);
-}
-
-void Engine::setLayerTextAlign(int i, Qt::Alignment align)
-{
-    Lock lk(&m_mutex);
-    if (Layer *l = layer(i)) l->text.align = align;
 }
 
 int Engine::addEffect(int li, const QString &path, QString *err)

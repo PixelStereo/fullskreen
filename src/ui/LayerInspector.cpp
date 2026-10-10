@@ -287,6 +287,13 @@ LayerInspector::LayerInspector(Engine *engine, QUndoStack *undo, QWidget *parent
     rebuild();
 }
 
+std::pair<double, double> LayerInspector::limitsOf(const QString &path, double lo, double hi) const
+{
+    NumberParam p;
+    if (!m_engine->numberParam(m_layerId, path, &p)) return {lo, hi};
+    return {p.lo, p.hi};
+}
+
 void LayerInspector::showAnimation(const QString &param)
 {
     QStringList now;
@@ -572,24 +579,29 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         auto style = [this, live](const QString &label, std::function<void(Layer &)> fn) {
             live(label, [this, fn] { m_engine->editLayerText(m_layer, fn); });
         };
-        auto colorButton = [this, style](const QColor &c, const QString &label, std::function<void(Layer &, const QColor &)> set) {
+        using ColorSet = std::function<void(Layer &, const QColor &)>;
+        auto paint = [](QPushButton *b, const QColor &x) {
+            b->setProperty("color", x);
+            b->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #666; border-radius: 2px;").arg(x.name()));
+        };
+        // A color of the text set from its button (picked, or put back by the name of its row)
+        auto applyColor = [style, paint](QPushButton *b, const QColor &x, const QString &label, ColorSet set) {
+            paint(b, x);
+            style(label, [set, x](Layer &l) { set(l, x); });
+        };
+        auto colorButton = [this, paint, applyColor](const QColor &c, const QString &label, ColorSet set) {
             auto *b = new QPushButton;
             b->setFixedWidth(48);
             b->setEnabled(!m_locked);
-            auto paint = [b](const QColor &x) {
-                b->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #666; border-radius: 2px;").arg(x.name()));
-            };
-            paint(c);
-            connect(b, &QPushButton::clicked, this, [this, b, c, label, set, style, paint] {
-                const QColor cur = b->property("color").value<QColor>().isValid() ? b->property("color").value<QColor>() : c;
-                const QColor picked = QColorDialog::getColor(cur, this, label, QColorDialog::ShowAlphaChannel);
-                if (!picked.isValid()) return;
-                b->setProperty("color", picked);
-                paint(picked);
-                style(label, [set, picked](Layer &l) { set(l, picked); });
+            paint(b, c);
+            connect(b, &QPushButton::clicked, this, [this, b, label, set, applyColor] {
+                const QColor picked = QColorDialog::getColor(b->property("color").value<QColor>(), this, label,
+                                                             QColorDialog::ShowAlphaChannel);
+                if (picked.isValid()) applyColor(b, picked, label, set);
             });
             return b;
         };
+        const TextSource def; // what the names of the rows put back
         auto spin = [this](double v, double lo, double hi, double step, int dec, const QString &suffix) {
             auto *x = new NumberBox;
             x->setRange(lo, hi);
@@ -618,28 +630,38 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         auto *fontBox = new QFontComboBox;
         fontBox->setCurrentFont(QFont(s.text.font));
         fontBox->setEnabled(!m_locked);
-        fmt->addRow(QStringLiteral("Font"), fontBox);
+        fmt->addRow(new ResetLabel(QStringLiteral("Font"), [fontBox, def] { fontBox->setCurrentFont(QFont(def.font)); }), fontBox);
         connect(fontBox, &QFontComboBox::currentFontChanged, this, [style](const QFont &f) {
             const QString family = f.family();
             style(QStringLiteral("Text Font"), [family](Layer &l) { l.text.font = family; });
         });
 
         auto *size = new IntBox;
-        size->setRange(1, 1000);
+        {
+            const auto [lo, hi] = limitsOf(QStringLiteral("source/text/size"), 1, 1000);
+            size->setRange(int(lo), int(hi));
+        }
         size->setSuffix(QStringLiteral(" px"));
         size->setValue(s.text.size);
         size->setEnabled(!m_locked);
         auto *colorRow = new QHBoxLayout;
         colorRow->addWidget(size);
-        colorRow->addWidget(colorButton(s.text.color, QStringLiteral("Text Color"), [](Layer &l, const QColor &c) { l.text.color = c; }));
+        const ColorSet setTextColor = [](Layer &l, const QColor &c) { l.text.color = c; };
+        QPushButton *textColor = colorButton(s.text.color, QStringLiteral("Text Color"), setTextColor);
+        colorRow->addWidget(textColor);
         colorRow->addStretch();
-        fmt->addRow(QStringLiteral("Size / color"), colorRow);
+        fmt->addRow(new ResetLabel(QStringLiteral("Size / color"), [size, textColor, def, applyColor, setTextColor] {
+                        size->setValue(def.size);
+                        applyColor(textColor, def.color, QStringLiteral("Text Color"), setTextColor);
+                    }),
+                    colorRow);
         connect(size, QOverload<int>::of(&QSpinBox::valueChanged), this, [style](int px) {
             style(QStringLiteral("Text Size"), [px](Layer &l) { l.text.size = px; });
         });
 
         // Bold, italic, underline, strikethrough
         auto *styleRow = new QHBoxLayout;
+        QList<ToggleButton *> styleButtons;
         struct Toggle { const char *label, *tip; bool on; bool TextSource::*field; };
         const Toggle toggles[] = {{"B", "Bold", s.text.bold, &TextSource::bold},
                                   {"I", "Italic", s.text.italic, &TextSource::italic},
@@ -657,13 +679,17 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
             f.setStrikeOut(t.label[0] == 'S');
             b->setFont(f);
             styleRow->addWidget(b);
+            styleButtons << b;
             auto field = t.field;
             connect(b, &QToolButton::toggled, this, [style, field, tip = QString::fromLatin1(t.tip)](bool on) {
                 style(tip, [field, on](Layer &l) { l.text.*field = on; });
             });
         }
         styleRow->addStretch();
-        fmt->addRow(QStringLiteral("Style"), styleRow);
+        fmt->addRow(new ResetLabel(QStringLiteral("Style"), [styleButtons] { // plain
+                        for (ToggleButton *b : styleButtons) b->setChecked(false);
+                    }),
+                    styleRow);
 
         // Alignment: left, center, right, justified; top, middle, bottom
         auto *hAlign = new QComboBox;
@@ -684,35 +710,49 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         auto *alignRow = new QHBoxLayout;
         alignRow->addWidget(hAlign);
         alignRow->addWidget(vAlign);
-        fmt->addRow(QStringLiteral("Align"), alignRow);
         auto setAlign = [style, hAlign, vAlign] {
             const int a = hAlign->currentData().toInt() | vAlign->currentData().toInt();
             style(QStringLiteral("Text Alignment"), [a](Layer &l) { l.text.align = Qt::Alignment(a); });
         };
+        fmt->addRow(new ResetLabel(QStringLiteral("Align"), [hAlign, vAlign, def, setAlign] {
+                        hAlign->setCurrentIndex(std::max(0, hAlign->findData(int(def.align & Qt::AlignHorizontal_Mask))));
+                        vAlign->setCurrentIndex(std::max(0, vAlign->findData(int(def.align & Qt::AlignVertical_Mask))));
+                        setAlign();
+                    }),
+                    alignRow);
         connect(hAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
         connect(vAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
 
-        auto *lineSp = spin(s.text.lineHeight, 0.2, 5.0, 0.05, 2, QStringLiteral(" ×"));
+        const auto lh = limitsOf(QStringLiteral("source/text/line_height"), 0.1, 10);
+        auto *lineSp = spin(s.text.lineHeight, lh.first, lh.second, 0.05, 2, QStringLiteral(" ×"));
         lineSp->setToolTip(QStringLiteral("Space between the lines (1 = the font's own)"));
-        fmt->addRow(QStringLiteral("Line spacing"), lineSp);
+        fmt->addRow(new ResetLabel(QStringLiteral("Line spacing"), [lineSp, def] { lineSp->setValue(def.lineHeight); }), lineSp);
         connect(lineSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
             style(QStringLiteral("Line Spacing"), [x](Layer &l) { l.text.lineHeight = float(x); });
         });
-        auto *letterSp = spin(s.text.letterSpacing, -50, 200, 0.5, 1, QStringLiteral(" px"));
+        const auto ls = limitsOf(QStringLiteral("source/text/letter_spacing"), -200, 500);
+        auto *letterSp = spin(s.text.letterSpacing, ls.first, ls.second, 0.5, 1, QStringLiteral(" px"));
         letterSp->setToolTip(QStringLiteral("Space added between the letters"));
-        fmt->addRow(QStringLiteral("Letter spacing"), letterSp);
+        fmt->addRow(new ResetLabel(QStringLiteral("Letter spacing"), [letterSp, def] { letterSp->setValue(def.letterSpacing); }),
+                    letterSp);
         connect(letterSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
             style(QStringLiteral("Letter Spacing"), [x](Layer &l) { l.text.letterSpacing = float(x); });
         });
 
         // Outline
-        auto *outline = spin(s.text.outline, 0, 100, 0.5, 1, QStringLiteral(" px"));
+        const auto ol = limitsOf(QStringLiteral("source/text/outline"), 0, 200);
+        auto *outline = spin(s.text.outline, ol.first, ol.second, 0.5, 1, QStringLiteral(" px"));
         auto *outlineRow = new QHBoxLayout;
         outlineRow->addWidget(outline);
-        outlineRow->addWidget(colorButton(s.text.outlineColor, QStringLiteral("Outline Color"),
-                                          [](Layer &l, const QColor &c) { l.text.outlineColor = c; }));
+        const ColorSet setOutlineColor = [](Layer &l, const QColor &c) { l.text.outlineColor = c; };
+        QPushButton *outlineColor = colorButton(s.text.outlineColor, QStringLiteral("Outline Color"), setOutlineColor);
+        outlineRow->addWidget(outlineColor);
         outlineRow->addStretch();
-        fmt->addRow(QStringLiteral("Outline"), outlineRow);
+        fmt->addRow(new ResetLabel(QStringLiteral("Outline"), [outline, outlineColor, def, applyColor, setOutlineColor] {
+                        outline->setValue(def.outline);
+                        applyColor(outlineColor, def.outlineColor, QStringLiteral("Outline Color"), setOutlineColor);
+                    }),
+                    outlineRow);
         connect(outline, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
             style(QStringLiteral("Text Outline"), [x](Layer &l) { l.text.outline = float(x); });
         });
@@ -732,13 +772,22 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         shadow->setEnabled(!m_locked);
         auto *shadowRow = new QHBoxLayout;
         shadowRow->addWidget(shadow);
-        shadowRow->addWidget(colorButton(s.text.shadowColor, QStringLiteral("Shadow Color"),
-                                         [](Layer &l, const QColor &c) { l.text.shadowColor = c; }));
-        auto *sx = spin(s.text.shadowX, -200, 200, 1, 0, QStringLiteral(" x"));
-        auto *sy = spin(s.text.shadowY, -200, 200, 1, 0, QStringLiteral(" y"));
+        const ColorSet setShadowColor = [](Layer &l, const QColor &c) { l.text.shadowColor = c; };
+        QPushButton *shadowColor = colorButton(s.text.shadowColor, QStringLiteral("Shadow Color"), setShadowColor);
+        shadowRow->addWidget(shadowColor);
+        const auto sxl = limitsOf(QStringLiteral("source/text/shadow/x"), -2000, 2000);
+        const auto syl = limitsOf(QStringLiteral("source/text/shadow/y"), -2000, 2000);
+        auto *sx = spin(s.text.shadowX, sxl.first, sxl.second, 1, 0, QStringLiteral(" x"));
+        auto *sy = spin(s.text.shadowY, syl.first, syl.second, 1, 0, QStringLiteral(" y"));
         shadowRow->addWidget(sx);
         shadowRow->addWidget(sy);
-        fmt->addRow(QStringLiteral("Shadow"), shadowRow);
+        fmt->addRow(new ResetLabel(QStringLiteral("Shadow"), [shadow, shadowColor, sx, sy, def, applyColor, setShadowColor] {
+                        shadow->setChecked(def.shadow);
+                        applyColor(shadowColor, def.shadowColor, QStringLiteral("Shadow Color"), setShadowColor);
+                        sx->setValue(def.shadowX);
+                        sy->setValue(def.shadowY);
+                    }),
+                    shadowRow);
         m_animate->attach(sx, {QStringLiteral("source/text/shadow/x")});
         m_animate->attach(sy, {QStringLiteral("source/text/shadow/y")});
         m_animate->attach(fmt->labelForField(shadowRow), {QStringLiteral("source/text/shadow/x"), QStringLiteral("source/text/shadow/y")});
@@ -948,10 +997,15 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         grid->addLayout(playRow, 0, 1);
 
         // Mode: what happens at the end, then the in / out points at the playhead
-        rowLabel(1, QStringLiteral("Mode"));
+        auto *modes = new QButtonGroup(g);
+        rowLabel(1, QStringLiteral("Mode"), [this, modes] { // the one new media get (Settings)
+            const int def = int(m_engine->defaultPlayMode());
+            if (QAbstractButton *b = modes->button(def)) b->setChecked(true);
+            setProp(cmd::SetLayerProp::Mode, def);
+            emit layerChanged();
+        });
         auto *modeRow = new QHBoxLayout;
         modeRow->setSpacing(2);
-        auto *modes = new QButtonGroup(g);
         modes->setExclusive(true);
         const struct { PlayMode mode; const char *tip; } kModes[] = {
             {PlayMode::Loop, "Loop: starts again from the beginning"},
@@ -1420,9 +1474,7 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
     if (s.isViewport) return g; // drawn onto nothing: no blend, no routing
 
     auto *blend = new QComboBox;
-    for (BlendMode m : {BlendMode::Normal, BlendMode::Add, BlendMode::Screen, BlendMode::Multiply, BlendMode::Subtract,
-                        BlendMode::Difference})
-        blend->addItem(blendModeName(m), int(m));
+    for (BlendMode m : kBlendModes) blend->addItem(blendModeName(m), int(m));
     blend->setCurrentIndex(blend->findData(int(s.blend)));
     form->addRow(new ResetLabel(QStringLiteral("Blend Mode"), [blend] { blend->setCurrentIndex(0); }), blend);
     connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this,
@@ -1444,9 +1496,12 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
         auto *row = new QWidget;
         auto *rl = new QHBoxLayout(row);
         rl->setContentsMargins(0, 0, 0, 0);
-        auto *name = new QLabel(r.name);
-        name->setMinimumWidth(70);
         auto *sl = new SliderField;
+        auto *name = new ResetLabel(r.name, [sl] { // fully shown
+            sl->setValue(100);
+            emit sl->valueEdited(100);
+        });
+        name->setMinimumWidth(70);
         sl->setRange(0, 100);
         sl->setDecimals(0);
         sl->setSuffix(QStringLiteral(" %"));
@@ -1493,11 +1548,18 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             b->setAccelerated(true);
             return b;
         };
-        m_posX = spin(-100000, 100000, QStringLiteral(" px"), 1);
-        m_posY = spin(-100000, 100000, QStringLiteral(" px"), 1);
+        // Their limits are the numbers' (Params.h)
+        auto spinOf = [this, spin](const QString &path, const QString &suffix, int decimals) {
+            const auto [lo, hi] = limitsOf(path, -100000, 100000);
+            return spin(lo, hi, suffix, decimals);
+        };
+        m_posX = spinOf(QStringLiteral("spatial/position/x"), QStringLiteral(" px"), 1);
+        m_posY = spinOf(QStringLiteral("spatial/position/y"), QStringLiteral(" px"), 1);
         m_sizePx = s.isViewport;
-        m_scaleX = m_sizePx ? spin(1, 100000, QStringLiteral(" px"), 1) : spin(0.1, 10000, QStringLiteral(" %"), 2);
-        m_scaleY = m_sizePx ? spin(1, 100000, QStringLiteral(" px"), 1) : spin(0.1, 10000, QStringLiteral(" %"), 2);
+        m_scaleX = m_sizePx ? spinOf(QStringLiteral("spatial/width"), QStringLiteral(" px"), 1)
+                            : spinOf(QStringLiteral("spatial/scale/x"), QStringLiteral(" %"), 2);
+        m_scaleY = m_sizePx ? spinOf(QStringLiteral("spatial/height"), QStringLiteral(" px"), 1)
+                            : spinOf(QStringLiteral("spatial/scale/y"), QStringLiteral(" %"), 2);
         m_rotation = spin(-360, 360, QStringLiteral("°"), 1);
         m_posX->setToolTip(QStringLiteral("Horizontal position of the layer's center, in composition pixels"));
         m_posY->setToolTip(QStringLiteral("Vertical position of the layer's center, in composition pixels"));
@@ -1543,8 +1605,8 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             grid->addWidget(rotLabel, 2, 0);
             grid->addWidget(m_rotation, 2, 2);
         }
-        m_pivotX = spin(-100000, 100000, QStringLiteral(" px"), 1);
-        m_pivotY = spin(-100000, 100000, QStringLiteral(" px"), 1);
+        m_pivotX = spinOf(QStringLiteral("spatial/pivot/x"), QStringLiteral(" px"), 1);
+        m_pivotY = spinOf(QStringLiteral("spatial/pivot/y"), QStringLiteral(" px"), 1);
         m_pivotX->setToolTip(QStringLiteral("Horizontal center of the rotation, in composition pixels (moves with the layer)"));
         m_pivotY->setToolTip(QStringLiteral("Vertical center of the rotation, in composition pixels (moves with the layer)"));
         auto *pivotLabel = new ResetLabel(QStringLiteral("Pivot"), [this] {

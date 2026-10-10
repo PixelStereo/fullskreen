@@ -45,17 +45,9 @@ QString animWaveName(AnimWave w)
 
 QString animCurveName(int c)
 {
-    switch (c) {
-    case 0: return QStringLiteral("Linear");
-    case 1: return QStringLiteral("Ease in");
-    case 2: return QStringLiteral("Ease out");
-    case 3: return QStringLiteral("Ease in-out");
-    case 4: return QStringLiteral("Ease in (cubic)");
-    case 5: return QStringLiteral("Ease out (cubic)");
-    case kAnimBezier: return QStringLiteral("Bézier (handles)");
-    case kAnimHold: return QStringLiteral("Hold (steps)");
-    }
-    return {};
+    if (c == kAnimBezier) return QStringLiteral("Bézier (handles)");
+    if (c == kAnimHold) return QStringLiteral("Hold (steps)");
+    return Engine::easingNames().value(c); // the easings of the fades
 }
 
 void addParamMenu(QMenu *menu, const std::vector<Engine::AnimParam> &params,
@@ -782,18 +774,24 @@ void TrackRow::build()
     m_center->setToolTip(QStringLiteral("The value the wave goes around"));
     m_amp = numberBox(-1e6, 1e6, 3, 0.01);
     m_amp->setToolTip(QStringLiteral("How far it goes each way"));
-    auto small = [](const QString &t) {
-        auto *l = new QLabel(t);
+    auto small = [](const QString &t, std::function<void()> reset) {
+        auto *l = new ResetLabel(t, std::move(reset));
         l->setStyleSheet("color:#9a9aa0;");
         return l;
     };
-    og->addWidget(small(QStringLiteral("Period")), 0, 0);
+    // Their resets: a period of a second, no phase, the way a wave goes around this number (Engine::waveAround)
+    auto around = [this](bool center) {
+        double c = 0, a = 0;
+        m_e->waveAround(track().layer, track().param, &c, &a);
+        (center ? m_center : m_amp)->setValue(center ? c : a);
+    };
+    og->addWidget(small(QStringLiteral("Period"), [this] { m_period->setValue(AnimTrack().period); }), 0, 0);
     og->addWidget(m_period, 0, 1);
-    og->addWidget(small(QStringLiteral("Phase")), 0, 2);
+    og->addWidget(small(QStringLiteral("Phase"), [this] { m_phase->setValue(AnimTrack().phase); }), 0, 2);
     og->addWidget(m_phase, 0, 3);
-    og->addWidget(small(QStringLiteral("Center")), 1, 0);
+    og->addWidget(small(QStringLiteral("Center"), [around] { around(true); }), 1, 0);
     og->addWidget(m_center, 1, 1);
-    og->addWidget(small(QStringLiteral("Amplitude")), 1, 2);
+    og->addWidget(small(QStringLiteral("Amplitude"), [around] { around(false); }), 1, 2);
     og->addWidget(m_amp, 1, 3);
     og->setColumnStretch(1, 1);
     og->setColumnStretch(3, 1);
@@ -974,13 +972,24 @@ AnimEditor::AnimEditor(Engine *engine, QUndoStack *undo, Layout layout, bool scr
         l->setStyleSheet("color:#9a9aa0;");
         return l;
     };
+    // The names of the duration and the speed: a click puts them back (4 s, 1×)
+    auto durationLabel = [this](bool dim) {
+        auto *l = new ResetLabel(QStringLiteral("Duration"), [this] { m_duration->setValue(Animation().duration); });
+        if (dim) l->setStyleSheet("color:#9a9aa0;");
+        return l;
+    };
+    auto speedLabel = [this](bool dim) {
+        auto *l = new ResetLabel(QStringLiteral("Speed"), [this] { m_speed->setValue(Animation().speed); });
+        if (dim) l->setStyleSheet("color:#9a9aa0;");
+        return l;
+    };
     if (side) {
         auto *transport = new QHBoxLayout;
         for (QWidget *w : std::initializer_list<QWidget *>{m_play, m_pause, m_stop, m_rewind, m_time}) transport->addWidget(w);
         transport->addStretch();
-        transport->addWidget(new QLabel(QStringLiteral("Duration")));
+        transport->addWidget(durationLabel(false));
         transport->addWidget(m_duration);
-        transport->addWidget(new QLabel(QStringLiteral("Speed")));
+        transport->addWidget(speedLabel(false));
         transport->addWidget(m_speed);
         transport->addWidget(m_loop);
         transport->addWidget(m_repeat);
@@ -1012,9 +1021,9 @@ AnimEditor::AnimEditor(Engine *engine, QUndoStack *undo, Layout layout, bool scr
         r1->addWidget(m_time, 1);
         v->addLayout(r1);
         auto *r2 = new QHBoxLayout;
-        r2->addWidget(gray(QStringLiteral("Duration")));
+        r2->addWidget(durationLabel(true));
         r2->addWidget(m_duration, 1);
-        r2->addWidget(gray(QStringLiteral("Speed")));
+        r2->addWidget(speedLabel(true));
         r2->addWidget(m_speed, 1);
         v->addLayout(r2);
         auto *r3 = new QHBoxLayout;

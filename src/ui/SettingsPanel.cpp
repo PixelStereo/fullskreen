@@ -320,6 +320,10 @@ QWidget *SettingsPanel::buildAudio()
     auto *rescan = new QToolButton;
     rescan->setText(QStringLiteral("⟳"));
     rescan->setToolTip(QStringLiteral("Refresh the list of audio devices"));
+    devRow->addWidget(new ResetLabel(QStringLiteral("Device"), [this] {
+        m_audioDevice->setCurrentIndex(0); // the system's default
+        emit m_audioDevice->activated(0);
+    }));
     devRow->addWidget(m_audioDevice, 1);
     devRow->addWidget(rescan);
     v->addLayout(devRow);

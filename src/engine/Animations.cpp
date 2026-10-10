@@ -416,17 +416,25 @@ std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
 {
     Lock lk(&m_mutex);
     std::vector<AnimParam> out;
-    if (!layer) {
-        out.push_back({"opacity", "Opacity", 0, 1});
-        out.push_back({"volume", "Volume", 0, 2});
-        out.push_back({"speed", "Speed", 0, 10});
+    if (!layer) { // the composition's
+        out.push_back({"opacity", "Opacity", 0, 1, 0, 1});
+        out.push_back({"volume", "Volume", 0, 2, 0, 2});
+        out.push_back({"speed", "Speed", 0, 10, 0, 10});
         return out;
     }
     for (auto &l : m_layers)
         if (l->id == layer)
             for (const NumberParam &n : layerNumbers(*l, m_compSize))
-                if (n.animatable) out.push_back({n.path, n.label, n.min, n.max});
+                if (n.animatable) out.push_back(n);
     return out;
+}
+
+bool Engine::numberParam(quint64 layer, const QString &path, NumberParam *p) const
+{
+    Lock lk(&m_mutex);
+    for (auto &l : m_layers)
+        if (l->id == layer) return layerNumberParam(*l, path, m_compSize, p);
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -611,7 +619,7 @@ void Engine::controlLayerAnim(quint64 layer, const QString &param, AnimAction ac
     if (action == AnimAction::LoopMode || action == AnimAction::Speed) emit layerAnimsChanged(layer); // its definition
 }
 
-Animation Engine::makeLayerAnim(quint64 layer, const QString &param, int wave) const
+void Engine::waveAround(quint64 layer, const QString &param, double *center, double *amplitude) const
 {
     double lo = 0, hi = 1, v = 0;
     for (const AnimParam &p : animatableParams(layer))
@@ -622,24 +630,30 @@ Animation Engine::makeLayerAnim(quint64 layer, const QString &param, int wave) c
         Lock lk(&m_mutex);
         comp = m_compSize;
     }
-    // Around the number as it is: how far it goes
-    double center = v, amp = 0;
     const bool horizontal = param.endsWith("/x") || param.endsWith("/width");
+    *center = v;
     if (param == "spatial/rotation") {
-        center = 0; // a saw turns round and round, a sine swings
-        amp = 180;
+        *center = 0; // a saw turns round and round, a sine swings
+        *amplitude = 180;
     } else if (param.startsWith("spatial/position/") || param.startsWith("spatial/pivot/") || param == "spatial/width" ||
                param == "spatial/height") {
-        amp = 0.1 * (horizontal ? comp.width() : comp.height());
+        *amplitude = 0.1 * (horizontal ? comp.width() : comp.height()); // pixels: a tenth of the composition
     } else if (param.startsWith("spatial/scale/")) {
-        amp = 25;
+        *amplitude = 25;
     } else {
-        amp = std::min(v - lo, hi - v); // as far as it can go both ways…
-        if (amp < 0.1 * (hi - lo) / 2) { // …or, at a bound, the whole range
-            center = (lo + hi) / 2;
-            amp = (hi - lo) / 2;
+        *amplitude = std::min(v - lo, hi - v); // as far as it can go both ways…
+        if (*amplitude < 0.1 * (hi - lo) / 2) { // …or, at a bound, the whole range
+            *center = (lo + hi) / 2;
+            *amplitude = (hi - lo) / 2;
         }
     }
+}
+
+Animation Engine::makeLayerAnim(quint64 layer, const QString &param, int wave) const
+{
+    double v = 0, center = 0, amp = 0;
+    waveAround(layer, param, &center, &amp);
+    if (!animParamValue(layer, param, &v)) v = center;
     Animation a;
     a.duration = 4;
     a.loop = AnimLoop::Loop;

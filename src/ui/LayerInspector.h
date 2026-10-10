@@ -69,6 +69,8 @@ private:
     void editSource(const QString &text, const std::function<void()> &op);
     void setProp(int prop, const QVariant &value);
     void showAnimation(const QString &param); // the Anim tab, that number's card unfolded
+    // The limits of the layer's number at `path`, as declared (Params.h); `lo`, `hi` if it has none
+    std::pair<double, double> limitsOf(const QString &path, double lo, double hi) const;
 
     Engine *m_engine;
     QUndoStack *m_undo;

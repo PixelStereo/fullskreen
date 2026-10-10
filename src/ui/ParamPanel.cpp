@@ -112,6 +112,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
         const QString label = in.label;
         QWidget *field = nullptr;
         QWidget *pointX = nullptr, *pointY = nullptr;
+        std::function<void()> reset; // an image: cleared by a click on its name
 
         switch (in.type) {
         case IsfInput::Float: {
@@ -270,6 +271,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
                 m_engine->setIsfImageInput(instance(), idx, QString());
                 name->setText(QStringLiteral("(none)"));
             });
+            reset = [clear] { clear->click(); };
             field = w;
             break;
         }
@@ -284,7 +286,8 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
         }
         if (in.type == IsfInput::Event || in.type == IsfInput::Image || in.type == IsfInput::Audio ||
             in.type == IsfInput::AudioFFT) {
-            form->addRow(label, field);
+            if (reset) form->addRow(new ResetLabel(label, reset), field);
+            else form->addRow(label, field); // a trigger, or nothing to set
             continue;
         }
         // A click on the parameter's name puts it back to its default value

@@ -66,6 +66,7 @@ class ResetLabel : public QLabel
     Q_OBJECT
 public:
     ResetLabel(const QString &text, std::function<void()> reset, QWidget *parent = nullptr);
+    void setReset(std::function<void()> reset) { m_reset = std::move(reset); } // when it needs what is built after it
 
 protected:
     void mousePressEvent(QMouseEvent *e) override;

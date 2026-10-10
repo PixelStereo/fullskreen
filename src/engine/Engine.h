@@ -18,6 +18,7 @@
 #include "IsfLibrary.h"
 #include "Layer.h"
 #include "LayerTree.h"
+#include "Params.h"
 #include "Publish.h"
 
 #include <QColor>
@@ -183,12 +184,6 @@ public:
     // Text layer properties
     bool setLayerText(int i); // the layer's source becomes the Text generator
     void setLayerTextContent(int i, const QString &text);
-    void setLayerTextFont(int i, const QString &font);
-    void setLayerTextSize(int i, int size);
-    void setLayerTextColor(int i, const QColor &color);
-    void setLayerTextAlign(int i, Qt::Alignment align); // horizontal (left, center, right, justify) | vertical
-    void setLayerTextLineHeight(int i, float lineHeight); // multiple of the font's line spacing
-    void setLayerTextLetterSpacing(int i, float pixels);
     void editLayerText(int i, const std::function<void(Layer &)> &edit); // style (bold, outline, shadow…), under the lock
 
     int addEffect(int layerIndex, const QString &path, QString *err = nullptr);
@@ -242,10 +237,7 @@ public:
     using AnimKey = ::AnimKey;
     using AnimTrack = ::AnimTrack;
     using Animation = ::Animation;
-    struct AnimParam {
-        QString path, label;
-        double min = 0, max = 1;
-    };
+    using AnimParam = NumberParam; // a number a timeline can drive (Params.h)
     int animationCount() const;
     Animation animation(int i) const;
     int indexOfAnimation(quint64 id) const; // -1: none
@@ -258,6 +250,8 @@ public:
     void controlAnimation(quint64 id, AnimAction action, double time = 0, AnimLoop loop = AnimLoop::Loop, int repeat = 0);
     // The numbers of a layer (0: the composition) a timeline can drive, with their ranges
     std::vector<AnimParam> animatableParams(quint64 layer) const;
+    // A layer's number as declared (Params.h): its name, range and limits (false: the layer has no such number)
+    bool numberParam(quint64 layer, const QString &path, NumberParam *p) const;
     bool animParamValue(quint64 layer, const QString &path, double *value) const;
     void stepAnimations(double dt); // the layers' animations, then the timelines, move on and set their values (lock held)
 
@@ -285,6 +279,10 @@ public:
     // A new animation of a number, as the Animate menu makes it: a wave (`wave`: an AnimWave) around the number's
     // value, or (`wave` < 0) keys starting from it. Not added: see setLayerAnims.
     Animation makeLayerAnim(quint64 layer, const QString &param, int wave) const;
+    // How a wave goes around a number by default (layer 0: the composition): its center and how far each way — around
+    // its value, as far as its range allows, or the whole range from a bound; a turn for a rotation, a tenth of the
+    // composition for a position
+    void waveAround(quint64 layer, const QString &param, double *center, double *amplitude) const;
 
     // --- Sequences: ordered steps, each recalling a snapshot or driving a timeline (and carrying a text for the
     // operator), played by GO / GO BACK. Several sequences; one is current. Saved with the project; the position is not.
@@ -383,6 +381,11 @@ public:
     // Key under which a snapshot stores the time of a stored value (its path in the layer state), empty for a value
     // that does not fade: "opacity", "roi/left", "color/temp", "spatial", "fx/<fx>/param/<name>"…
     static QString timingKey(const QStringList &path, const QJsonObject &layer);
+    // The easings of the fades — and of a timeline's keys, the same (0..5) — by key ("ease_in_out") and by name
+    static QStringList easingKeys();
+    static QStringList easingNames();
+    // The easing of a value a snapshot gives no easing (by its timing key): in-out, the typing of a text even
+    static QString defaultEasing(const QString &timingKey);
 
     // --- External media (media bin)
     struct MediaRef {

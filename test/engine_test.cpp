@@ -1756,6 +1756,29 @@ int main(int argc, char **argv)
                 CHECK(server.handleMessage({"/layer/Wave/anim/opacity/rewind", "N", {}}) && e.layerAnim(wid, "opacity", &now) &&
                       near(now.clock, 0));
                 CHECK(!server.handleMessage({"/layer/Wave/anim/roi/left/enable", "T", {true}}));
+                // Every number at its own address (the one of the timelines and the animations), and the ones that go
+                // together at their common address too; their limits are the declared ones
+                CHECK(server.handleMessage({"/layer/Wave/spatial/position/x", "f", {16}}) &&
+                      server.handleMessage({"/layer/Wave/spatial/position", "ff", {20, 10}}));
+                {
+                    double x = 0, y = 0;
+                    e.animParamValue(wid, "spatial/position/x", &x);
+                    e.animParamValue(wid, "spatial/position/y", &y);
+                    CHECK(near(x, 20) && near(y, 10));
+                }
+                CHECK(server.handleMessage({"/layer/Wave/color/add", "fff", {0.1, 0.2, 0.3}}) &&
+                      server.handleMessage({"/layer/Wave/color/add/g", "f", {0.5}}) && near(L()->color.add[0], 0.1) &&
+                      near(L()->color.add[1], 0.5));
+                CHECK(server.handleMessage({"/layer/Wave/spatial/soft_edge/left/width", "f", {0.9}}) && near(L()->mapping.soft.width[0], 0.5));
+                CHECK(server.handleMessage({"/layer/Wave/blend_mode", "s", {QStringLiteral("difference")}}) &&
+                      L()->blend == BlendMode::Difference);
+                int status = 0;
+                const QJsonObject op = QJsonDocument::fromJson(server.httpGet("/layer/Wave/opacity", &status)).object();
+                CHECK(status == 200 && op.value("RANGE").toArray().at(0).toObject().value("MAX").toDouble() == 1 &&
+                      op.value("TYPE").toString() == "f");
+                L()->blend = BlendMode::Normal;
+                L()->mapping.soft.width[0] = 0;
+                L()->color.add[0] = L()->color.add[1] = L()->color.add[2] = 0;
             }
             // Saved with the layer: duplicated with it (on the copy), and back when the project is opened
             const QJsonObject lj = e.layerJson(e.indexOfId(wid));

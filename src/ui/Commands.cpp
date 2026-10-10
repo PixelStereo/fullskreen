@@ -183,7 +183,6 @@ void SetLayerProp::apply(const QVariant &v)
     case Enabled: l->enabled = v.toBool(); break;
     case Opacity: l->opacity = float(v.toDouble()); break;
     case Blend: l->blend = BlendMode(v.toInt()); break;
-    case Speed: l->speed = v.toDouble(); break;
     case Volume: l->volume = float(std::clamp(v.toDouble(), 0.0, 2.0)); break;
     case Muted: l->muted = v.toBool(); break;
     case Locked: l->locked = v.toBool(); break;

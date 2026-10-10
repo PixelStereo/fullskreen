@@ -62,19 +62,6 @@ static QString valueText(const MemField &f, const QJsonValue &value)
     }
 }
 
-// Easing curve names for UI (these match the engine's curve types)
-static QStringList easingCurveLabels()
-{
-    return {QStringLiteral("Linear"), QStringLiteral("Ease In"), QStringLiteral("Ease Out"),
-            QStringLiteral("Ease In-Out"), QStringLiteral("Ease In Cubic"), QStringLiteral("Ease Out Cubic")};
-}
-
-static QStringList easingCurveKeys()
-{
-    return {QStringLiteral("linear"), QStringLiteral("ease_in"), QStringLiteral("ease_out"),
-            QStringLiteral("ease_in_out"), QStringLiteral("ease_in_cubic"), QStringLiteral("ease_out_cubic")};
-}
-
 // The object a field's row refers to: a layer of the snapshot, or (-1) its composition
 static QJsonObject rowObject(const Engine::Snapshot &m, int row)
 {
@@ -730,17 +717,18 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
         auto *curveBox = new QWidget;
         auto *curveLay = new QHBoxLayout(curveBox);
         curveLay->setContentsMargins(0, 0, 0, 0);
-        curveLay->addWidget(new QLabel(QStringLiteral("Easing:")));
         auto *curveCombo = new QComboBox;
-        const auto curves = easingCurveKeys();
-        const auto labels = easingCurveLabels();
-        for (int k = 0; k < curves.size(); ++k) curveCombo->addItem(labels[k], curves[k]);
-
-        // Read current curve from JSON
+        const QStringList curves = Engine::easingKeys(), curveNames = Engine::easingNames();
+        for (int k = 0; k < curves.size(); ++k) curveCombo->addItem(curveNames[k], curves[k]);
+        // The snapshot's own, or the one it fades with when it has none
         const QString curveKey = f.timeKey + "/curve";
-        const QString currentCurve = o.value("timing").toObject().value(curveKey).toString();
-        curveCombo->setCurrentIndex(std::max(0, int(curves.indexOf(currentCurve))));
-
+        const QString stored = o.value("timing").toObject().value(curveKey).toString();
+        const QString shown = curves.contains(stored) ? stored : Engine::defaultEasing(f.timeKey);
+        curveCombo->setCurrentIndex(std::max(0, int(curves.indexOf(shown))));
+        curveLay->addWidget(new ResetLabel(QStringLiteral("Easing"), [this, row0 = f.row, key = f.timeKey, curveCombo] {
+            curveCombo->setCurrentIndex(std::max(0, int(Engine::easingKeys().indexOf(Engine::defaultEasing(key)))));
+            applyEasingCurve(row0, key, curveCombo->currentData().toString());
+        }));
         curveLay->addWidget(curveCombo);
         curveLay->addStretch();
         bv->addWidget(curveBox);

@@ -73,7 +73,14 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
     fit->setToolTip(QStringLiteral("The native resolution of the screen chosen below"));
     row->addWidget(fit);
     pf->addRow(QStringLiteral("Preset"), m_preset);
-    pf->addRow(QStringLiteral("Size"), row);
+    pf->addRow(new ResetLabel(QStringLiteral("Size"), [this] { // 1920 × 1080, the size of a new viewport
+        m_syncing = true;
+        m_width->setValue(1920);
+        m_height->setValue(1080);
+        m_syncing = false;
+        applySize();
+    }),
+               row);
     pf->addRow(note(QStringLiteral("Its place in the composition is set in the Spatial tab.")));
     v->addWidget(picture);
     connect(m_preset, qOverload<int>(&QComboBox::activated), this, [this](int i) {
@@ -106,7 +113,9 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
     // No screen chosen yet (or unplugged): the one the window would go to
     const QScreen *target = OutputWindow::screenNamed(screen);
     m_screen->setCurrentIndex(qMax(0, m_screen->findData(target ? target->name() : screen)));
-    of->addRow(QStringLiteral("Screen"), m_screen);
+    // The main screen; the two below are set together (applyOutput, further down)
+    auto *screenLabel = new ResetLabel(QStringLiteral("Screen"), nullptr);
+    of->addRow(screenLabel, m_screen);
     auto *modes = new QHBoxLayout;
     m_mode = new QButtonGroup(this);
     m_mode->setExclusive(true);
@@ -120,7 +129,8 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
         m_mode->addButton(b, k);
         modes->addWidget(b);
     }
-    of->addRow(QStringLiteral("Show"), modes);
+    auto *showLabel = new ResetLabel(QStringLiteral("Show"), nullptr);
+    of->addRow(showLabel, modes);
     of->addRow(note(QStringLiteral("⌘F / Ctrl+F puts every viewport fullscreen on its screen at once, "
                                    "and back to how each one was.")));
     v->addWidget(out);
@@ -131,6 +141,14 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
         emit outputChanged();
     };
     connect(m_screen, qOverload<int>(&QComboBox::activated), this, applyOutput);
+    screenLabel->setReset([this, applyOutput] {
+        m_screen->setCurrentIndex(qMax(0, m_screen->findData(QGuiApplication::primaryScreen()->name())));
+        applyOutput();
+    });
+    showLabel->setReset([this, applyOutput] {
+        m_mode->button(0)->setChecked(true); // hidden
+        applyOutput();
+    });
     connect(m_mode, &QButtonGroup::idClicked, this, applyOutput);
     connect(fit, &QPushButton::clicked, this, [this] {
         for (QScreen *sc : QGuiApplication::screens())
@@ -182,7 +200,11 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
              {"Auto", 0}, {"Low", 1}, {"Medium", 50}, {"High", 100}})
         m_omtQuality->addItem(QString::fromUtf8(label), q);
     m_omtQuality->setCurrentIndex(qMax(0, m_omtQuality->findData(ps.omtQuality)));
-    form->addRow(QStringLiteral("OMT Quality"), m_omtQuality);
+    form->addRow(new ResetLabel(QStringLiteral("OMT Quality"), [this] {
+        m_omtQuality->setCurrentIndex(0); // auto
+        applyPublish();
+    }),
+                 m_omtQuality);
     auto *lib = new QHBoxLayout;
     m_libFolder = new QLineEdit(ps.libraryFolder);
     m_libFolder->setPlaceholderText(QStringLiteral("standard locations"));
@@ -191,7 +213,11 @@ ViewportOutputPanel::ViewportOutputPanel(Engine *engine, quint64 viewport, QWidg
     browse->setFixedWidth(30);
     lib->addWidget(m_libFolder, 1);
     lib->addWidget(browse);
-    form->addRow(QStringLiteral("Libraries"), lib);
+    form->addRow(new ResetLabel(QStringLiteral("Libraries"), [this] {
+        m_libFolder->clear(); // the standard locations
+        applyPublish();
+    }),
+                 lib);
     pv->addLayout(form);
     m_libInfo = note(QString());
     pv->addWidget(m_libInfo);

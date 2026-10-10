@@ -114,10 +114,8 @@ void TimelineTrackRow::fillParams()
 void TimelineTrackRow::selectParam(const QString &path)
 {
     track().param = path;
-    const auto [lo, hi] = range();
     track().keys = {AnimKey{0, currentValue(), 3}};
-    track().center = path == "spatial/rotation" ? 0 : (lo + hi) / 2;
-    track().amplitude = path == "spatial/rotation" ? 180 : (hi - lo) / 2;
+    m_e->waveAround(track().layer, path, &track().center, &track().amplitude);
     fillParams(); // the check mark
     fill();
     changed();
