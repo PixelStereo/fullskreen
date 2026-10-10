@@ -17,6 +17,7 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QPushButton>
+#include <QSet>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -26,6 +27,7 @@
 #include <QTreeWidget>
 #include <QUndoStack>
 #include <QVBoxLayout>
+#include <cmath>
 #include <functional>
 
 static const QSize kThumb(160, 90);
@@ -35,18 +37,21 @@ enum { IdRole = Qt::UserRole, FieldRole = Qt::UserRole + 1, KeyRole = Qt::UserRo
 // Columns of the tree of what a snapshot holds
 enum Column { ColName, ColValue, ColTime };
 
-// How a value gets there at the recall
-// The time a snapshot gives a value; the pivot is a CUT unless said otherwise (the other values FOLLOW the fade)
-static QJsonValue timingValue(const QJsonObject &layer, const QString &key)
+// How a value gets there at the recall: the time the snapshot gives it, or gives a group it is in (`from`: the key that
+// gives it; none: it follows the snapshot's fade)
+static QJsonValue timingValue(const QJsonObject &layer, const QString &key, QString *from = nullptr)
 {
-    const QJsonValue t = layer.value("timing").toObject().value(key);
-    return !t.isDouble() && key == QLatin1String("spatial/pivot") ? QJsonValue(0.0) : t;
+    const QJsonObject timing = layer.value("timing").toObject();
+    const QString k = Engine::timingKeyOf(timing, key);
+    if (from) *from = k;
+    return k.isEmpty() ? QJsonValue() : timing.value(k);
 }
 
-static QString timeText(const QJsonValue &v)
+static QString timeText(const QJsonValue &v, bool inherited = false)
 {
     if (!v.isDouble()) return QStringLiteral("Follow");
-    return v.toDouble() <= 0 ? QStringLiteral("Cut") : QStringLiteral("%1 s").arg(v.toDouble(), 0, 'g', 4);
+    const QString t = v.toDouble() <= 0 ? QStringLiteral("Cut") : QStringLiteral("%1 s").arg(v.toDouble(), 0, 'g', 4);
+    return inherited ? QStringLiteral("↑ ") + t : t;
 }
 
 static QString valueText(const MemField &f, const QJsonValue &value)
@@ -104,42 +109,6 @@ static QJsonValue jsonWith(const QJsonValue &root, const QStringList &path, cons
     QJsonObject o = root.toObject();
     o[path[from]] = jsonWith(o.value(path[from]), path, v, from + 1);
     return o;
-}
-
-// Labels and ranges of a shader's parameters, read from the layer if it is still in the composition.
-struct IsfMeta {
-    QString label;
-    double min = 0, max = 1;
-    bool hasRange = false;
-};
-
-static QHash<QString, IsfMeta> isfMeta(Engine *e, quint64 id, int slot, QStringList *order)
-{
-    QHash<QString, IsfMeta> out;
-    Engine::Lock lk(&e->mutex());
-    const int li = e->indexOfId(id);
-    Layer *l = li >= 0 ? e->layer(li) : nullptr;
-    if (!l) return out;
-    const IsfInstance *inst = slot < 0 ? l->generator.get()
-                                       : (slot < int(l->effects.size()) ? l->effects[size_t(slot)].get() : nullptr);
-    if (!inst) return out;
-    for (const IsfInput &in : inst->inputs()) {
-        if (in.isInputImage) continue;
-        IsfMeta m;
-        m.label = in.label.isEmpty() ? in.name : in.label;
-        if (in.type == IsfInput::Float) {
-            m.min = in.fMin;
-            m.max = in.fMax;
-            m.hasRange = in.fMax > in.fMin;
-        } else if (in.type == IsfInput::Point2D && in.hasPointRange) {
-            m.min = std::min(in.pMin.x(), in.pMin.y());
-            m.max = std::max(in.pMax.x(), in.pMax.y());
-            m.hasRange = m.max > m.min;
-        }
-        out.insert(in.name, m);
-        if (order) *order << in.name;
-    }
-    return out;
 }
 
 static QPixmap thumbnail(const QImage &thumb)
@@ -486,7 +455,7 @@ void SnapshotPanel::showInspector(int i)
         const QJsonObject o = m.layers[row].toObject();
         auto *it = new QTreeWidgetItem(m_layers, {(o.contains("parent") ? QStringLiteral("    ") : QString()) + o.value("name").toString(),
                                                   (o.value("enable").toBool(true) ? QStringLiteral("✓ ") : QStringLiteral("— ")) +
-                                                      QStringLiteral("%1%").arg(std::lround(o.value("opacity").toDouble(1) * 100))});
+                                                      QStringLiteral("%1%").arg(std::lround(o.value("params").toObject().value("opacity").toDouble(1) * 100))});
         it->setData(0, IdRole, o.value("id").toString().toULongLong());
         it->setData(0, KeyRole, QStringLiteral("L") + o.value("id").toString());
         it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
@@ -524,13 +493,18 @@ QTreeWidgetItem *SnapshotPanel::addField(QTreeWidgetItem *parent, const MemField
     it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     if (f.kind == MemField::Info) it->setForeground(ColValue, QColor(140, 140, 146));
     m_fields.push_back(f);
-    if (!f.timeKey.isEmpty()) {
-        const Engine::Snapshot m = m_engine->snapshot(selected());
-        const QJsonValue t = timingValue(rowObject(m, f.row), f.timeKey);
-        it->setText(ColTime, timeText(t));
-        it->setForeground(ColTime, t.isDouble() ? QColor(230, 230, 233) : QColor(130, 130, 136));
-    }
+    if (!f.timeKey.isEmpty()) showTime(it, f);
     return it;
+}
+
+// The time of a value in its row: its own (bright), its group's (↑), or the snapshot's fade (Follow)
+void SnapshotPanel::showTime(QTreeWidgetItem *it, const MemField &f)
+{
+    const Engine::Snapshot m = m_engine->snapshot(selected());
+    QString from;
+    const QJsonValue t = timingValue(rowObject(m, f.row), f.timeKey, &from);
+    it->setText(ColTime, timeText(t, !from.isEmpty() && from != f.timeKey));
+    it->setForeground(ColTime, from == f.timeKey ? QColor(230, 230, 233) : QColor(130, 130, 136));
 }
 
 // Values and times shown in the tree, after an edit of the selected snapshot (the tree is not rebuilt)
@@ -547,11 +521,7 @@ void SnapshotPanel::refreshRows()
                 const MemField &f = m_fields[size_t(fi.toInt())];
                 const QJsonObject o = rowObject(m, f.row);
                 c->setText(ColValue, f.kind == MemField::Info ? c->text(ColValue) : valueText(f, jsonAt(o, f.path)));
-                if (!f.timeKey.isEmpty()) {
-                    const QJsonValue t = timingValue(o, f.timeKey);
-                    c->setText(ColTime, timeText(t));
-                    c->setForeground(ColTime, t.isDouble() ? QColor(230, 230, 233) : QColor(130, 130, 136));
-                }
+                if (!f.timeKey.isEmpty()) showTime(c, f);
             }
             walk(c);
         }
@@ -663,13 +633,16 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
 
     // How it gets there
     if (!f.timeKey.isEmpty()) {
-        const QJsonValue t = timingValue(o, f.timeKey);
+        const QJsonObject timing = o.value("timing").toObject(), easing = o.value("easing").toObject();
+        const QJsonValue t = timing.value(f.timeKey); // its own
+        QString groupKey;
+        const QJsonValue inherited = timingValue(o, f.timeKey, &groupKey);
         auto *box = new QWidget;
         auto *bv = new QVBoxLayout(box);
         bv->setContentsMargins(0, 10, 0, 0);
-        bv->addWidget(new QLabel(f.timeKey == "source/file"         ? QStringLiteral("<b>Transition of the source</b>")
-                                 : f.timeKey == "source/text/content" ? QStringLiteral("<b>Typing (typewriter)</b>")
-                                                                : QStringLiteral("<b>Transition</b>")));
+        bv->addWidget(new QLabel(f.timeKey == "file"           ? QStringLiteral("<b>Transition of the source</b>")
+                                 : f.timeKey == "text/content" ? QStringLiteral("<b>Typing (typewriter)</b>")
+                                                               : QStringLiteral("<b>Transition</b>")));
         auto *row = new QHBoxLayout;
         auto *group = new QButtonGroup(box);
         const char *names[] = {"CUT", "FOLLOW", "TIME"};
@@ -693,13 +666,15 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
         secs->setEnabled(mode == 2);
         row->addWidget(secs);
         bv->addLayout(row);
-        auto *note = new QLabel(QStringLiteral("CUT: at once · FOLLOW: the snapshot's fade (%1 s) · TIME: this value "
-                                               "only, in its own time%2")
-                                    .arg(m.fade, 0, 'f', 1)
-                                    .arg(f.timeKey == "roi" || f.timeKey == "spatial" || f.timeKey == "spatial/pivot" || f.timeKey.startsWith("color/") ||
-                                                     (f.timeKey.startsWith("source/text/") && f.timeKey.endsWith("/color"))
-                                             ? QStringLiteral(" (shared by the whole %1)").arg(f.timeKey.section('/', -1))
-                                             : QString()));
+        // FOLLOW: the time of the group it is in when it has one, else the snapshot's fade
+        const QString follows = !groupKey.isEmpty() && groupKey != f.timeKey
+                                    ? QStringLiteral("%1's time (%2)").arg(groupKey, timeText(inherited))
+                                    : QStringLiteral("the snapshot's fade (%1 s)").arg(m.fade, 0, 'f', 1);
+        auto *note = new QLabel(QStringLiteral("CUT: at once · FOLLOW: %1 · TIME: its own time%2")
+                                    .arg(follows, f.kind == MemField::Info && f.timeKey != "file" && f.timeKey != "text/content" &&
+                                                          f.timeKey != "mesh" && f.timeKey != "viewports"
+                                                      ? QStringLiteral(", for all its values that have none")
+                                                      : QString()));
         note->setWordWrap(true);
         note->setStyleSheet("color:#888; font-size:11px;");
         bv->addWidget(note);
@@ -713,21 +688,19 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
         connect(secs, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [this, row0, key](double v) { applyTime(row0, key, v); });
 
-        // Easing curve selector for the parameter
+        // Its easing: its own, its group's, or the default one
         auto *curveBox = new QWidget;
         auto *curveLay = new QHBoxLayout(curveBox);
         curveLay->setContentsMargins(0, 0, 0, 0);
         auto *curveCombo = new QComboBox;
         const QStringList curves = Engine::easingKeys(), curveNames = Engine::easingNames();
         for (int k = 0; k < curves.size(); ++k) curveCombo->addItem(curveNames[k], curves[k]);
-        // The snapshot's own, or the one it fades with when it has none
-        const QString curveKey = f.timeKey + "/curve";
-        const QString stored = o.value("timing").toObject().value(curveKey).toString();
+        const QString easingKey = Engine::timingKeyOf(easing, f.timeKey);
+        const QString stored = easing.value(easingKey).toString();
         const QString shown = curves.contains(stored) ? stored : Engine::defaultEasing(f.timeKey);
         curveCombo->setCurrentIndex(std::max(0, int(curves.indexOf(shown))));
-        curveLay->addWidget(new ResetLabel(QStringLiteral("Easing"), [this, row0 = f.row, key = f.timeKey, curveCombo] {
-            curveCombo->setCurrentIndex(std::max(0, int(Engine::easingKeys().indexOf(Engine::defaultEasing(key)))));
-            applyEasingCurve(row0, key, curveCombo->currentData().toString());
+        curveLay->addWidget(new ResetLabel(QStringLiteral("Easing"), [this, row0 = f.row, key = f.timeKey] {
+            applyEasingCurve(row0, key, QString()); // back to its group's, or the default one
         }));
         curveLay->addWidget(curveCombo);
         curveLay->addStretch();
@@ -740,42 +713,49 @@ void SnapshotPanel::showDetail(QTreeWidgetItem *it)
     m_detailLayout->addStretch();
 }
 
-// Everything the snapshot stores for this layer, as editable rows grouped in sections.
+// Everything the snapshot stores for this layer, as editable rows: what it is (its source, its mesh, its routing), then
+// its parameters by category (as their labels name them), the numbers of one address together (x y, r g b a…). A
+// value that fades has a time; so has a group of them, for all of its values that have none of their own.
 void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObject &o)
 {
     const QString lkey = QStringLiteral("L") + o.value("id").toString();
     const quint64 id = o.value("id").toString().toULongLong();
     const bool group = o.value("group").toBool();
     const QJsonObject src = o.value("source").toObject();
+    const QJsonObject params = o.value("params").toObject();
     const QString type = src.value("type").toString();
-    const bool hasSound = type == "video" || type == "audio";
 
-    auto section = [&](QTreeWidgetItem *p, const QString &label, const QString &key) {
-        auto *it = new QTreeWidgetItem(p, {label});
-        it->setFlags(Qt::ItemIsEnabled);
+    auto expand = [&](QTreeWidgetItem *it) { it->setExpanded(m_expanded.contains(it->data(0, KeyRole).toString())); };
+    // A node of the tree: a section, or a group of values with a time of its own
+    auto node = [&](QTreeWidgetItem *p, const QString &label, const QString &key, const QString &timeKey) {
+        QTreeWidgetItem *it;
+        if (timeKey.isEmpty()) {
+            it = new QTreeWidgetItem(p, {label});
+            it->setFlags(Qt::ItemIsEnabled);
+        } else {
+            MemField f;
+            f.row = row;
+            f.label = label;
+            f.timeKey = timeKey;
+            it = addField(p, f, QJsonValue(QString()));
+            it->setForeground(ColName, QColor(200, 200, 206));
+        }
         it->setData(0, KeyRole, lkey + "/" + key);
-        QFont f = it->font(0);
-        f.setItalic(true);
-        it->setFont(0, f);
-        it->setForeground(0, QColor(200, 200, 206));
+        QFont font = it->font(0);
+        font.setItalic(true);
+        it->setFont(0, font);
+        if (timeKey.isEmpty()) it->setForeground(0, QColor(200, 200, 206));
         return it;
     };
-    auto expand = [&](QTreeWidgetItem *it) { it->setExpanded(m_expanded.contains(it->data(0, KeyRole).toString())); };
-    auto num = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path, double lo, double hi, double scale,
-                   int decimals, const QString &suffix, double step) {
-        MemField f;
-        f.kind = MemField::Number;
+    auto info = [&](QTreeWidgetItem *p, const QString &label, const QString &text, const QString &tip = QString(),
+                    const QString &timeKey = QString()) {
+        MemField f; // Info: shown, not editable
         f.row = row;
-        f.path = path;
-        f.min = lo;
-        f.max = hi;
-        f.scale = scale;
-        f.decimals = decimals;
-        f.suffix = suffix;
-        f.step = step;
         f.label = label;
-        f.timeKey = Engine::timingKey(path, o); // a value that fades: its time can be chosen
-        return addField(p, f, jsonAt(o, path));
+        f.timeKey = timeKey;
+        auto *it = addField(p, f, QJsonValue(text));
+        if (!tip.isEmpty()) it->setToolTip(1, tip);
+        return it;
     };
     auto flag = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path) {
         MemField f;
@@ -785,224 +765,157 @@ void SnapshotPanel::fillLayer(QTreeWidgetItem *parent, int row, const QJsonObjec
         f.label = label;
         return addField(p, f, jsonAt(o, path));
     };
-    auto choice = [&](QTreeWidgetItem *p, const QString &label, const QStringList &path, const QStringList &keys,
-                      const QStringList &labels) {
-        MemField f;
-        f.kind = MemField::Choice;
-        f.row = row;
-        f.path = path;
-        f.keys = keys;
-        f.labels = labels;
-        f.label = label;
-        return addField(p, f, jsonAt(o, path));
-    };
-    auto info = [&](QTreeWidgetItem *p, const QString &label, const QString &text, const QString &tip = QString()) {
-        MemField f; // Info: shown, not editable
-        f.row = row;
-        f.label = label;
-        auto *it = addField(p, f, QJsonValue(text));
-        if (!tip.isEmpty()) it->setToolTip(1, tip);
-        return it;
-    };
 
     flag(parent, QStringLiteral("Visible"), {"enable"});
     flag(parent, QStringLiteral("Locked"), {"locked"});
-    num(parent, QStringLiteral("Opacity"), {"opacity"}, 0, 1, 100, 0, QStringLiteral(" %"), 0.01);
-    choice(parent, QStringLiteral("Blend Mode"), {"blend_mode"}, {"normal", "add", "screen", "multiply", "subtract", "difference"},
-           {QStringLiteral("Normal"), QStringLiteral("Add"), QStringLiteral("Screen"), QStringLiteral("Multiply"), QStringLiteral("Subtract"),
-            QStringLiteral("Difference")});
-    if (hasSound) {
-        num(parent, QStringLiteral("Volume"), {"volume"}, 0, 2, 100, 0, QStringLiteral(" %"), 0.01);
-        flag(parent, QStringLiteral("Muted"), {"muted"});
-    }
-
-    // Parameters of a shader (generator or effect), from the values the snapshot holds
-    auto isfParams = [&](QTreeWidgetItem *p, const QStringList &base, int slot) {
-        const QJsonObject params = jsonAt(o, base).toObject();
-        if (params.isEmpty()) return;
-        QStringList order;
-        const QHash<QString, IsfMeta> meta = isfMeta(m_engine, id, slot, &order);
-        QStringList names = params.keys();
-        std::sort(names.begin(), names.end(), [&](const QString &a, const QString &b) {
-            const int ia = order.indexOf(a), ib = order.indexOf(b);
-            if (ia != ib) return (ia < 0 ? order.size() : ia) < (ib < 0 ? order.size() : ib);
-            return a < b;
-        });
-        for (const QString &name : names) {
-            const IsfMeta mt = meta.value(name);
-            const QString label = mt.label.isEmpty() ? name : mt.label;
-            const double lo = mt.hasRange ? mt.min : -1e6, hi = mt.hasRange ? mt.max : 1e6;
-            const double stp = mt.hasRange ? std::max(1e-4, (hi - lo) / 100) : 0.01;
-            const QJsonValue v = params.value(name);
-            if (v.isBool()) {
-                flag(p, label, base + QStringList{name});
-            } else if (v.isDouble()) {
-                num(p, label, base + QStringList{name}, lo, hi, 1, 3, QString(), stp);
-            } else if (v.isArray()) {
-                const QJsonArray a = v.toArray();
-                static const char *kXY[] = {"X", "Y"};
-                static const char *kRGBA[] = {"R", "G", "B", "A"};
-                for (int c = 0; c < a.size() && c < 4; ++c) {
-                    const QString sub = a.size() == 2 ? QString::fromLatin1(kXY[c]) : QString::fromLatin1(kRGBA[c]);
-                    const bool color = a.size() == 4;
-                    num(p, label + " " + sub, base + QStringList{name, QString::number(c)}, color ? 0 : lo,
-                        color ? 1 : hi, 1, 3, QString(), color ? 0.01 : stp);
-                }
-            } else if (v.isString()) {
-                info(p, label, QFileInfo(v.toString()).fileName(), v.toString());
-            }
-        }
-    };
-
     if (!group) {
-        QTreeWidgetItem *sec = section(parent, QStringLiteral("Source"), QStringLiteral("source"));
         QTreeWidgetItem *what = nullptr;
-        if (type == "none") {
-            what = info(sec, QStringLiteral("Source"), QStringLiteral("—"));
+        if (type == "none" || type.isEmpty()) {
+            what = info(parent, QStringLiteral("Source"), QStringLiteral("—"));
         } else if (type == "layer") {
             const Layer *from = m_engine->layer(m_engine->indexOfId(src.value("layer").toString().toULongLong()));
-            what = info(sec, QStringLiteral("Layer"), from ? from->name : QStringLiteral("(gone)"));
-            choice(sec, QStringLiteral("Tap"), {"source", "tap"}, {"prefx", "postfx"},
-                   {QStringLiteral("Pre-FX"), QStringLiteral("Post-FX")});
+            what = info(parent, QStringLiteral("Source"), from ? from->name : QStringLiteral("(gone)"));
+        } else if (type == "text") {
+            what = info(parent, QStringLiteral("Source"), QStringLiteral("Text"));
         } else {
-            what = info(sec, type == "isf" ? QStringLiteral("Shader") : QStringLiteral("File"),
+            what = info(parent, type == "isf" ? QStringLiteral("Shader") : QStringLiteral("File"),
                         QFileInfo(src.value("path").toString()).fileName(), src.value("path").toString());
         }
         // Another source than the layer's at the recall: its transition, over this time
-        m_fields[size_t(what->data(0, FieldRole).toInt())].timeKey = QStringLiteral("source/file");
+        m_fields[size_t(what->data(0, FieldRole).toInt())].timeKey = QStringLiteral("file");
+        showTime(what, m_fields[size_t(what->data(0, FieldRole).toInt())]);
         const QString tr = src.value("transition").toString();
-        info(sec, QStringLiteral("Transition"),
-             tr.isEmpty() ? QStringLiteral("Default") : QFileInfo(tr).completeBaseName(), tr);
-        if (hasSound) {
-            choice(sec, QStringLiteral("Play mode"), {"source", "play_mode"}, {"oneshot", "loop", "pingpong", "stop"},
-                   {QStringLiteral("One-shot"), QStringLiteral("Loop"), QStringLiteral("Ping-pong"), QStringLiteral("Stop")});
-            num(sec, QStringLiteral("In"), {"source", "in"}, 0, 1e6, 1, 2, QStringLiteral(" s"), 0.1);
-            num(sec, QStringLiteral("Out"), {"source", "out"}, -1, 1e6, 1, 2, QStringLiteral(" s"), 0.1)
-                ->setToolTip(1, QStringLiteral("−1: end of the media"));
-            num(sec, QStringLiteral("Speed"), {"source", "speed"}, -8, 8, 1, 2, QStringLiteral(" ×"), 0.05);
-            flag(sec, QStringLiteral("Playing"), {"source", "playing"});
-        }
-        if (type == "isf") {
-            num(sec, QStringLiteral("Width"), {"source", "width"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
-            num(sec, QStringLiteral("Height"), {"source", "height"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
-            num(sec, QStringLiteral("Speed"), {"source", "speed"}, 0, 10, 1, 2, QStringLiteral(" ×"), 0.05)
-                ->setToolTip(1, QStringLiteral("Pace of TIME in the shader"));
-            isfParams(sec, {"source", "params"}, -1);
-        }
-        if (type == "text") {
-            // Text generator: the text (its typing time: the typewriter), the words and switches set at once, the
-            // numbers that fade, each with its time and easing
-            QTreeWidgetItem *content = info(sec, QStringLiteral("Text"), jsonAt(o, {"source", "content"}).toString());
-            m_fields[size_t(content->data(0, FieldRole).toInt())].timeKey = Engine::timingKey({"source", "content"}, o);
-            info(sec, QStringLiteral("Font"), jsonAt(o, {"source", "font"}).toString());
-            num(sec, QStringLiteral("Size"), {"source", "size"}, 1, 1000, 1, 0, QStringLiteral(" px"), 1);
-            static const char *kRgba[] = {"R", "G", "B", "A"};
-            auto rgba = [&](QTreeWidgetItem *p, const QString &label, const QString &key) {
-                for (int c = 0; c < 4; ++c)
-                    num(p, label + " " + QString::fromLatin1(kRgba[c]), {"source", key, QString::number(c)}, 0, 1, 255, 0,
-                        QString(), 1.0 / 255);
-            };
-            rgba(sec, QStringLiteral("Color"), QStringLiteral("color"));
-            flag(sec, QStringLiteral("Bold"), {"source", "bold"});
-            flag(sec, QStringLiteral("Italic"), {"source", "italic"});
-            flag(sec, QStringLiteral("Underline"), {"source", "underline"});
-            flag(sec, QStringLiteral("Strikethrough"), {"source", "strike"});
-            choice(sec, QStringLiteral("Align"), {"source", "h_align"}, {"left", "center", "right", "justify"},
-                   {QStringLiteral("Left"), QStringLiteral("Center"), QStringLiteral("Right"), QStringLiteral("Justified")});
-            choice(sec, QStringLiteral("Vertical"), {"source", "v_align"}, {"top", "middle", "bottom"},
-                   {QStringLiteral("Top"), QStringLiteral("Middle"), QStringLiteral("Bottom")});
-            num(sec, QStringLiteral("Line spacing"), {"source", "line_height"}, 0.1, 10, 1, 2, QStringLiteral(" ×"), 0.05);
-            num(sec, QStringLiteral("Letter spacing"), {"source", "letter_spacing"}, -200, 500, 1, 1, QStringLiteral(" px"), 0.5);
-            QTreeWidgetItem *outline = section(sec, QStringLiteral("Outline"), QStringLiteral("textOutline"));
-            num(outline, QStringLiteral("Width"), {"source", "outline"}, 0, 200, 1, 1, QStringLiteral(" px"), 0.5);
-            rgba(outline, QStringLiteral("Color"), QStringLiteral("outline_color"));
-            expand(outline);
-            QTreeWidgetItem *shadow = section(sec, QStringLiteral("Shadow"), QStringLiteral("textShadow"));
-            flag(shadow, QStringLiteral("On"), {"source", "shadow"});
-            rgba(shadow, QStringLiteral("Color"), QStringLiteral("shadow_color"));
-            num(shadow, QStringLiteral("X"), {"source", "shadow_x"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
-            num(shadow, QStringLiteral("Y"), {"source", "shadow_y"}, -2000, 2000, 1, 0, QStringLiteral(" px"), 1);
-            expand(shadow);
-            num(sec, QStringLiteral("Width"), {"source", "width"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
-            num(sec, QStringLiteral("Height"), {"source", "height"}, 1, 16384, 1, 0, QStringLiteral(" px"), 1);
-        }
-        expand(sec);
+        info(parent, QStringLiteral("Transition"), tr.isEmpty() ? QStringLiteral("Default") : QFileInfo(tr).completeBaseName(), tr);
+    }
+    if (o.contains("viewports"))
+        info(parent, QStringLiteral("Viewports"),
+             o.value("viewports").toObject().isEmpty() ? QStringLiteral("All") : QStringLiteral("Routed"),
+             QStringLiteral("How much of it each viewport shows"), QStringLiteral("viewports"));
+    if (o.contains("mesh")) {
+        const QJsonObject mesh = o.value("mesh").toObject();
+        info(parent, QStringLiteral("Mesh"), QStringLiteral("%1 × %2").arg(mesh.value("cols").toInt(4)).arg(mesh.value("rows").toInt(4)),
+             QStringLiteral("Its warp's points"), QStringLiteral("mesh"));
     }
 
-    if (jsonAt(o, {"roi"}).toArray().size() == 4) {
-        QTreeWidgetItem *sec = section(parent, QStringLiteral("ROI"), QStringLiteral("roi"));
-        static const char *kSides[] = {"Left", "Top", "Right", "Bottom"};
-        for (int c = 0; c < 4; ++c)
-            num(sec, QString::fromLatin1(kSides[c]), {"roi", QString::number(c)}, 0, 1, 100, 1,
-                QStringLiteral(" %"), 0.01);
-        expand(sec);
-    }
-
-    if (o.contains("color")) {
-        QTreeWidgetItem *sec = section(parent, QStringLiteral("Color"), QStringLiteral("color"));
-        flag(sec, QStringLiteral("Enable"), {"color", "enable"});
-        flag(sec, QStringLiteral("Temperature Enable"), {"color", "temp_enable"});
-        num(sec, QStringLiteral("Temperature"), {"color", "temp"}, -ColorAdjust::kTempRange, ColorAdjust::kTempRange, 1, 0,
-            QStringLiteral(" K"), 10);
-        flag(sec, QStringLiteral("Tint Enable"), {"color", "tint_enable"});
-        num(sec, QStringLiteral("Tint"), {"color", "tint"}, -ColorAdjust::kTintRange, ColorAdjust::kTintRange, 1, 0,
-            QString(), 1);
-        static const char *kRgb[] = {"Red", "Green", "Blue"};
-        flag(sec, QStringLiteral("Add Enable"), {"color", "add_enable"});
-        for (int c = 0; c < 3; ++c)
-            num(sec, QStringLiteral("Add ") + QString::fromLatin1(kRgb[c]), {"color", "add", QString::number(c)}, 0, 1,
-                100, 0, QStringLiteral(" %"), 0.01);
-        flag(sec, QStringLiteral("Remove Enable"), {"color", "remove_enable"});
-        for (int c = 0; c < 3; ++c)
-            num(sec, QStringLiteral("Remove ") + QString::fromLatin1(kRgb[c]), {"color", "remove", QString::number(c)}, 0,
-                1, 100, 0, QStringLiteral(" %"), 0.01);
-        expand(sec);
-    }
-
-    if (o.contains("spatial")) {
-        const QJsonObject map = o.value("spatial").toObject();
-        QTreeWidgetItem *sec = section(parent, QStringLiteral("Spatial"), QStringLiteral("spatial"));
-        flag(sec, QStringLiteral("Mesh mode"), {"spatial", "mesh_mode"});
-        static const char *kCorners[] = {"Top-left", "Top-right", "Bottom-right", "Bottom-left"};
-        for (int c = 0; c < 4 && c < map.value("corners").toArray().size(); ++c) {
-            num(sec, QString::fromLatin1(kCorners[c]) + " X", {"spatial", "corners", QString::number(c), "0"}, -10, 10, 1,
-                4, QString(), 0.001);
-            num(sec, QString::fromLatin1(kCorners[c]) + " Y", {"spatial", "corners", QString::number(c), "1"}, -10, 10, 1,
-                4, QString(), 0.001);
-        }
-        const int cols = map.value("cols").toInt(4), rows = map.value("rows").toInt(4);
-        const QJsonArray offsets = map.value("offsets").toArray();
-        info(sec, QStringLiteral("Mesh"), QStringLiteral("%1 × %2").arg(cols).arg(rows));
-        if (map.value("mesh_mode").toBool() && offsets.size() == cols * rows && offsets.size() <= 64) {
-            QTreeWidgetItem *pts = section(sec, QStringLiteral("Mesh points"), QStringLiteral("mesh"));
-            for (int k = 0; k < offsets.size(); ++k) {
-                const QString label = QStringLiteral("(%1, %2)").arg(k % cols + 1).arg(k / cols + 1);
-                num(pts, label + " X", {"spatial", "offsets", QString::number(k), "0"}, -10, 10, 1, 4, QString(), 0.001);
-                num(pts, label + " Y", {"spatial", "offsets", QString::number(k), "1"}, -10, 10, 1, 4, QString(), 0.001);
+    // Its parameters: what they are, from the layer when it is still there (else from their values)
+    std::vector<ParamInfo> list;
+    {
+        QSet<QString> known;
+        for (const ParamInfo &i : m_engine->parameters(id))
+            if (params.contains(i.path)) {
+                list.push_back(i);
+                known.insert(i.path);
             }
-            expand(pts);
+        QStringList rest;
+        for (auto it = params.constBegin(); it != params.constEnd(); ++it)
+            if (!known.contains(it.key())) rest << it.key();
+        std::sort(rest.begin(), rest.end());
+        for (const QString &path : rest) {
+            ParamInfo i;
+            i.path = i.label = path;
+            const QJsonValue v = params.value(path);
+            i.type = v.isBool() ? ParamInfo::Type::Bool : v.isDouble() ? ParamInfo::Type::Float : ParamInfo::Type::Text;
+            i.ramp = v.isDouble() ? ParamInfo::Ramp::Linear : ParamInfo::Ramp::Cut;
+            i.min = i.lo = -1e6;
+            i.max = i.hi = 1e6;
+            list.push_back(i);
         }
-        if (map.value("pivot").toArray().size() == 2) {
-            num(sec, QStringLiteral("Pivot X"), {"spatial", "pivot", "0"}, -10, 10, 1, 4, QString(), 0.001);
-            num(sec, QStringLiteral("Pivot Y"), {"spatial", "pivot", "1"}, -10, 10, 1, 4, QString(), 0.001);
+    }
+    static const QString kSep = QStringLiteral(" › ");
+    auto categoryOf = [](const ParamInfo &i) {
+        const int cut = i.label.lastIndexOf(kSep);
+        return cut < 0 ? QString() : i.label.left(cut);
+    };
+    auto parentOf = [](const QString &path) {
+        const int cut = path.lastIndexOf('/');
+        return cut < 0 ? QString() : path.left(cut);
+    };
+    // The address all the values of a category share ("roi", "fx/blur"), if they share one: the key of its time
+    QHash<QString, QStringList> pathsIn; // category (and the categories above it) → addresses
+    for (const ParamInfo &i : list) {
+        QString c = categoryOf(i);
+        while (!c.isEmpty()) {
+            pathsIn[c] << i.path;
+            const int cut = c.lastIndexOf(kSep);
+            c = cut < 0 ? QString() : c.left(cut);
         }
-        expand(sec);
     }
-
-    const QJsonArray effects = o.value("fx").toArray();
-    QTreeWidgetItem *fxSec = section(parent, QStringLiteral("FX (%1)").arg(effects.size()), QStringLiteral("fx"));
-    flag(fxSec, QStringLiteral("Enable"), {"fx_enable"});
-    for (int k = 0; k < effects.size(); ++k) {
-        const QJsonObject fx = effects[k].toObject();
-        QTreeWidgetItem *one = section(fxSec, QStringLiteral("%1. %2").arg(k + 1).arg(QFileInfo(fx.value("path").toString()).completeBaseName()),
-                                       QStringLiteral("fx%1").arg(k));
-        one->setToolTip(0, fx.value("path").toString());
-        flag(one, QStringLiteral("Enable"), {"fx", QString::number(k), "enable"});
-        num(one, QStringLiteral("Speed"), {"fx", QString::number(k), "speed"}, 0, 10, 1, 2, QStringLiteral(" ×"), 0.05);
-        isfParams(one, {"fx", QString::number(k), "params"}, k);
-        expand(one);
+    auto sharedAddress = [&](const QStringList &paths) {
+        if (paths.size() < 2) return QString();
+        QStringList common = paths.front().split('/');
+        common.removeLast();
+        for (const QString &p : paths) {
+            const QStringList seg = p.split('/');
+            int k = 0;
+            while (k < common.size() && k < seg.size() - 1 && common[k] == seg[k]) ++k;
+            common = common.mid(0, k);
+        }
+        return common.join('/');
+    };
+    QHash<QString, QTreeWidgetItem *> categories;
+    std::function<QTreeWidgetItem *(const QString &)> categoryNode = [&](const QString &c) -> QTreeWidgetItem * {
+        if (c.isEmpty()) return parent;
+        if (QTreeWidgetItem *it = categories.value(c)) return it;
+        const int cut = c.lastIndexOf(kSep);
+        QTreeWidgetItem *up = categoryNode(cut < 0 ? QString() : c.left(cut));
+        QTreeWidgetItem *it = node(up, cut < 0 ? c : c.mid(cut + kSep.size()), QStringLiteral("cat/") + c, sharedAddress(pathsIn.value(c)));
+        categories.insert(c, it);
+        return it;
+    };
+    // The values of one address together ("position": x y), unless that is their whole category's
+    QHash<QString, int> siblings; // category + address → how many values
+    for (const ParamInfo &i : list) ++siblings[categoryOf(i) + '\n' + parentOf(i.path)];
+    QHash<QString, QTreeWidgetItem *> groups;
+    for (const ParamInfo &i : list) {
+        const QString c = categoryOf(i), up = parentOf(i.path);
+        QTreeWidgetItem *p = categoryNode(c);
+        const QString gk = c + '\n' + up;
+        if (!up.isEmpty() && siblings.value(gk) >= 2 && up != sharedAddress(pathsIn.value(c))) {
+            QTreeWidgetItem *&g = groups[gk];
+            if (!g) {
+                // Its name: what its values' names share ("Position X", "Position Y": "Position")
+                QString name;
+                bool first = true;
+                for (const ParamInfo &x : list)
+                    if (categoryOf(x) == c && parentOf(x.path) == up) {
+                        if (first) name = x.name();
+                        first = false;
+                        int k = 0;
+                        while (k < name.size() && k < x.name().size() && name[k] == x.name()[k]) ++k;
+                        name.truncate(k);
+                    }
+                name = name.trimmed();
+                g = node(p, name.isEmpty() ? up.section('/', -1) : name, QStringLiteral("addr/") + up, up);
+            }
+            p = g;
+        }
+        MemField f;
+        f.row = row;
+        f.path = {QStringLiteral("params"), i.path};
+        f.label = i.name();
+        const QJsonValue v = params.value(i.path);
+        switch (i.type) {
+        case ParamInfo::Type::Float:
+        case ParamInfo::Type::Int:
+            f.kind = MemField::Number;
+            f.min = i.min;
+            f.max = i.max;
+            f.step = i.step > 0 ? i.step : 0.01;
+            f.decimals = f.step >= 1 ? 0 : std::clamp(int(std::ceil(-std::log10(f.step))), 0, 6);
+            break;
+        case ParamInfo::Type::Bool: f.kind = MemField::Bool; break;
+        case ParamInfo::Type::Choice:
+            f.kind = MemField::Choice;
+            f.keys = f.labels = i.choices;
+            break;
+        default: f.kind = MemField::Info; break; // a text: shown
+        }
+        if ((i.isNumber() && i.ramp != ParamInfo::Ramp::Cut) || i.ramp == ParamInfo::Ramp::Typed) f.timeKey = i.path;
+        QTreeWidgetItem *it = addField(p, f, v);
+        it->setToolTip(0, i.path); // its address
     }
-    expand(fxSec);
+    for (QTreeWidgetItem *it : std::as_const(groups)) expand(it);
+    for (QTreeWidgetItem *it : std::as_const(categories)) expand(it);
 }
 
 // Writes a value into the selected snapshot: what the recall will apply changes, the composition does not move.
@@ -1040,24 +953,26 @@ void SnapshotPanel::applyTime(int row, const QString &key, double seconds)
     refreshRows();
 }
 
-// The easing curve of a parameter in the selected snapshot's timing
-void SnapshotPanel::applyEasingCurve(int row, const QString &paramKey, const QString &curveKey)
+// The easing of a value (or of a group of values) in the selected snapshot (empty: none of its own)
+void SnapshotPanel::applyEasingCurve(int row, const QString &key, const QString &curveKey)
 {
     const int i = selected();
-    if (i < 0 || paramKey.isEmpty() || curveKey.isEmpty()) return;
+    if (i < 0 || key.isEmpty()) return;
     Engine::Snapshot m = m_engine->snapshot(i);
     if (row >= m.layers.size()) return;
     QJsonObject o = rowObject(m, row);
-    QJsonObject timing = o.value("timing").toObject();
-    const QString key = paramKey + "/curve";
-    timing[key] = curveKey;
-    o["timing"] = timing;
+    QJsonObject easing = o.value("easing").toObject();
+    if (curveKey.isEmpty()) easing.remove(key);
+    else easing[key] = curveKey;
+    if (easing.isEmpty()) o.remove("easing");
+    else o["easing"] = easing;
     setRowObject(m, row, o);
     m_applying = true;
     m_engine->setSnapshot(i, m);
     m_applying = false;
     emit edited();
     refreshRows();
+    showDetail(m_layers->currentItem());
 }
 
 void SnapshotPanel::store()
@@ -1085,12 +1000,13 @@ void SnapshotPanel::updateSnapshot(int i)
     Engine::Snapshot m = m_engine->snapshot(i);
     // Layers left out stay out; the times given to values are kept
     QSet<quint64> excluded;
-    QHash<quint64, QJsonValue> timing;
+    QHash<quint64, QJsonValue> timing, easings;
     for (const QJsonValue &v : m.layers) {
         const QJsonObject o = v.toObject();
         const quint64 id = o.value("id").toString().toULongLong();
         if (!o.value("included").toBool(true)) excluded.insert(id);
         if (o.contains("timing")) timing.insert(id, o.value("timing"));
+        if (o.contains("easing")) easings.insert(id, o.value("easing"));
     }
     QJsonArray layers = m_engine->captureLayers();
     for (int k = 0; k < layers.size(); ++k) {
@@ -1098,6 +1014,7 @@ void SnapshotPanel::updateSnapshot(int i)
         const quint64 id = o.value("id").toString().toULongLong();
         if (excluded.contains(id)) o["included"] = false;
         if (timing.contains(id)) o["timing"] = timing.value(id);
+        if (easings.contains(id)) o["easing"] = easings.value(id);
         layers[k] = o;
     }
     m.layers = layers;
@@ -1106,6 +1023,7 @@ void SnapshotPanel::updateSnapshot(int i)
     if (!m.composition.isEmpty()) {
         comp["included"] = m.composition.value("included").toBool(true);
         if (m.composition.contains("timing")) comp["timing"] = m.composition.value("timing");
+        if (m.composition.contains("easing")) comp["easing"] = m.composition.value("easing");
     }
     m.composition = comp;
     m.thumbnail = m_engine->grabOutput().scaled(kThumb * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);

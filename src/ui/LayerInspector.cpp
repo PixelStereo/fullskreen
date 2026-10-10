@@ -1619,10 +1619,10 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             grid->addWidget(rotLabel, 2, 0);
             grid->addWidget(m_rotation, 2, 2);
         }
-        m_pivotX = spinOf(QStringLiteral("pivot/x"), QStringLiteral(" px"), 1);
-        m_pivotY = spinOf(QStringLiteral("pivot/y"), QStringLiteral(" px"), 1);
-        m_pivotX->setToolTip(QStringLiteral("Horizontal center of the rotation, in composition pixels (moves with the layer)"));
-        m_pivotY->setToolTip(QStringLiteral("Vertical center of the rotation, in composition pixels (moves with the layer)"));
+        m_pivotX = spinOf(QStringLiteral("pivot/x"), QStringLiteral(" %"), 1);
+        m_pivotY = spinOf(QStringLiteral("pivot/y"), QStringLiteral(" %"), 1);
+        m_pivotX->setToolTip(QStringLiteral("Horizontal center of the rotation, in % of the layer (50: its middle)"));
+        m_pivotY->setToolTip(QStringLiteral("Vertical center of the rotation, in % of the layer (50: its middle)"));
         auto *pivotLabel = new ResetLabel(QStringLiteral("Pivot"), [this] {
             editMapping(QStringLiteral("Pivot"), [](Mapping &m) {
                 m.pivot = QPointF(0.5, 0.5); // the middle of the picture
@@ -1666,11 +1666,10 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         }
 
         connect(link, &QToolButton::toggled, this, [this](bool on) { m_scaleLinked = on; });
-        auto setPivot = [this, comp](bool x, double v) {
+        auto setPivot = [this](bool x, double v) {
             editMapping(QStringLiteral("Pivot"), [&](Mapping &m) {
-                QPointF p = m.pivotPoint();
-                (x ? p.rx() : p.ry()) = v / (x ? comp.width() : comp.height());
-                m.setPivotPoint(p);
+                (x ? m.pivot.rx() : m.pivot.ry()) = v / 100.0;
+                ++m.revision;
             }, true);
         };
         connect(m_pivotX, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [setPivot](double v) { setPivot(true, v); });
@@ -2138,10 +2137,9 @@ void LayerInspector::refreshSpatial()
         m = l->mapping;
     }
     const double unitX = m_sizePx ? comp.width() : 100.0, unitY = m_sizePx ? comp.height() : 100.0;
-    const QPointF pivot = m.pivotPoint();
     QDoubleSpinBox *boxes[7] = {m_posX, m_posY, m_scaleX, m_scaleY, m_pivotX, m_pivotY, m_rotation};
     const double all[7] = {m.position.x() * comp.width(), m.position.y() * comp.height(), m.size.width() * unitX,
-                           m.size.height() * unitY, pivot.x() * comp.width(), pivot.y() * comp.height(), std::remainder(m.rotation, 360.0)};
+                           m.size.height() * unitY, m.pivot.x() * 100.0, m.pivot.y() * 100.0, std::remainder(m.rotation, 360.0)};
     for (int k = 0; k < 7; ++k) {
         if (!boxes[k] || boxes[k]->hasFocus()) continue; // being edited
         if (std::abs(boxes[k]->value() - all[k]) < 1e-6) continue;

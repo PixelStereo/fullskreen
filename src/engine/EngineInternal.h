@@ -13,8 +13,6 @@ inline constexpr int kMeshSubdiv = 40;
 
 // Resources removed from the composition (under lock), then released in the render thread.
 // The Text generator's settings in a layer state (Project.cpp)
-QJsonObject textJson(const TextSource &t);
-void readTextJson(TextSource &t, const QJsonObject &o); // onto the current values, then kept in range
 // An easing of the snapshots' fades (0 linear, 1 in, 2 out, 3 in-out, 4 in cubic, 5 out cubic) at t in 0..1
 double easeCurve(double t, int curve);
 // Keys of a timeline's loop mode in a project ("once", "loop", "pingpong")
@@ -73,29 +71,3 @@ inline void startMedia(Layer &l)
 }
 
 // ROI of a saved layer object (the whole picture when it is absent or degenerate)
-inline QRectF roiFromJson(const QJsonObject &layer)
-{
-    const QJsonArray c = layer.value("roi").toArray();
-    if (c.size() != 4) return Layer::fullRoi();
-    const QRectF r = QRectF(QPointF(c[0].toDouble(), c[1].toDouble()), QPointF(c[2].toDouble(), c[3].toDouble()))
-                         .normalized() & Layer::fullRoi();
-    return r.isEmpty() ? Layer::fullRoi() : r;
-}
-
-inline void colorFromJson(ColorAdjust &col, const QJsonObject &o)
-{
-    col.temp = float(std::clamp(o.value("temp").toDouble(0), -double(ColorAdjust::kTempRange), double(ColorAdjust::kTempRange)));
-    col.tint = float(std::clamp(o.value("tint").toDouble(0), -double(ColorAdjust::kTintRange), double(ColorAdjust::kTintRange)));
-    for (int c = 0; c < 3; ++c) {
-        col.add[c] = float(std::clamp(o.value("add").toArray().at(c).toDouble(0), 0.0, 1.0));
-        col.remove[c] = float(std::clamp(o.value("remove").toArray().at(c).toDouble(0), 0.0, 1.0));
-    }
-    // Switches: on when absent
-    col.enabled = o.value("enable").toBool(true);
-    col.tempOn = o.value("temp_enable").toBool(true);
-    col.tintOn = o.value("tint_enable").toBool(true);
-    col.addOn = o.value("add_enable").toBool(true);
-    col.removeOn = o.value("remove_enable").toBool(true);
-    col.maskLayer = o.value("mask").toString().toULongLong(); // ids are strings: JSON numbers are doubles
-    col.maskInvert = o.value("mask_invert").toBool(false);
-}

@@ -22,8 +22,6 @@ struct SoftEdge {
     double width[4] = {0.1, 0.1, 0.1, 0.1}; // 0 to 0.5
     double power[4] = {1, 1, 1, 1};         // 0.1 to 8
     bool active() const { return enabled && (width[0] > 0 || width[1] > 0 || width[2] > 0 || width[3] > 0); }
-    QJsonObject toJson() const;
-    void fromJson(const QJsonObject &o);
     bool operator==(const SoftEdge &o) const;
 };
 
@@ -99,8 +97,12 @@ public:
     // Fits the layer to a source's aspect ratio within a composition (centered).
     void fitAspect(double srcAspect, double compAspect);
 
-    QJsonObject toJson() const;
-    void fromJson(const QJsonObject &o);
+    // Its mesh in a file (cols, rows, offsets): its other values are its layer's parameters
+    QJsonObject meshJson() const;
+    void setMeshJson(const QJsonObject &o);
+    // The same shape: every stored value equal (its revision and the composition's aspect aside)
+    bool operator==(const Mapping &o) const;
+    bool operator!=(const Mapping &o) const { return !(*this == o); }
 
 private:
     QPointF offsetAt(double u, double v) const;

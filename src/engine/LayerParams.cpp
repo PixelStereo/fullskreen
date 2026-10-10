@@ -20,7 +20,8 @@ std::vector<quint64> keyOf(const Layer &l)
     const QSize c = l.compSize ? *l.compSize : QSize(1920, 1080);
     std::vector<quint64> k{quint64(l.type),       quint64(l.hasTransport()), quint64(bool(l.audio)), quint64(l.isViewport),
                            quint64(l.isGroup),    quint64(c.width()),        quint64(c.height()),
-                           quint64(quintptr(l.generator.get())), quint64(l.effects.size())};
+                           quint64(quintptr(l.generator.get())), quint64(l.effects.size()),
+                           quint64(std::llround(l.duration() * 1000))};
     auto inputs = [&k](const IsfInstance *i) {
         if (!i) return;
         k.push_back(quint64(i->isValid()));
@@ -75,54 +76,48 @@ const std::vector<Parameter *> &Layer::parameters()
                 .bind([self] { return QVariant(blendModeKey(self->blend)); },
                       [self](const QVariant &v) { self->blend = blendModeFromKey(v.toString()); });
 
-        // Where it is (Mapping.h): the center of its rectangle, its size, its rotation about its pivot — each one a
-        // value of its own; a viewport's size is in pixels, a layer's in % of the composition
+        // Where it is (Mapping.h): the center of its rectangle, its size, its rotation about its pivot, the pins of its
+        // corners — each one a value of its own, as the mapping stores it; a viewport's size is in pixels, a layer's in %
+        // of the composition. The pivot and the pins are in % of the layer: they move with it
         Mapping *m = &mapping;
+        auto touch = [m] { ++m->revision; };
         num("rotation", "Spatial › Rotation (°)", -180, 180, 0.0, [m] { return m->rotation; },
-            [m](double v) {
+            [m, touch](double v) {
                 m->rotation = v;
-                ++m->revision;
+                touch();
             })
             .limits(-1e9, 1e9)
             .step(0.1)
             .ramp(Parameter::Ramp::Angle);
+        for (int axis = 0; axis < 2; ++axis) { // the center of the rotation: where it is in the layer (moving it moves the layer)
+            const bool x = axis == 0;
+            num(x ? "pivot/x" : "pivot/y", x ? "Spatial › Pivot X (%)" : "Spatial › Pivot Y (%)", 0, 100, 50.0,
+                [m, x] { return (x ? m->pivot.x() : m->pivot.y()) * 100.0; },
+                [m, x, touch](double v) {
+                    (x ? m->pivot.rx() : m->pivot.ry()) = v / 100.0;
+                    touch();
+                })
+                .limits(-1000, 1000)
+                .step(0.1);
+        }
         for (int axis = 0; axis < 2; ++axis) {
             const bool x = axis == 0;
             const double size = x ? C().width() : C().height();
             num(x ? "position/x" : "position/y", x ? "Spatial › Position X" : "Spatial › Position Y", -4 * size, 5 * size, size / 2,
                 [m, C, x] { return x ? m->position.x() * C().width() : m->position.y() * C().height(); },
-                [m, C, x](double v) {
+                [m, C, x, touch](double v) {
                     (x ? m->position.rx() : m->position.ry()) = v / (x ? C().width() : C().height());
-                    ++m->revision;
+                    touch();
                 })
                 .step(1);
-        }
-        for (int axis = 0; axis < 2; ++axis) { // the center of the rotation, fixed to the picture, in composition pixels
-            const bool x = axis == 0;
-            const double size = x ? C().width() : C().height();
-            num(x ? "pivot/x" : "pivot/y", x ? "Spatial › Pivot X" : "Spatial › Pivot Y", -4 * size, 5 * size, size / 2,
-                [m, C, x] {
-                    const QPointF p = m->pivotPoint();
-                    return x ? p.x() * C().width() : p.y() * C().height();
-                },
-                [m, C, x](double v) { // the picture stays where it is
-                    QPointF p = m->pivotPoint();
-                    (x ? p.rx() : p.ry()) = v / (x ? C().width() : C().height());
-                    m->setPivotPoint(p);
-                })
-                .step(1)
-                .byDefault(std::function<QVariant()>([m, C, x] { // the middle of the picture
-                    const QPointF c = m->toComposition(QPointF(0.5, 0.5));
-                    return QVariant(x ? c.x() * C().width() : c.y() * C().height());
-                }));
         }
         for (int axis = 0; axis < 2; ++axis) {
             const bool x = axis == 0;
             auto get = [m, x] { return x ? m->size.width() : m->size.height(); };
-            auto put = [m, x](double v) {
+            auto put = [m, x, touch](double v) {
                 if (x) m->size.setWidth(v);
                 else m->size.setHeight(v);
-                ++m->revision;
+                touch();
             };
             if (isViewport) // its rectangle, in pixels
                 num(x ? "width" : "height", x ? "Spatial › Width" : "Spatial › Height", 1, 10000, x ? C().width() : C().height(),
@@ -136,6 +131,23 @@ const std::vector<Parameter *> &Layer::parameters()
                     .limits(0.1, 2000)
                     .step(0.1);
         }
+        if (!isViewport) { // a viewport is a rectangle: no pins, no mesh
+            static const char *const kCorners[] = {"top_left", "top_right", "bottom_right", "bottom_left"};
+            static const char *const kCornerNames[] = {"Top Left", "Top Right", "Bottom Right", "Bottom Left"};
+            for (int k = 0; k < 4; ++k)
+                for (int axis = 0; axis < 2; ++axis) { // how far the corner is pulled, in % of the layer
+                    const bool x = axis == 0;
+                    num(QStringLiteral("corner/%1/%2").arg(QLatin1String(kCorners[k]), x ? "x" : "y"),
+                        QStringLiteral("Spatial › %1 %2 (%)").arg(QLatin1String(kCornerNames[k]), x ? "X" : "Y"), -100, 100, 0.0,
+                        [m, k, x] { return (x ? m->pins[k].x() : m->pins[k].y()) * 100.0; },
+                        [m, k, x, touch](double v) {
+                            (x ? m->pins[k].rx() : m->pins[k].ry()) = v / 100.0;
+                            touch();
+                        })
+                        .limits(-1000, 1000)
+                        .step(0.01);
+                }
+        }
         // Soft edge: the picture fades out towards each side
         flag("soft_edge/enable", "Spatial › Soft Edge", false, &mapping.soft.enabled);
         static const char *const kSides[] = {"left", "right", "top", "bottom"}; // the order of SoftEdge's arrays
@@ -143,7 +155,7 @@ const std::vector<Parameter *> &Layer::parameters()
         for (int k = 0; k < 4; ++k) {
             const QString base = QStringLiteral("soft_edge/%1/").arg(QLatin1String(kSides[k]));
             const QString name = QStringLiteral("Spatial › Soft Edge %1 ").arg(QLatin1String(kSideNames[k]));
-            num(base + "width", name + "Width", 0, 0.5, 0.0, [self, k] { return self->mapping.soft.width[k]; },
+            num(base + "width", name + "Width", 0, 0.5, SoftEdge().width[k], [self, k] { return self->mapping.soft.width[k]; },
                 [self, k](double v) { self->mapping.soft.width[k] = v; })
                 .step(0.001);
             num(base + "power", name + "Power", 0.1, 8, 1.0, [self, k] { return self->mapping.soft.power[k]; },
@@ -201,15 +213,23 @@ const std::vector<Parameter *> &Layer::parameters()
             [self](double v) { self->volume = float(v); });
         flag("mute", "Source › Mute", false, &muted);
     }
-    if (hasTransport())
-        num("speed", "Source › Speed", 0, 4, 1.0, [self] { return self->speed; },
-            [self](double v) {
-                const int dir = v < 0 ? -1 : v > 0 ? 1 : self->dir;
-                const double pos = self->position();
-                self->speed = v;
-                if (dir != self->dir) reposition(*self, pos, dir); // the other way from the same place
-            })
+    if (hasTransport()) {
+        num("speed", "Source › Speed", 0, 4, 1.0, [self] { return self->speed; }, [self](double v) { self->setSpeed(v); })
             .limits(-8, 8);
+        add("play_mode", "Source › Play Mode", T::Choice)
+            .choices({"oneshot", "loop", "pingpong", "stop"})
+            .byDefault(playModeKey(PlayMode::Loop))
+            .bind([self] { return QVariant(playModeKey(self->mode)); },
+                  [self](const QVariant &v) { self->setPlayMode(playModeFromKey(v.toString())); });
+        // The played range, in seconds (out: the end of the media unless set)
+        const double d = std::max(0.0, duration());
+        num("in", "Source › In (s)", 0, d, 0.0, [self] { return self->inPoint; },
+            [self](double v) { self->setInOut(v, self->outPoint); })
+            .step(0.01);
+        num("out", "Source › Out (s)", 0, d, d, [self] { return self->outPoint < 0 ? self->duration() : self->outPoint; },
+            [self](double v) { self->setInOut(self->inPoint, v); })
+            .step(0.01);
+    }
 
     // Text generator
     if (isText()) {
@@ -224,11 +244,55 @@ const std::vector<Parameter *> &Layer::parameters()
                 .limits(llo, lhi);
         };
         const TextSource def;
-        add("text/content", "Text › Content", T::Text).byDefault(QString()).bind([t] { return QVariant(t->content); },
-                                                                                 [t](const QVariant &v) { t->content = v.toString(); });
+        add("text/content", "Text › Content", T::Text)
+            .ramp(Parameter::Ramp::Typed)
+            .byDefault(QString())
+            .bind([t] { return QVariant(t->content); }, [t](const QVariant &v) { t->content = v.toString(); });
         add("text/font", "Text › Font", T::Text).byDefault(def.font).bind([t] { return QVariant(t->font); }, [t](const QVariant &v) {
             t->font = v.toString().isEmpty() ? QStringLiteral("Arial") : v.toString();
         });
+        static const char *const kH[] = {"left", "center", "right", "justify"};
+        static const Qt::AlignmentFlag kHF[] = {Qt::AlignLeft, Qt::AlignHCenter, Qt::AlignRight, Qt::AlignJustify};
+        static const char *const kV[] = {"top", "middle", "bottom"};
+        static const Qt::AlignmentFlag kVF[] = {Qt::AlignTop, Qt::AlignVCenter, Qt::AlignBottom};
+        add("text/align", "Text › Align", T::Choice)
+            .choices({"left", "center", "right", "justify"})
+            .byDefault(QStringLiteral("center"))
+            .bind(
+                [t] {
+                    for (int k = 0; k < 4; ++k)
+                        if (t->align & kHF[k]) return QVariant(QString::fromLatin1(kH[k]));
+                    return QVariant(QStringLiteral("left"));
+                },
+                [t](const QVariant &v) {
+                    for (int k = 0; k < 4; ++k)
+                        if (v.toString() == QLatin1String(kH[k])) t->align = Qt::Alignment((t->align & Qt::AlignVertical_Mask) | kHF[k]);
+                });
+        add("text/v_align", "Text › Vertical Align", T::Choice)
+            .choices({"top", "middle", "bottom"})
+            .byDefault(QStringLiteral("middle"))
+            .bind(
+                [t] {
+                    for (int k = 0; k < 3; ++k)
+                        if (t->align & kVF[k]) return QVariant(QString::fromLatin1(kV[k]));
+                    return QVariant(QStringLiteral("top"));
+                },
+                [t](const QVariant &v) {
+                    for (int k = 0; k < 3; ++k)
+                        if (v.toString() == QLatin1String(kV[k])) t->align = Qt::Alignment((t->align & Qt::AlignHorizontal_Mask) | kVF[k]);
+                });
+        flag("text/bold", "Text › Bold", def.bold, &text.bold);
+        flag("text/italic", "Text › Italic", def.italic, &text.italic);
+        flag("text/underline", "Text › Underline", def.underline, &text.underline);
+        flag("text/strike", "Text › Strikethrough", def.strike, &text.strike);
+        for (int axis = 0; axis < 2; ++axis) { // the size of its picture
+            int TextSource::*f = axis ? &TextSource::height : &TextSource::width;
+            add(axis ? "text/height" : "text/width", axis ? "Text › Height (px)" : "Text › Width (px)", T::Int)
+                .range(1, 16384)
+                .ramp(Parameter::Ramp::Cut)
+                .byDefault(axis ? def.height : def.width)
+                .bind([t, f] { return QVariant(t->*f); }, [t, f](const QVariant &v) { t->*f = std::clamp(v.toInt(), 1, 16384); });
+        }
         textNum("text/size", "Text › Size (px)", 1, 400, 1, 1000, def.size, nullptr).step(1);
         textNum("text/line_height", "Text › Line Height", 0.5, 3, 0.1, 10, def.lineHeight, &TextSource::lineHeight);
         textNum("text/letter_spacing", "Text › Letter Spacing (px)", -20, 100, -200, 500, def.letterSpacing, &TextSource::letterSpacing)
@@ -278,13 +342,51 @@ const std::vector<Parameter *> &Layer::parameters()
     for (size_t k = 0; k < effects.size(); ++k)
         shader(*effects[k], QStringLiteral("fx/%1/").arg(segs[int(k)]), QStringLiteral("FX › %1").arg(effects[k]->name()), true);
 
-    for (auto &p : paramStore) paramList.push_back(p.get());
+    paramIndex.clear();
+    for (auto &p : paramStore) {
+        paramList.push_back(p.get());
+        paramIndex.insert(p->path(), p.get());
+    }
+    // Values read from a file for parameters it did not have then (its media was missing): theirs now
+    if (!extraParams.isEmpty()) parametersFromJson(paramList, QJsonObject(extraParams), &extraParams);
     return paramList;
 }
 
 Parameter *Layer::parameter(const QString &path)
 {
-    for (Parameter *p : parameters())
-        if (p->path() == path) return p;
-    return nullptr;
+    parameters();
+    return paramIndex.value(path);
+}
+
+void Layer::setSpeed(double v)
+{
+    const int d = v < 0 ? -1 : v > 0 ? 1 : dir;
+    const double pos = position();
+    speed = v;
+    if (d != dir && hasTransport()) reposition(*this, pos, d); // the other way from the same place
+}
+
+void Layer::setPlayMode(PlayMode m)
+{
+    const double pos = position();
+    mode = m;
+    ended = false;
+    if (hasTransport()) reposition(*this, pos, dir); // same place, new mode
+}
+
+void Layer::setInOut(double in, double out)
+{
+    const double d = duration();
+    in = std::max(0.0, in);
+    if (d > 0) {
+        in = std::min(in, d);
+        if (out >= 0) out = std::clamp(out, 0.0, d);
+        if (out >= d - 1e-6) out = -1; // up to the end: follows the media
+    }
+    if (out >= 0 && out < in + 0.01) out = in + 0.01; // at least a few milliseconds
+    if (std::abs(inPoint - in) < 1e-9 && std::abs(outPoint - out) < 1e-9) return;
+    const double pos = position();
+    inPoint = in;
+    outPoint = out;
+    if (hasTransport()) reposition(*this, pos, dir); // clamped into the new range
 }

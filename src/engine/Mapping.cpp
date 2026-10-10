@@ -229,31 +229,6 @@ void Mapping::fitAspect(double srcAspect, double compAspect)
     ++revision;
 }
 
-QJsonObject SoftEdge::toJson() const
-{
-    QJsonObject o;
-    o["enable"] = enabled;
-    QJsonArray w, p;
-    for (int i = 0; i < 4; ++i) {
-        w.append(width[i]);
-        p.append(power[i]);
-    }
-    o["width"] = w;
-    o["power"] = p;
-    return o;
-}
-
-void SoftEdge::fromJson(const QJsonObject &o)
-{
-    *this = SoftEdge();
-    enabled = o.value("enable").toBool(false);
-    const QJsonArray w = o.value("width").toArray(), p = o.value("power").toArray();
-    for (int i = 0; i < 4; ++i) {
-        if (i < w.size()) width[i] = std::clamp(w[i].toDouble(), 0.0, 0.5);
-        if (i < p.size()) power[i] = std::clamp(p[i].toDouble(), 0.1, 8.0);
-    }
-}
-
 bool SoftEdge::operator==(const SoftEdge &o) const
 {
     if (enabled != o.enabled) return false;
@@ -262,47 +237,34 @@ bool SoftEdge::operator==(const SoftEdge &o) const
     return true;
 }
 
-QJsonObject Mapping::toJson() const
+// Its mesh (the other values are its layer's parameters): the grid and the points pulled from it
+QJsonObject Mapping::meshJson() const
 {
-    auto pt = [](QPointF p) { return QJsonArray{p.x(), p.y()}; };
-    QJsonObject o;
-    o["position"] = pt(position);
-    o["size"] = QJsonArray{size.width(), size.height()};
-    o["rotation"] = rotation;
-    o["pivot"] = pt(pivot);
-    QJsonArray pin;
-    for (const QPointF &p : pins) pin.append(pt(p));
-    o["pins"] = pin;
-    o["cols"] = cols;
-    o["rows"] = rows;
     QJsonArray off;
-    for (const QPointF &p : offsets) off.append(pt(p));
-    o["offsets"] = off;
-    o["mesh_mode"] = meshMode;
-    // Always save soft edge (even if disabled) so snapshots preserve crop feathering settings
-    o["soft_edge"] = soft.toJson();
-    return o;
+    for (const QPointF &p : offsets) off.append(QJsonArray{p.x(), p.y()});
+    return QJsonObject{{"cols", cols}, {"rows", rows}, {"offsets", off}, {"edit", meshMode}}; // edit: the points are edited (not the corners)
 }
 
-void Mapping::fromJson(const QJsonObject &o)
+void Mapping::setMeshJson(const QJsonObject &o)
 {
-    auto pt = [](const QJsonValue &v, QPointF def) {
-        const QJsonArray a = v.toArray();
-        return a.size() == 2 ? QPointF(a[0].toDouble(), a[1].toDouble()) : def;
-    };
-    position = pt(o.value("position"), QPointF(0.5, 0.5));
-    const QPointF sz = pt(o.value("size"), QPointF(1, 1));
-    size = QSizeF(sz.x(), sz.y());
-    rotation = o.value("rotation").toDouble(0);
-    pivot = pt(o.value("pivot"), QPointF(0.5, 0.5));
-    const QJsonArray pin = o.value("pins").toArray();
-    for (int i = 0; i < 4; ++i) pins[i] = pt(pin.at(i), QPointF());
     resetMesh(o.value("cols").toInt(4), o.value("rows").toInt(4));
     const QJsonArray off = o.value("offsets").toArray();
-    for (int i = 0; i < int(offsets.size()) && i < off.size(); ++i) offsets[size_t(i)] = pt(off[i], QPointF());
-    meshMode = o.value("mesh_mode").toBool(false);
-    soft.fromJson(o.value("soft_edge").toObject());
+    for (int i = 0; i < int(offsets.size()) && i < off.size(); ++i) {
+        const QJsonArray a = off[i].toArray();
+        if (a.size() == 2) offsets[size_t(i)] = QPointF(a[0].toDouble(), a[1].toDouble());
+    }
+    meshMode = o.value("edit").toBool(false);
     ++revision;
+}
+
+bool Mapping::operator==(const Mapping &o) const
+{
+    if (position != o.position || size != o.size || rotation != o.rotation || pivot != o.pivot || cols != o.cols ||
+        rows != o.rows || offsets != o.offsets || meshMode != o.meshMode || !(soft == o.soft))
+        return false;
+    for (int k = 0; k < 4; ++k)
+        if (pins[k] != o.pins[k]) return false;
+    return true;
 }
 
 void Mapping::rotate(double degrees, QSize)

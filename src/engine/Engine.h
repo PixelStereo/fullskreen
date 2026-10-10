@@ -119,6 +119,7 @@ public:
     };
     // Copies the chosen parts of `o` (a layerJson, from any layer or project) onto layer i, leaving its
     // identity (id, name, group, place in the list) alone. False if the layer is missing or locked.
+    static int partOf(const QString &path); // the part (Part…) a parameter of a layer belongs to, by its address
     bool applyLayerParts(int i, const QJsonObject &o, int parts);
 
     bool setLayerVideo(int i, const QString &path, QString *err = nullptr);
@@ -373,14 +374,18 @@ public:
         bool running() const { return snapshot && total > 0 && elapsed < total; }
         double fraction() const { return total > 0 ? std::min(1.0, elapsed / total) : 1.0; }
     };
+    struct FadeJob; // a layer on its way to a snapshot's state (Snapshots.cpp)
     RecallProgress recallProgress() const;
     void stepCompositionFade(double dt); // a snapshot's fade of the level and the volume (lock held)
     void stepTypewriters(double dt); // the texts snapshots gave are typed on (lock held)
     void advanceFades(double dt); // tests: moves the fades on by dt seconds, as a rendered frame does
     void setFadesManual(bool on) { m_fadesManual = on; } // tests: only advanceFades moves them, not the frames
-    // Key under which a snapshot stores the time of a stored value (its path in the layer state), empty for a value
-    // that does not fade: "opacity", "roi/left", "color/temp", "spatial", "fx/<fx>/param/<name>"…
-    static QString timingKey(const QStringList &path, const QJsonObject &layer);
+    // A snapshot gives a value of a layer its time ("timing": key → seconds, 0 at once) and its easing ("easing": key →
+    // easing key) under its address or the address of a group it is in ("position" for "position/x", "fx/blur" for
+    // that effect's); the other keys: "file" (another source's transition), "viewports" (its routing), "mesh" (its
+    // points). The key that gives `path` its time in `timing` (or its easing in `easing`), empty when none does: it
+    // follows the snapshot's fade
+    static QString timingKeyOf(const QJsonObject &timing, const QString &path);
     // The easings of the fades — and of a timeline's keys, the same (0..5) — by key ("ease_in_out") and by name
     static QStringList easingKeys();
     static QStringList easingNames();
@@ -537,7 +542,7 @@ private:
     void bindMesh(Layer &l);         // its mapped mesh (render thread, mesh vertex array bound)
     void bindMeshBuffer(GLuint vbo); // any mesh vertex buffer
     QString resolvePath(const QJsonObject &o, const QString &projectDir) const;
-    QJsonObject layerToJson(const Layer &l, const QString &projectDir) const;
+    QJsonObject layerToJson(Layer &l, const QString &projectDir) const;
     void layerFromJson(int index, const QJsonObject &o, const QString &projectDir, QStringList *warnings);
     double nextDt();
     struct Publication;
@@ -635,7 +640,6 @@ private:
     PlayMode m_defaultPlayMode = PlayMode::Loop;
     int m_defaultColorModels = 1;
     std::vector<Snapshot> m_snapshots;
-    struct FadeJob;
     std::vector<std::shared_ptr<FadeJob>> m_fades;
     // A snapshot gives a layer another source: the outgoing one keeps playing, invisible, and the two pictures
     // are mixed by an ISF transition into the layer's picture (before its mapping) until it is over

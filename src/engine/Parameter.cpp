@@ -161,3 +161,28 @@ bool Parameter::setValue(const QVariant &v)
     }
     return false;
 }
+
+bool Parameter::isStored() const
+{
+    return m_info.access == ParamInfo::ReadWrite && m_info.type != Type::Trigger && m_get && m_set;
+}
+
+QJsonValue Parameter::json() const
+{
+    const QVariant v = value();
+    switch (m_info.type) {
+    case Type::Float: return v.toDouble();
+    case Type::Int: return v.toInt();
+    case Type::Bool: return v.toBool();
+    case Type::Choice:
+    case Type::Text: return v.toString();
+    case Type::Trigger: break;
+    }
+    return {};
+}
+
+bool Parameter::setJson(const QJsonValue &v)
+{
+    if (v.isUndefined() || v.isNull()) return false;
+    return setValue(v.toVariant());
+}

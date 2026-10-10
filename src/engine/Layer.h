@@ -10,7 +10,9 @@
 #include "VideoTexture.h"
 
 #include <QColor>
+#include <QHash>
 #include <QImage>
+#include <QJsonObject>
 #include <QRectF>
 #include <QSize>
 #include <QString>
@@ -290,7 +292,17 @@ struct Layer {
     const QSize *compSize = nullptr;           // the composition's (set by the engine): its parameters in pixels
     std::vector<std::unique_ptr<Parameter>> paramStore;
     std::vector<Parameter *> paramList;
+    QHash<QString, Parameter *> paramIndex; // by address
     std::vector<quint64> paramKey; // what they were made from
+    // Values read from a file for parameters it does not have now (a media file missing: its speed, its in and out
+    // points…): written back as they were when it is saved
+    QJsonObject extraParams;
+
+    // Its transport, changed from where it is: the speed (below 0 it turns round there), the play mode, the
+    // played range (kept within the media; out < 0: its end)
+    void setSpeed(double speed);
+    void setPlayMode(PlayMode mode);
+    void setInOut(double in, double out);
 
     bool hasTransport() const { return video || audio; }
     double duration() const { return video ? video->duration() : audio ? audio->duration() : 0.0; }

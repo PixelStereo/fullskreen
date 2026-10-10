@@ -359,10 +359,11 @@ std::vector<Parameter> IsfInstance::parameters(const QString &title) const
         case IsfInput::Float:
             number(path, label, -1, in.fMin, in.fMax, in.fDefault)->step(std::abs(in.fMax - in.fMin) / 1000.0);
             break;
-        case IsfInput::Long:
-            if (in.lValues.isEmpty()) break;
+        case IsfInput::Long: // one among its values (any whole number when it lists none): at once in a fade
             out.emplace_back(path, label, T::Int);
-            out.back().values(QList<int>(in.lValues.begin(), in.lValues.end())).byDefault(in.lDefault).bind(
+            if (in.lValues.isEmpty()) out.back().range(0, 100).limits(-1e6, 1e6);
+            else out.back().values(QList<int>(in.lValues.begin(), in.lValues.end()));
+            out.back().ramp(Parameter::Ramp::Cut).byDefault(in.lDefault).bind(
                 [input]() -> QVariant { const IsfInput *x = input(); return x ? QVariant(x->lValue) : QVariant(); },
                 [input](const QVariant &v) {
                     if (IsfInput *x = input()) {
@@ -416,15 +417,6 @@ void IsfInstance::setImageTexture(const QString &name, GLuint tex, int w, int h)
         in->extW = w;
         in->extH = h;
     }
-}
-
-void IsfInstance::readState(const QJsonObject &o)
-{
-    enabled = o.value("enable").toBool(true);
-    speed = std::clamp(o.value("speed").toDouble(1.0), 0.0, 10.0);
-    maskLayer = o.value("mask").toString().toULongLong();
-    maskInvert = o.value("mask_invert").toBool(false);
-    maskPreFx = o.value("mask_tap").toString() == "prefx";
 }
 
 IsfInstance::~IsfInstance()
@@ -849,62 +841,49 @@ void IsfInstance::render(const IsfRenderContext &rc, GLuint inputTex, int inW, i
 // Parameter saving
 // ---------------------------------------------------------------------------
 
-QJsonObject IsfInstance::save(const QString &projectDir) const
+QJsonObject IsfInstance::save(const QString &projectDir, bool withParams) const
 {
     QJsonObject o;
     o["path"] = m_path;
     if (!projectDir.isEmpty()) o["relative_path"] = QDir(projectDir).relativeFilePath(m_path);
-    o["enable"] = enabled;
-    o["speed"] = speed;
-    if (maskLayer) o["mask"] = QString::number(maskLayer); // ids are strings: JSON numbers are doubles
-    if (maskInvert) o["mask_invert"] = true;
-    if (maskLayer) o["mask_tap"] = maskPreFx ? "prefx" : "postfx";
-    QJsonObject params;
-    for (const IsfInput &in : m_inputs) {
-        switch (in.type) {
-        case IsfInput::Float: params[in.name] = in.fValue; break;
-        case IsfInput::Bool: params[in.name] = in.bValue; break;
-        case IsfInput::Long: params[in.name] = in.lValue; break;
-        case IsfInput::Point2D: params[in.name] = QJsonArray{in.pValue.x(), in.pValue.y()}; break;
-        case IsfInput::Color: params[in.name] = QJsonArray{in.cValue[0], in.cValue[1], in.cValue[2], in.cValue[3]}; break;
-        case IsfInput::Image:
-            if (!in.isInputImage && !in.imagePath.isEmpty()) params[in.name] = in.imagePath;
-            break;
-        default: break;
-        }
+    if (maskLayer) {
+        o["mask"] = QString::number(maskLayer); // ids are strings: JSON numbers are doubles
+        o["mask_tap"] = maskPreFx ? "prefx" : "postfx";
     }
-    o["params"] = params;
+    QJsonObject images;
+    for (const IsfInput &in : m_inputs)
+        if (in.type == IsfInput::Image && !in.isInputImage && !in.imagePath.isEmpty()) images[in.name] = in.imagePath;
+    if (!images.isEmpty()) o["images"] = images;
+    if (withParams) {
+        std::vector<Parameter> params = parameters(QString());
+        std::vector<Parameter *> list;
+        for (Parameter &p : params) list.push_back(&p);
+        o["params"] = parametersToJson(list);
+    }
     return o;
 }
 
-void IsfInstance::restoreParams(const QJsonObject &params, const QString &projectDir)
+void IsfInstance::restore(const QJsonObject &o, const QString &projectDir)
 {
+    maskLayer = o.value("mask").toString().toULongLong();
+    maskPreFx = o.value("mask_tap").toString() == "prefx";
+    const QJsonObject images = o.value("images").toObject();
     for (int idx = 0; idx < int(m_inputs.size()); ++idx) {
-        IsfInput &in = m_inputs[idx];
-        if (!params.contains(in.name)) continue;
-        QJsonValue v = params.value(in.name);
-        switch (in.type) {
-        case IsfInput::Float: in.fValue = v.toDouble(in.fDefault); break;
-        case IsfInput::Bool: in.bValue = v.toBool(in.bDefault); break;
-        case IsfInput::Long: in.lValue = v.toInt(in.lDefault); break;
-        case IsfInput::Point2D: in.pValue = jsonPoint(v, in.pDefault); break;
-        case IsfInput::Color: {
-            QJsonArray a = v.toArray();
-            for (int k = 0; k < 4 && k < a.size(); ++k) in.cValue[k] = float(a[k].toDouble());
-            break;
+        IsfInput &in = m_inputs[size_t(idx)];
+        if (in.type != IsfInput::Image || !images.contains(in.name)) continue;
+        QString p = images.value(in.name).toString();
+        if (!QFile::exists(p) && !projectDir.isEmpty()) {
+            const QString alt = QDir(projectDir).absoluteFilePath(QFileInfo(p).fileName());
+            if (QFile::exists(alt)) p = alt;
         }
-        case IsfInput::Image: {
-            QString p = v.toString();
-            if (!QFile::exists(p) && !projectDir.isEmpty()) {
-                QString alt = QDir(projectDir).absoluteFilePath(QFileInfo(p).fileName());
-                if (QFile::exists(alt)) p = alt;
-            }
-            if (QFile::exists(p)) setImageInput(idx, p, nullptr);
-            else if (!p.isEmpty()) in.imagePath = p; // kept (missing) for the media bin and saving
-            break;
-        }
-        default: break;
-        }
+        if (QFile::exists(p)) setImageInput(idx, p, nullptr);
+        else if (!p.isEmpty()) in.imagePath = p; // kept (missing) for the media bin and saving
+    }
+    if (o.contains("params")) {
+        std::vector<Parameter> params = parameters(QString());
+        std::vector<Parameter *> list;
+        for (Parameter &p : params) list.push_back(&p);
+        parametersFromJson(list, o.value("params").toObject());
     }
 }
 

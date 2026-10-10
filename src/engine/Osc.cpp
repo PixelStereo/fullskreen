@@ -873,16 +873,6 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      return e->setColorMask(idx, id, invert);
                  });
     }
-    static const char *kCorners[] = {"top_left", "top_right", "bottom_right", "bottom_left"};
-    static const char *kCornerNames[] = {"Top Left", "Top Right", "Bottom Right", "Bottom Left"};
-    for (int k = 0; k < 4; ++k)
-        L.method(P + "/corner/" + kCorners[k], "ff", 3, kCornerNames[k],
-                 [k](Layer &l) { return QVariantList{l.mapping.corner(k).x(), l.mapping.corner(k).y()}; },
-                 L.edit([k](Layer &l, const QVariantList &a) {
-                     if (a.size() < 2) return false;
-                     l.mapping.setCorner(k, QPointF(num(a[0]), num(a[1])));
-                     return true;
-                 }));
     for (const auto &[k, seg] : effects) {
         const int slot = k;
         L.method(P + "/fx/" + seg + "/mask", "s", 3, "Mask",
@@ -986,7 +976,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      return true;
                  },
                  true);
-        L.method(P + "/position", "f", 3, "Position", [](Layer &l) { return QVariantList{l.position()}; },
+        L.method(P + "/time", "f", 3, "Time (s)", [](Layer &l) { return QVariantList{l.position()}; },
                  [e](int idx, const QVariantList &a) {
                      if (a.isEmpty()) return false;
                      e->seekLayer(idx, num(a[0]));
@@ -995,34 +985,6 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  true);
         L.method(P + "/duration", "f", 1, "Duration",
                  [](Layer &l) { return QVariantList{l.duration()}; }, nullptr);
-        L.method(P + "/play_mode", "s", 3, "Play Mode", [](Layer &l) { return QVariantList{playModeKey(l.mode)}; },
-                 [e](int idx, const QVariantList &a) {
-                     const QString k = a.value(0).toString().toLower();
-                     if (!QStringList{"oneshot", "loop", "pingpong", "stop"}.contains(k)) return false;
-                     e->setLayerPlayMode(idx, playModeFromKey(k));
-                     return true;
-                 })
-            .range = {vals({"oneshot", "loop", "pingpong", "stop"})};
-        for (int which = 0; which < 2; ++which)
-            L.method(P + (which ? "/out" : "/in"), "f", 3,
-                     which ? "Out" : "In",
-                     [which](Layer &l) {
-                         return QVariantList{which ? (l.outPoint < 0 ? l.duration() : l.outPoint) : l.inPoint};
-                     },
-                     [e, which](int idx, const QVariantList &a) {
-                         if (a.isEmpty()) return false;
-                         double in, out;
-                         {
-                             Engine::Lock lk(&e->mutex());
-                             Layer *l = e->layer(idx);
-                             if (!l) return false;
-                             in = l->inPoint;
-                             out = l->outPoint;
-                         }
-                         (which ? out : in) = num(a[0]);
-                         e->setLayerInOut(idx, in, out);
-                         return true;
-                     });
     }
 
     // The animation of a parameter, under that parameter: <param>/anim/play, …/duration, …/loop_mode…

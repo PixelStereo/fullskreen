@@ -8,6 +8,8 @@
 // A Parameter says what it is — its type, how it goes from one value to another in a fade (its ramp), its granularity,
 // its access, its default, its range — and reads / writes the value in its holder (bound at construction).
 
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -30,6 +32,7 @@ struct ParamInfo {
         Cut,    // at once (switches, choices, texts)
         Linear, // through the values in between
         Angle,  // the shortest way round (degrees)
+        Typed,  // a text typed in over its time (erased back to what it shares with the new one, then typed)
     };
     enum Access { Read = 1, Write = 2, ReadWrite = 3 };
 
@@ -92,8 +95,34 @@ public:
     bool setNumber(double v) { return setValue(v); }
     bool reset() { return setValue(info().defaultValue); }
 
+    // Its value in a file (a project, a snapshot, a copied layer): a number, a switch, a key, a text
+    bool isStored() const; // read and written, not an action
+    QJsonValue json() const;
+    bool setJson(const QJsonValue &v);
+
 private:
     ParamInfo m_info;
     std::function<QVariant()> m_default, m_get;
     std::function<void(const QVariant &)> m_set;
 };
+
+// The values of a holder's parameters in a file, by address; read back in their order (an address the holder no longer
+// has goes to `unknown`, when given)
+template <class List> QJsonObject parametersToJson(const List &params)
+{
+    QJsonObject o;
+    for (const auto &p : params)
+        if (p->isStored()) o.insert(p->path(), p->json());
+    return o;
+}
+template <class List> void parametersFromJson(const List &params, const QJsonObject &o, QJsonObject *unknown = nullptr)
+{
+    QJsonObject left = o;
+    for (const auto &p : params) {
+        const auto it = left.constFind(p->path());
+        if (it == left.constEnd()) continue;
+        if (p->isStored()) p->setJson(it.value());
+        left.remove(p->path());
+    }
+    if (unknown) *unknown = left;
+}

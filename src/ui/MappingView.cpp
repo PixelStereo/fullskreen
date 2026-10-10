@@ -150,7 +150,7 @@ void MappingView::typeCoordinate()
         moveSelection(target - handlePos(m_primary));
         after = *m;
     }
-    if (m_undo && after.toJson() != before.toJson())
+    if (m_undo && after != before)
         m_undo->push(new cmd::SetMapping(m_engine, m_layer, before, after, QStringLiteral("Move Point"), true));
     emit mappingEdited();
     update();
@@ -935,7 +935,7 @@ void MappingView::mouseReleaseEvent(QMouseEvent *)
     update();
     if (!dragging || !m_undo) return;
     const Mapping after = cmd::SetMapping::read(m_engine, m_layer);
-    if (after.toJson() == m_dragBefore.toJson()) return;
+    if (after == m_dragBefore) return;
     const QString text = !handle ? (isViewport(m_layer) ? QStringLiteral("Move Viewport") : QStringLiteral("Move Layer"))
                          : m_selection.size() > 1 ? QStringLiteral("Move %1 Points").arg(m_selection.size())
                                                   : QStringLiteral("Move Handle");
