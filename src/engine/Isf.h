@@ -4,6 +4,7 @@
 // persistent and float buffers, imported images.
 
 #include "Gl.h"
+#include "Parameter.h"
 #include <QJsonObject>
 #include <QPointF>
 #include <QString>
@@ -148,6 +149,10 @@ public:
 
     std::vector<IsfInput> &inputs() { return m_inputs; }
     const std::vector<IsfInput> &inputs() const { return m_inputs; }
+    // Its parameters (Parameter.h), from its inputs as they are now: "speed", "enable" (an effect's switch),
+    // "mask/invert", "param/<input>" (a point: /x /y; a color: /r /g /b /a; a boolean, an event). Bound to this
+    // instance (an input is found again by its name: a reloaded shader keeps them); labels "<title> › <input>"
+    std::vector<Parameter> parameters(const QString &title) const;
 
     // Lightweight header parsing (for the library, no GL).
     struct Header {

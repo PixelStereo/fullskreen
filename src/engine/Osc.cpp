@@ -1,5 +1,5 @@
 #include "Osc.h"
-#include "Params.h"
+#include "EngineInternal.h"
 #include "Engine.h"
 #include "Zeroconf.h"
 
@@ -655,74 +655,59 @@ struct LayerNodes {
         };
     }
 
-    // A shader's switches and triggers (its numbers are the layer's numbers: see numbers)
-    void isfParams(const QString &prefix, int slot, const IsfInstance &inst)
+    // The layer's parameters (Parameter.h), each at its address; and the numbers that go together (x y; r g b;
+    // r g b a) also at their common address, all at once
+    void parameters(const QString &P, Layer &layer)
     {
-        for (const IsfInput &in : inst.inputs()) {
-            if (in.isInputImage || (in.type != IsfInput::Bool && in.type != IsfInput::Event)) continue;
-            const QString name = in.name;
-            Engine *eng = e;
-            const quint64 lid = id;
-            // The input is found again by name (the shader may have been reloaded)
-            auto input = [eng, lid, slot, name]() -> IsfInput * {
-                IsfInstance *i = findIsf(eng, lid, slot);
-                if (!i) return nullptr;
-                for (IsfInput &x : i->inputs())
-                    if (x.name == name) return &x;
-                return nullptr;
-            };
-            const bool event = in.type == IsfInput::Event;
-            method(prefix + '/' + osc::safeName(name), event ? "N" : "T", event ? 2 : 3, in.label.isEmpty() ? name : in.label,
-                   event ? std::function<QVariantList(Layer &)>()
-                         : [input](Layer &) -> QVariantList {
-                               const IsfInput *x = input();
-                               return x ? QVariantList{x->bValue} : QVariantList();
-                           },
-                   [eng, input, event](int, const QVariantList &a) {
-                       Engine::Lock lk(&eng->mutex());
-                       IsfInput *x = input();
-                       if (!x) return false;
-                       if (event) x->eventFired = true;
-                       else x->bValue = truth(a.value(0));
-                       return true;
-                   });
-        }
-    }
-
-    // The layer's numbers, as declared once (Params.h): each one at its address ("f", or "i" for a choice among
-    // values), and the ones that go together (x y; r g b; r g b a) also at their common address, all at once
-    void numbers(const QString &P, const std::vector<NumberParam> &nums)
-    {
-        Engine *eng = e;
-        auto shortName = [](const QString &label) {
-            const int cut = label.lastIndexOf(QStringLiteral(" › "));
-            return cut < 0 ? label : label.mid(cut + 3);
+        auto typeOf = [](const ParamInfo &i) -> QString {
+            switch (i.type) {
+            case ParamInfo::Type::Float: return QStringLiteral("f");
+            case ParamInfo::Type::Int: return QStringLiteral("i");
+            case ParamInfo::Type::Bool: return QStringLiteral("T");
+            case ParamInfo::Type::Choice:
+            case ParamInfo::Type::Text: return QStringLiteral("s");
+            case ParamInfo::Type::Trigger: return QStringLiteral("N");
+            }
+            return {};
         };
-        auto rangeOf = [](const NumberParam &n) {
-            if (n.values.isEmpty()) return minMax(n.min, n.max);
-            QJsonArray v;
-            for (int x : n.values) v.append(x);
-            return QJsonObject{{"VALS", v}};
+        auto rangeOf = [](const ParamInfo &i) {
+            if (!i.values.isEmpty()) {
+                QJsonArray v;
+                for (int x : i.values) v.append(x);
+                return QJsonObject{{"VALS", v}};
+            }
+            if (i.type == ParamInfo::Type::Choice) return vals(i.choices);
+            return minMax(i.min, i.max);
+        };
+        // Read and written through the layer's parameter, found again by its address
+        auto read = [](const QString &path) {
+            return [path](Layer &l) -> QVariantList {
+                const Parameter *p = l.parameter(path);
+                const QVariant v = p ? p->value() : QVariant();
+                return v.isValid() ? QVariantList{v} : QVariantList();
+            };
         };
         QHash<QString, QStringList> parts; // a common address → the last segments of its numbers
-        QHash<QString, const NumberParam *> byPath;
-        for (const NumberParam &n : nums) {
-            byPath[n.path] = &n;
-            const QString path = n.path;
-            OscNode &node = method(P + '/' + path, n.values.isEmpty() ? "f" : "i", 3, shortName(n.label),
-                                   [eng, path](Layer &l) {
-                                       double v = 0;
-                                       return layerNumber(l, path, &v, nullptr, eng->compositionSize()) ? QVariantList{v} : QVariantList();
-                                   },
-                                   edit([eng, path](Layer &l, const QVariantList &a) {
-                                       if (a.isEmpty()) return false;
-                                       const double v = num(a[0]);
-                                       return layerNumber(l, path, nullptr, &v, eng->compositionSize());
+        QHash<QString, ParamInfo> byPath;
+        for (const Parameter *p : layer.parameters()) {
+            const ParamInfo i = p->info();
+            byPath[i.path] = i;
+            const QString path = i.path;
+            const bool number = i.isNumber();
+            OscNode &node = method(P + '/' + path, typeOf(i), i.access, i.name(),
+                                   (i.access & ParamInfo::Read) ? read(path) : std::function<QVariantList(Layer &)>(),
+                                   edit([path, number](Layer &l, const QVariantList &a) {
+                                       Parameter *p = l.parameter(path);
+                                       if (!p) return false;
+                                       if (number) return !a.isEmpty() && p->setNumber(num(a[0]));
+                                       if (p->info().type == ParamInfo::Type::Bool) return p->setValue(truth(a.value(0)));
+                                       return p->setValue(a.value(0));
                                    }));
-            node.range = {rangeOf(n)};
-            if (n.min == n.lo && n.max == n.hi) node.clip = "both";
+            if (i.type != ParamInfo::Type::Bool && i.type != ParamInfo::Type::Text && i.type != ParamInfo::Type::Trigger)
+                node.range = {rangeOf(i)};
+            if (number && i.min == i.lo && i.max == i.hi) node.clip = "both";
             const int cut = path.lastIndexOf('/');
-            if (cut > 0) parts[path.left(cut)] << path.mid(cut + 1);
+            if (number && cut > 0) parts[path.left(cut)] << path.mid(cut + 1);
         }
         for (auto it = parts.cbegin(); it != parts.cend(); ++it) {
             const QStringList &p = it.value();
@@ -731,31 +716,31 @@ struct LayerNodes {
             QJsonArray range;
             for (const QString &x : p) {
                 paths << it.key() + '/' + x;
-                range.append(rangeOf(*byPath[paths.back()]));
+                range.append(rangeOf(byPath[paths.back()]));
             }
             // Its name: what the names of its numbers share ("Position X", "Position Y": "Position")
-            QString name = shortName(byPath[paths.front()]->label);
+            QString name = byPath[paths.front()].name();
             for (const QString &path : paths) {
-                const QString other = shortName(byPath[path]->label);
+                const QString other = byPath[path].name();
                 int k = 0;
                 while (k < name.size() && k < other.size() && name[k] == other[k]) ++k;
                 name.truncate(k);
             }
             OscNode &node = method(P + '/' + it.key(), QString(p.size(), QLatin1Char('f')), 3, name.trimmed(),
-                                   [eng, paths](Layer &l) {
+                                   [paths](Layer &l) {
                                        QVariantList out;
                                        for (const QString &path : paths) {
-                                           double v = 0;
-                                           if (!layerNumber(l, path, &v, nullptr, eng->compositionSize())) return QVariantList();
-                                           out << v;
+                                           const Parameter *x = l.parameter(path);
+                                           if (!x) return QVariantList();
+                                           out << x->number();
                                        }
                                        return out;
                                    },
-                                   edit([eng, paths](Layer &l, const QVariantList &a) {
+                                   edit([paths](Layer &l, const QVariantList &a) {
                                        if (a.size() < paths.size() - (paths.size() == 4 ? 1 : 0)) return false; // alpha may be left out
                                        for (int k = 0; k < paths.size() && k < a.size(); ++k) {
-                                           const double v = num(a[k]);
-                                           if (!layerNumber(l, paths[k], nullptr, &v, eng->compositionSize())) return false;
+                                           Parameter *x = l.parameter(paths[k]);
+                                           if (!x || !x->setNumber(num(a[k]))) return false;
                                        }
                                        return true;
                                    }));
@@ -771,10 +756,10 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
     LayerNodes L{this, e, id, [this](const QString &p, const QString &t, int a, const QString &d) -> OscNode & {
                      return add(p, t, a, d);
                  }};
-    bool isGroup, isViewport, topLevel, transport, sound, picture, text;
+    bool isGroup, isViewport, topLevel, transport;
     std::vector<std::pair<quint64, QString>> viewports; // routing of a top-level item
     std::vector<std::pair<int, QString>> effects;
-    bool generator;
+    QStringList animated; // the parameters with an animation
     {
         Engine::Lock lk(&e->mutex());
         Layer *l = find(e, id);
@@ -794,27 +779,21 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
             }
         }
         transport = l->hasTransport();
-        text = l->isText();
-        sound = bool(l->audio);
-        picture = l->hasPicture();
-        generator = l->generator && l->generator->isValid();
-        L.numbers(P, layerNumbers(*l, e->compositionSize())); // its numbers, declared once
-        // The generator's switches and triggers
-        if (generator) L.isfParams(P + "/source/param", -1, *l->generator);
+        L.parameters(P, *l); // its parameters, declared by it
         QStringList fxNames;
         for (const auto &x : l->effects) fxNames << x->name();
         const QStringList segs = osc::uniqueSegments(fxNames);
-        for (int k = 0; k < int(l->effects.size()); ++k) {
-            const QString seg = segs[k];
-            effects.emplace_back(k, seg);
-            if (l->effects[size_t(k)]->isValid()) L.isfParams(P + "/fx/" + seg + "/param", k, *l->effects[size_t(k)]);
-        }
+        for (int k = 0; k < int(l->effects.size()); ++k) effects.emplace_back(k, segs[k]);
+        for (const Animation &a : l->anims)
+            if (!a.tracks.empty()) animated << a.tracks.front().param;
     }
 
+    // What is not a value of the layer but an action of the engine on it: its name, its kind, its visibility and lock
+    // (allowed on a locked layer), its source, its transport, the layers chosen as masks, its viewports
     if (isViewport) {
-        // Its size in pixels and where it is shown (0 hidden, 1 windowed, 2 fullscreen)
+        // Its picture's size in pixels and where it is shown (0 hidden, 1 windowed, 2 fullscreen)
         for (int axis = 0; axis < 2; ++axis) {
-            OscNode &n = L.method(P + (axis ? "/height" : "/width"), "i", 3, axis ? "Height" : "Width",
+            OscNode &n = L.method(P + (axis ? "/output/height" : "/output/width"), "i", 3, axis ? "Height" : "Width",
                                   [axis](Layer &l) { return QVariantList{axis ? l.vpHeight : l.vpWidth}; },
                                   L.edit([axis](Layer &l, const QVariantList &a) {
                                       if (a.isEmpty()) return false;
@@ -823,7 +802,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                                   }));
             n.range = {minMax(1, 16384)};
         }
-        L.method(P + "/output_mode", "i", 3, "Output Mode", [](Layer &l) { return QVariantList{l.vpMode}; },
+        L.method(P + "/output/mode", "i", 3, "Output Mode", [](Layer &l) { return QVariantList{l.vpMode}; },
                  L.edit([](Layer &l, const QVariantList &a) {
                      if (a.isEmpty()) return false;
                      l.vpMode = std::clamp(int(std::lround(num(a[0]))), 0, 2);
@@ -867,156 +846,79 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  return true;
              }),
              true);
-    if (picture) {
-        L.method(P + "/blend_mode", "s", 3, "Blend Mode", [](Layer &l) { return QVariantList{blendModeKey(l.blend)}; },
-                 L.edit([](Layer &l, const QVariantList &a) {
-                     const QString k = a.value(0).toString().toLower();
-                     if (!blendKeys().contains(k)) return false;
-                     l.blend = blendModeFromKey(k);
-                     return true;
-                 }))
-            .range = {vals(blendKeys())};
-
-
-        // Color: switches (the whole section, then each parameter)
-        {
-            struct Sw {
-                const char *path, *label;
-                bool ColorAdjust::*member;
-            };
-            static const Sw kSwitches[] = {{"/color/enable", "Color Enable", &ColorAdjust::enabled},
-                                           {"/color/temp/enable", "Temperature Enable", &ColorAdjust::tempOn},
-                                           {"/color/tint/enable", "Tint Enable", &ColorAdjust::tintOn},
-                                           {"/color/add/enable", "Add Enable", &ColorAdjust::addOn},
-                                           {"/color/remove/enable", "Remove Enable", &ColorAdjust::removeOn}};
-            for (const Sw &sw : kSwitches) {
-                auto member = sw.member;
-                L.method(P + sw.path, "T", 3, sw.label, [member](Layer &l) { return QVariantList{l.color.*member}; },
-                         L.edit([member](Layer &l, const QVariantList &a) {
-                             l.color.*member = truth(a.value(0));
-                             return true;
-                         }));
+    // A mask: a layer by its name ("" for none)
+    auto byName = [e](const QString &name, quint64 *id) {
+        Engine::Lock lk(&e->mutex());
+        for (int k = 0; k < e->layerCount() && !name.isEmpty(); ++k)
+            if (const Layer *o = e->layer(k); o && o->name == name && !o->isViewport) {
+                *id = o->id;
+                return true;
             }
-        }
-
-        // Color: its mask, a layer by its name ("" for none), and whether it is inverted
-        L.method(P + "/color/mask", "s", 3, "Color Mask",
+        return name.isEmpty();
+    };
+    if (!isViewport) {
+        L.method(P + "/mask", "s", 3, "Color Mask",
                  [e](Layer &l) {
                      const Layer *m = l.color.maskLayer ? e->layer(e->indexOfId(l.color.maskLayer)) : nullptr;
                      return QVariantList{m ? m->name : QString()};
                  },
-                 [e](int idx, const QVariantList &a) {
-                     const QString name = a.value(0).toString().trimmed();
+                 [e, byName](int idx, const QVariantList &a) {
                      quint64 id = 0;
+                     if (!byName(a.value(0).toString().trimmed(), &id)) return false;
+                     bool invert = false;
+                     {
+                         Engine::Lock lk(&e->mutex());
+                         if (const Layer *l = e->layer(idx)) invert = l->color.maskInvert;
+                     }
+                     return e->setColorMask(idx, id, invert);
+                 });
+    }
+    static const char *kCorners[] = {"top_left", "top_right", "bottom_right", "bottom_left"};
+    static const char *kCornerNames[] = {"Top Left", "Top Right", "Bottom Right", "Bottom Left"};
+    for (int k = 0; k < 4; ++k)
+        L.method(P + "/corner/" + kCorners[k], "ff", 3, kCornerNames[k],
+                 [k](Layer &l) { return QVariantList{l.mapping.corners[k].x(), l.mapping.corners[k].y()}; },
+                 L.edit([k](Layer &l, const QVariantList &a) {
+                     if (a.size() < 2) return false;
+                     l.mapping.setCorner(k, QPointF(num(a[0]), num(a[1])));
+                     return true;
+                 }));
+    for (const auto &[k, seg] : effects) {
+        const int slot = k;
+        L.method(P + "/fx/" + seg + "/mask", "s", 3, "Mask",
+                 [e, slot](Layer &l) {
+                     const Layer *m = slot < int(l.effects.size()) && l.effects[size_t(slot)]->maskLayer
+                                          ? e->layer(e->indexOfId(l.effects[size_t(slot)]->maskLayer))
+                                          : nullptr;
+                     return QVariantList{m ? m->name : QString()};
+                 },
+                 [e, slot, byName](int idx, const QVariantList &a) {
+                     quint64 id = 0;
+                     if (!byName(a.value(0).toString().trimmed(), &id)) return false;
                      bool invert = false;
                      {
                          Engine::Lock lk(&e->mutex());
                          const Layer *l = e->layer(idx);
-                         if (!l) return false;
-                         invert = l->color.maskInvert;
-                         for (int k = 0; k < e->layerCount() && !name.isEmpty(); ++k)
-                             if (const Layer *o = e->layer(k); o && o->name == name && !o->isViewport) {
-                                 id = o->id;
-                                 break;
-                             }
+                         if (!l || slot >= int(l->effects.size())) return false;
+                         invert = l->effects[size_t(slot)]->maskInvert;
                      }
-                     if (!name.isEmpty() && !id) return false;
-                     return e->setColorMask(idx, id, invert);
+                     return e->setEffectMask(idx, slot, id, invert);
                  });
-        L.method(P + "/color/mask/invert", "T", 3, "Invert Color Mask", [](Layer &l) { return QVariantList{l.color.maskInvert}; },
-                 L.edit([](Layer &l, const QVariantList &a) {
-                     l.color.maskInvert = truth(a.value(0));
-                     return true;
-                 }));
-
-
-        static const char *kCorners[] = {"top_left", "top_right", "bottom_right", "bottom_left"};
-        static const char *kCornerNames[] = {"Top Left", "Top Right", "Bottom Right", "Bottom Left"};
-        for (int k = 0; k < 4; ++k)
-            L.method(P + "/spatial/corner/" + kCorners[k], "ff", 3, kCornerNames[k],
-                     [k](Layer &l) { return QVariantList{l.mapping.corners[k].x(), l.mapping.corners[k].y()}; },
-                     L.edit([k](Layer &l, const QVariantList &a) {
-                         if (a.size() < 2) return false;
-                         l.mapping.setCorner(k, QPointF(num(a[0]), num(a[1])));
-                         return true;
-                     }));
-
-        // Soft edge: the picture fades out towards each side (width: 0..1 of the layer, 0.5 at most)
-        L.method(P + "/spatial/soft_edge/enable", "T", 3, "Soft Edge Enable",
-                 [](Layer &l) { return QVariantList{l.mapping.soft.enabled}; },
-                 L.edit([](Layer &l, const QVariantList &a) {
-                     l.mapping.soft.enabled = truth(a.value(0));
-                     return true;
-                 }));
-
-        // Effects
-        L.method(P + "/fx/enable", "T", 3, "FX Enable",
-                 [](Layer &l) { return QVariantList{l.effectsEnabled}; }, L.edit([](Layer &l, const QVariantList &a) {
-                     l.effectsEnabled = truth(a.value(0));
-                     return true;
-                 }));
-        for (const auto &[k, seg] : effects) {
-            const int slot = k;
-            L.method(P + "/fx/" + seg + "/enable", "T", 3, "Enable",
-                     [slot](Layer &l) {
-                         return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->enabled} : QVariantList();
-                     },
-                     L.edit([slot](Layer &l, const QVariantList &a) {
-                         if (slot >= int(l.effects.size())) return false;
-                         l.effects[size_t(slot)]->enabled = truth(a.value(0));
-                         return true;
-                     }));
-            // Mask: a layer by its name ("" for none), and whether it is inverted
-            L.method(P + "/fx/" + seg + "/mask", "s", 3, "Mask",
-                     [e, slot](Layer &l) {
-                         const Layer *m = slot < int(l.effects.size()) && l.effects[size_t(slot)]->maskLayer
-                                              ? e->layer(e->indexOfId(l.effects[size_t(slot)]->maskLayer))
-                                              : nullptr;
-                         return QVariantList{m ? m->name : QString()};
-                     },
-                     [e, slot](int idx, const QVariantList &a) {
-                         const QString name = a.value(0).toString().trimmed();
-                         quint64 id = 0;
-                         bool invert = false;
-                         {
-                             Engine::Lock lk(&e->mutex());
-                             const Layer *l = e->layer(idx);
-                             if (!l || slot >= int(l->effects.size())) return false;
-                             invert = l->effects[size_t(slot)]->maskInvert;
-                             for (int k = 0; k < e->layerCount() && !name.isEmpty(); ++k)
-                                 if (const Layer *o = e->layer(k); o && o->name == name && !o->isViewport) {
-                                     id = o->id;
-                                     break;
-                                 }
-                         }
-                         if (!name.isEmpty() && !id) return false;
-                         return e->setEffectMask(idx, slot, id, invert);
-                     });
-            L.method(P + "/fx/" + seg + "/mask/tap", "s", 3, "Mask Tap",
-                     [slot](Layer &l) {
-                         return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->maskPreFx ? "prefx" : "postfx"}
-                                                             : QVariantList();
-                     },
-                     [e, slot](int idx, const QVariantList &a) {
-                         const QString k = a.value(0).toString().toLower();
-                         if (k != "prefx" && k != "postfx") return false;
-                         return e->setEffectMaskTap(idx, slot, k == "prefx");
-                     })
-                .range = {vals({"prefx", "postfx"})};
-            L.method(P + "/fx/" + seg + "/mask/invert", "T", 3, "Invert Mask",
-                     [slot](Layer &l) {
-                         return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->maskInvert} : QVariantList();
-                     },
-                     L.edit([slot](Layer &l, const QVariantList &a) {
-                         if (slot >= int(l.effects.size())) return false;
-                         l.effects[size_t(slot)]->maskInvert = truth(a.value(0));
-                         return true;
-                     }));
-        }
+        L.method(P + "/fx/" + seg + "/mask/tap", "s", 3, "Mask Tap",
+                 [slot](Layer &l) {
+                     return slot < int(l.effects.size()) ? QVariantList{l.effects[size_t(slot)]->maskPreFx ? "prefx" : "postfx"}
+                                                         : QVariantList();
+                 },
+                 [e, slot](int idx, const QVariantList &a) {
+                     const QString k = a.value(0).toString().toLower();
+                     if (k != "prefx" && k != "postfx") return false;
+                     return e->setEffectMaskTap(idx, slot, k == "prefx");
+                 })
+            .range = {vals({"prefx", "postfx"})};
     }
 
     if (!isGroup) {
-        L.method(P + "/source/file", "s", 3, "File",
+        L.method(P + "/file", "s", 3, "File",
                  [](Layer &l) { return QVariantList{l.sourcePath}; },
                  [e](int idx, const QVariantList &a) {
                      const QString path = a.value(0).toString();
@@ -1029,7 +931,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      return e->setLayerFile(idx, path);
                  });
         // Another layer as the source, by name (empty: no source), and where its picture is taken
-        L.method(P + "/source/layer", "s", 3, "Source Layer",
+        L.method(P + "/source_layer", "s", 3, "Source Layer",
                  [e](Layer &l) {
                      const Layer *s = l.type == SourceType::Layer ? e->layer(e->indexOfId(l.sourceLayer)) : nullptr;
                      return QVariantList{s ? s->name : QString()};
@@ -1053,7 +955,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      }
                      return id && e->setLayerSourceLayer(idx, id, tap);
                  });
-        L.method(P + "/source/tap", "s", 3, "Source Tap",
+        L.method(P + "/source_tap", "s", 3, "Source Tap",
                  [](Layer &l) { return QVariantList{layerTapKey(l.sourceTap)}; },
                  [e](int idx, const QVariantList &a) {
                      const QString k = a.value(0).toString().toLower();
@@ -1062,50 +964,14 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  })
             .range = {vals({"prefx", "postfx"})};
     }
-    if (text) {
-        // Text generator
-        auto textEdit = [&L](std::function<bool(TextSource &, const QVariantList &)> fn) {
-            return L.edit([fn](Layer &l, const QVariantList &a) {
-                if (!fn(l.text, a)) return false;
-                l.text.sanitize();
-                return true;
-            });
-        };
-        auto rgba = [](const QColor &c) { return QVariantList{c.redF(), c.greenF(), c.blueF(), c.alphaF()}; };
-        auto toColor = [](const QVariantList &a, QColor &c) {
-            if (a.size() < 3) return false;
-            c = QColor::fromRgbF(float(std::clamp(num(a[0]), 0.0, 1.0)), float(std::clamp(num(a[1]), 0.0, 1.0)),
-                                 float(std::clamp(num(a[2]), 0.0, 1.0)), float(a.size() > 3 ? std::clamp(num(a[3]), 0.0, 1.0) : 1.0));
-            return true;
-        };
-        const QString T = P + "/source/text";
-        L.method(T + "/content", "s", 3, "Text", [](Layer &l) { return QVariantList{l.text.content}; },
-                 textEdit([](TextSource &t, const QVariantList &a) { t.content = a.value(0).toString(); return true; }));
-        L.method(T + "/font", "s", 3, "Font", [](Layer &l) { return QVariantList{l.text.font}; },
-                 textEdit([](TextSource &t, const QVariantList &a) { t.font = a.value(0).toString(); return true; }));
-        L.method(T + "/shadow/enable", "T", 3, "Shadow Enable", [](Layer &l) { return QVariantList{l.text.shadow}; },
-                 textEdit([](TextSource &t, const QVariantList &a) { t.shadow = truth(a.value(0)); return true; }));
-        struct Col {
-            const char *path, *label;
-            QColor TextSource::*member;
-        };
-        for (const Col &c : {Col{"/color", "Color", &TextSource::color}, Col{"/outline/color", "Outline Color", &TextSource::outlineColor},
-                             Col{"/shadow/color", "Shadow Color", &TextSource::shadowColor}}) {
-            auto member = c.member;
-            OscNode &n = L.method(T + c.path, "ffff", 3, c.label, [member, rgba](Layer &l) { return rgba(l.text.*member); },
-                                  textEdit([member, toColor](TextSource &t, const QVariantList &a) { return toColor(a, t.*member); }));
-            n.range = {minMax(0, 1), minMax(0, 1), minMax(0, 1), minMax(0, 1)};
-            n.clip = "both";
-        }
-    }
     if (transport) {
-        L.method(P + "/source/play", "T", 3, "Play", [](Layer &l) { return QVariantList{l.playing}; },
+        L.method(P + "/play", "T", 3, "Play", [](Layer &l) { return QVariantList{l.playing}; },
                  [e](int idx, const QVariantList &a) {
                      e->setLayerPlaying(idx, truth(a.value(0)));
                      return true;
                  },
                  true);
-        L.method(P + "/source/restart", "N", 2, "Restart", nullptr,
+        L.method(P + "/restart", "N", 2, "Restart", nullptr,
                  [e](int idx, const QVariantList &) {
                      double from;
                      {
@@ -1120,16 +986,16 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                      return true;
                  },
                  true);
-        L.method(P + "/source/position", "f", 3, "Position", [](Layer &l) { return QVariantList{l.position()}; },
+        L.method(P + "/position", "f", 3, "Position", [](Layer &l) { return QVariantList{l.position()}; },
                  [e](int idx, const QVariantList &a) {
                      if (a.isEmpty()) return false;
                      e->seekLayer(idx, num(a[0]));
                      return true;
                  },
                  true);
-        L.method(P + "/source/duration", "f", 1, "Duration",
+        L.method(P + "/duration", "f", 1, "Duration",
                  [](Layer &l) { return QVariantList{l.duration()}; }, nullptr);
-        L.method(P + "/source/play_mode", "s", 3, "Play Mode", [](Layer &l) { return QVariantList{playModeKey(l.mode)}; },
+        L.method(P + "/play_mode", "s", 3, "Play Mode", [](Layer &l) { return QVariantList{playModeKey(l.mode)}; },
                  [e](int idx, const QVariantList &a) {
                      const QString k = a.value(0).toString().toLower();
                      if (!QStringList{"oneshot", "loop", "pingpong", "stop"}.contains(k)) return false;
@@ -1138,7 +1004,7 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                  })
             .range = {vals({"oneshot", "loop", "pingpong", "stop"})};
         for (int which = 0; which < 2; ++which)
-            L.method(P + (which ? "/source/out" : "/source/in"), "f", 3,
+            L.method(P + (which ? "/out" : "/in"), "f", 3,
                      which ? "Out" : "In",
                      [which](Layer &l) {
                          return QVariantList{which ? (l.outPoint < 0 ? l.duration() : l.outPoint) : l.inPoint};
@@ -1158,70 +1024,117 @@ void OscNamespace::addLayer(const QString &P, quint64 id)
                          return true;
                      });
     }
-    if (sound) {
-        L.method(P + "/source/mute", "T", 3, "Mute", [](Layer &l) { return QVariantList{l.muted}; },
-                 [e](int idx, const QVariantList &a) {
-                     e->setLayerMuted(idx, truth(a.value(0)));
-                     return true;
-                 });
-    }
-    // Its animations (the Anim tab): /anim/<the number's address>/enable, speed, rewind
-    {
-        QStringList params;
-        {
-            Engine::Lock lk(&e->mutex());
-            if (Layer *l = find(e, id))
-                for (const Animation &a : l->anims)
-                    if (!a.tracks.empty()) params << a.tracks.front().param;
-        }
-        if (!params.isEmpty()) add(P + "/anim", QString(), 0, "Animations");
-        for (const QString &param : params) {
-            QStringList segs = param.split('/');
-            for (QString &x : segs) x = osc::safeName(x);
-            const QString A = P + "/anim/" + segs.join('/');
-            auto anim = [param](Layer &l) -> const Animation * {
-                for (const Animation &a : l.anims)
-                    if (!a.tracks.empty() && a.tracks.front().param == param) return &a;
-                return nullptr;
-            };
-            L.method(A + "/enable", "T", 3, "On",
-                     [anim](Layer &l) {
-                         const Animation *a = anim(l);
-                         return a ? QVariantList{a->tracks.front().enabled} : QVariantList();
-                     },
-                     [e, id, param](int, const QVariantList &a) {
-                         if (!e->layerAnim(id, param, nullptr)) return false;
-                         e->setLayerAnimOn(id, param, truth(a.value(0)));
-                         return true;
-                     });
-            OscNode &sp = L.method(A + "/speed", "f", 3, "Speed (1 = normal)",
-                                   [anim](Layer &l) {
-                                       const Animation *a = anim(l);
-                                       return a ? QVariantList{a->speed} : QVariantList();
-                                   },
-                                   [e, id, param](int, const QVariantList &a) {
-                                       if (a.isEmpty() || !e->layerAnim(id, param, nullptr)) return false;
-                                       e->controlLayerAnim(id, param, AnimAction::Speed, num(a[0]));
-                                       return true;
-                                   });
-            sp.range = {minMax(0, 10)};
-            sp.clip = "both";
-            L.method(A + "/rewind", "N", 2, "Rewind (from the start)", nullptr, [e, id, param](int, const QVariantList &) {
+
+    // The animation of a parameter, under that parameter: <param>/anim/play, …/duration, …/loop_mode…
+    for (const QString &param : animated) {
+        const QString A = P + '/' + param + "/anim";
+        auto anim = [param](Layer &l) -> const Animation * {
+            for (const Animation &a : l.anims)
+                if (!a.tracks.empty() && a.tracks.front().param == param) return &a;
+            return nullptr;
+        };
+        // Its transport: no value, an action
+        struct Cmd {
+            const char *key, *label;
+            AnimAction act;
+        };
+        for (const Cmd &c : {Cmd{"play", "Play", AnimAction::Play}, Cmd{"pause", "Pause", AnimAction::Pause},
+                             Cmd{"stop", "Stop", AnimAction::Stop}, Cmd{"rewind", "Rewind", AnimAction::Rewind}})
+            L.method(A + '/' + c.key, "N", 2, c.label, nullptr, [e, id, param, act = c.act](int, const QVariantList &) {
                 if (!e->layerAnim(id, param, nullptr)) return false;
-                e->controlLayerAnim(id, param, AnimAction::Rewind);
+                e->controlLayerAnim(id, param, act);
                 return true;
             });
-            m_nodes[A].description = param;
+        // Its settings: read, and written as an edit of the animation (it goes on from where it is)
+        auto setting = [&](const char *key, const QString &type, const QString &label, std::function<QVariant(const Animation &)> get,
+                           std::function<bool(Animation &, const QVariant &)> set) -> OscNode & {
+            return L.method(A + '/' + key, type, 3, label,
+                            [anim, get](Layer &l) {
+                                const Animation *a = anim(l);
+                                return a ? QVariantList{get(*a)} : QVariantList();
+                            },
+                            [e, id, param, set](int, const QVariantList &v) {
+                                Animation a;
+                                if (v.isEmpty() || !e->layerAnim(id, param, &a) || !set(a, v[0])) return false;
+                                e->setLayerAnim(id, param, &a);
+                                return true;
+                            });
+        };
+        setting("enable", "T", "On", [](const Animation &a) { return QVariant(a.tracks.front().enabled); },
+                [](Animation &a, const QVariant &v) {
+                    a.tracks.front().enabled = truth(v);
+                    return true;
+                });
+        setting("duration", "f", "Duration (s)", [](const Animation &a) { return QVariant(a.duration); },
+                [](Animation &a, const QVariant &v) {
+                    a.duration = std::clamp(num(v), 0.05, 36000.0);
+                    for (AnimKey &k : a.tracks.front().keys) k.t = std::min(k.t, a.duration);
+                    return true;
+                })
+            .range = {minMax(0.05, 600)};
+        setting("speed", "f", "Speed (1 = normal)", [](const Animation &a) { return QVariant(a.speed); },
+                [](Animation &a, const QVariant &v) {
+                    a.speed = std::clamp(num(v), 0.0, 10.0);
+                    return true;
+                })
+            .range = {minMax(0, 10)};
+        setting("loop_mode", "s", "Loop Mode", [](const Animation &a) { return QVariant(animLoopKey(a.loop)); },
+                [](Animation &a, const QVariant &v) {
+                    const QString k = v.toString().toLower().remove('-');
+                    if (!QStringList{"once", "loop", "pingpong"}.contains(k)) return false;
+                    a.loop = animLoopFromKey(k);
+                    return true;
+                })
+            .range = {vals({"once", "loop", "pingpong"})};
+        setting("repeat", "i", "Passes (0: endless)", [](const Animation &a) { return QVariant(a.repeat); },
+                [](Animation &a, const QVariant &v) {
+                    a.repeat = std::clamp(int(std::lround(num(v))), 0, 100000);
+                    return true;
+                })
+            .range = {minMax(0, 1000)};
+        // Its wave (a wave keeps these while it draws keys instead)
+        setting("wave", "s", "Wave", [](const Animation &a) { return QVariant(a.tracks.front().oscillator ? animWaveKey(a.tracks.front().wave) : QStringLiteral("keys")); },
+                [](Animation &a, const QVariant &v) {
+                    const QString k = v.toString().toLower();
+                    if (k == "keys") {
+                        a.tracks.front().oscillator = false;
+                        return true;
+                    }
+                    const int w = animWaveKeys().indexOf(k);
+                    if (w < 0) return false;
+                    a.tracks.front().oscillator = true;
+                    a.tracks.front().wave = AnimWave(w);
+                    return true;
+                })
+            .range = {vals(animWaveKeys() << QStringLiteral("keys"))};
+        struct Num {
+            const char *key, *label;
+            double AnimTrack::*field;
+            double lo, hi;
+        };
+        for (const Num &n : {Num{"period", "Period (s)", &AnimTrack::period, 0.01, 36000},
+                             Num{"center", "Center", &AnimTrack::center, -1e9, 1e9},
+                             Num{"amplitude", "Amplitude", &AnimTrack::amplitude, -1e9, 1e9},
+                             Num{"phase", "Phase (0..1)", &AnimTrack::phase, 0, 1}}) {
+            double AnimTrack::*f = n.field;
+            const double lo = n.lo, hi = n.hi;
+            setting(n.key, "f", n.label, [f](const Animation &a) { return QVariant(a.tracks.front().*f); },
+                    [f, lo, hi](Animation &a, const QVariant &v) {
+                        a.tracks.front().*f = std::clamp(num(v), lo, hi);
+                        return true;
+                    });
         }
+        m_nodes[A].description = QStringLiteral("Animation");
     }
     if (isGroup) add(P + "/layer", QString(), 0, "Layers");
     // Readable names of the containers
     static const std::pair<const char *, const char *> kNames[] = {
-        {"/source", "Source"}, {"/roi", "ROI"}, {"/source/param", "Parameters"}, {"/color", "Color"},
-        {"/spatial", "Spatial"}, {"/spatial/corner", "Corners"}, {"/spatial/soft_edge", "Soft Edge"}, {"/source/text", "Text"}, {"/fx", "FX"}};
+        {"/roi", "ROI"},        {"/param", "Parameters"}, {"/corner", "Corners"}, {"/soft_edge", "Soft Edge"},
+        {"/text", "Text"},      {"/fx", "FX"},            {"/output", "Output"},  {"/position", "Position"},
+        {"/pivot", "Pivot"},    {"/scale", "Scale"},      {"/add", "Add"},        {"/remove", "Remove"}};
     for (const auto &[suffix, name] : kNames) {
         auto it = m_nodes.find(P + suffix);
-        if (it != m_nodes.end()) it->second.description = name;
+        if (it != m_nodes.end() && it->second.description.isEmpty()) it->second.description = name;
     }
     for (const auto &[k, seg] : effects) {
         auto it = m_nodes.find(P + "/fx/" + seg);

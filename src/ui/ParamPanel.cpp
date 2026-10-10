@@ -348,8 +348,8 @@ void ParamPanel::attachAnimate(AnimateMenu *menu)
         const Layer *l = m_engine->layer(m_layer);
         if (!l) return;
         if (m_slot < 0) {
-            base = QStringLiteral("source/param/");
-            speed = QStringLiteral("source/speed");
+            base = QStringLiteral("param/");
+            speed = QStringLiteral("speed");
         } else {
             QStringList names;
             for (const auto &x : l->effects) names << x->name();

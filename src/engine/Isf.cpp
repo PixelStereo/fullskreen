@@ -1,4 +1,5 @@
 #include "Isf.h"
+#include "Osc.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -309,6 +310,96 @@ IsfInstance::Header IsfInstance::readHeader(const QString &path)
     }
     h.isTransition = start && end;
     return h;
+}
+
+std::vector<Parameter> IsfInstance::parameters(const QString &title) const
+{
+    using T = Parameter::Type;
+    auto *self = const_cast<IsfInstance *>(this); // the parameters write into it
+    std::vector<Parameter> out;
+    const QString cat = title + QStringLiteral(" › ");
+    out.emplace_back(QStringLiteral("speed"), cat + QStringLiteral("Speed"), T::Float);
+    out.back().range(0, 10).step(0.01).byDefault(1.0).bind([self] { return self->speed; },
+                                                           [self](const QVariant &v) { self->speed = v.toDouble(); });
+    out.emplace_back(QStringLiteral("enable"), cat + QStringLiteral("Enable"), T::Bool);
+    out.back().byDefault(true).bind([self] { return self->enabled; }, [self](const QVariant &v) { self->enabled = v.toBool(); });
+    out.emplace_back(QStringLiteral("mask/invert"), cat + QStringLiteral("Invert Mask"), T::Bool);
+    out.back().byDefault(false).bind([self] { return self->maskInvert; }, [self](const QVariant &v) { self->maskInvert = v.toBool(); });
+    for (const IsfInput &in : m_inputs) {
+        if (in.isInputImage) continue;
+        const QString name = in.name;
+        const QString path = QStringLiteral("param/") + osc::safeName(name);
+        const QString label = cat + (in.label.isEmpty() ? name : in.label);
+        // The input, found again by its name
+        auto input = [self, name]() -> IsfInput * { return self->input(name); };
+        // One number of its value (k: the component of a point or a color, -1: the value)
+        auto number = [&](const QString &p, const QString &l, int k, double lo, double hi, double def) {
+            out.emplace_back(p, l, T::Float);
+            const IsfInput::Type type = in.type;
+            out.back().range(lo, hi).byDefault(def).bind(
+                [input, k, type]() -> QVariant {
+                    const IsfInput *x = input();
+                    if (!x) return {};
+                    if (type == IsfInput::Point2D) return k == 0 ? x->pValue.x() : x->pValue.y();
+                    if (type == IsfInput::Color) return double(x->cValue[k]);
+                    return x->fValue;
+                },
+                [input, k, type](const QVariant &v) {
+                    IsfInput *x = input();
+                    if (!x) return;
+                    IsfValue val = x->value();
+                    if (type == IsfInput::Point2D) (k == 0 ? val.p.rx() : val.p.ry()) = v.toDouble();
+                    else if (type == IsfInput::Color) val.c[k] = float(v.toDouble());
+                    else val.f = v.toDouble();
+                    x->setValue(val);
+                });
+            return &out.back();
+        };
+        switch (in.type) {
+        case IsfInput::Float:
+            number(path, label, -1, in.fMin, in.fMax, in.fDefault)->step(std::abs(in.fMax - in.fMin) / 1000.0);
+            break;
+        case IsfInput::Long:
+            if (in.lValues.isEmpty()) break;
+            out.emplace_back(path, label, T::Int);
+            out.back().values(QList<int>(in.lValues.begin(), in.lValues.end())).byDefault(in.lDefault).bind(
+                [input]() -> QVariant { const IsfInput *x = input(); return x ? QVariant(x->lValue) : QVariant(); },
+                [input](const QVariant &v) {
+                    if (IsfInput *x = input()) {
+                        IsfValue val = x->value();
+                        val.l = v.toInt();
+                        x->setValue(val);
+                    }
+                });
+            break;
+        case IsfInput::Point2D: {
+            const QPointF lo = in.hasPointRange ? in.pMin : QPointF(0, 0), hi = in.hasPointRange ? in.pMax : QPointF(1, 1);
+            number(path + "/x", label + " X", 0, lo.x(), hi.x(), in.pDefault.x())->limits(-1e6, 1e6);
+            number(path + "/y", label + " Y", 1, lo.y(), hi.y(), in.pDefault.y())->limits(-1e6, 1e6);
+            break;
+        }
+        case IsfInput::Color:
+            for (int c = 0; c < 4; ++c)
+                number(path + "/" + QChar("rgba"[c]), label + " " + QChar("RGBA"[c]), c, 0, 1, in.cDefault[c]);
+            break;
+        case IsfInput::Bool:
+            out.emplace_back(path, label, T::Bool);
+            out.back().byDefault(in.bDefault).bind(
+                [input]() -> QVariant { const IsfInput *x = input(); return x ? QVariant(x->bValue) : QVariant(); },
+                [input](const QVariant &v) {
+                    if (IsfInput *x = input()) x->bValue = v.toBool();
+                });
+            break;
+        case IsfInput::Event:
+            out.emplace_back(path, label, T::Trigger);
+            out.back().bind(nullptr, [input](const QVariant &) {
+                if (IsfInput *x = input()) x->eventFired = true;
+            });
+            break;
+        default: break; // images and sound: not parameters
+        }
+    }
+    return out;
 }
 
 IsfInput *IsfInstance::input(const QString &name)

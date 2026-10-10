@@ -54,7 +54,7 @@ void fillMenu(QMenu *menu, Engine *e, QUndoStack *undo, quint64 layer, const QSt
 } // namespace paramanim
 
 // Right-click on the widgets of a layer's numbers: the Animate menu of the numbers they show. Only the numbers declared
-// animatable on that layer (Params.h) are offered; a widget showing several (a position: x and y) offers each one.
+// animatable on that layer (Parameter.h) are offered; a widget showing several (a position: x and y) offers each one.
 class AnimateMenu : public QObject
 {
 public:

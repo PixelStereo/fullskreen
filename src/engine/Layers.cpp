@@ -109,6 +109,7 @@ int Engine::addLayer(const QString &name, int at)
     {
         Lock lk(&m_mutex);
         auto l = std::make_unique<Layer>();
+        l->compSize = &m_compSize;
         l->id = newIdLocked();
         l->colorModels = m_defaultColorModels;
         l->name = name.isEmpty() ? QStringLiteral("Layer %1").arg(m_layers.size() + 1) : name;
@@ -141,6 +142,7 @@ int Engine::addViewport(const QString &name, QSize size)
     {
         Lock lk(&m_mutex);
         auto l = std::make_unique<Layer>();
+        l->compSize = &m_compSize;
         l->id = id = newIdLocked();
         l->isViewport = true;
         // By default, the size of the last viewport (the same projectors, side by side)
@@ -249,6 +251,7 @@ int Engine::addGroup(const QString &name, int at)
         int groups = 0;
         for (const auto &l : m_layers) groups += l->isGroup;
         auto l = std::make_unique<Layer>();
+        l->compSize = &m_compSize;
         l->id = newIdLocked();
         l->isGroup = true;
         l->name = name.isEmpty() ? QStringLiteral("Group %1").arg(groups + 1) : name;

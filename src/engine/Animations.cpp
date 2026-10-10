@@ -2,7 +2,6 @@
 // clock; the sequences drive their transport.
 #include "EngineInternal.h"
 #include "Osc.h"
-#include "Params.h"
 
 #include <QJsonArray>
 #include <QRandomGenerator>
@@ -371,70 +370,85 @@ void Engine::stepAnimations(double dt)
 // ---------------------------------------------------------------------------
 // The numbers a timeline drives
 
-bool Engine::setAnimParam(quint64 layer, const QString &path, double v)
+const std::vector<Parameter *> &Engine::compositionParameters()
+{
+    if (!m_compParamList.empty()) return m_compParamList;
+    auto add = [this](const QString &path, const QString &label) -> Parameter & {
+        m_compParams.push_back(std::make_unique<Parameter>(path, label, Parameter::Type::Float));
+        return *m_compParams.back();
+    };
+    add("opacity", "Opacity").range(0, 1).byDefault(1.0).bind([this] { return QVariant(m_compositionOpacityTarget); },
+                                                               [this](const QVariant &v) {
+                                                                   m_compositionOpacityTarget = v.toDouble();
+                                                                   m_compositionOpacitySpeed = 0;
+                                                               });
+    add("volume", "Volume").range(0, 2).byDefault(1.0).bind([this] { return QVariant(double(m_audio->volume())); },
+                                                             [this](const QVariant &v) { m_audio->setVolume(float(v.toDouble())); });
+    add("speed", "Speed").range(0, 10).byDefault(1.0).bind([this] { return QVariant(m_compositionSpeed.load()); },
+                                                           [this](const QVariant &v) { setCompositionSpeed(v.toDouble()); });
+    for (auto &p : m_compParams) m_compParamList.push_back(p.get());
+    return m_compParamList;
+}
+
+Parameter *Engine::findParameter(quint64 layer, const QString &path)
 {
     if (!layer) {
-        if (path == "opacity") {
-            m_compositionOpacityTarget = std::clamp(v, 0.0, 1.0);
-            m_compositionOpacitySpeed = 0;
-            return true;
-        }
-        if (path == "volume") {
-            m_audio->setVolume(float(std::clamp(v, 0.0, 2.0)));
-            return true;
-        }
-        if (path == "speed") {
-            setCompositionSpeed(v);
-            return true;
-        }
-        return false;
+        for (Parameter *p : compositionParameters())
+            if (p->path() == path) return p;
+        return nullptr;
     }
     for (auto &l : m_layers)
-        if (l->id == layer) {
-            if (l->locked) return false;
-            return layerNumber(*l, path, nullptr, &v, m_compSize);
-        }
-    return false;
+        if (l->id == layer) return l->parameter(path);
+    return nullptr;
+}
+
+bool Engine::setAnimParam(quint64 layer, const QString &path, double v)
+{
+    if (layer)
+        for (auto &l : m_layers)
+            if (l->id == layer && l->locked) return false; // a timeline leaves a locked layer alone
+    Parameter *p = findParameter(layer, path);
+    return p && p->isNumber() && p->setNumber(v);
 }
 
 bool Engine::animParamValue(quint64 layer, const QString &path, double *value) const
 {
     Lock lk(&m_mutex);
-    if (!layer) {
-        if (path == "opacity") *value = m_compositionOpacityTarget;
-        else if (path == "volume") *value = m_audio->volume();
-        else if (path == "speed") *value = m_compositionSpeed.load();
-        else return false;
-        return true;
-    }
+    const Parameter *p = const_cast<Engine *>(this)->findParameter(layer, path);
+    if (!p || !p->isNumber()) return false;
+    *value = p->number();
+    return true;
+}
+
+std::vector<ParamInfo> Engine::parameters(quint64 layer) const
+{
+    Lock lk(&m_mutex);
+    std::vector<ParamInfo> out;
+    auto *self = const_cast<Engine *>(this); // the lists are made when they are asked for
+    const std::vector<Parameter *> *list = nullptr;
+    if (!layer) list = &self->compositionParameters();
     for (auto &l : m_layers)
-        if (l->id == layer) return layerNumber(*l, path, value, nullptr, m_compSize);
-    return false;
+        if (l->id == layer) list = &l->parameters();
+    if (list)
+        for (const Parameter *p : *list) out.push_back(p->info());
+    return out;
 }
 
 std::vector<Engine::AnimParam> Engine::animatableParams(quint64 layer) const
 {
-    Lock lk(&m_mutex);
     std::vector<AnimParam> out;
-    if (!layer) { // the composition's
-        out.push_back({"opacity", "Opacity", 0, 1, 0, 1});
-        out.push_back({"volume", "Volume", 0, 2, 0, 2});
-        out.push_back({"speed", "Speed", 0, 10, 0, 10});
-        return out;
-    }
-    for (auto &l : m_layers)
-        if (l->id == layer)
-            for (const NumberParam &n : layerNumbers(*l, m_compSize))
-                if (n.animatable) out.push_back(n);
+    for (const ParamInfo &i : parameters(layer))
+        if (i.animatable) out.push_back(i);
     return out;
 }
 
-bool Engine::numberParam(quint64 layer, const QString &path, NumberParam *p) const
+bool Engine::parameterInfo(quint64 layer, const QString &path, ParamInfo *info) const
 {
     Lock lk(&m_mutex);
-    for (auto &l : m_layers)
-        if (l->id == layer) return layerNumberParam(*l, path, m_compSize, p);
-    return false;
+    const Parameter *p = const_cast<Engine *>(this)->findParameter(layer, path);
+    if (!p) return false;
+    if (info) *info = p->info();
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +460,8 @@ void Engine::applyLayerAnim(Layer &l, Animation &a)
     const AnimTrack &t = a.tracks.front();
     if (!t.enabled || t.param.isEmpty()) return;
     const double v = t.valueAt(a.position(), std::min(a.clock, a.length()));
-    if (std::isfinite(v) && layerNumber(l, t.param, nullptr, &v, m_compSize)) releaseFromFades(l.id, t.param);
+    Parameter *p = l.parameter(t.param);
+    if (std::isfinite(v) && p && p->setNumber(v)) releaseFromFades(l.id, t.param);
 }
 
 void Engine::startLayerAnim(Animation &a)
@@ -632,13 +647,14 @@ void Engine::waveAround(quint64 layer, const QString &param, double *center, dou
     }
     const bool horizontal = param.endsWith("/x") || param.endsWith("/width");
     *center = v;
-    if (param == "spatial/rotation") {
+    ParamInfo info;
+    parameterInfo(layer, param, &info);
+    if (info.ramp == ParamInfo::Ramp::Angle) {
         *center = 0; // a saw turns round and round, a sine swings
         *amplitude = 180;
-    } else if (param.startsWith("spatial/position/") || param.startsWith("spatial/pivot/") || param == "spatial/width" ||
-               param == "spatial/height") {
+    } else if (param.startsWith("position/") || param.startsWith("pivot/") || param == "width" || param == "height") {
         *amplitude = 0.1 * (horizontal ? comp.width() : comp.height()); // pixels: a tenth of the composition
-    } else if (param.startsWith("spatial/scale/")) {
+    } else if (param.startsWith("scale/")) {
         *amplitude = 25;
     } else {
         *amplitude = std::min(v - lo, hi - v); // as far as it can go both ways…
@@ -686,6 +702,13 @@ static int keyIndex(const char *const *keys, int n, const QString &k, int fallba
     for (int i = 0; i < n; ++i)
         if (k == QLatin1String(keys[i])) return i;
     return fallback;
+}
+
+QStringList animWaveKeys()
+{
+    QStringList k;
+    for (const char *x : kWaveKeys) k << QString::fromLatin1(x);
+    return k;
 }
 
 QString animLoopKey(Engine::AnimLoop l) { return QString::fromLatin1(kLoopKeys[std::clamp(int(l), 0, 2)]); }

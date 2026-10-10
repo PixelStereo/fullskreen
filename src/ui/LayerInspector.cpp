@@ -289,8 +289,8 @@ LayerInspector::LayerInspector(Engine *engine, QUndoStack *undo, QWidget *parent
 
 std::pair<double, double> LayerInspector::limitsOf(const QString &path, double lo, double hi) const
 {
-    NumberParam p;
-    if (!m_engine->numberParam(m_layerId, path, &p)) return {lo, hi};
+    ParamInfo p;
+    if (!m_engine->parameterInfo(m_layerId, path, &p)) return {lo, hi};
     return {p.lo, p.hi};
 }
 
@@ -638,7 +638,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
 
         auto *size = new IntBox;
         {
-            const auto [lo, hi] = limitsOf(QStringLiteral("source/text/size"), 1, 1000);
+            const auto [lo, hi] = limitsOf(QStringLiteral("text/size"), 1, 1000);
             size->setRange(int(lo), int(hi));
         }
         size->setSuffix(QStringLiteral(" px"));
@@ -723,14 +723,14 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         connect(hAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
         connect(vAlign, QOverload<int>::of(&QComboBox::activated), this, setAlign);
 
-        const auto lh = limitsOf(QStringLiteral("source/text/line_height"), 0.1, 10);
+        const auto lh = limitsOf(QStringLiteral("text/line_height"), 0.1, 10);
         auto *lineSp = spin(s.text.lineHeight, lh.first, lh.second, 0.05, 2, QStringLiteral(" ×"));
         lineSp->setToolTip(QStringLiteral("Space between the lines (1 = the font's own)"));
         fmt->addRow(new ResetLabel(QStringLiteral("Line spacing"), [lineSp, def] { lineSp->setValue(def.lineHeight); }), lineSp);
         connect(lineSp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [style](double x) {
             style(QStringLiteral("Line Spacing"), [x](Layer &l) { l.text.lineHeight = float(x); });
         });
-        const auto ls = limitsOf(QStringLiteral("source/text/letter_spacing"), -200, 500);
+        const auto ls = limitsOf(QStringLiteral("text/letter_spacing"), -200, 500);
         auto *letterSp = spin(s.text.letterSpacing, ls.first, ls.second, 0.5, 1, QStringLiteral(" px"));
         letterSp->setToolTip(QStringLiteral("Space added between the letters"));
         fmt->addRow(new ResetLabel(QStringLiteral("Letter spacing"), [letterSp, def] { letterSp->setValue(def.letterSpacing); }),
@@ -740,7 +740,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         });
 
         // Outline
-        const auto ol = limitsOf(QStringLiteral("source/text/outline"), 0, 200);
+        const auto ol = limitsOf(QStringLiteral("text/outline"), 0, 200);
         auto *outline = spin(s.text.outline, ol.first, ol.second, 0.5, 1, QStringLiteral(" px"));
         auto *outlineRow = new QHBoxLayout;
         outlineRow->addWidget(outline);
@@ -758,13 +758,13 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         });
 
         for (auto [field, path] : std::initializer_list<std::pair<QWidget *, const char *>>{
-                 {size, "source/text/size"}, {lineSp, "source/text/line_height"},
-                 {letterSp, "source/text/letter_spacing"}, {outline, "source/text/outline"}})
+                 {size, "text/size"}, {lineSp, "text/line_height"},
+                 {letterSp, "text/letter_spacing"}, {outline, "text/outline"}})
             m_animate->attach(field, {QString::fromLatin1(path)});
-        m_animate->attach(fmt->labelForField(colorRow), {QStringLiteral("source/text/size")});
-        m_animate->attach(fmt->labelForField(lineSp), {QStringLiteral("source/text/line_height")});
-        m_animate->attach(fmt->labelForField(letterSp), {QStringLiteral("source/text/letter_spacing")});
-        m_animate->attach(fmt->labelForField(outlineRow), {QStringLiteral("source/text/outline")});
+        m_animate->attach(fmt->labelForField(colorRow), {QStringLiteral("text/size")});
+        m_animate->attach(fmt->labelForField(lineSp), {QStringLiteral("text/line_height")});
+        m_animate->attach(fmt->labelForField(letterSp), {QStringLiteral("text/letter_spacing")});
+        m_animate->attach(fmt->labelForField(outlineRow), {QStringLiteral("text/outline")});
 
         // Shadow
         auto *shadow = new FlagBox(QStringLiteral("Enable"));
@@ -775,8 +775,8 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         const ColorSet setShadowColor = [](Layer &l, const QColor &c) { l.text.shadowColor = c; };
         QPushButton *shadowColor = colorButton(s.text.shadowColor, QStringLiteral("Shadow Color"), setShadowColor);
         shadowRow->addWidget(shadowColor);
-        const auto sxl = limitsOf(QStringLiteral("source/text/shadow/x"), -2000, 2000);
-        const auto syl = limitsOf(QStringLiteral("source/text/shadow/y"), -2000, 2000);
+        const auto sxl = limitsOf(QStringLiteral("text/shadow/x"), -2000, 2000);
+        const auto syl = limitsOf(QStringLiteral("text/shadow/y"), -2000, 2000);
         auto *sx = spin(s.text.shadowX, sxl.first, sxl.second, 1, 0, QStringLiteral(" x"));
         auto *sy = spin(s.text.shadowY, syl.first, syl.second, 1, 0, QStringLiteral(" y"));
         shadowRow->addWidget(sx);
@@ -788,9 +788,9 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
                         sy->setValue(def.shadowY);
                     }),
                     shadowRow);
-        m_animate->attach(sx, {QStringLiteral("source/text/shadow/x")});
-        m_animate->attach(sy, {QStringLiteral("source/text/shadow/y")});
-        m_animate->attach(fmt->labelForField(shadowRow), {QStringLiteral("source/text/shadow/x"), QStringLiteral("source/text/shadow/y")});
+        m_animate->attach(sx, {QStringLiteral("text/shadow/x")});
+        m_animate->attach(sy, {QStringLiteral("text/shadow/y")});
+        m_animate->attach(fmt->labelForField(shadowRow), {QStringLiteral("text/shadow/x"), QStringLiteral("text/shadow/y")});
         connect(shadow, &QCheckBox::toggled, this, [style](bool on) {
             style(QStringLiteral("Text Shadow"), [on](Layer &l) { l.text.shadow = on; });
         });
@@ -1075,7 +1075,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         m_speed->setToolTip(QStringLiteral("Playback speed — below 0 the media plays backwards, 100 % is its own rate"));
         m_animate->attach({barLabel(1, QStringLiteral("Speed"), [this] { setProp(cmd::SetLayerProp::Speed, 1.0); m_speed->setValue(100); }),
                            m_speed},
-                          {QStringLiteral("source/speed")});
+                          {QStringLiteral("speed")});
         bars->addWidget(m_speed, 1, 1);
 
         m_loop = new RangeField;
@@ -1146,7 +1146,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         row->addWidget(icon);
         row->addWidget(vol, 1);
         row->addWidget(mute);
-        m_animate->attach({icon, vol}, {QStringLiteral("source/volume")});
+        m_animate->attach({icon, vol}, {QStringLiteral("volume")});
         v->addLayout(row);
         m_meter = new QProgressBar;
         m_meter->setRange(0, 600);
@@ -1363,10 +1363,10 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
             QPointer<SliderField> *field;
             bool on;
             int onProp;
-        } defs[] = {{"Temp", "color/temp", ColorAdjust::kTempRange, s.color.temp,
+        } defs[] = {{"Temp", "temp", ColorAdjust::kTempRange, s.color.temp,
                      {{0.0, QColor("#3a7bff")}, {0.5, QColor("#888888")}, {1.0, QColor("#ffd23a")}},
                      cmd::SetLayerProp::Temp, &m_temp, s.color.tempOn, cmd::SetLayerProp::TempOn},
-                    {"Tint", "color/tint", ColorAdjust::kTintRange, s.color.tint,
+                    {"Tint", "tint", ColorAdjust::kTintRange, s.color.tint,
                      {{0.0, QColor("#2fd04a")}, {0.5, QColor("#888888")}, {1.0, QColor("#e03ce0")}},
                      cmd::SetLayerProp::Tint, &m_tint, s.color.tintOn, cmd::SetLayerProp::TintOn}};
         int row = 1;
@@ -1438,8 +1438,8 @@ QWidget *LayerInspector::buildColor(const LayerValues &s)
         v->addWidget(frame);
         ed->setModels(s.colorModels);
     }
-    m_animate->attach(m_colorAdd, {"color/add/r", "color/add/g", "color/add/b"});
-    m_animate->attach(m_colorRemove, {"color/remove/r", "color/remove/g", "color/remove/b"});
+    m_animate->attach(m_colorAdd, {"add/r", "add/g", "add/b"});
+    m_animate->attach(m_colorRemove, {"remove/r", "remove/g", "remove/b"});
     m_colorAdd->setSwitch(true, s.color.addOn, QStringLiteral("Apply the added color (it is kept either way)"));
     m_colorRemove->setSwitch(true, s.color.removeOn, QStringLiteral("Apply the removed color (it is kept either way)"));
     connect(m_colorAdd, &ColorEditor::colorEdited, this, [this](const QColor &c) { setProp(cmd::SetLayerProp::ColorAdd, c); });
@@ -1548,18 +1548,18 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             b->setAccelerated(true);
             return b;
         };
-        // Their limits are the numbers' (Params.h)
+        // Their limits are the parameters' (Parameter.h)
         auto spinOf = [this, spin](const QString &path, const QString &suffix, int decimals) {
             const auto [lo, hi] = limitsOf(path, -100000, 100000);
             return spin(lo, hi, suffix, decimals);
         };
-        m_posX = spinOf(QStringLiteral("spatial/position/x"), QStringLiteral(" px"), 1);
-        m_posY = spinOf(QStringLiteral("spatial/position/y"), QStringLiteral(" px"), 1);
+        m_posX = spinOf(QStringLiteral("position/x"), QStringLiteral(" px"), 1);
+        m_posY = spinOf(QStringLiteral("position/y"), QStringLiteral(" px"), 1);
         m_sizePx = s.isViewport;
-        m_scaleX = m_sizePx ? spinOf(QStringLiteral("spatial/width"), QStringLiteral(" px"), 1)
-                            : spinOf(QStringLiteral("spatial/scale/x"), QStringLiteral(" %"), 2);
-        m_scaleY = m_sizePx ? spinOf(QStringLiteral("spatial/height"), QStringLiteral(" px"), 1)
-                            : spinOf(QStringLiteral("spatial/scale/y"), QStringLiteral(" %"), 2);
+        m_scaleX = m_sizePx ? spinOf(QStringLiteral("width"), QStringLiteral(" px"), 1)
+                            : spinOf(QStringLiteral("scale/x"), QStringLiteral(" %"), 2);
+        m_scaleY = m_sizePx ? spinOf(QStringLiteral("height"), QStringLiteral(" px"), 1)
+                            : spinOf(QStringLiteral("scale/y"), QStringLiteral(" %"), 2);
         m_rotation = spin(-360, 360, QStringLiteral("°"), 1);
         m_posX->setToolTip(QStringLiteral("Horizontal position of the layer's center, in composition pixels"));
         m_posY->setToolTip(QStringLiteral("Vertical position of the layer's center, in composition pixels"));
@@ -1601,12 +1601,12 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
             m_rotation->setWrapping(true);
             m_rotation->setRange(-180, 180);
             auto *rotLabel = new ResetLabel(QStringLiteral("Rotation"), [this] { m_rotation->setValue(0); });
-            m_animate->attach(rotLabel, {"spatial/rotation"});
+            m_animate->attach(rotLabel, {"rotation"});
             grid->addWidget(rotLabel, 2, 0);
             grid->addWidget(m_rotation, 2, 2);
         }
-        m_pivotX = spinOf(QStringLiteral("spatial/pivot/x"), QStringLiteral(" px"), 1);
-        m_pivotY = spinOf(QStringLiteral("spatial/pivot/y"), QStringLiteral(" px"), 1);
+        m_pivotX = spinOf(QStringLiteral("pivot/x"), QStringLiteral(" px"), 1);
+        m_pivotY = spinOf(QStringLiteral("pivot/y"), QStringLiteral(" px"), 1);
         m_pivotX->setToolTip(QStringLiteral("Horizontal center of the rotation, in composition pixels (moves with the layer)"));
         m_pivotY->setToolTip(QStringLiteral("Vertical center of the rotation, in composition pixels (moves with the layer)"));
         auto *pivotLabel = new ResetLabel(QStringLiteral("Pivot"), [this] {
@@ -1622,18 +1622,18 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
         grid->addWidget(new QLabel(QStringLiteral("Y")), 3, 4);
         grid->addWidget(m_pivotY, 3, 5);
         {
-            const QString sx = m_sizePx ? QStringLiteral("spatial/width") : QStringLiteral("spatial/scale/x");
-            const QString sy = m_sizePx ? QStringLiteral("spatial/height") : QStringLiteral("spatial/scale/y");
-            m_animate->attach(posLabel, {"spatial/position/x", "spatial/position/y"});
-            m_animate->attach(m_posX, {"spatial/position/x"});
-            m_animate->attach(m_posY, {"spatial/position/y"});
+            const QString sx = m_sizePx ? QStringLiteral("width") : QStringLiteral("scale/x");
+            const QString sy = m_sizePx ? QStringLiteral("height") : QStringLiteral("scale/y");
+            m_animate->attach(posLabel, {"position/x", "position/y"});
+            m_animate->attach(m_posX, {"position/x"});
+            m_animate->attach(m_posY, {"position/y"});
             m_animate->attach(scaleLabel, {sx, sy});
             m_animate->attach(m_scaleX, {sx});
             m_animate->attach(m_scaleY, {sy});
-            m_animate->attach(m_rotation, {"spatial/rotation"});
-            m_animate->attach(pivotLabel, {"spatial/pivot/x", "spatial/pivot/y"});
-            m_animate->attach(m_pivotX, {"spatial/pivot/x"});
-            m_animate->attach(m_pivotY, {"spatial/pivot/y"});
+            m_animate->attach(m_rotation, {"rotation"});
+            m_animate->attach(pivotLabel, {"pivot/x", "pivot/y"});
+            m_animate->attach(m_pivotX, {"pivot/x"});
+            m_animate->attach(m_pivotY, {"pivot/y"});
         }
         grid->setColumnStretch(2, 1);
         grid->setColumnStretch(5, 1);
@@ -1884,7 +1884,7 @@ QWidget *LayerInspector::buildMapping(const LayerValues &s)
                 emit power->valueEdited(1.0);
             });
             grid->addWidget(name, side + 1, 0);
-            const QString base = QStringLiteral("spatial/soft_edge/%1/").arg(QString::fromLatin1(names[side]).toLower());
+            const QString base = QStringLiteral("soft_edge/%1/").arg(QString::fromLatin1(names[side]).toLower());
             m_animate->attach(name, {base + "width", base + "power"});
             m_animate->attach(width, {base + "width"});
             m_animate->attach(power, {base + "power"});

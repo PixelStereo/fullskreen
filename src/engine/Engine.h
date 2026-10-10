@@ -18,7 +18,6 @@
 #include "IsfLibrary.h"
 #include "Layer.h"
 #include "LayerTree.h"
-#include "Params.h"
 #include "Publish.h"
 
 #include <QColor>
@@ -237,7 +236,7 @@ public:
     using AnimKey = ::AnimKey;
     using AnimTrack = ::AnimTrack;
     using Animation = ::Animation;
-    using AnimParam = NumberParam; // a number a timeline can drive (Params.h)
+    using AnimParam = ParamInfo; // a number a timeline can drive (Parameter.h)
     int animationCount() const;
     Animation animation(int i) const;
     int indexOfAnimation(quint64 id) const; // -1: none
@@ -250,8 +249,9 @@ public:
     void controlAnimation(quint64 id, AnimAction action, double time = 0, AnimLoop loop = AnimLoop::Loop, int repeat = 0);
     // The numbers of a layer (0: the composition) a timeline can drive, with their ranges
     std::vector<AnimParam> animatableParams(quint64 layer) const;
-    // A layer's number as declared (Params.h): its name, range and limits (false: the layer has no such number)
-    bool numberParam(quint64 layer, const QString &path, NumberParam *p) const;
+    // The parameters of a layer (0: the composition), as they declare themselves (Parameter.h)
+    std::vector<ParamInfo> parameters(quint64 layer) const;
+    bool parameterInfo(quint64 layer, const QString &path, ParamInfo *p) const; // false: it has none at that address
     bool animParamValue(quint64 layer, const QString &path, double *value) const;
     void stepAnimations(double dt); // the layers' animations, then the timelines, move on and set their values (lock held)
 
@@ -668,6 +668,10 @@ private:
     // A number of a layer an animation sets: the snapshots' fades running leave it to it from now on (lock held)
     void releaseFromFades(quint64 layer, const QString &path);
     bool setAnimParam(quint64 layer, const QString &path, double v); // lock held
+    const std::vector<Parameter *> &compositionParameters(); // its opacity, volume, speed (lock held)
+    Parameter *findParameter(quint64 layer, const QString &path); // a layer's (0: the composition's); lock held
+    std::vector<std::unique_ptr<Parameter>> m_compParams;
+    std::vector<Parameter *> m_compParamList;
     QJsonArray animationsToJson() const;
     void animationsFromJson(const QJsonArray &a);
     void startLayerAnim(Animation &a); // from the start: the "current value" keys read now (lock held)

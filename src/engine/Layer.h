@@ -4,6 +4,7 @@
 #include "Gl.h"
 #include "Isf.h"
 #include "Mapping.h"
+#include "Parameter.h"
 #include "Publish.h"
 #include "VideoDecoder.h"
 #include "VideoTexture.h"
@@ -280,6 +281,16 @@ struct Layer {
     int finalW = 0, finalH = 0;
     GLuint preFxTex = 0; // picture just before the effect chain (tap of a layer used as a source)
     int preFxW = 0, preFxH = 0;
+
+    // Its parameters (Parameter.h), the ones it has as it is now: its own, its generator's (speed, param/<input>) and
+    // its effects' (fx/<fx>/…). Made again when what it is changes (its kind, its source, its effects, the
+    // composition's size). The engine's lock is held.
+    const std::vector<Parameter *> &parameters();
+    Parameter *parameter(const QString &path); // null: it has none at that address
+    const QSize *compSize = nullptr;           // the composition's (set by the engine): its parameters in pixels
+    std::vector<std::unique_ptr<Parameter>> paramStore;
+    std::vector<Parameter *> paramList;
+    std::vector<quint64> paramKey; // what they were made from
 
     bool hasTransport() const { return video || audio; }
     double duration() const { return video ? video->duration() : audio ? audio->duration() : 0.0; }

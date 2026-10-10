@@ -72,6 +72,13 @@ public:
     // Where its value lives: read and written in its holder (the holder's lock is held by the caller)
     Parameter &bind(std::function<QVariant()> get, std::function<void(const QVariant &)> set);
 
+    // The same parameter under its holder's holder: path and the address under it ("fx/blur/" + "speed")
+    Parameter prefixed(const QString &prefix) const
+    {
+        Parameter p = *this;
+        p.m_info.path = prefix + m_info.path;
+        return p;
+    }
     ParamInfo info() const; // its declaration, its default resolved now
     const QString &path() const { return m_info.path; }
     bool isNumber() const { return m_info.isNumber(); }

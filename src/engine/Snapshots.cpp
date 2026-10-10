@@ -1,6 +1,5 @@
 // Snapshots (cues): snapshots of the layers, recalled with a fade; another source comes in with a transition.
 #include "EngineInternal.h"
-#include "Params.h"
 #include "Osc.h"
 
 #include <QBuffer>
@@ -900,10 +899,10 @@ void Engine::applyLayers(const QJsonArray &layers, double fade, bool hideOthers)
 static quint64 ownBitOf(const QString &path)
 {
     if (path == QLatin1String("opacity")) return OwnOpacity;
-    if (path == QLatin1String("source/volume")) return OwnVolume;
-    if (path == QLatin1String("source/speed")) return OwnSpeed; // not set then set back: no turning round twice a frame
-    for (int k = 0; k < TextNumCount; ++k)
-        if (path == QLatin1String(kTextTimeKeys[k])) return OwnText0 << k;
+    if (path == QLatin1String("volume")) return OwnVolume;
+    if (path == QLatin1String("speed")) return OwnSpeed; // not set then set back: no turning round twice a frame
+    for (int k = 0; k < TextNumCount; ++k) // the text's numbers: text/<key> (their timing keys: source/text/<key>)
+        if (QStringLiteral("source/") + path == QLatin1String(kTextTimeKeys[k])) return OwnText0 << k;
     return 0;
 }
 
@@ -926,17 +925,16 @@ void Engine::stepFade(double dt)
         // What an animation drives stays as it set it: a value the fade drives alone is left out of it, one that shares
         // its part with others (a side of the ROI, a corner of the mapping…) is put back after it
         quint64 owned = job.owned;
-        std::vector<std::pair<QString, double>> keep;
+        std::vector<std::pair<Parameter *, double>> keep;
         for (const QString &path : job.released) {
             if (const quint64 bit = ownBitOf(path)) {
                 owned &= ~bit;
                 continue;
             }
-            double v = 0;
-            if (layerNumber(*l, path, &v, nullptr, m_compSize)) keep.push_back({path, v});
+            if (Parameter *p = l->parameter(path); p && p->isNumber()) keep.push_back({p, p->number()});
         }
         setNumbers(*l, mixNumbers(job.from, job.to, job.times, job.elapsed), owned);
-        for (const auto &[path, v] : keep) layerNumber(*l, path, nullptr, &v, m_compSize);
+        for (const auto &[p, v] : keep) p->setNumber(v);
         if (job.hideAtEnd && job.elapsed >= job.times.opacity) {
             l->enabled = false;
             if (!job.released.contains(QStringLiteral("opacity"))) l->opacity = job.finalOpacity;

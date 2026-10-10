@@ -3,7 +3,7 @@
 #include "Engine.h"
 #include "LayerTree.h"
 #include "Osc.h"
-#include "Params.h"
+#include "Parameter.h"
 #include "Zeroconf.h"
 #include <QJsonArray>
 #include <QTcpSocket>
@@ -211,7 +211,7 @@ int main(int argc, char **argv)
             CHECK(cmd::resolveIsf(&e, g, -1)->speed == 1.0);
             undo.redo();
             bool found = false;
-            for (const auto &p : e.animatableParams(e.layerId(g))) found |= (p.path == "source/speed");
+            for (const auto &p : e.animatableParams(e.layerId(g))) found |= (p.path == "speed");
             CHECK(found);
             // The timeline menu and the snapshot timing offer the speed of an effect too
             const int fxi = e.addEffect(g, QStringLiteral(TEST_DIR) + "/isf/Offset.fs", &err);
@@ -570,9 +570,9 @@ int main(int argc, char **argv)
         const QString L = "/layer/G/layer/My_layer";
         CHECK(server.handleMessage({L + "/opacity", "f", {0.25}}) && std::abs(e.layer(V + 1)->opacity - 0.25f) < 1e-6);
         CHECK(server.handleMessage({"/layer/G/layer/*/opacity", "f", {0.5}}) && std::abs(e.layer(V + 1)->opacity - 0.5f) < 1e-6);
-        CHECK(server.handleMessage({L + "/color/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(V + 1)->color.add[2] - 0.3f) < 1e-6);
-        CHECK(server.handleMessage({L + "/color/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
-        CHECK(server.handleMessage({L + "/color/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
+        CHECK(server.handleMessage({L + "/add", "fff", {0.1, 0.2, 0.3}}) && std::abs(e.layer(V + 1)->color.add[2] - 0.3f) < 1e-6);
+        CHECK(server.handleMessage({L + "/temp", "f", {-2000.0}}) && e.layer(V + 1)->color.temp == -2000.0f);
+        CHECK(server.handleMessage({L + "/tint", "f", {500.0}}) && e.layer(V + 1)->color.tint == 100.0f); // clipped
         CHECK(server.handleMessage({L + "/roi/left", "f", {0.25}}) && std::abs(e.layer(V + 1)->roi.left() - 0.25) < 1e-9);
         CHECK(server.handleMessage({L + "/fx/FlipCrop/param/flipH", "T", {true}}));
         CHECK(e.layer(V + 1)->effects[0]->inputs()[1].bValue || e.layer(V + 1)->effects[0]->inputs()[2].bValue);
@@ -590,23 +590,23 @@ int main(int argc, char **argv)
         {
             const int vi = e.indexOfId(e.mainViewportId());
             const QString VP = "/viewport/" + osc::safeName(e.layer(vi)->name);
-            CHECK(server.handleMessage({VP + "/spatial/width", "f", {32}}) && server.handleMessage({VP + "/spatial/height", "f", {16}}));
-            CHECK(server.handleMessage({VP + "/spatial/position/x", "f", {10}}) && server.handleMessage({VP + "/spatial/position/y", "f", {8}}));
+            CHECK(server.handleMessage({VP + "/width", "f", {32}}) && server.handleMessage({VP + "/height", "f", {16}}));
+            CHECK(server.handleMessage({VP + "/position/x", "f", {10}}) && server.handleMessage({VP + "/position/y", "f", {8}}));
             const QRectF bb = e.layer(vi)->mapping.bounds();
             CHECK(std::abs(bb.width() * 64 - 32) < 1e-6 && std::abs(bb.height() * 32 - 16) < 1e-6);
             CHECK(std::abs(bb.center().x() * 64 - 10) < 1e-6 && std::abs(bb.center().y() * 32 - 8) < 1e-6);
-            CHECK(!server.handleMessage({VP + "/spatial/scale", "ff", {50, 50}}));
-            CHECK(server.handleMessage({VP + "/spatial/pivot/x", "f", {0}}) && server.handleMessage({VP + "/spatial/pivot/y", "f", {0}}));
-            CHECK(server.handleMessage({VP + "/spatial/rotation", "f", {90}}));
+            CHECK(!server.handleMessage({VP + "/scale", "ff", {50, 50}}));
+            CHECK(server.handleMessage({VP + "/pivot/x", "f", {0}}) && server.handleMessage({VP + "/pivot/y", "f", {0}}));
+            CHECK(server.handleMessage({VP + "/rotation", "f", {90}}));
             {
                 const Mapping &pm = e.layer(vi)->mapping;
                 CHECK((pm.pivotPoint() - QPointF(0, 0)).manhattanLength() < 1e-6 && std::abs(pm.angle(e.compositionSize()) - 90) < 1e-6);
             }
             QStringList paths;
             for (const auto &p : e.animatableParams(e.layerId(vi))) paths << p.path;
-            CHECK(paths.contains("spatial/width") && paths.contains("spatial/height") && paths.contains("spatial/position/x") &&
-                  !paths.contains("spatial/scale/x") && paths.contains("spatial/rotation") &&
-                  paths.contains("spatial/pivot/x") && paths.contains("spatial/pivot/y"));
+            CHECK(paths.contains("width") && paths.contains("height") && paths.contains("position/x") &&
+                  !paths.contains("scale/x") && paths.contains("rotation") &&
+                  paths.contains("pivot/x") && paths.contains("pivot/y"));
             e.layer(vi)->mapping.resetCorners();
         }
         // Renaming changes the address
@@ -651,10 +651,10 @@ int main(int argc, char **argv)
             walk(root, QString());
             CHECK(nodes > 50 && bad == 0);
             const QString LF = "/layer/G/layer/Front_wall";
-            CHECK(server.handleMessage({LF + "/color/tint/enable", "T", {true}}) && e.layer(V + 1)->color.tintOn);
-            CHECK(server.handleMessage({LF + "/color/mask/invert", "T", {true}}) && e.layer(V + 1)->color.maskInvert);
+            CHECK(server.handleMessage({LF + "/tint/enable", "T", {true}}) && e.layer(V + 1)->color.tintOn);
+            CHECK(server.handleMessage({LF + "/mask/invert", "T", {true}}) && e.layer(V + 1)->color.maskInvert);
             CHECK(server.handleMessage({LF + "/blend_mode", "s", {QStringLiteral("add")}}) && e.layer(V + 1)->blend == BlendMode::Add);
-            CHECK(server.handleMessage({LF + "/spatial/rotation", "f", {30.0}}) &&
+            CHECK(server.handleMessage({LF + "/rotation", "f", {30.0}}) &&
                   std::abs(e.layer(V + 1)->mapping.angle(e.compositionSize()) - 30.0) < 0.01);
             e.layer(V + 1)->blend = BlendMode::Normal;
         }
@@ -1364,7 +1364,7 @@ int main(int argc, char **argv)
             a.repeat = 0;
             Engine::AnimTrack rot;
             rot.layer = tid;
-            rot.param = "spatial/rotation";
+            rot.param = "rotation";
             rot.oscillator = true;
             rot.wave = Engine::AnimWave::Saw;
             rot.period = 4;
@@ -1378,12 +1378,12 @@ int main(int argc, char **argv)
             e.controlAnimation(aid, A::Play);
             CHECK(near(val("opacity"), 0) && e.animation(ai).state == Engine::AnimState::Playing);
             e.advanceFades(1.0);
-            CHECK(near(val("opacity"), 0.5) && near(val("spatial/rotation"), -90));
+            CHECK(near(val("opacity"), 0.5) && near(val("rotation"), -90));
             e.advanceFades(1.0);
-            CHECK(near(val("opacity"), 1.0) && near(val("spatial/rotation"), 0));
+            CHECK(near(val("opacity"), 1.0) && near(val("rotation"), 0));
             CHECK(near(e.layer(e.indexOfId(tid))->mapping.bounds().width(), before.width())); // turned, not shrunk
             e.advanceFades(2.5); // 4.5 s: the second pass of the pattern
-            CHECK(near(val("opacity"), 0.25) && near(val("spatial/rotation"), -135));
+            CHECK(near(val("opacity"), 0.25) && near(val("rotation"), -135));
             // Paused: its values are left alone
             e.controlAnimation(aid, A::Pause);
             e.layer(e.indexOfId(tid))->opacity = 0.9f;
@@ -1667,15 +1667,17 @@ int main(int argc, char **argv)
             // Declared once: what can be animated is an attribute of each number
             {
                 Engine::Lock lk(&e.mutex());
-                const std::vector<NumberParam> nums = layerNumbers(*L(), e.compositionSize());
                 QStringList paths;
-                for (const NumberParam &n : nums) paths << n.path;
-                CHECK(paths.contains("opacity") && paths.contains("spatial/soft_edge/left/width") && paths.contains("roi/left") &&
-                      !paths.contains("source/volume") && !paths.contains("spatial/width")); // no sound, not a viewport
-                double v = 2, got = 0;
-                CHECK(layerNumber(*L(), "opacity", nullptr, &v, e.compositionSize()) && layerNumber(*L(), "opacity", &got, nullptr, e.compositionSize()) &&
-                      near(got, 1)); // kept within its limits
-                CHECK(!layerNumber(*L(), "spatial/width", &got, nullptr, e.compositionSize()));
+                for (const Parameter *p : L()->parameters()) paths << p->path();
+                CHECK(paths.contains("opacity") && paths.contains("soft_edge/left/width") && paths.contains("roi/left") &&
+                      !paths.contains("volume") && !paths.contains("width")); // no sound, not a viewport
+                Parameter *op = L()->parameter("opacity");
+                CHECK(op && op->setNumber(2) && op->number() == 1.0); // kept within its limits
+                CHECK(!L()->parameter("width") && L()->parameter("blend_mode")->setValue("add") && L()->blend == BlendMode::Add &&
+                      !L()->parameter("blend_mode")->setValue("nothing")); // a choice: one of its keys only
+                CHECK(L()->parameter("blend_mode")->reset() && L()->blend == BlendMode::Normal &&
+                      L()->parameter("rotation")->info().ramp == ParamInfo::Ramp::Angle &&
+                      !L()->parameter("color/enable")->info().animatable);
             }
             // A sine around the value, from Animate ▸ Sine
             Engine::Animation s = e.makeLayerAnim(wid, "opacity", int(Engine::AnimWave::Sine));
@@ -1706,7 +1708,7 @@ int main(int argc, char **argv)
             e.setLayerAnims(wid, {s});
             CHECK(e.layerAnim(wid, "opacity", &now) && near(now.clock, 0) && near(L()->opacity, 0.5));
             // One animation per number; keys from where the number is, out and back
-            Engine::Animation k = e.makeLayerAnim(wid, "spatial/rotation", -1);
+            Engine::Animation k = e.makeLayerAnim(wid, "rotation", -1);
             CHECK(!k.tracks[0].oscillator && k.tracks[0].keys.size() == 3 && near(k.tracks[0].keys[0].v, 0));
             e.setLayerAnims(wid, {s, k, s});
             CHECK(e.layerAnims(wid).size() == 2);
@@ -1733,11 +1735,11 @@ int main(int argc, char **argv)
                 st.push(new cmd::SetLayerAnim(&e, wid, "opacity", b0, b1, "Speed", "speed"));
                 st.push(new cmd::SetLayerAnim(&e, wid, "opacity", b1, b2, "Speed", "speed"));
                 CHECK(st.count() == 1 && e.layerAnim(wid, "opacity", &now) && near(now.speed, 3));
-                e.setLayerAnimOn(wid, "spatial/rotation", false); // meanwhile, by OSC
+                e.setLayerAnimOn(wid, "rotation", false); // meanwhile, by OSC
                 st.undo();
-                CHECK(e.layerAnim(wid, "opacity", &now) && near(now.speed, 1) && e.layerAnim(wid, "spatial/rotation", &now) &&
+                CHECK(e.layerAnim(wid, "opacity", &now) && near(now.speed, 1) && e.layerAnim(wid, "rotation", &now) &&
                       !now.tracks[0].enabled);
-                e.setLayerAnimOn(wid, "spatial/rotation", true);
+                e.setLayerAnimOn(wid, "rotation", true);
                 // Removed, then back at its place
                 Engine::Animation r;
                 e.layerAnim(wid, "opacity", &r);
@@ -1749,27 +1751,45 @@ int main(int argc, char **argv)
             // OSC: /layer/<name>/anim/<the number>/enable, speed, rewind
             {
                 OscServer server(&e);
-                CHECK(server.handleMessage({"/layer/Wave/anim/opacity/speed", "f", {0.5}}) && e.layerAnim(wid, "opacity", &now) &&
+                CHECK(server.handleMessage({"/layer/Wave/opacity/anim/speed", "f", {0.5}}) && e.layerAnim(wid, "opacity", &now) &&
                       near(now.speed, 0.5));
-                CHECK(server.handleMessage({"/layer/Wave/anim/spatial/rotation/enable", "F", {false}}) &&
-                      e.layerAnim(wid, "spatial/rotation", &now) && !now.tracks[0].enabled);
-                CHECK(server.handleMessage({"/layer/Wave/anim/opacity/rewind", "N", {}}) && e.layerAnim(wid, "opacity", &now) &&
+                CHECK(server.handleMessage({"/layer/Wave/rotation/anim/enable", "F", {false}}) &&
+                      e.layerAnim(wid, "rotation", &now) && !now.tracks[0].enabled);
+                CHECK(server.handleMessage({"/layer/Wave/opacity/anim/rewind", "N", {}}) && e.layerAnim(wid, "opacity", &now) &&
                       near(now.clock, 0));
-                CHECK(!server.handleMessage({"/layer/Wave/anim/roi/left/enable", "T", {true}}));
+                CHECK(!server.handleMessage({"/layer/Wave/roi/left/anim/enable", "T", {true}}));
+                // The animation's settings, under its parameter
+                CHECK(server.handleMessage({"/layer/Wave/rotation/anim/duration", "f", {6}}) &&
+                      server.handleMessage({"/layer/Wave/rotation/anim/loop_mode", "s", {QStringLiteral("ping-pong")}}) &&
+                      e.layerAnim(wid, "rotation", &now) && near(now.duration, 6) && now.loop == Engine::AnimLoop::PingPong);
+                CHECK(server.handleMessage({"/layer/Wave/rotation/anim/wave", "s", {QStringLiteral("saw")}}) &&
+                      server.handleMessage({"/layer/Wave/rotation/anim/period", "f", {3}}) && e.layerAnim(wid, "rotation", &now) &&
+                      now.tracks[0].oscillator && now.tracks[0].wave == Engine::AnimWave::Saw && near(now.tracks[0].period, 3));
+                CHECK(server.handleMessage({"/layer/Wave/rotation/anim/wave", "s", {QStringLiteral("keys")}}) &&
+                      server.handleMessage({"/layer/Wave/rotation/anim/pause", "N", {}}) && e.layerAnim(wid, "rotation", &now) &&
+                      !now.tracks[0].oscillator && now.tracks[0].keys.size() == 3);
+                CHECK(!server.handleMessage({"/layer/Wave/rotation/anim/loop_mode", "s", {QStringLiteral("sideways")}}));
+                {
+                    Engine::Animation r;
+                    e.layerAnim(wid, "rotation", &r);
+                    r.duration = 4;
+                    r.loop = Engine::AnimLoop::Loop;
+                    e.setLayerAnim(wid, "rotation", &r);
+                }
                 // Every number at its own address (the one of the timelines and the animations), and the ones that go
                 // together at their common address too; their limits are the declared ones
-                CHECK(server.handleMessage({"/layer/Wave/spatial/position/x", "f", {16}}) &&
-                      server.handleMessage({"/layer/Wave/spatial/position", "ff", {20, 10}}));
+                CHECK(server.handleMessage({"/layer/Wave/position/x", "f", {16}}) &&
+                      server.handleMessage({"/layer/Wave/position", "ff", {20, 10}}));
                 {
                     double x = 0, y = 0;
-                    e.animParamValue(wid, "spatial/position/x", &x);
-                    e.animParamValue(wid, "spatial/position/y", &y);
+                    e.animParamValue(wid, "position/x", &x);
+                    e.animParamValue(wid, "position/y", &y);
                     CHECK(near(x, 20) && near(y, 10));
                 }
-                CHECK(server.handleMessage({"/layer/Wave/color/add", "fff", {0.1, 0.2, 0.3}}) &&
-                      server.handleMessage({"/layer/Wave/color/add/g", "f", {0.5}}) && near(L()->color.add[0], 0.1) &&
+                CHECK(server.handleMessage({"/layer/Wave/add", "fff", {0.1, 0.2, 0.3}}) &&
+                      server.handleMessage({"/layer/Wave/add/g", "f", {0.5}}) && near(L()->color.add[0], 0.1) &&
                       near(L()->color.add[1], 0.5));
-                CHECK(server.handleMessage({"/layer/Wave/spatial/soft_edge/left/width", "f", {0.9}}) && near(L()->mapping.soft.width[0], 0.5));
+                CHECK(server.handleMessage({"/layer/Wave/soft_edge/left/width", "f", {0.9}}) && near(L()->mapping.soft.width[0], 0.5));
                 CHECK(server.handleMessage({"/layer/Wave/blend_mode", "s", {QStringLiteral("difference")}}) &&
                       L()->blend == BlendMode::Difference);
                 int status = 0;
@@ -1807,7 +1827,7 @@ int main(int argc, char **argv)
             CHECK(e.saveProject(tmp + "/anims.fulskrin", {}, &err));
             CHECK(e.loadProject(tmp + "/anims.fulskrin", nullptr, &err));
             CHECK(e.layerAnims(wid).size() == 2 && e.layerAnim(wid, "opacity", &now) && now.state == Engine::AnimState::Playing &&
-                  near(now.speed, 0.5) && now.tracks[0].layer == wid && e.layerAnim(wid, "spatial/rotation", &now) &&
+                  near(now.speed, 0.5) && now.tracks[0].layer == wid && e.layerAnim(wid, "rotation", &now) &&
                   !now.tracks[0].enabled && now.state == Engine::AnimState::Stopped && now.tracks[0].keys.size() == 3);
             e.removeLayer(e.indexOfId(wid));
             e.setFadesManual(false);
