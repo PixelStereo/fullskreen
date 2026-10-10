@@ -623,6 +623,7 @@ void Engine::setEffectsJson(int i, const QJsonArray &a)
 std::shared_ptr<Engine::Garbage> Engine::detachSource(Layer &l)
 {
     auto g = std::make_shared<Garbage>();
+    l.extraParams = QJsonObject(); // another source: what its missing file kept is not for this one
     g->video = std::move(l.video);
     g->videoTex = std::move(l.videoTex);
     l.frame = VideoFrame{}; // its upload buffer belongs to the texture that goes

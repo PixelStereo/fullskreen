@@ -2773,6 +2773,8 @@ int main(int argc, char **argv)
         CHECK(e.layer(vi)->type == SourceType::Video && e.layer(vi)->error.isEmpty());
         CHECK(e.layer(vi)->mapping == before);
         CHECK(paramOf(e.layerJson(vi), "play_mode").isString() && e.layer(vi)->extraParams.isEmpty());
+        e.layer(vi)->extraParams = QJsonObject{{"speed", -1.0}}; // kept from a missing file: not for another media
+        CHECK(e.setLayerImage(vi, root + "/media/bars.png", &err) && e.layer(vi)->extraParams.isEmpty());
         CHECK(e.binItems().contains(tmp + "/clip_moved.mp4"));
         QFile::remove(tmp + "/clip_moved.mp4");
         VideoDecoder::Info info;
@@ -3199,6 +3201,12 @@ int main(int argc, char **argv)
             CHECK(std::abs(paramOf(j, "in").toDouble() - 1.5) < 1e-9 && std::abs(paramOf(j, "out").toDouble() - 2.5) < 1e-9);
             CHECK(e.setLayerAudio(a2, root + "/media/tone.wav", &err)); // a new media is played whole
             CHECK(e.layer(a2)->inPoint == 0 && e.layer(a2)->outPoint < 0);
+            CHECK(paramOf(e.layerJson(a2), "out").toDouble() == -1.0); // to its end, whatever its length
+            {
+                Engine::Lock lk(&e.mutex());
+                const Parameter *in = e.layer(a2)->parameter("in");
+                CHECK(in && !in->animatable() && in->info().ramp == ParamInfo::Ramp::Cut); // each change repositions the media
+            }
             e.removeLayer(a2);
         }
         { // Stop: black and silent at the end; One-shot: last frame kept

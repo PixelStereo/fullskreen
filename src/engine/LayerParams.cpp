@@ -21,7 +21,7 @@ std::vector<quint64> keyOf(const Layer &l)
     std::vector<quint64> k{quint64(l.type),       quint64(l.hasTransport()), quint64(bool(l.audio)), quint64(l.isViewport),
                            quint64(l.isGroup),    quint64(c.width()),        quint64(c.height()),
                            quint64(quintptr(l.generator.get())), quint64(l.effects.size()),
-                           quint64(std::llround(l.duration() * 1000))};
+                           quint64(std::llround(l.duration() * 1000)), quint64(l.hasPicture())};
     auto inputs = [&k](const IsfInstance *i) {
         if (!i) return;
         k.push_back(quint64(i->isValid()));
@@ -221,14 +221,19 @@ const std::vector<Parameter *> &Layer::parameters()
             .byDefault(playModeKey(PlayMode::Loop))
             .bind([self] { return QVariant(playModeKey(self->mode)); },
                   [self](const QVariant &v) { self->setPlayMode(playModeFromKey(v.toString())); });
-        // The played range, in seconds (out: the end of the media unless set)
-        const double d = std::max(0.0, duration());
-        num("in", "Source › In (s)", 0, d, 0.0, [self] { return self->inPoint; },
+        // The played range, in seconds (out −1: the end of the media, whatever its length); set at once, not faded or
+        // animated (each change repositions the media)
+        const double d = std::max(0.0, duration()), hi = d > 0 ? d : 1e9;
+        num("in", "Source › In (s)", 0, hi, 0.0, [self] { return self->inPoint; },
             [self](double v) { self->setInOut(v, self->outPoint); })
-            .step(0.01);
-        num("out", "Source › Out (s)", 0, d, d, [self] { return self->outPoint < 0 ? self->duration() : self->outPoint; },
-            [self](double v) { self->setInOut(self->inPoint, v); })
-            .step(0.01);
+            .step(0.01)
+            .ramp(Parameter::Ramp::Cut)
+            .animatable(false);
+        num("out", "Source › Out (s)", -1, hi, -1.0, [self] { return self->outPoint; },
+            [self](double v) { self->setInOut(self->inPoint, v < 0 ? -1.0 : v); })
+            .step(0.01)
+            .ramp(Parameter::Ramp::Cut)
+            .animatable(false);
     }
 
     // Text generator
@@ -297,7 +302,7 @@ const std::vector<Parameter *> &Layer::parameters()
         textNum("text/line_height", "Text › Line Height", 0.5, 3, 0.1, 10, def.lineHeight, &TextSource::lineHeight);
         textNum("text/letter_spacing", "Text › Letter Spacing (px)", -20, 100, -200, 500, def.letterSpacing, &TextSource::letterSpacing)
             .step(0.5);
-        textNum("text/outline", "Text › Outline (px)", 0, 40, 0, 200, def.outline, &TextSource::outline).step(0.5);
+        textNum("text/outline/width", "Text › Outline (px)", 0, 40, 0, 200, def.outline, &TextSource::outline).step(0.5);
         flag("text/shadow/enable", "Text › Shadow", def.shadow, &text.shadow);
         textNum("text/shadow/x", "Text › Shadow X (px)", -100, 100, -2000, 2000, def.shadowX, &TextSource::shadowX).step(1);
         textNum("text/shadow/y", "Text › Shadow Y (px)", -100, 100, -2000, 2000, def.shadowY, &TextSource::shadowY).step(1);
@@ -360,6 +365,7 @@ Parameter *Layer::parameter(const QString &path)
 
 void Layer::setSpeed(double v)
 {
+    if (v == speed) return;
     const int d = v < 0 ? -1 : v > 0 ? 1 : dir;
     const double pos = position();
     speed = v;
@@ -368,6 +374,7 @@ void Layer::setSpeed(double v)
 
 void Layer::setPlayMode(PlayMode m)
 {
+    if (m == mode) return; // as it is (a Stop layer that ended stays so)
     const double pos = position();
     mode = m;
     ended = false;

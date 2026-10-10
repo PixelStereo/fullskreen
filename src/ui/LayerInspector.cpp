@@ -754,7 +754,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         });
 
         // Outline
-        const auto ol = limitsOf(QStringLiteral("text/outline"), 0, 200);
+        const auto ol = limitsOf(QStringLiteral("text/outline/width"), 0, 200);
         auto *outline = spin(s.text.outline, ol.first, ol.second, 0.5, 1, QStringLiteral(" px"));
         auto *outlineRow = new QHBoxLayout;
         outlineRow->addWidget(outline);
@@ -773,12 +773,12 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
 
         for (auto [field, path] : std::initializer_list<std::pair<QWidget *, const char *>>{
                  {size, "text/size"}, {lineSp, "text/line_height"},
-                 {letterSp, "text/letter_spacing"}, {outline, "text/outline"}})
+                 {letterSp, "text/letter_spacing"}, {outline, "text/outline/width"}})
             m_animate->attach(field, {QString::fromLatin1(path)});
         m_animate->attach(fmt->labelForField(colorRow), {QStringLiteral("text/size")});
         m_animate->attach(fmt->labelForField(lineSp), {QStringLiteral("text/line_height")});
         m_animate->attach(fmt->labelForField(letterSp), {QStringLiteral("text/letter_spacing")});
-        m_animate->attach(fmt->labelForField(outlineRow), {QStringLiteral("text/outline")});
+        m_animate->attach(fmt->labelForField(outlineRow), {QStringLiteral("text/outline/width")});
 
         // Shadow
         auto *shadow = new FlagBox(QStringLiteral("Enable"));
