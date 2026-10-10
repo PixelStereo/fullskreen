@@ -30,7 +30,7 @@ jobs:
           xvfb-run -a ./build/fulskrin_tests --check-isf isf
 
   macos:
-    name: macOS (Apple Silicon)
+    name: macOS (Apple Silicon) + tests
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +40,12 @@ jobs:
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
           cmake --build build -j4
+          cmake --build build --target fulskrin_tests -j4
+      - name: Engine tests
+        run: |
+          sh test/make_media.sh
+          ./build/fulskrin_tests
+          ./build/fulskrin_tests --check-isf isf
       - name: Package .app
         run: |
           "$(brew --prefix qt)/bin/macdeployqt" build/Fulskrin.app
@@ -50,7 +56,7 @@ jobs:
           path: Fulskrin-macos.zip
 
   windows:
-    name: Windows (MSVC 2022)
+    name: Windows (MSVC 2022) + tests
     runs-on: windows-2022
     env:
       FFMPEG_ZIP: ffmpeg-n8.1-latest-win64-lgpl-shared-8.1
@@ -72,6 +78,26 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="C:\ffmpeg\$env:FFMPEG_ZIP"
           cmake --build build
+          cmake --build build --target fulskrin_tests
+      # The test media need encoders the LGPL libraries leave out (x264): made with a GPL ffmpeg program, used only here
+      - name: Test media
+        shell: bash
+        run: |
+          curl -sSL -o ffmpeg-gpl.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-8.1.zip"
+          unzip -q ffmpeg-gpl.zip -d /c/ffmpeg-gpl
+          export PATH="$(ls -d /c/ffmpeg-gpl/*/bin):$PATH"
+          sh test/make_media.sh
+      # No GPU on the runner: Qt's software OpenGL (Mesa llvmpipe, opengl32sw.dll)
+      - name: Engine tests
+        shell: pwsh
+        env:
+          QT_OPENGL: software
+        run: |
+          $env:PATH = "C:\ffmpeg\$env:FFMPEG_ZIP\bin;$env:PATH"
+          .\build\fulskrin_tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\build\fulskrin_tests.exe --check-isf isf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package
         shell: pwsh
         run: |
