@@ -15,7 +15,11 @@ class ParamPanel : public QWidget
 {
     Q_OBJECT
 public:
-    ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QWidget *parent = nullptr);
+    // What it leaves to its host: the shader's speed (a generator's is shown above the layer's tabs), the Reset to
+    // Defaults button (the host places it, and calls resetToDefaults)
+    enum Option { NoSpeed = 1, NoReset = 2 };
+    ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, int options = 0, QWidget *parent = nullptr);
+    void resetToDefaults(); // every input back to its default: one undo step
 
     // Shows the current values (a snapshot fading them, OSC), except in the field being edited
     void refresh();

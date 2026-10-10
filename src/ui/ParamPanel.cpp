@@ -46,7 +46,7 @@ void ParamPanel::setValue(int input, const QString &label, const std::function<v
     m_undo->push(new cmd::SetParam(m_engine, m_layer, m_slot, input, before, after, label));
 }
 
-ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QWidget *parent)
+ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, int options, QWidget *parent)
     : QWidget(parent), m_engine(engine), m_undo(undo), m_layer(layer), m_slot(slot)
 {
     // Copy metadata and values under the lock: widgets are then built without blocking rendering.
@@ -74,7 +74,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
     }
 
     // Speed of TIME, for every shader (TIME goes on from where it is: no jump)
-    {
+    if (!(options & NoSpeed)) {
         double speed = 1.0;
         {
             Engine::Lock lk(&engine->mutex());
@@ -305,10 +305,18 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
         m_rows.push_back({in.name, {name, field}, pointX, pointY});
     }
 
-    auto *reset = new QPushButton(QStringLiteral("Reset to Defaults"));
-    reset->setFlat(true);
-    reset->setStyleSheet("color:#aaa; text-align:left;");
-    connect(reset, &QPushButton::clicked, this, [this] {
+    if (!(options & NoReset)) {
+        auto *reset = new QPushButton(QStringLiteral("Reset to Defaults"));
+        reset->setFlat(true);
+        reset->setStyleSheet("color:#aaa; text-align:left;");
+        connect(reset, &QPushButton::clicked, this, &ParamPanel::resetToDefaults);
+        form->addRow(reset);
+    }
+}
+
+void ParamPanel::resetToDefaults()
+{
+    {
         // A single undo step for all parameters
         std::vector<std::pair<IsfValue, IsfValue>> changes;
         std::vector<QString> labels;
@@ -334,8 +342,7 @@ ParamPanel::ParamPanel(Engine *engine, QUndoStack *undo, int layer, int slot, QW
                                                labels[k]));
         m_undo->endMacro();
         emit rebuildRequested();
-    });
-    form->addRow(reset);
+    }
 }
 
 void ParamPanel::attachAnimate(AnimateMenu *menu)

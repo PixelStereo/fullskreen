@@ -1,6 +1,7 @@
 #include "LayerInspector.h"
 #include "Commands.h"
 #include "Engine.h"
+#include "LayerTable.h"
 #include "ParamAnimPanel.h"
 #include "ParamPanel.h"
 #include "SettingsPanel.h"
@@ -81,6 +82,8 @@ struct LayerValues {
     AudioStream::Info audio;
     bool hasGenerator = false;
     int genW = 0, genH = 0;
+    double genSpeed = 1;
+    int srcW = 0, srcH = 0; // an image's
     // Another layer as the source, and the layers that could be chosen (id, name; cycles left out)
     quint64 sourceLayer = 0;
     LayerTap sourceTap = LayerTap::PostFx;
@@ -147,6 +150,9 @@ struct LayerValues {
         s.hasGenerator = l->generator != nullptr;
         s.genW = l->genWidth;
         s.genH = l->genHeight;
+        s.genSpeed = l->generator ? l->generator->speed : 1.0;
+        s.srcW = l->srcWidth;
+        s.srcH = l->srcHeight;
         s.sourceLayer = l->sourceLayer;
         s.sourceTap = l->sourceTap;
         s.transition = l->transition;
@@ -219,7 +225,8 @@ namespace {
 class DropZone : public QLabel
 {
 public:
-    std::function<void(const QString &)> onDrop;
+    std::function<void(const QString &)> onDrop; // a file
+    std::function<void(int)> onLayer;           // a layer dragged from the list (its row)
     explicit DropZone(const QString &text) : QLabel(text)
     {
         setAcceptDrops(true);
@@ -228,15 +235,39 @@ public:
         setMinimumHeight(64);
         setHover(false);
     }
+    // Loaded: it stands out (a filled, framed card), empty: a dashed outline; missing: in red
+    void setLoaded(bool on, bool missing = false)
+    {
+        m_loaded = on;
+        m_missing = missing;
+        setHover(false);
+    }
 
 protected:
     void setHover(bool on)
     {
-        setStyleSheet(on ? QStringLiteral("QLabel { border:2px dashed %1; border-radius:6px; background:%2;"
-                                          " color:%3; padding:8px; }")
-                               .arg(theme::css(), theme::css(40), theme::accent().lighter(130).name())
-                         : QStringLiteral("QLabel { border:2px dashed #55555c; border-radius:6px; "
-                                          "color:#9a9aa0; padding:8px; }"));
+        if (on)
+            setStyleSheet(QStringLiteral("QLabel { border:2px dashed %1; border-radius:6px; background:%2;"
+                                         " color:%3; padding:8px; }")
+                              .arg(theme::css(), theme::css(40), theme::accent().lighter(130).name()));
+        else if (m_missing)
+            setStyleSheet(QStringLiteral("QLabel { border:2px solid #b4483c; border-radius:6px; background:#3a2422;"
+                                         " color:#ffb4a8; padding:8px; }"));
+        else if (m_loaded)
+            setStyleSheet(QStringLiteral("QLabel { border:2px solid %1; border-radius:6px; background:%2;"
+                                         " color:#f4f4f6; padding:8px; }")
+                              .arg(theme::css(), theme::css(55)));
+        else
+            setStyleSheet(QStringLiteral("QLabel { border:2px dashed #55555c; border-radius:6px; "
+                                         "color:#9a9aa0; padding:8px; }"));
+    }
+    bool m_loaded = false, m_missing = false;
+    static int layerRow(const QMimeData *m)
+    {
+        if (!m->hasFormat(kLayerRowsMime)) return -1;
+        bool ok = false;
+        const int row = m->data(kLayerRowsMime).split(',').value(0).toInt(&ok);
+        return ok ? row : -1;
     }
     static QString firstFile(const QMimeData *m)
     {
@@ -246,7 +277,7 @@ protected:
     }
     void dragEnterEvent(QDragEnterEvent *e) override
     {
-        if (firstFile(e->mimeData()).isEmpty()) return e->ignore();
+        if (firstFile(e->mimeData()).isEmpty() && (layerRow(e->mimeData()) < 0 || !onLayer)) return e->ignore();
         setHover(true);
         e->acceptProposedAction();
     }
@@ -255,8 +286,10 @@ protected:
     {
         setHover(false);
         const QString f = firstFile(e->mimeData());
+        const int row = layerRow(e->mimeData());
         e->acceptProposedAction();
         if (!f.isEmpty() && onDrop) onDrop(f);
+        else if (row >= 0 && onLayer) onLayer(row);
     }
 };
 
@@ -458,10 +491,13 @@ void LayerInspector::rebuild()
                                        "QTabBar::tab:hover:!selected { background:#313136; color:#d8d8dc; }"
                                        "QTabBar::tab:disabled { color:#55555a; }")
                             .arg(theme::css()));
+    const bool hasSource = !s.isGroup && !s.isViewport;
+    if (hasSource) tabs->addTab(page(buildSourceTab(s)), QStringLiteral("Source"));
     tabs->addTab(page(buildRoi(s)), QStringLiteral("ROI"));
     tabs->addTab(page(buildColor(s)), QStringLiteral("Color"));
     tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
     tabs->addTab(page(buildEffects(s)), QStringLiteral("FX"));
+    if (!s.isViewport) tabs->addTab(page(buildViewports(s)), QStringLiteral("Viewports"));
     m_anims = new ParamAnimPanel(m_engine, m_undo, s.id);
     connect(m_anims, &ParamAnimPanel::projectEdited, this, &LayerInspector::projectEdited);
     {
@@ -473,6 +509,7 @@ void LayerInspector::rebuild()
         tabs->setTabToolTip(m_animTab, QStringLiteral("The animations of this layer's numbers (right-click a parameter › Animate)"));
     }
     m_output = nullptr;
+    if (s.isViewport) m_routeFields.clear();
     if (s.isViewport) { // its size, screen and publishing
         m_output = new ViewportOutputPanel(m_engine, s.id);
         connect(m_output, &ViewportOutputPanel::edited, this, &LayerInspector::projectEdited);
@@ -481,18 +518,28 @@ void LayerInspector::rebuild()
     }
     lockInputs(tabs, m_locked);
     name->setEnabled(!m_locked);
-    if (s.type == SourceType::Audio) { // a sound has no picture: no ROI, color, mapping or effects
+    if (s.type == SourceType::Audio) { // a sound has no picture: no ROI, color, mapping, effects or routing
         for (int t = 0; t < tabs->count(); ++t) {
-            if (t == m_animTab) continue; // its volume and speed can be animated
+            if (t == m_animTab || tabs->tabText(t) == QLatin1String("Source")) continue; // its transport, volume, speed
             tabs->setTabEnabled(t, false);
             tabs->setTabToolTip(t, QStringLiteral("An audio layer has no picture"));
         }
     }
     m_tabs = tabs;
-    if (!m_revealAnim.isEmpty()) m_subTab = m_animTab;
-    tabs->setCurrentIndex(tabs->isTabEnabled(m_subTab) ? m_subTab : m_animTab);
+    // The tab shown last, by its name (the tabs differ from one kind of layer to the next)
+    int current = -1;
+    for (int t = 0; t < tabs->count(); ++t)
+        if (tabs->tabText(t).section(' ', 0, 0) == m_subTab && tabs->isTabEnabled(t)) current = t;
+    if (!m_revealAnim.isEmpty() || current < 0) current = m_animTab;
+    if (current == m_animTab && m_revealAnim.isEmpty() && m_subTab != QLatin1String("Anim"))
+        for (int t = 0; t < tabs->count(); ++t) // its first tab that can be used
+            if (tabs->isTabEnabled(t)) {
+                current = t;
+                break;
+            }
+    tabs->setCurrentIndex(current);
     connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int i) {
-        if (tabs->isTabEnabled(i)) m_subTab = i;
+        if (tabs->isTabEnabled(i)) m_subTab = tabs->tabText(i).section(' ', 0, 0);
     });
     v->addWidget(tabs, 1);
     if (!m_revealAnim.isEmpty()) {
@@ -500,6 +547,26 @@ void LayerInspector::rebuild()
         m_revealAnim.clear();
     }
     refreshDynamic();
+}
+
+// The picture of the layer at `row` as this one's source (dropped from the list onto the source)
+void LayerInspector::useLayer(int row, const std::vector<std::pair<quint64, QString>> &candidates)
+{
+    const quint64 id = m_engine->layerId(row);
+    if (!id || row == m_layer) return;
+    const bool allowed = std::any_of(candidates.begin(), candidates.end(), [id](const auto &c) { return c.first == id; });
+    if (!allowed) {
+        QMessageBox::warning(this, QStringLiteral("Source"),
+                             QStringLiteral("This layer cannot be used here: its picture would feed back on itself."));
+        return;
+    }
+    QString err;
+    bool ok = false;
+    editSource(QStringLiteral("Use Layer as Source"),
+               [this, id, &err, &ok] { ok = m_engine->setLayerSourceLayer(m_layer, id, LayerTap::PostFx, &err); });
+    if (!ok && !err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Source"), err);
+    emit layerChanged();
+    rebuild();
 }
 
 QWidget *LayerInspector::buildSource(const LayerValues &s)
@@ -529,34 +596,77 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         return g;
     }
 
-    QString desc;
+    // What feeds it, in the drop zone: its kind, its name and what it is (resolution, rate, length, codec), or that it is
+    // empty. A file dropped there (Media Bin, Finder) replaces it; a layer dragged from the list becomes its source.
+    QString kind, name, details;
+    auto audioText = [](const AudioStream::Info &a) {
+        const QString ch = a.channels == 1 ? QStringLiteral("mono") : a.channels == 2 ? QStringLiteral("stereo")
+                                                                                        : QStringLiteral("%1 ch").arg(a.channels);
+        return QStringLiteral("%1 · %2 kHz · %3").arg(a.codec).arg(a.sampleRate / 1000.0, 0, 'g', 3).arg(ch);
+    };
+    QStringList d;
     switch (s.type) {
-    case SourceType::Video: desc = QStringLiteral("Video — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
-    case SourceType::Image: desc = QStringLiteral("Image — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
-    case SourceType::Isf: desc = QStringLiteral("ISF Generator — %1").arg(QFileInfo(s.sourcePath).completeBaseName()); break;
-    case SourceType::Audio: desc = QStringLiteral("Audio — %1").arg(QFileInfo(s.sourcePath).fileName()); break;
-    case SourceType::Text: desc = QStringLiteral("Text"); break;
+    case SourceType::Video:
+        kind = QStringLiteral("Video");
+        name = QFileInfo(s.sourcePath).fileName();
+        d << QStringLiteral("%1 × %2").arg(s.videoW).arg(s.videoH) << QStringLiteral("%1 fps").arg(s.fps, 0, 'f', 2)
+          << fmtTime(s.duration) << s.codec << (s.hasAudio ? QStringLiteral("sound: ") + audioText(s.audio) : QStringLiteral("no sound"));
+        break;
+    case SourceType::Audio:
+        kind = QStringLiteral("Sound");
+        name = QFileInfo(s.sourcePath).fileName();
+        d << fmtTime(s.duration) << audioText(s.audio);
+        break;
+    case SourceType::Image:
+        kind = QStringLiteral("Image");
+        name = QFileInfo(s.sourcePath).fileName();
+        d << QStringLiteral("%1 × %2").arg(s.srcW).arg(s.srcH);
+        break;
+    case SourceType::Isf:
+        kind = QStringLiteral("ISF Generator");
+        name = QFileInfo(s.sourcePath).completeBaseName();
+        d << QStringLiteral("%1 × %2").arg(s.genW).arg(s.genH);
+        break;
+    case SourceType::Text:
+        kind = QStringLiteral("Text");
+        name = s.text.content.section('\n', 0, 0).left(40);
+        d << QStringLiteral("%1 × %2").arg(s.text.width).arg(s.text.height);
+        break;
     case SourceType::Layer: {
-        QString from = QStringLiteral("(gone)");
+        kind = QStringLiteral("Layer");
+        name = QStringLiteral("(gone)");
         for (const auto &c : s.candidates)
-            if (c.first == s.sourceLayer) from = c.second;
-        desc = QStringLiteral("Layer — %1, %2").arg(from, s.sourceTap == LayerTap::PreFx ? QStringLiteral("pre-FX") : QStringLiteral("post-FX"));
+            if (c.first == s.sourceLayer) name = c.second;
+        d << (s.sourceTap == LayerTap::PreFx ? QStringLiteral("before its FX") : QStringLiteral("after its FX"));
         break;
     }
-    default: desc = QStringLiteral("No source"); break;
+    default:
+        if (!s.sourcePath.isEmpty()) { // its file is missing
+            kind = QStringLiteral("Missing");
+            name = QFileInfo(s.sourcePath).fileName();
+        }
+        break;
     }
-
-    // Drop zone: the current media, replaced by whatever is dropped (Media Bin, Finder). × ejects it.
-    const bool loaded = s.type != SourceType::None;
+    d.removeAll(QString());
+    details = d.join(QStringLiteral(" · "));
+    const bool loaded = !kind.isEmpty();
     auto *zoneRow = new QHBoxLayout;
-    auto *zone = new DropZone(loaded ? QStringLiteral("<b>%1</b><br><span style='font-size:11px'>Drop another media here to replace it</span>")
-                                           .arg(desc.toHtmlEscaped())
-                                     : QStringLiteral("Drop a video, image, sound or ISF generator here<br>"
-                                                      "<span style='font-size:11px'>from the Media Bin or the Finder</span>"));
+    auto *zone = new DropZone(loaded ? QStringLiteral("<span style='font-size:11px; letter-spacing:1px'>%1</span><br>"
+                                                      "<b style='font-size:14px'>%2</b><br>"
+                                                      "<span style='font-size:11px'>%3</span>")
+                                           .arg(kind.toUpper().toHtmlEscaped(), name.toHtmlEscaped(), details.toHtmlEscaped())
+                                     : QStringLiteral("<b>Empty layer</b><br><span style='font-size:11px'>Drop a video, image, "
+                                                      "sound or ISF generator here (Media Bin, Finder), or a layer from the list</span>"));
     zone->setTextFormat(Qt::RichText);
-    zone->setToolTip(s.sourcePath.isEmpty() ? QStringLiteral("Video, image, audio file or ISF generator") : s.sourcePath);
-    zone->onDrop = [this](const QString &f) { emit fileDropped(f); };
-    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Eject the media from the layer"));
+    zone->setLoaded(loaded, s.type == SourceType::None && loaded); // a missing file: in red
+    zone->setToolTip(s.sourcePath.isEmpty() ? QStringLiteral("Drop a file, or a layer from the list (its picture becomes this one's)")
+                                            : s.sourcePath + QStringLiteral("\nDrop another media or a layer to replace it"));
+    zone->onDrop = [this](const QString &f) { QTimer::singleShot(0, this, [this, f] { emit fileDropped(f); }); };
+    zone->onLayer = [this, candidates = s.candidates](int row) {
+        // After the drag is over (the zone is rebuilt with the inspector)
+        QTimer::singleShot(0, this, [this, candidates, row] { useLayer(row, candidates); });
+    };
+    auto *bClear = toolButton(QStringLiteral("×"), QStringLiteral("Eject the source from the layer"));
     bClear->setEnabled(loaded || s.error.size());
     zoneRow->addWidget(zone, 1);
     zoneRow->addWidget(bClear, 0, Qt::AlignTop);
@@ -566,6 +676,133 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         emit layerChanged();
         rebuild();
     });
+    if (!s.error.isEmpty()) v->addWidget(errorLabel(s.error));
+
+    // Transition when a snapshot gives this layer another source
+    {
+        auto *row = new QHBoxLayout;
+        auto *label = new ResetLabel(QStringLiteral("Transition"), [this] {
+            setProp(cmd::SetLayerProp::Transition, QString());
+            rebuild();
+        });
+        auto *pick = new QComboBox;
+        const QString def = m_engine->defaultTransition();
+        pick->addItem(QStringLiteral("Default (%1)").arg(def.isEmpty() ? QStringLiteral("Crossfade")
+                                                                      : QFileInfo(def).completeBaseName()),
+                      QString());
+        for (const IsfEntry &t : m_engine->library().transitions()) {
+            pick->addItem(t.name, t.path);
+            pick->setItemData(pick->count() - 1, t.description, Qt::ToolTipRole);
+        }
+        int k = pick->findData(s.transition);
+        if (k < 0 && !s.transition.isEmpty()) { // not in the library (any more): kept, shown by its name
+            pick->addItem(QFileInfo(s.transition).completeBaseName(), s.transition);
+            k = pick->count() - 1;
+        }
+        pick->setCurrentIndex(std::max(0, k));
+        pick->setToolTip(QStringLiteral("When a snapshot gives this layer another source, the outgoing one keeps playing and "
+                                        "this ISF transition takes it to the new one, over the snapshot's fade "
+                                        "(or the time the snapshot gives the source)"));
+        row->addWidget(label);
+        row->addWidget(pick, 1);
+        v->addLayout(row);
+        connect(pick, &QComboBox::activated, this,
+                [this, pick](int i) { setProp(cmd::SetLayerProp::Transition, pick->itemData(i).toString()); });
+    }
+
+
+    // Its speed: the media's (below 0 backwards), or the pace of the generator's time; a click on its name puts it back
+    if ((s.type == SourceType::Video && s.hasVideo) || (s.type == SourceType::Audio && s.hasAudio)) {
+        auto *row = new QHBoxLayout;
+        m_speed = new SliderField;
+        m_speed->setRange(-200, 200);      // the bar: the speeds actually used
+        m_speed->setTypedRange(-800, 800); // faster or more backwards: typed
+        m_speed->setDecimals(0);
+        m_speed->setSuffix(QStringLiteral(" %"));
+        m_speed->setSingleStep(5);
+        m_speed->setOrigin(0); // the fill grows either side of a standstill
+        m_speed->setTicks(8);
+        m_speed->setSnaps({-200, -100, 0, 100, 200});
+        m_speed->setValue(s.speed * 100);
+        m_speed->setToolTip(QStringLiteral("Playback speed — below 0 the media plays backwards, 100 % is its own rate"));
+        auto *label = new ResetLabel(QStringLiteral("Speed"), [this] {
+            setProp(cmd::SetLayerProp::Speed, 1.0);
+            m_speed->setValue(100);
+        });
+        m_animate->attach({label, m_speed}, {QStringLiteral("speed")});
+        row->addWidget(label);
+        row->addWidget(m_speed, 1);
+        v->addLayout(row);
+        connect(m_speed, &SliderField::valueEdited, this, [this](double pct) {
+            setProp(cmd::SetLayerProp::Speed, pct / 100.0);
+            emit layerChanged();
+        });
+    } else if (s.type == SourceType::Isf && s.hasGenerator) {
+        auto *row = new QHBoxLayout;
+        m_genSpeed = new SliderField;
+        m_genSpeed->setRange(0, 10);
+        m_genSpeed->setDecimals(2);
+        m_genSpeed->setSingleStep(0.05);
+        m_genSpeed->setTicks(10);
+        m_genSpeed->setSnaps({1});
+        m_genSpeed->setValue(s.genSpeed);
+        m_genSpeed->setToolTip(QStringLiteral("Speed of the shader's time (1 = normal, 0 = stopped)"));
+        auto setSpeed = [this](double v) {
+            double before = 1.0;
+            {
+                Engine::Lock lk(&m_engine->mutex());
+                IsfInstance *inst = cmd::resolveIsf(m_engine, m_layer, -1);
+                if (!inst) return;
+                before = inst->speed;
+            }
+            if (std::abs(before - v) > 1e-9) m_undo->push(new cmd::SetIsfSpeed(m_engine, m_layer, -1, before, v));
+        };
+        auto *label = new ResetLabel(QStringLiteral("Speed"), [this, setSpeed] {
+            m_genSpeed->setValue(1);
+            setSpeed(1);
+        });
+        m_animate->attach({label, m_genSpeed}, {QStringLiteral("speed")});
+        row->addWidget(label);
+        row->addWidget(m_genSpeed, 1);
+        v->addLayout(row);
+        connect(m_genSpeed, &SliderField::valueEdited, this, setSpeed);
+    }
+    return g;
+}
+
+// The Source tab: what the source is made of and how it plays — the media's transport and sound, the generator's
+// parameters and resolution, the text and its style, the tap of a layer used as the source
+QWidget *LayerInspector::buildSourceTab(const LayerValues &s)
+{
+    auto *g = new QWidget;
+    auto *v = new QVBoxLayout(g);
+    v->setContentsMargins(0, 0, 0, 0);
+
+    if (s.type == SourceType::Layer) {
+        auto *row = new QHBoxLayout;
+        auto *tap = new QComboBox;
+        tap->addItem(QStringLiteral("Pre-FX"), int(LayerTap::PreFx));
+        tap->addItem(QStringLiteral("Post-FX"), int(LayerTap::PostFx));
+        tap->setCurrentIndex(s.sourceTap == LayerTap::PreFx ? 0 : 1);
+        tap->setToolTip(QStringLiteral("Where the picture is taken in that layer:\n"
+                                       "Pre-FX — after its ROI and color, before its FX\n"
+                                       "Post-FX — after its FX"));
+        auto setTap = [this](LayerTap t) {
+            editSource(QStringLiteral("Change Source Tap"), [this, t] { m_engine->setLayerTap(m_layer, t); });
+            emit layerChanged();
+            QMetaObject::invokeMethod(this, &LayerInspector::rebuild, Qt::QueuedConnection);
+        };
+        row->addWidget(new ResetLabel(QStringLiteral("Tap"), [setTap] { setTap(LayerTap::PostFx); }));
+        row->addWidget(tap, 1);
+        v->addLayout(row);
+        connect(tap, &QComboBox::activated, this, [tap, setTap](int i) { setTap(LayerTap(tap->itemData(i).toInt())); });
+        auto *hint = new QLabel(QStringLiteral("To use another layer, drag it from the list onto the source above, or "
+                                               "right-click it › Load into Layer."));
+        hint->setWordWrap(true);
+        hint->setStyleSheet("color:#888; font-size:11px;");
+        v->addWidget(hint);
+        return g;
+    }
 
     // Text generator: the text typed here, and how it is set
     if (s.type == SourceType::Text) {
@@ -820,128 +1057,22 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         return g;
     }
 
-    // Or the picture of another layer, tapped before or after its effect chain
-    {
-        auto *row = new QHBoxLayout;
-        auto *pick = new QComboBox;
-        pick->setToolTip(QStringLiteral("Use the picture of another layer as this layer's source"));
-        pick->addItem(QStringLiteral("Use a layer…"), QVariant(qulonglong(0)));
-        int current = 0;
-        for (const auto &c : s.candidates) {
-            pick->addItem(c.second, QVariant(qulonglong(c.first)));
-            if (s.type == SourceType::Layer && c.first == s.sourceLayer) current = pick->count() - 1;
-        }
-        pick->setCurrentIndex(current);
-        auto *tap = new QComboBox;
-        tap->addItem(QStringLiteral("Pre-FX"), int(LayerTap::PreFx));
-        tap->addItem(QStringLiteral("Post-FX"), int(LayerTap::PostFx));
-        tap->setCurrentIndex(s.sourceTap == LayerTap::PreFx ? 0 : 1);
-        tap->setToolTip(QStringLiteral("Where the picture is taken in that layer:\n"
-                                       "Pre-FX — after its ROI and color, before its FX\n"
-                                       "Post-FX — after its FX"));
-        tap->setEnabled(s.type == SourceType::Layer);
-        row->addWidget(pick, 1);
-        row->addWidget(tap, 0);
-        v->addLayout(row);
-        connect(pick, &QComboBox::activated, this, [this, pick, tap](int i) {
-            const quint64 id = pick->itemData(i).toULongLong();
-            if (!id) return;
-            const LayerTap t = LayerTap(tap->currentData().toInt());
-            QString err;
-            bool ok = false;
-            editSource(QStringLiteral("Use Layer as Source"),
-                       [this, id, t, &err, &ok] { ok = m_engine->setLayerSourceLayer(m_layer, id, t, &err); });
-            if (!ok && !err.isEmpty()) QMessageBox::warning(this, QStringLiteral("Source"), err);
-            emit layerChanged();
-            rebuild();
-        });
-        connect(tap, &QComboBox::activated, this, [this, tap](int i) {
-            editSource(QStringLiteral("Change Source Tap"),
-                       [this, tap, i] { m_engine->setLayerTap(m_layer, LayerTap(tap->itemData(i).toInt())); });
-            emit layerChanged();
-            rebuild();
-        });
-        if (s.candidates.empty()) {
-            pick->setEnabled(false);
-            pick->setToolTip(QStringLiteral("No other layer can be used here without the picture feeding back on itself"));
-        }
-    }
-
-    // Transition when a snapshot gives this layer another source
-    {
-        auto *row = new QHBoxLayout;
-        auto *label = new ResetLabel(QStringLiteral("Transition"), [this] {
-            setProp(cmd::SetLayerProp::Transition, QString());
-            rebuild();
-        });
-        auto *pick = new QComboBox;
-        const QString def = m_engine->defaultTransition();
-        pick->addItem(QStringLiteral("Default (%1)").arg(def.isEmpty() ? QStringLiteral("Crossfade")
-                                                                      : QFileInfo(def).completeBaseName()),
-                      QString());
-        for (const IsfEntry &t : m_engine->library().transitions()) {
-            pick->addItem(t.name, t.path);
-            pick->setItemData(pick->count() - 1, t.description, Qt::ToolTipRole);
-        }
-        int k = pick->findData(s.transition);
-        if (k < 0 && !s.transition.isEmpty()) { // not in the library (any more): kept, shown by its name
-            pick->addItem(QFileInfo(s.transition).completeBaseName(), s.transition);
-            k = pick->count() - 1;
-        }
-        pick->setCurrentIndex(std::max(0, k));
-        pick->setToolTip(QStringLiteral("When a snapshot gives this layer another source, the outgoing one keeps playing and "
-                                        "this ISF transition takes it to the new one, over the snapshot's fade "
-                                        "(or the time the snapshot gives the source)"));
-        row->addWidget(label);
-        row->addWidget(pick, 1);
-        v->addLayout(row);
-        connect(pick, &QComboBox::activated, this,
-                [this, pick](int i) { setProp(cmd::SetLayerProp::Transition, pick->itemData(i).toString()); });
-    }
-
-    if (!s.error.isEmpty()) v->addWidget(errorLabel(s.error));
-
-    auto audioText = [](const AudioStream::Info &a) {
-        const QString ch = a.channels == 1 ? QStringLiteral("mono") : a.channels == 2 ? QStringLiteral("stereo")
-                                                                                        : QStringLiteral("%1 ch").arg(a.channels);
-        return QStringLiteral("%1 · %2 kHz · %3").arg(a.codec).arg(a.sampleRate / 1000.0, 0, 'g', 3).arg(ch);
-    };
     const bool media = (s.type == SourceType::Video && s.hasVideo) || (s.type == SourceType::Audio && s.hasAudio);
     if (media) {
-        // What the media is
-        auto *facts = new QFormLayout;
-        facts->setContentsMargins(0, 2, 0, 2);
-        facts->setHorizontalSpacing(10);
-        facts->setVerticalSpacing(2);
-        facts->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        auto fact = [&](const QString &name, const QString &value) {
-            auto *k = new QLabel(name);
+        if (s.type == SourceType::Video) { // how the decoded frames reach the GPU: known once they come
+            auto *facts = new QFormLayout;
+            facts->setContentsMargins(0, 2, 0, 2);
+            facts->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            auto *k = new QLabel(QStringLiteral("Picture"));
             k->setStyleSheet("color:#8a8a8e;");
-            auto *val = new QLabel(value);
-            val->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            facts->addRow(k, val);
-            return val;
-        };
-        fact(QStringLiteral("Name"), QFileInfo(s.sourcePath).fileName());
-        if (s.type == SourceType::Video) {
-            fact(QStringLiteral("Resolution"), QStringLiteral("%1 × %2").arg(s.videoW).arg(s.videoH));
-            fact(QStringLiteral("FPS"), QString::number(s.fps, 'f', 2));
-        }
-        fact(QStringLiteral("Duration"), fmtTime(s.duration));
-        m_codecFact = fact(QStringLiteral("Codec"), s.type == SourceType::Video ? s.codec : s.audio.codec);
-        if (s.type == SourceType::Video) {
-            // How the frames reach the GPU: their layout, or HAP's textures, or a conversion on the CPU
-            m_pictureFact = fact(QStringLiteral("Picture"), QStringLiteral("…"));
+            m_pictureFact = new QLabel(QStringLiteral("…"));
+            m_pictureFact->setTextInteractionFlags(Qt::TextSelectableByMouse);
             m_pictureFact->setToolTip(QStringLiteral("How the decoded frames reach the GPU. A pixel layout (yuv420p, nv12, "
                                                      "p010…) or HAP textures are converted by the GPU; \"converted on "
                                                      "the CPU\" or \"decoded on the CPU\" costs processor time."));
-        } else {
-            m_codecFact = nullptr;
+            facts->addRow(k, m_pictureFact);
+            v->addLayout(facts);
         }
-        fact(QStringLiteral("Sound"), s.hasAudio ? audioText(s.audio) : QStringLiteral("none"));
-        v->addLayout(facts);
-        v->addWidget(separator());
-
         auto *grid = new QGridLayout;
         grid->setHorizontalSpacing(8);
         grid->setVerticalSpacing(4);
@@ -1051,7 +1182,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         v->addLayout(grid);
         v->addWidget(separator());
 
-        // Position, speed and played range: one bar each, dragged or typed
+        // Position and played range: one bar each, dragged or typed
         auto *bars = new QGridLayout;
         bars->setHorizontalSpacing(8);
         bars->setVerticalSpacing(4);
@@ -1063,7 +1194,6 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
             bars->addWidget(l, row, 0);
             return l;
         };
-
         m_position = new SliderField;
         m_position->setRange(0, std::max(0.01, s.duration));
         m_position->setDecimals(2);
@@ -1076,22 +1206,6 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         barLabel(0, QStringLiteral("Position"), [this] { m_engine->seekLayer(m_layer, 0); });
         bars->addWidget(m_position, 0, 1);
 
-        m_speed = new SliderField;
-        m_speed->setRange(-200, 200);        // the bar: the speeds actually used
-        m_speed->setTypedRange(-800, 800); // faster or more backwards: typed
-        m_speed->setDecimals(0);
-        m_speed->setSuffix(QStringLiteral(" %"));
-        m_speed->setSingleStep(5);
-        m_speed->setOrigin(0); // the fill grows either side of a standstill
-        m_speed->setTicks(8);
-        m_speed->setSnaps({-200, -100, 0, 100, 200});
-        m_speed->setValue(s.speed * 100);
-        m_speed->setToolTip(QStringLiteral("Playback speed — below 0 the media plays backwards, 100 % is its own rate"));
-        m_animate->attach({barLabel(1, QStringLiteral("Speed"), [this] { setProp(cmd::SetLayerProp::Speed, 1.0); m_speed->setValue(100); }),
-                           m_speed},
-                          {QStringLiteral("speed")});
-        bars->addWidget(m_speed, 1, 1);
-
         m_loop = new RangeField;
         m_loop->setRange(0, std::max(0.01, s.duration));
         m_loop->setDecimals(2);
@@ -1099,14 +1213,14 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         m_loop->setValues(s.inPoint, s.outPoint < 0 ? s.duration : s.outPoint);
         m_loop->setToolTip(QStringLiteral("Played range: playback, loops and ping-pong stay between these two points"));
         const double duration0 = s.duration;
-        barLabel(2, QStringLiteral("Loop"), [this] {
+        barLabel(1, QStringLiteral("Loop"), [this] {
             m_undo->beginMacro(QStringLiteral("Clear In / Out Points"));
             setProp(cmd::SetLayerProp::InPoint, 0.0);
             setProp(cmd::SetLayerProp::OutPoint, -1.0);
             m_undo->endMacro();
             rebuild();
         });
-        bars->addWidget(m_loop, 2, 1);
+        bars->addWidget(m_loop, 1, 1);
         v->addLayout(bars);
 
         // Playback is not a project edit: no undo on play, pause or seek.
@@ -1128,10 +1242,6 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
             emit layerChanged();
         });
         connect(m_position, &SliderField::valueEdited, this, [this](double t) { m_engine->seekLayer(m_layer, t); });
-        connect(m_speed, &SliderField::valueEdited, this, [this](double pct) {
-            setProp(cmd::SetLayerProp::Speed, pct / 100.0);
-            emit layerChanged();
-        });
         connect(m_loop, &RangeField::edited, this, [this, duration0](bool low, double t) {
             setProp(low ? cmd::SetLayerProp::InPoint : cmd::SetLayerProp::OutPoint,
                     low ? t : (t >= duration0 - 1e-6 ? -1.0 : t));
@@ -1179,6 +1289,13 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
     }
 
     if (s.type == SourceType::Isf && s.hasGenerator) {
+        // Its inputs back to their defaults, at the top
+        auto *reset = new QPushButton(QStringLiteral("Reset to Defaults"));
+        reset->setToolTip(QStringLiteral("Every parameter of the shader back to its default value (one undo step)"));
+        auto *resetRow = new QHBoxLayout;
+        resetRow->addWidget(reset);
+        resetRow->addStretch();
+        v->addLayout(resetRow);
         auto *res = new QHBoxLayout;
         auto *w = new IntBox, *h = new IntBox;
         for (auto *sb : {w, h}) {
@@ -1214,11 +1331,17 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
             m_engine->reloadIsf(gen);
             rebuild();
         });
-        auto *params = new ParamPanel(m_engine, m_undo, m_layer, -1);
+        auto *params = new ParamPanel(m_engine, m_undo, m_layer, -1, ParamPanel::NoSpeed | ParamPanel::NoReset);
+        connect(reset, &QPushButton::clicked, params, &ParamPanel::resetToDefaults);
         m_generatorParams = params;
         params->attachAnimate(m_animate);
         connect(params, &ParamPanel::rebuildRequested, this, &LayerInspector::rebuild, Qt::QueuedConnection);
         v->addWidget(params);
+    }
+    if (s.type == SourceType::None) {
+        auto *hint = new QLabel(QStringLiteral("Nothing to set: the layer is empty."));
+        hint->setStyleSheet("color:#888;");
+        v->addWidget(hint);
     }
     return g;
 }
@@ -1494,11 +1617,21 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
     connect(blend, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this, blend](int i) { setProp(cmd::SetLayerProp::Blend, blend->itemData(i).toInt()); });
 
+    return g;
+}
+
+// The viewports it appears in: chosen at the top of the list (a group for everything inside it)
+QWidget *LayerInspector::buildViewports(const LayerValues &s)
+{
     // Viewports it appears in: chosen at the top of the list (a group for everything inside it)
     auto *routes = new QWidget;
     auto *rv = new QVBoxLayout(routes);
     rv->setContentsMargins(0, 0, 0, 0);
-    rv->setSpacing(2);
+    rv->setSpacing(4);
+    auto *intro = new QLabel(QStringLiteral("How much of it each viewport shows (0 hides it). A click on a name shows it fully."));
+    intro->setWordWrap(true);
+    intro->setStyleSheet("color:#888; font-size:11px;");
+    rv->addWidget(intro);
     if (!s.routedBy.isEmpty()) {
         auto *note = new QLabel(QStringLiteral("Routed by its group “%1”.").arg(s.routedBy.toHtmlEscaped()));
         note->setStyleSheet("color:#999;");
@@ -1539,9 +1672,10 @@ QWidget *LayerInspector::buildCompositing(const LayerValues &s)
             *current = after;
         });
     }
-    form->addRow(new QLabel(QStringLiteral("Viewports")), routes);
-    return g;
+    rv->addStretch();
+    return routes;
 }
+
 
 QWidget *LayerInspector::buildMapping(const LayerValues &s)
 {
@@ -2209,6 +2343,15 @@ void LayerInspector::refreshDynamic()
         show(m_opacity, opacity * 100.0);
         show(m_volume, volume * 100.0);
         if (m_generatorParams) m_generatorParams->refresh();
+        if (m_genSpeed) {
+            double gs = 1;
+            {
+                Engine::Lock lk(&m_engine->mutex());
+                Layer *l = m_engine->layer(m_layer);
+                if (l && l->generator) gs = l->generator->speed;
+            }
+            show(m_genSpeed, gs);
+        }
         if (m_effectParams) m_effectParams->refresh();
         for (int side = 0; side < 4; ++side) {
             show(m_softWidth[side], soft.width[side] * 100.0);
@@ -2238,10 +2381,6 @@ void LayerInspector::refreshDynamic()
         speed = l->speed;
         d = l->duration();
         p = l->position();
-        if (l->video && m_codecFact) {
-            const QString codec = l->video->codecName();
-            if (m_codecFact->text() != codec) m_codecFact->setText(codec);
-        }
         if (l->video && m_pictureFact && l->frame.layout && m_pictureFact->text() != l->frame.layout->description)
             m_pictureFact->setText(l->frame.layout->description);
     }

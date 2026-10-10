@@ -57,7 +57,10 @@ signals:
     void kindChanged(const QString &kind); // "Layer", "Group" or "Viewport": the title of the tab
 
 private:
-    QWidget *buildSource(const LayerValues &s);
+    QWidget *buildSource(const LayerValues &s);    // above the tabs: the drop zone, the transition, the speed
+    QWidget *buildSourceTab(const LayerValues &s); // the Source tab
+    QWidget *buildViewports(const LayerValues &s); // the Viewports tab: how much of it each one shows
+    void useLayer(int row, const std::vector<std::pair<quint64, QString>> &candidates); // a layer dropped on the source
     QWidget *buildRoi(const LayerValues &s);
     QWidget *buildColor(const LayerValues &s);
     QWidget *buildCompositing(const LayerValues &s);
@@ -77,7 +80,7 @@ private:
     QUndoStack *m_undo;
     int m_layer = -1;
     int m_selectedEffect = 0;
-    int m_subTab = 0; // ROI / Color / Spatial / FX / Anim / Output
+    QString m_subTab = QStringLiteral("Source"); // the tab shown, by its name: kept from one layer to the next
     quint64 m_layerId = 0;
     bool m_locked = false;
     QVBoxLayout *m_layout = nullptr;
@@ -103,7 +106,8 @@ private:
     std::vector<RouteField> m_routeFields;
     bool m_previewing = false;
     QPointer<QProgressBar> m_meter;
-    QPointer<QLabel> m_codecFact, m_pictureFact; // known once frames are decoded: kept up to date
+    QPointer<QLabel> m_pictureFact; // known once frames are decoded: kept up to date
+    QPointer<SliderField> m_genSpeed; // the generator's speed (above the tabs)
     QPointer<ViewportOutputPanel> m_output;
     QPointer<QTabWidget> m_tabs;
     QPointer<AnimateMenu> m_animate; // right-click on a number: Animate
