@@ -71,7 +71,10 @@ int main(int argc, char **argv)
 
     Engine e;
     QString err;
-    CHECK(e.initialize(&err));
+    if (!e.initialize(&err)) { // nothing else can run
+        std::printf("FAIL OpenGL: %s\n", qPrintable(err));
+        return 1;
+    }
     // A composition is always shown through a viewport, and viewports come first in the list:
     // the layers of these tests start at row V.
     const int V = 1;
