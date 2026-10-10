@@ -30,9 +30,10 @@ class AnimateMenu;
 class QTabWidget;
 class ViewportOutputPanel;
 
-// Inspector for the selected layer, group or viewport, in sub-tabs: Source (drop zone, transport, sound, generator
-// parameters), ROI, Color (added / removed), Spatial (mapping), FX (ISF chain), Compositing (opacity, blend, the
-// viewports it appears in), Anim (the animations of its numbers), and for a viewport, Output (size, screen, publishing).
+// Inspector for the selected layer, group or viewport: at the top, always shown, its source (drop zone, transport,
+// sound, generator parameters) and its compositing (opacity, blend, the viewports it appears in); below, in sub-tabs:
+// ROI, Color (added / removed), Spatial (mapping), FX (ISF chain), Anim (the animations of its parameters), and for a
+// viewport, Output (size, screen, publishing).
 // All edits go through the undo stack. A locked layer shows its settings without allowing edits
 // (the transport stays available). A click on a parameter's name resets it; a right-click animates it.
 class LayerInspector : public QWidget
@@ -76,7 +77,7 @@ private:
     QUndoStack *m_undo;
     int m_layer = -1;
     int m_selectedEffect = 0;
-    int m_subTab = 0; // Source / ROI / Color / Spatial / Effects / Compositing
+    int m_subTab = 0; // ROI / Color / Spatial / FX / Anim / Output
     quint64 m_layerId = 0;
     bool m_locked = false;
     QVBoxLayout *m_layout = nullptr;

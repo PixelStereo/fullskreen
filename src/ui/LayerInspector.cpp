@@ -215,7 +215,7 @@ static QToolButton *toolButton(const QString &text, const QString &tip)
 }
 
 namespace {
-// Drop zone of the Source tab: a file from the Media Bin or the Finder is loaded into the layer.
+// Drop zone of the source (top of the inspector): a file from the Media Bin or the Finder is loaded into the layer.
 class DropZone : public QLabel
 {
 public:
@@ -430,7 +430,23 @@ void LayerInspector::rebuild()
         emit layerChanged();
     });
 
-    // Sub-tabs; the current one is kept from one layer to the next
+    // At the top, always shown: its source (media, transport, sound, generator) and how it is composited (opacity,
+    // blend, the viewports it appears in)
+    auto *top = new QWidget;
+    {
+        auto *tv = new QVBoxLayout(top);
+        tv->setContentsMargins(0, 0, 0, 0);
+        tv->setSpacing(8);
+        tv->addWidget(buildSource(s));
+        if (s.type != SourceType::Audio) { // a sound has no picture to composite
+            tv->addWidget(separator());
+            tv->addWidget(buildCompositing(s));
+        }
+        lockInputs(top, m_locked);
+    }
+    v->addWidget(top);
+
+    // Below, in sub-tabs; the current one is kept from one layer to the next
     auto *tabs = new QTabWidget;
     tabs->setDocumentMode(true);
     // Tabs that read as tabs (as the ones above): the current one lighter, underlined with the accent
@@ -442,12 +458,10 @@ void LayerInspector::rebuild()
                                        "QTabBar::tab:hover:!selected { background:#313136; color:#d8d8dc; }"
                                        "QTabBar::tab:disabled { color:#55555a; }")
                             .arg(theme::css()));
-    tabs->addTab(page(buildSource(s)), QStringLiteral("Source"));
     tabs->addTab(page(buildRoi(s)), QStringLiteral("ROI"));
     tabs->addTab(page(buildColor(s)), QStringLiteral("Color"));
     tabs->addTab(page(buildMapping(s)), QStringLiteral("Spatial"));
     tabs->addTab(page(buildEffects(s)), QStringLiteral("FX"));
-    tabs->addTab(page(buildCompositing(s)), QStringLiteral("Compositing"));
     m_anims = new ParamAnimPanel(m_engine, m_undo, s.id);
     connect(m_anims, &ParamAnimPanel::projectEdited, this, &LayerInspector::projectEdited);
     {
@@ -467,8 +481,8 @@ void LayerInspector::rebuild()
     }
     lockInputs(tabs, m_locked);
     name->setEnabled(!m_locked);
-    if (s.type == SourceType::Audio) { // a sound has no picture: no color, mapping, effects or compositing
-        for (int t = 1; t < tabs->count(); ++t) {
+    if (s.type == SourceType::Audio) { // a sound has no picture: no ROI, color, mapping or effects
+        for (int t = 0; t < tabs->count(); ++t) {
             if (t == m_animTab) continue; // its volume and speed can be animated
             tabs->setTabEnabled(t, false);
             tabs->setTabToolTip(t, QStringLiteral("An audio layer has no picture"));
@@ -476,7 +490,7 @@ void LayerInspector::rebuild()
     }
     m_tabs = tabs;
     if (!m_revealAnim.isEmpty()) m_subTab = m_animTab;
-    tabs->setCurrentIndex(tabs->isTabEnabled(m_subTab) ? m_subTab : 0);
+    tabs->setCurrentIndex(tabs->isTabEnabled(m_subTab) ? m_subTab : m_animTab);
     connect(tabs, &QTabWidget::currentChanged, this, [this, tabs](int i) {
         if (tabs->isTabEnabled(i)) m_subTab = i;
     });
@@ -498,7 +512,7 @@ QWidget *LayerInspector::buildSource(const LayerValues &s)
         auto *info = new QLabel(QStringLiteral("<b>Viewport</b> %1 × %2<br><span style='font-size:11px; color:#999'>"
                                                "A window onto the composition: it shows the region set in Spatial, "
                                                "at its own size (Output). The layers at the top of the list choose "
-                                               "the viewports they appear in (Compositing).</span>")
+                                               "the viewports they appear in (below their opacity).</span>")
                                     .arg(s.vpSize.width())
                                     .arg(s.vpSize.height()));
         info->setWordWrap(true);
